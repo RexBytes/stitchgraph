@@ -143,6 +143,7 @@ Result {
   provenance:     extracted | inferred | ambiguous
   needs_review:   bool
   review_reasons: [str]
+  urgency:        green | orange | red | null   # issue results only (see §7)
   alternatives:   [<payload>]
   meta:           {...}
 }
@@ -279,7 +280,78 @@ ranked by how many things depend on them").
 
 ---
 
-## 7. The report
+## 7. Issue flagging & urgency model
+
+stitchgraph can flag issues and rank them — but two color scales are in play and
+**must not be conflated**, so they are separate fields:
+
+- **Regime** (🟢/🟡/🔴, §5) = *what compute a capability needs* (build-time).
+- **Urgency** (🟢/🟠/🔴, this section) = *how alarming a flagged issue is*
+  (per-issue, on the result envelope as `urgency`). Orange, not yellow, to keep
+  it visually distinct from the regime scale.
+
+### What the matrix can flag *purely structurally* (no LSP, no runtime)
+
+| Issue (matrix-only) | Default urgency |
+|---|---|
+| Dangling call reachable from an entry point (calls something undefined) | 🔴 |
+| Live stub on a critical path (`is_stub ∧ reachable ∧ high fan-in`) | 🔴 |
+| Required wiring missing on a live path (route→handler, etc.) | 🔴 |
+| Circular dependency (SCC > 1) among modules | 🟠 |
+| Data loop / feedback (cycle over READS/WRITES) | 🟠 |
+| God object / coupling hotspot (high fan-in ∧ fan-out) | 🟠 |
+| Layering violation (edge points "up") | 🟠 |
+| Articulation point with no tests (fragile ∧ untested) | 🟠 |
+| Possibly-stale, but maybe dynamically reached (AMBIGUOUS) | 🟠 |
+| Dead code on no live path | 🟢 |
+| Unused parameter / unused private helper | 🟢 |
+| Deep-but-isolated chain, minor coupling | 🟢 |
+
+### Suspicion, not diagnosis
+
+The matrix flags **anomalous shapes that correlate with defects**; it never
+asserts a bug as fact. Scope it honestly: **stitchgraph finds wiring/structure
+defects, not logic bugs.** An off-by-one, a wrong condition, a bad calculation
+leave no structural trace and are invisible to the graph — do not promise them.
+
+### Urgency = severity prior × impact
+
+```
+urgency = severity_prior(issue_type)  ×  impact(reachability, centrality)
+```
+
+`severity_prior` is a fixed prior per issue type. `impact` is what the matrix
+computes best — and so **the matrix can rank the urgency of issues it didn't
+find.** A type error the LSP reported (🔴 regime, not the matrix's to detect)
+still gets its *urgency* from the matrix: on a function 14 things depend on → 🔴;
+in dead code → 🟢. The urgency engine is the unifying layer over every issue
+source, structural or delegated.
+
+Modulators that move an issue up or down: reachability from entry points (live ↑,
+dead ↓), centrality/fan-in (more dependents ↑), test coverage (untested ↑), churn
+(recently changed ↑, once git fusion exists).
+
+### Provenance gates the ceiling (no confident-wrong reds)
+
+A wrong 🔴 destroys trust faster than anything, so urgency is gated by the same
+confidence machinery:
+
+- `EXTRACTED` + live + high-impact → may be 🔴
+- `INFERRED` → caps at 🟠
+- `AMBIGUOUS` → caps at 🟠 **and** forces `needs_review`
+
+Nothing low-confidence can ever shout red. Urgency stays coupled to confidence —
+"refuse when unsure" applied to severity.
+
+### Operation
+
+`scan(path?)` → a ranked issue list, each with `urgency` + `confidence` +
+`review_reasons`. It is the backbone of the report's "Fix now / Look closer /
+Cleanup" structure.
+
+---
+
+## 8. The report
 
 Point at a repo, get a Markdown report — `report.py` is a renderer that composes
 the operations and prints their envelopes as prose:
@@ -299,13 +371,17 @@ self-organizes:
 - Read these first (top hubs): ...
 - Subsystems: ...
 
-## High-confidence findings
-- Stale code (safe to remove): ...
-- Dangling calls: ...
+## 🔴 Fix now (live, high-impact, high-confidence)
+- Dangling calls reachable from entry points: ...
+- Live stubs on critical paths: ...
 
-## Needs review (look closer)
-- Possibly-stale (could be dynamically reached): ...  [reasons]
-- Live stubs on critical paths: ...                   [reasons]
+## 🟠 Look closer (anomalies / ambiguous / tech debt)
+- Circular dependencies, god objects, layering violations: ...
+- Possibly-stale (could be dynamically reached): ...   [reasons]
+
+## 🟢 Cleanup (low risk, informational)
+- Stale code on no live path (safe to remove): ...
+- Unused parameters / private helpers: ...
 
 ## Structure
 - Circular dependencies: ...
@@ -320,7 +396,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 
 ---
 
-## 8. Operation surface (~8 task-level)
+## 9. Operation surface (~8 task-level)
 
 | Operation | Returns | Bucket |
 |---|---|---|
@@ -330,6 +406,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 | `impact_of(symbol)` | blast radius + which tests | B/G |
 | `trace_path(src, sink, relations?)` | full-stack cross-language path + confidence | B |
 | `structure_smells(path?)` | cycles, god objects, layering violations, data loops | C/F |
+| `scan(path?)` | ranked issue list with `urgency` + confidence + reasons | §7 |
 | `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading | — |
 | `find_symbol / get_callers / get_callees / type_at` | structural primitives | A |
 | `reindex(path)` | incremental update (admin) | — |
@@ -347,7 +424,7 @@ ignored in favor of grep muscle memory.
 
 ---
 
-## 9. Open-source components & licensing
+## 10. Open-source components & licensing
 
 Goal: ship 100% open-source under MIT with **zero copyleft obligations**.
 
@@ -388,7 +465,7 @@ it as a backend.
 
 ---
 
-## 10. Build order
+## 11. Build order
 
 - **M0 — Structural base (mostly borrow).** tree-sitter + LSP extraction into the
   SQLite adjacency store; `find_symbol / get_callers / get_callees / type_at`
@@ -397,7 +474,8 @@ it as a backend.
   envelope on every operation. Cheap, high payoff.
 - **M2 — Reachability engine (the core value).** Derive CSR matrices, wire
   python-graphblas / LAGraph; ship `find_stale`, `find_holes`, `orient`,
-  `impact_of`. Dead code, holes, orientation — the headline features.
+  `impact_of`, and `scan` (structural issue flagging + urgency). Dead code,
+  holes, orientation, ranked issues — the headline features.
 - **M3 — Cross-language resolver + report.** Link one web framework + one ORM
   end-to-end (`trace_path`); ship `stitchgraph report`.
 - **M4 — Optional / later.** Data-loop detection (🟡), git-history risk fusion,
@@ -411,7 +489,7 @@ target stack.
 
 ---
 
-## 11. Traps to avoid
+## 12. Traps to avoid
 
 - **Dense `C^k` powers.** Use frontier SpMV over a semiring (the GraphBLAS/LAGraph
   pattern). The difference between fast and unusable.
