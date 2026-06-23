@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 11 (Panels A–K) |
+| Multi-model review panels | 12 (Panels A–L) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 115 passing, 1 skipped |
+| Tests | 120 passing, 1 skipped |
 | Coverage | ~84% |
-| Release-Readiness Score | 78.4 / 100 |
-| Convergence | I (11) → J (30) → K (14): the use-form class is closing (K found only its tail: signature annotations + a self-inflicted metric regression). Clean streak 0 of 2 |
-| Verdict | NOT RELEASABLE — yield falling again post-J; needs ≥2 clean panels |
+| Release-Readiness Score | 77.3 / 100 |
+| Convergence | precision-corner findings persist (I–L), each narrower; L closed constructor-body reachability + the Python twins of K's metric fixes. Clean streak 0 of 2 |
+| Verdict | NOT RELEASABLE — still surfacing real precision corners (live-flagged-dead); each fixed. Needs ≥2 clean panels |
 
 ## Trajectory
 
@@ -33,6 +33,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | I | opus · sonnet · haiku | 1 HIGH · 1 LOW | 11.0 | **confirmation gate caught a real HIGH** — `new Foo()` not edged in JS/TS/C#/C++ (live class flagged dead); read-only `global` false data_loop. Streak resets. |
 | J | opus · sonnet · haiku | 3 HIGH | 30.0 | **use-form class fully exposed** — bare-name refs (opus); PHP `new` + Ruby `.new` missed by I's fix (sonnet). One general by-name-reference pass closes the class. |
 | K | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM | 14.0 | tail of the class — Python signature type annotations (opus); + a self-inflicted regression: J's `_direct_refs` `id()`-skip failed → spurious REFERENCES self-loops (opus+sonnet). haiku clean. |
+| L | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | constructing a class didn't reach its constructor → `__init__` constructions flagged dead (haiku); Python twins of K's metric fixes — CALLS+REFERENCES double-edge (opus), REFERENCES self-loop (sonnet) — fixed at the dedup boundary. |
 
 ## What each panel found and how it was fixed
 
@@ -269,6 +270,27 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   The confirmation pair did its job again: the aggressive Panel J change had both a
   missed corner and a self-inflicted side-effect, and the side-effect audit caught
   both. RRS 73.7 → 78.4.
+
+- **Panel L (opus · sonnet · haiku)** — one more real precision corner plus the
+  Python twins of Panel K's tree-sitter metric fixes:
+  - **HIGH (haiku)** — **constructing a class didn't reach its constructor.** `Foo()`
+    edges to the class node, but nothing linked the class to `__init__`, so a class
+    built inside another's constructor (`Service.__init__` doing `self.r = Resource()`)
+    left `Resource` unreachable and flagged dead. Now `class -> constructor` is modeled
+    in both extractors (Python `__init__`/`__new__`/`__post_init__`; tree-sitter
+    `constructor`/`initialize`/`__construct` and the class-named Java/C#/C++ ctors).
+  - **MEDIUM (opus)** — the Python extractor emitted both a CALLS and a REFERENCES edge
+    to a symbol it both calls and names/annotates (`def build() -> Node: return Node()`),
+    double-counting fan_in/pagerank (23 such pairs on stitchgraph's own src).
+  - **MEDIUM (sonnet)** — the Python extractor also left REFERENCES self-loops (a def
+    naming itself), inflating its own fan_in. (sonnet's slot hit a 500 mid-write-up;
+    the finding was salvaged from its transcript and fixed.)
+
+  opus's and sonnet's were the **Python twins** of the tree-sitter metric fixes from
+  Panel K — the recurring "fix one extractor, miss its sibling" theme. Both are now
+  fixed **language-agnostically at the dedup boundary** (`_dedup_edges`: a CALLS edge
+  subsumes a REFERENCES edge to the same target; REFERENCES self-loops are dropped),
+  which should stop this twin class recurring. RRS 78.4 → 77.3.
 
 ## Standing themes
 

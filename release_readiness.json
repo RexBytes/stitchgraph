@@ -78,6 +78,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "MEDIUM": 1},
       "theme": "tail of the use-form class + a self-inflicted regression: Python signature type annotations not modeled (opus HIGH); the Panel J _direct_refs id()-skip was ineffective on tree-sitter wrappers, spurious REFERENCES self-loops + callee double-edges inflating fan_in (opus+sonnet converged, MEDIUM). haiku clean."
+    },
+    {
+      "id": "L",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 2},
+      "theme": "constructing a class didn't reach its constructor -> constructions in __init__ flagged dead (haiku HIGH); Python twins of Panel K's tree-sitter metric fixes — CALLS+REFERENCES double-edge (opus) and REFERENCES self-loop (sonnet) — now fixed language-agnostically at the dedup boundary. (sonnet's slot hit a 500; finding salvaged from transcript and fixed.)"
     }
   ]
 }

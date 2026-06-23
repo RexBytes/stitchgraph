@@ -642,7 +642,9 @@ def _dedup_edges(edges: list) -> list:
     A CALLS edge also subsumes a REFERENCES edge to the *same* (src, dst): a called
     symbol is already a dependency, so the by-name REFERENCES is redundant and would
     double-count fan_in / pagerank (a function that both calls and names/annotates a
-    class). The strong relation wins."""
+    class). The strong relation wins. A REFERENCES *self-loop* (a def naming itself)
+    is likewise dropped — it carries no liveness/impact meaning and only inflates
+    degree metrics (unlike a recursive CALLS self-loop, which is kept)."""
     best: dict[tuple, Any] = {}
     order: list[tuple] = []
     holes: list = []
@@ -657,9 +659,12 @@ def _dedup_edges(edges: list) -> list:
         elif e.weight > best[key].weight:
             best[key] = e
     called = {(e.src, e.dst_id) for e in best.values() if e.relation is Relation.CALLS}
-    kept = [best[k] for k in order
-            if not (best[k].relation is Relation.REFERENCES and (best[k].src, best[k].dst_id) in called)]
-    return holes + kept
+
+    def _drop(e) -> bool:  # a redundant or self-looping REFERENCES edge
+        return e.relation is Relation.REFERENCES and (
+            e.src == e.dst_id or (e.src, e.dst_id) in called)
+
+    return holes + [best[k] for k in order if not _drop(best[k])]
 
 
 def _resolve_one(store: Store, name: str):

@@ -816,3 +816,18 @@ def test_constructor_body_is_reachable_tree_sitter(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "Resource" not in stale
+
+
+# -- Panel L / sonnet (MEDIUM): Python REFERENCES self-loops are dropped --------
+def test_python_reference_self_loop_is_dropped(tmp_path):
+    """A function that names itself by value (`table = {"x": dispatcher}`) must not
+    get a REFERENCES self-loop — it carries no liveness/impact meaning and inflated
+    fan_in (the Python twin of the tree-sitter self-loop fixed in Panel K)."""
+    from stitchgraph.core.model import Relation
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {"pkg/__init__.py": "",
+                   "pkg/m.py": "def dispatcher():\n    table = {'x': dispatcher}\n    return table\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert not any(e.src == e.dst_id for e in store.resolved_edges(Relation.REFERENCES))
+        assert fan_in(store).get("pkg/m.py::dispatcher") in (None, 0)
