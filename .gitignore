@@ -12,3 +12,4 @@ stitchgraph.db
 .DS_Store
 .coverage
 .readiness_cov.json
+.claude/worktrees/
