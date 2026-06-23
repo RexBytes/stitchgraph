@@ -61,8 +61,9 @@ class PythonLibraryDetector:
 
     def detect(self, store: Store) -> set[str]:
         roots: set[str] = set()
-        # 'runtime' = observed executing in a trace -> definitely live (design §2c).
-        for role in ("exported", "main", "script", "route", "runtime"):
+        # 'runtime' = observed executing in a trace -> definitely live (design §2c);
+        # 'callback' = a framework-invoked override (design §7).
+        for role in ("exported", "main", "script", "route", "runtime", "callback"):
             roots.update(n.id for n in store.nodes_with_role(role))
         if self.include_tests:
             roots.update(n.id for n in store.nodes_with_role("test"))

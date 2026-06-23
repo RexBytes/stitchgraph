@@ -27,6 +27,7 @@ class NodeKind(str, Enum):
     DB_COLUMN = "DBColumn"
     QUERY = "Query"
     TEST = "Test"
+    EVENT = "Event"
 
 
 class Relation(str, Enum):
