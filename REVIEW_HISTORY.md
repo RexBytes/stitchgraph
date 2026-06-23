@@ -8,14 +8,14 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 21 (Panels A–U) |
+| Multi-model review panels | 22 (Panels A–V) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
 | Tests | 148 passing, 0 skipped (full extras) |
-| Coverage | ~85% |
-| Release-Readiness Score | **90.4 / 100** |
-| Convergence | T (80, the last two nesting hosts) → U (**0.0, CLEAN** at full diversity + a non-vacuous test-quality audit). **Streak 1 of 2** — one more clean panel clears the gate |
+| Coverage | 86.4% |
+| Release-Readiness Score | **93.3 / 100** |
+| Convergence | U (**0.0 CLEAN**) → V (**0.0 CLEAN**), both full-diversity, V steered onto less-trodden surfaces so the clean is earned. **Streak 2 of 2** |
 | Dogfood (self) | find_stale 3 advisory (no false-dead) · holes 0 · scan: 4 cycles / 1 data_loop / 12 god_objects · 349 nodes |
-| Verdict | NOT RELEASABLE — gates green AND RRS ≥ 90; **only** blocker is the 2nd consecutive clean panel (streak 1 of 2) |
+| Verdict | **RELEASABLE** — gates green AND RRS ≥ 90 AND 2 consecutive full-diversity clean panels. Awaiting the maintainer's manual `1.0.0` tag (version stays `0.4.0` until then) |
 
 ## Trajectory
 
@@ -44,6 +44,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | S | opus · haiku | 1 CRITICAL | **40.0** | **the confirmation gate caught a CRITICAL regression Panel R itself introduced** — the textbook case for why consecutive clean panels are required. opus: R's body-skip made each `_direct_*` driver `continue` on a nested def statement, but a def's **header** (decorator args `@registry(make_validator())`, nested-class base exprs `class L(get_base())`) executes in the *enclosing* scope at def-time and was dropped — not recovered elsewhere → a symbol used only there had zero inbound edges and was flagged dead. Pre-R this erred safe (over-attributed to the enclosing fn); R flipped it to erring **unsafe** (false dead, the cardinal sin). Fixed with `_def_header_refs`: walk a nested def's header (decorators + class bases/keywords) in the enclosing scope while still skipping the body. haiku **clean** (48 adversarial tests, no findings). **Streak resets to 0.** |
 | T | opus · haiku | 2 CRITICAL | **80.0** | **the last two nesting hosts of the Panel Q class — both CRITICAL false-deads, both pre-existing (not regressions).** haiku: a Python def nested in a **control-flow block** (`if`/`for`/`while`/`try`/`with`/`match`) was never modeled (`_def_node`/`_walk_scope` walked only the *direct* body) → phantom-source edges → a symbol used only there flagged dead. opus: the tree-sitter twin — a def nested in a JS/TS **arrow function** (`const h = () => { function w(){…} }`) was never modeled (the arrow branch made the node but never recursed into the arrow body). Closed by a **systematic nesting-host audit** (function/class/control-flow/arrow are the only hosts; lambdas/comprehensions can't hold defs): Python `_scope_defs` looks *through* control flow in `_def_node`/`_walk_scope`/`_iter_funcs`/module loop; tree-sitter arrow branch now recurses + emits the containment edge. Test matrix pins every host (140→148). Dogfood: find_stale still 3 advisory, 0 holes. **Streak resets to 0; the enumeration is now believed complete.** |
 | U | opus · haiku | _none_ | **0.0** | **CLEAN** — both models `FINDINGS: none` at full diversity, the first clean panel since the nesting audit. Scope also included a **regression-test-quality audit** (after two test-authoring slips in R/S): both confirmed the Panel Q–T nesting tests are **non-vacuous** — opus monkeypatched `_scope_defs` back to a pre-fix variant in `/tmp` and saw **5/5** control-flow tests FAIL, then pass post-fix. No still-unmodeled def host found; body-leak (R) and header-leak (S) fixes hold; no metric inflation (`_dedup_edges` collapses the CALLS+REFERENCES pair, fan_in==1); module-level `try: import`/`TYPE_CHECKING` idioms sane. Dogfood: 3 advisory, 0 holes. **RRS crosses 90.4; clean streak 1 of 2.** |
+| V | opus · haiku | _none_ | **0.0** | **CLEAN — the second consecutive clean panel; the release gate is met.** Both `FINDINGS: none`, steered onto the less-trodden surfaces so the clean is earned: SQL/ORM/event resolvers (CTE/UNION/INSERT…SELECT/MERGE, `mapped_column`/`relationship` exclusion, additive-only events), the full envelope contract (every `urgency=` assignment vs the provenance ceiling; scan-RED needs an EXTRACTED-only `certain_live` path; `ingest_trace` refuses on zero grounding; no `ok=True`-with-vacuous-result), persistence/migration, metric dedup (`LIVENESS_RELATIONS` excludes QUERIES/READS/WRITES/MAPS_TO), a **2000-graph GraphBLAS-vs-pure-Python fuzz (0 mismatches)**, and precision use-forms (walrus/comprehensions/f-strings/forward-refs/`__all__`). Two non-defect sub-observations recorded (SQL MERGE labels target READS not WRITES — err-safe, uncommon; `find_holes` urgency=ORANGE on empty list — cosmetic), neither a finding. Dogfood: 3 advisory, 0 holes. **Gates green · RRS 93.3 · clean streak 2/2 → RELEASABLE.** |
 
 ## What each panel found and how it was fixed
 
@@ -530,6 +531,48 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   Gates are green and RRS ≥ 90; the *only* remaining release blocker is the **second**
   consecutive clean panel. **Clean streak 1 of 2.** One more clean panel at full diversity
   clears the gate, at which point the maintainer can tag `1.0.0`.
+
+- **Panel V (opus · haiku)** — **CLEAN, and the gate-clearing panel.** To keep a clean
+  verdict from being a rubber-stamp on the same code Panel U saw (U changed no source), both
+  reviewers were steered *away* from the now-closed nesting class and *toward* the
+  less-trodden surfaces. They still came back `FINDINGS: none` after genuine probing:
+  - **opus** — SQL/ORM/event resolvers (CTE/UNION/`INSERT…SELECT`/MERGE, `mapped_column` vs
+    `relationship`/`ManyToManyField` exclusion, additive-only events); the full envelope
+    contract (audited every `operations.py` `urgency=` assignment against the provenance
+    ceiling; `scan`-RED requires an EXTRACTED-only `certain_live` path; `find_stale`
+    0.6/INFERRED/needs_review; `ingest_trace` refuses on zero grounding; no
+    `ok=True`-with-vacuous-result); persistence/migration; metric dedup
+    (`LIVENESS_RELATIONS` excludes QUERIES/READS/WRITES/MAPS_TO, so resolver edges don't
+    inflate fan_in); `get_matrix` N/N+1 bounds; a **2000-random-graph GraphBLAS-vs-pure-Python
+    reachability fuzz with 0 mismatches**; and precision use-forms (walrus, nested
+    comprehensions, f-string calls, string forward-refs, `__all__` re-exports,
+    `@property`/`@staticmethod`).
+  - **haiku** — per-language call graphs across the 12 languages, cross-language resolvers
+    (Django routes as roots, SQL CTE not a phantom table), envelope-field validity on every
+    operation, parallel-edge dedup, and robustness (unicode identifiers, malformed/empty
+    files, the read-only invariant).
+  - Two **non-defect sub-observations** were recorded, neither flagged as a finding: SQL
+    `MERGE` labels its target READS rather than WRITES (a recall-only label gap, err-safe,
+    and MERGE is uncommon), and `find_holes` sets `urgency=ORANGE` even on an empty hole list
+    (cosmetic — the result is a valid `ok=True`, `count=0`, `[]`). These are noted for a
+    future cleanup; they do not affect the cardinal invariant or the release decision.
+
+  Weighted yield **0.0**. With **two consecutive full-diversity clean panels (U, V)**, all
+  hard gates green, and **RRS 93.3** (coverage 86.4%), `scripts/readiness.py` returns
+  **RELEASABLE**. Per the methodology the maintainer now tags/releases manually; the package
+  version reads `1.0.0` only at that point (it stays `0.4.0` in-repo until the tag).
+
+## Release status (2026-06-23)
+
+`scripts/readiness.py` → **RELEASABLE**: gates (pytest/ruff/mypy/no-open-defects) green,
+RRS **93.3 / 100**, clean streak **2** at full diversity (opus + haiku). The dominant
+historical defect class — "a live symbol used in a way not modeled → flagged dead," the
+Python↔tree-sitter nesting-scope asymmetry — is closed across all four nesting hosts
+(function / class / control-flow / arrow) by the Panel T systematic audit and re-confirmed
+clean by Panels U and V. **Next step is the maintainer's manual release** (tag `v1.0.0`,
+bump the in-repo version + CHANGELOG). Deferred non-blockers for after 1.0.0: SQL MERGE
+WRITES label; `find_holes` empty-list urgency; the LSP backend and variable-granularity
+data flow (see `STATUS.md` roadmap).
 
 ## Standing themes
 
