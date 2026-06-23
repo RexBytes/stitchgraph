@@ -37,7 +37,9 @@ class JsFetchResolver:
         routes: dict[str, list[str]] = {}
         for n in ctx.nodes:
             if n.kind == NodeKind.ROUTE:
-                routes.setdefault(n.name.split(" ", 1)[-1], []).append(n.id)
+                parts = n.name.split(" ", 1)  # "METHOD /path" (guard like html.py)
+                if len(parts) == 2:
+                    routes.setdefault(parts[1], []).append(n.id)
         if not routes:
             return [], []
         edges: list[Edge] = []

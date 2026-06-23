@@ -53,7 +53,11 @@ def _link(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
     if tree is None:
         return
     writes = isinstance(tree, (exp.Insert, exp.Update, exp.Delete, exp.Create))
-    rel_kind = Relation.WRITES if writes else Relation.READS
+    # The DML *target* is a write; tables read by a nested SELECT/subquery are reads
+    # (e.g. `INSERT INTO archive SELECT ... FROM users` writes `archive`, reads
+    # `users`). The target lives in the statement's `this`; everything else is a read.
+    write_tables = ({id(t) for t in tree.this.find_all(exp.Table)}
+                    if writes and tree.this is not None else set())
     # CTE names (`WITH recent AS (...)`) parse as Tables when referenced, but they
     # are query-local aliases, not real db tables — skip them so they don't become
     # phantom `db::` nodes that pollute trace_path / get_matrix.
@@ -62,6 +66,7 @@ def _link(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
         name = table.name
         if not name or name in cte_names:
             continue
+        rel_kind = Relation.WRITES if id(table) in write_tables else Relation.READS
         tid = f"db::{name}"
         nodes.setdefault(tid, Node(id=tid, kind=NodeKind.DB_TABLE, name=name,
                                    location="db", roles=frozenset()))

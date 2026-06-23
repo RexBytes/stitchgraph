@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 4 (Panels A, B, C, D) |
+| Multi-model review panels | 5 (Panels A–E) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 101 passing, 1 skipped |
+| Tests | 104 passing, 1 skipped |
 | Coverage | ~83% |
-| Release-Readiness Score | 80.5 / 100 |
-| Convergence | weighted yield 43 → 15 → 18 → 6 (rate 0.14); clean streak 0 of 2 required |
-| Verdict | NOT RELEASABLE — yield down sharply; needs ≥2 clean (<2) full-diversity panels to converge |
+| Release-Readiness Score | 78.7 / 100 |
+| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 (non-monotonic); clean streak 0 of 2 required |
+| Verdict | NOT RELEASABLE — Panel E found a real HIGH (C/C++ untested path); needs ≥2 clean (<2) full-diversity panels |
 
 ## Trajectory
 
@@ -26,6 +26,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | B | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM · 1 LOW | 15.0 | the *same* gaps in the other siblings (tree-sitter, html/jsfetch, git risk) |
 | C | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | deeper surfaces — tree-sitter callback roles, signal `.connect()`, SQL CTE phantom |
 | D | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | incremental/edge surfaces — `_resolve_worklist` ambiguity, recursion self-edge, malformed-coverage crash |
+| E | opus · sonnet · haiku | 1 HIGH · 2 LOW · 1 NIT | 12.2 | untested language path — C/C++ functions silently dropped; exported-method over-seeding, INSERT…SELECT label, jsfetch guard |
 
 ## What each panel found and how it was fixed
 
@@ -116,6 +117,30 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   - **LOW (sonnet)** — `runtime._parse_json` admitted non-integer `executed_lines`
     from a malformed coverage file, crashing the later range test (LCOV/Go already
     int-cast). JSON now coerces and drops non-integers too.
+
+- **Panel E (opus · sonnet · haiku)** — the panel reached an *untested* surface and
+  the headline find justifies the whole exercise:
+  - **HIGH (sonnet)** — C and C++ produced **zero** function/method nodes: `_name_of`
+    read the function's `type` field (the *return type*) before the `declarator`, so
+    every `function_definition` resolved to `None` and was silently dropped — the
+    entire C/C++ call graph was empty, though `docs/LANGUAGES.md` claimed ✅ and no
+    C/C++ test existed to catch it. `_name_of` now reads the declarator first (the
+    `type` field is kept only for Rust `impl` targets); a C/C++ regression test guards
+    it. `Widget* create()` also now resolves to `create`, not `Widget`.
+  - **LOW (opus)** — `_seed_exported_class_methods` over-marked Java/C# *private*
+    methods of a public class as `exported` (its docstring claimed those languages
+    were unaffected). Now gated to the JS/TS family, where visibility is inherited
+    from the class; Java/C#/Go/Rust/PHP keep their correct per-method roles.
+  - **LOW (sonnet)** — `INSERT INTO archive SELECT … FROM users` labelled the SELECT
+    source `users` as WRITES (top-level statement type applied to every table). The
+    DML target is now distinguished from read sources.
+  - **NIT (haiku)** — `jsfetch.py` lacked html.py's `"METHOD /path"` route-name guard
+    (zero practical impact; added for defensive symmetry).
+
+> Process note: a Panel E review worktree ran its own `pip install -e .`, repointing
+> the editable install at a stale worktree copy — caught when a verified fix appeared
+> not to take. Worktrees are now pruned and the install repointed to the main tree;
+> all fixes re-verified there. Review worktrees must not install the package.
 
 ## Standing themes
 

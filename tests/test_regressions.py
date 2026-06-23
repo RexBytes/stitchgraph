@@ -418,3 +418,66 @@ def test_malformed_executed_lines_do_not_crash_ingest(tmp_path):
         sg.reindex(store, str(tmp_path))
         res = sg.ingest_trace(store, str(bad))  # must not raise
         assert res.ok
+
+
+# -- Panel E / sonnet (HIGH): C/C++ functions must be extracted -----------------
+def test_c_and_cpp_functions_are_extracted(tmp_path):
+    """`_name_of` read the C/C++ *return type* before the declarator, so every
+    function_definition resolved to None and was silently dropped — the whole
+    C/C++ call graph was empty. The declarator must be read before the type field."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.c": "int helper(int x){ return x+1; }\nint main(void){ return helper(41); }\n",
+        "w.cpp": "class Box {\npublic:\n  int get(){ return 1; }\n};\nBox* make(){ return 0; }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = set(store.all_node_ids())
+        assert {"m.c::helper", "m.c::main"} <= ids          # C free functions
+        assert "w.cpp::Box.get" in ids                       # C++ method
+        assert "w.cpp::make" in ids                          # `Box* make()` -> make, not Box
+        # and the C call graph is wired
+        assert any(e.dst_id == "m.c::helper" for e in store.callees_of("m.c::main"))
+
+
+# -- Panel E / opus (LOW): exported-class seeding is JS/TS-only -----------------
+def test_private_methods_of_public_csharp_class_stay_dead_eligible(tmp_path):
+    """`_seed_exported_class_methods` must not mark Java/C# private methods exported
+    (they tokenize per-method visibility). Only JS/TS inherit visibility from the
+    class. A genuinely-private, unreferenced C# method should be a stale candidate."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Server.cs": "public class Server {\n"
+                     "  public void Run(){ Help(); }\n"
+                     "  void Help(){ return; }\n"
+                     "  private void DeadPrivate(){ return; }\n}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Server.DeadPrivate" in stale   # private + unreferenced -> dead
+        assert "Server.Run" not in stale        # public API -> live
+
+
+# -- Panel E / sonnet (LOW): INSERT...SELECT reads its source table ------------
+def test_insert_select_marks_source_as_read(tmp_path):
+    """`INSERT INTO archive SELECT ... FROM users` writes `archive` and *reads*
+    `users` — the source table was wrongly labelled WRITES (top-level stmt type
+    applied to every table)."""
+    pytest.importorskip("sqlglot")
+    _mk(tmp_path, {
+        "q/__init__.py": "",
+        "q/svc.py": "def archive_old():\n"
+                    "    return db.execute("
+                    "'INSERT INTO archive SELECT id FROM users')\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import Relation
+        writes = {e.dst_id for e in store.resolved_edges(Relation.WRITES)}
+        reads = {e.dst_id for e in store.resolved_edges(Relation.READS)}
+        assert "db::archive" in writes      # the target
+        assert "db::users" in reads         # the SELECT source
+        assert "db::users" not in writes    # not a write

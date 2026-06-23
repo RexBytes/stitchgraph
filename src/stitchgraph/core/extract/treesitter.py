@@ -191,7 +191,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name in _import_names(tree.root_node, src, spec):
             imports.append((mod_id, name, lang))
 
-    _seed_exported_class_methods(nodes)
+    _seed_exported_class_methods(nodes, file_lang)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
@@ -232,18 +232,28 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     return nodes, edges
 
 
-def _seed_exported_class_methods(nodes):
+# Languages where a method's visibility is inherited from its class (no per-method
+# visibility token), so an exported class implies exported public methods. Languages
+# that tokenize per-method visibility (Java/C#/Go/Rust/PHP) already get the correct
+# per-method `exported` role from `_roles`, so seeding there would over-mark genuinely
+# private methods as public API.
+_CLASS_VISIBILITY_LANGS = {"javascript", "typescript", "tsx"}
+
+
+def _seed_exported_class_methods(nodes, file_lang):
     """Public methods of an exported class are themselves public API — external
     callers reach them, so they're never dead for lack of an internal caller
-    (precision over recall). Mirrors the Python extractor's `_apply_entrypoint_roles`,
-    closing the symmetry gap for JS/TS and any language where method visibility is
-    inherited from the class rather than tokenized per method (Go/Java/C#/PHP/Rust
-    already carry per-method visibility, so they're unaffected)."""
+    (precision over recall). Mirrors the Python extractor's `_apply_entrypoint_roles`.
+
+    Only applies to languages where method visibility is inherited from the class
+    (JS/TS); Java/C#/Go/Rust/PHP tokenize per-method visibility and already carry the
+    correct `exported` role, so seeding there would hide genuinely-private dead code."""
     exported_class_ids = {n.id for n in nodes if n.kind is C and "exported" in n.roles}
     if not exported_class_ids:
         return
     for n in nodes:
         if n.kind is M and not n.name.startswith(("_", "#")) \
+                and file_lang.get(n.id.split("::", 1)[0]) in _CLASS_VISIBILITY_LANGS \
                 and n.id.rsplit(".", 1)[0] in exported_class_ids:
             n.roles = n.roles | {"exported"}
 
@@ -442,9 +452,13 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS):
 
 # -- helpers ---------------------------------------------------------------
 def _name_of(node, src):
-    nm = node.child_by_field_name("name") or node.child_by_field_name("type")
+    nm = node.child_by_field_name("name")
     if nm is not None:
         return _trailing_id(nm, src)
+    # C/C++: the name is in the `declarator`, not the `type` field (which is the
+    # *return type*). This must run before the `type` fallback, or a function like
+    # `int helper(...)` resolves to its return type (yielding None -> the whole def
+    # was silently dropped) and `Widget* create()` resolves to `Widget`.
     decl = node.child_by_field_name("declarator")  # C / C++
     while decl is not None:
         if decl.type in ("identifier", "field_identifier"):
@@ -455,6 +469,12 @@ def _name_of(node, src):
                           if c.type in ("identifier", "field_identifier")), None)
             return _text(ident, src) if ident else None
         decl = nxt
+    # Rust `impl Container { ... }` names its target via the `type` field.
+    ty = node.child_by_field_name("type")
+    if ty is not None:
+        got = _trailing_id(ty, src)
+        if got:
+            return got
     for c in node.children:
         if c.type in ("identifier", "type_identifier", "property_identifier"):
             return _text(c, src)

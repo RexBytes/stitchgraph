@@ -36,6 +36,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"MEDIUM": 1, "LOW": 2},
       "theme": "incremental/edge surfaces: _resolve_worklist ambiguity (opus+sonnet converged), tree-sitter recursion self-edge, malformed-coverage crash"
+    },
+    {
+      "id": "E",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "LOW": 2, "NIT": 1},
+      "theme": "untested language path: C/C++ functions silently dropped (return type read before declarator); plus exported-method over-seeding for Java/C#, INSERT...SELECT read/write label, jsfetch route guard"
     }
   ]
 }
