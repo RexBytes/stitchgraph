@@ -37,6 +37,30 @@ Caveats: small corpus (10 packages); topology is *confounded by extractor asymme
 (Python `ast` is deeper than JS tree-sitter), which inflates the language split;
 published package source differs in scope (e.g. flask 83 files vs express 7).
 
+### §3 — Purpose-aware "find the component that does X"
+`find_component.py` builds on the §2 result (the *semantic* axis is what carries
+purpose) and stitchgraph's existing `find_similar` (token similarity over name +
+docstring + callees), made usable by exploiting structure stitchgraph already
+models: **exclude test code** (by `test` role *and* test-file path — needed because
+function-local helpers nested in test methods are now first-class nodes after the
+Panel Q/T nesting work) and **boost exported/public API**.
+
+Result: free-text purpose queries locate the right public components across
+application types —
+
+| Query | Package | Top public hits |
+|---|---|---|
+| "parse command line options" | click | `Command`, `Option`, `Group.resolve_command` |
+| "send an http request / response" | requests | `Response`, `Session.request`, `Request` |
+| "render a template" | jinja2 | `Environment.get_template`, `get_or_select_template` |
+| "match a url route to a handler" | flask | `Blueprint.add_url_rule`, `Scaffold.route`, `url_for` |
+
+3/4 nail the right component as the #1 public hit; flask routing has a noisy #1
+(a decorator wrapper) but the real router ranks 2–5. **On-brand:** the graph
+supplies verifiable, role-aware structure; the ranking stays advisory. A natural
+next step is exposing this as a first-class purpose helper and swapping the token
+similarity for a dense embedder.
+
 ### §1 — Does structural signal predict where code gets fixed?
 `risk_centrality_check.py` isolates the non-circular question (since `risk()` uses
 churn as both input and label): does **structural centrality alone** (fan_in+fan_out,

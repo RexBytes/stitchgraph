@@ -85,6 +85,18 @@ If §2 works and we can recover intent/purpose from structure:
 This is the "so what" of §2 — enumerate the capabilities that become possible
 once the graph is tied to function.
 
+> **Spike result (2026-06-23, `research/find_component.py`):** a first §3
+> capability already works. `find_similar` (free-text → symbols by name + docstring
+> + callee tokens) already exists; making it **purpose-aware** — exclude test code
+> (by `test` role *and* test-file path) and **boost exported/public API** — turns it
+> into a working *component locator*: "parse command line options" → `Command`/
+> `Option`; "send an http request" → `Response`/`Session.request`; "render a
+> template" → `Environment.get_template`; "match a url route" → `Blueprint.add_url_rule`.
+> 3/4 nail the right public component as #1. Natural productisation: a first-class
+> `find_component(query)` op (advisory, confidence-carrying) and a dense embedder in
+> place of token similarity. This is the on-brand path: graph = verifiable
+> role-aware structure, LLM/embedder = the fuzzy purpose layer on top.
+
 ## 4. Do all of the above together, across a wide, varied corpus
 
 The three above are related and can run **in parallel**: pick a **wide range of
