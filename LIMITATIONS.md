@@ -48,6 +48,23 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   to the value; these cases surface as `needs_review`, not confident verdicts.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
 
+### Incremental `replace_file` resolves holes against the nodes present *now*
+- **Concern:** `Store.replace_file` (the experimental single-file incremental
+  updater) over-approximates an ambiguous hole to *all* candidates that exist when
+  it runs — but if a *later* single-file update introduces a new same-named
+  definition, an edge already uniquely resolved by an earlier update is not
+  retroactively widened to include it.
+- **Decision:** the worklist over-approximates at resolution time; it does not
+  re-open already-resolved edges when a homonym appears in a subsequent update.
+- **Rationale:** `replace_file` is not wired into any product path — `watch` does a
+  full `reindex`, which always sees the complete symbol table and links to all
+  candidates. Tracking enough provenance to retroactively re-expand individual
+  resolved edges across updates is disproportionate for an experimental method
+  whose wired alternative is already exact.
+- **Escape hatch:** run a full `reindex` (the supported path) — it is authoritative
+  for ambiguity; or call `replace_file` for the affected files once all definitions
+  exist.
+
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are
   `INFERRED` with confidence < 1 and can mis-link.

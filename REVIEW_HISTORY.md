@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 3 (Panels A, B, C) |
+| Multi-model review panels | 4 (Panels A, B, C, D) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 98 passing, 1 skipped |
+| Tests | 101 passing, 1 skipped |
 | Coverage | ~83% |
-| Release-Readiness Score | 77.0 / 100 |
-| Convergence | weighted yield 43 → 15 → 18 (non-monotonic); clean streak 0 of 2 required |
-| Verdict | NOT RELEASABLE — still surfacing real sibling gaps; needs ≥2 clean full-diversity panels to converge |
+| Release-Readiness Score | 80.5 / 100 |
+| Convergence | weighted yield 43 → 15 → 18 → 6 (rate 0.14); clean streak 0 of 2 required |
+| Verdict | NOT RELEASABLE — yield down sharply; needs ≥2 clean (<2) full-diversity panels to converge |
 
 ## Trajectory
 
@@ -25,6 +25,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | A | opus · sonnet · haiku | 3 HIGH · 3 MEDIUM · 1 LOW | 43.0 | symmetry gaps — a rule present in one sibling, missing in another |
 | B | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM · 1 LOW | 15.0 | the *same* gaps in the other siblings (tree-sitter, html/jsfetch, git risk) |
 | C | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | deeper surfaces — tree-sitter callback roles, signal `.connect()`, SQL CTE phantom |
+| D | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | incremental/edge surfaces — `_resolve_worklist` ambiguity, recursion self-edge, malformed-coverage crash |
 
 ## What each panel found and how it was fixed
 
@@ -97,6 +98,24 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 > Process note: Panel C agents shared the working tree and one edited source
 > directly. Subsequent panels run in **isolated worktrees, strictly review-only**
 > — they report findings; the maintainer adjudicates and applies.
+
+- **Panel D (opus · sonnet · haiku)** — first run in isolated worktrees,
+  review-only. Yield fell to 6; opus also fuzz-confirmed the GraphBLAS-vs-pure-Python
+  reachability agreement over 3000 random graphs (0 mismatches) and cleared coverage
+  ingestion, `find_similar`, the report/MCP/CLI adapters, and the envelope contract.
+  - **MEDIUM (opus + sonnet, converged)** — `Store._resolve_worklist`, the
+    incremental re-resolution path, linked an ambiguous hole to only one candidate
+    (`COUNT(*) = 1` guard) — the lone resolution site not over-approximating. Now it
+    links to *all* candidates as AMBIGUOUS, mirroring the extractors. The rarer
+    cross-update homonym case (a hole uniquely resolved, then a same-named def added
+    by a *later* single-file update) is documented in `LIMITATIONS.md`; `replace_file`
+    is experimental and `reindex` (the wired path) is authoritative.
+  - **LOW (haiku)** — the tree-sitter `_ref` filtered self-references for *all*
+    relations, dropping the self-CALLS edge of a recursive function that the Python
+    extractor keeps. The self-filter now applies only to INHERITS/IMPORTS.
+  - **LOW (sonnet)** — `runtime._parse_json` admitted non-integer `executed_lines`
+    from a malformed coverage file, crashing the later range test (LCOV/Go already
+    int-cast). JSON now coerces and drops non-integers too.
 
 ## Standing themes
 

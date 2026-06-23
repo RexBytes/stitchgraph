@@ -30,6 +30,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "MEDIUM": 2},
       "theme": "deeper surfaces: tree-sitter callback-role twin of _apply_callback_roles, single-arg signal .connect(), SQL CTE phantom table"
+    },
+    {
+      "id": "D",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 2},
+      "theme": "incremental/edge surfaces: _resolve_worklist ambiguity (opus+sonnet converged), tree-sitter recursion self-edge, malformed-coverage crash"
     }
   ]
 }

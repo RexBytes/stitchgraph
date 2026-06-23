@@ -368,3 +368,53 @@ def test_sql_cte_is_not_a_phantom_table(tmp_path):
         tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
         assert "orders" in tables       # the real table
         assert "recent" not in tables   # the CTE alias is not a table
+
+
+# -- Panel D / opus + sonnet (MEDIUM): incremental re-resolution over-approximates
+def test_replace_file_links_ambiguous_hole_to_all_candidates():
+    """`_resolve_worklist` (the incremental path) must link an ambiguous hole to
+    *every* candidate as AMBIGUOUS, like the extractors — resolving to just one
+    could flag the other (live) candidate dead."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import reachable_from
+    from stitchgraph.core.store import Store
+
+    with Store(":memory:") as s:
+        s.add_node(Node(id="b.py::helper", kind=NodeKind.FUNCTION, name="helper"), file="b.py")
+        s.add_node(Node(id="c.py::helper", kind=NodeKind.FUNCTION, name="helper"), file="c.py")
+        caller = Node(id="a.py::caller", kind=NodeKind.FUNCTION, name="caller")
+        hole = Edge(src="a.py::caller", relation=Relation.IMPORTS, dst_symbol="helper",
+                    dst_id=None, provenance=Provenance.INFERRED)
+        s.replace_file("a.py", [caller], [hole])
+        targets = {e.dst_id for e in s.resolved_edges(Relation.IMPORTS)}
+        assert targets == {"b.py::helper", "c.py::helper"}  # both, not one
+        assert {"b.py::helper", "c.py::helper"} <= reachable_from(s, {"a.py::caller"})
+
+
+# -- Panel D / haiku (LOW): tree-sitter must model self-recursion CALLS ---------
+def test_tree_sitter_recursive_call_is_modeled(tmp_path):
+    """A recursive function CALLS itself — the tree-sitter extractor dropped the
+    self-edge (filtered for all relations), unlike the Python extractor. Both must
+    model the same graph; the self-filter belongs only to INHERITS/IMPORTS."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"r.js": "function fact(n){ return n <= 1 ? 1 : n * fact(n-1); }\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        fid = next(n.id for n in store.nodes_by_name("fact") if n.id.endswith("r.js::fact"))
+        assert any(e.dst_id == fid for e in store.callees_of(fid))  # self-CALLS edge
+
+
+# -- Panel D / sonnet (LOW): malformed coverage JSON must not crash -------------
+def test_malformed_executed_lines_do_not_crash_ingest(tmp_path):
+    """Non-integer `executed_lines` in a hand-crafted coverage.json must be dropped,
+    not crash the later `lo <= ln <= end` range test (LCOV/Go already int-cast)."""
+    _mk(tmp_path, {"pkg/__init__.py": "",
+                   "pkg/m.py": "def f():\n    return 1\n"})
+    bad = tmp_path / "cov.json"
+    bad.write_text('{"files": {"pkg/m.py": {"executed_lines": ["oops", 1, null]}}}')
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.ingest_trace(store, str(bad))  # must not raise
+        assert res.ok

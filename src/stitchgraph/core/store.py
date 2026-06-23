@@ -152,13 +152,38 @@ class Store:
             self._invalidate_dangling()
 
     def _resolve_worklist(self) -> None:
-        """Relink unresolved edges whose dst_symbol now matches a known node."""
+        """Relink unresolved edges whose dst_symbol now matches known node(s).
+
+        A unique match resolves in place. An *ambiguous* match (the name now resolves
+        to several nodes) over-approximates to every candidate as AMBIGUOUS edges —
+        mirroring the extractors (`python.py:_ref_edges`, `treesitter.py:_ref`) so the
+        incremental path never under-counts reachability and calls a live symbol dead
+        (precision over recall). This was the lone resolution site that linked to only
+        one candidate.
+        """
         self.conn.execute(
             """UPDATE edges
                   SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol LIMIT 1)
                 WHERE dst_id IS NULL
                   AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) = 1"""
         )
+        ambiguous = self.conn.execute(
+            """SELECT * FROM edges
+                WHERE dst_id IS NULL
+                  AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) >= 2"""
+        ).fetchall()
+        for row in ambiguous:
+            cands = [r["id"] for r in self.conn.execute(
+                "SELECT id FROM nodes WHERE name = ?", (row["dst_symbol"],)).fetchall()]
+            w = round(1.0 / len(cands), 3)
+            self.conn.execute("DELETE FROM edges WHERE id = ?", (row["id"],))
+            for cid in cands:
+                self.conn.execute(
+                    """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                         provenance, location, source, file)
+                       VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
+                    (row["src"], row["relation"], row["dst_symbol"], cid, w,
+                     row["location"], row["source"], row["file"]))
 
     def _invalidate_dangling(self) -> None:
         """Any resolved edge pointing at a now-missing node reverts to a hole."""

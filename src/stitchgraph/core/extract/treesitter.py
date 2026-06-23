@@ -418,7 +418,13 @@ def _trailing_id(node, src):
 
 
 def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS):
-    cands = [c for c in by_name.get(name, []) if c != src_id]
+    cands = by_name.get(name, [])
+    # A function may legitimately CALL itself (recursion) — keep the self-edge, as
+    # the Python extractor does, so both model the same graph. Self-reference is
+    # only pathological for INHERITS/IMPORTS (a class/module can't inherit/import
+    # itself), so drop it there.
+    if relation in (Relation.INHERITS, Relation.IMPORTS):
+        cands = [c for c in cands if c != src_id]
     loc = f"{rel}:{line}:0"
     if not cands:
         return
