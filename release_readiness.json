@@ -96,6 +96,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1},
       "theme": "opus+haiku CONVERGED: a class/fn used only as a Python parameter default value (def f(x=Strategy)) was flagged dead — func.args.defaults/kw_defaults weren't walked (the 3rd instance of Python-walks-body-not-signature, after Panel K annotations). _annotation_names -> _signature_ref_names now covers defaults too. Third-party 'sonnet' (core-only) clean, re-confirming Panel M's fixes."
+    },
+    {
+      "id": "O",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1},
+      "theme": "lightest panel since clean H: opus+haiku CONVERGED on one narrow MEDIUM — a metaclass used only via class X(metaclass=Meta) flagged dead (_walk_scope edged child.bases but not child.keywords). Now walks class-def keywords. Third-party 'sonnet' (core-only) clean for the 2nd straight panel."
     }
   ]
 }

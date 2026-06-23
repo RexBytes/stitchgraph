@@ -8,12 +8,12 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 14 (Panels A–N) |
+| Multi-model review panels | 15 (Panels A–O) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 126 passing, 1 skipped |
+| Tests | 127 passing, 1 skipped |
 | Coverage | ~84% |
-| Release-Readiness Score | 79.6 / 100 |
-| Convergence | Panel M (32): a core-only/persistence blind spot the all-extras agents missed — config-from-cwd, ingest_trace, old-DB migration, core-only CI. Streak 0 of 2 |
+| Release-Readiness Score | 81.3 / 100 |
+| Convergence | yield bottoming out: N (10, default values) → O (4, metaclass), both single narrow corners opus+haiku converged on; third-party core-only clean 2 straight. Streak 0 of 2 |
 | Verdict | NOT RELEASABLE — sonnet now supplied by a third party (API down for agents); needs ≥2 consecutive full-diversity clean panels |
 
 ## Trajectory
@@ -36,6 +36,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | L | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | constructing a class didn't reach its constructor → `__init__` constructions flagged dead (haiku); Python twins of K's metric fixes — CALLS+REFERENCES double-edge (opus), REFERENCES self-loop (sonnet) — fixed at the dedup boundary. |
 | M | opus · sonnet† · haiku | 2 HIGH · 3 MEDIUM | 32.0 | PHP public class flagged dead (opus). Third-party "sonnet" (core-only env) found the blind spot: config from cwd not indexed root (HIGH); ingest_trace success on zero grounding; old-DB edge migration + index ordering; core-only CI red (unguarded test imports). haiku clean. _(†sonnet API down — review supplied by a third party)_ |
 | N | opus · sonnet† · haiku | 1 HIGH | 10.0 | **opus + haiku converged** — a class/fn used only as a Python parameter *default value* (`def f(x=Strategy)`) flagged dead (`func.args.defaults`/`kw_defaults` not walked — 3rd "body-not-signature" gap after K's annotations). `_annotation_names` now covers defaults. Third-party "sonnet" (core-only) clean, re-confirming M's fixes. _(†third-party review)_ |
+| O | opus · sonnet† · haiku | 1 MEDIUM | **4.0** | **lightest since H** — opus + haiku converged on one narrow MEDIUM: a metaclass used only via `class X(metaclass=Meta)` flagged dead (`_walk_scope` edged `child.bases` not `child.keywords`). Now walks class-def keywords. Third-party "sonnet" (core-only) clean **2nd straight panel**. _(†third-party review)_ |
 
 ## What each panel found and how it was fixed
 
