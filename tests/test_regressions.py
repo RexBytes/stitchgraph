@@ -605,3 +605,34 @@ def test_orm_relationship_is_not_a_phantom_column(tmp_path):
         cols = {n.id for n in store.nodes_by_kind(NodeKind.DB_COLUMN)}
         assert {"db::users.id", "db::users.email"} <= cols  # real columns kept
         assert "db::users.orders" not in cols                # relationship is not a column
+
+
+# -- Panel I / opus (HIGH): `new Foo()` constructor calls are edges ------------
+def test_new_expression_constructor_is_a_call(tmp_path):
+    """A class instantiated only via `new Foo()` inside a live function must not be
+    flagged dead — JS/TS/C#/C++ `new`/object-creation expressions weren't in
+    call_types (Java and Python already model constructor calls). Precision gap."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.model import Relation
+    # JS/TS: exported entry instantiates an otherwise-unreferenced class.
+    _mk(tmp_path, {
+        "app.ts": "class Internal {\n  used(){ return 1; }\n}\n"
+                  "export function api(){ const i = new Internal(); return i.used(); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Internal" not in stale  # instantiated by a live exported function
+
+    # C++: the constructor call must produce a CALLS edge (entry seeding aside).
+    cpp = tmp_path / "cpp"
+    cpp.mkdir()
+    (cpp / "m.cpp").write_text(
+        "class Widget { public: int g(){ return 1; } };\n"
+        "int run(){ Widget* w = new Widget(); return w->g(); }\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(cpp))
+        calls = {(e.src.split("::")[-1], e.dst_id.split("::")[-1])
+                 for e in store.resolved_edges(Relation.CALLS)}
+        assert ("run", "Widget") in calls   # new Widget() -> CALLS edge

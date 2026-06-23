@@ -63,7 +63,9 @@ class LangSpec:
 _JS = LangSpec(
     defs={"function_declaration": F, "generator_function_declaration": F,
           "class_declaration": C, "method_definition": M},
-    call_types={"call_expression": "function"},
+    # `new Foo()` is a use of Foo: edge it so a class instantiated only via `new`
+    # isn't false-flagged dead (Java/Python already model constructor calls).
+    call_types={"call_expression": "function", "new_expression": "constructor"},
     containers=frozenset({"class_declaration", "class_body"}),
     arrow_decls=True,
     heritage=frozenset({"class_heritage"}),
@@ -85,7 +87,7 @@ SPECS: dict[str, LangSpec] = {
     ),
     "cpp": LangSpec(
         defs={"function_definition": F, "class_specifier": C, "struct_specifier": C},
-        call_types={"call_expression": "function"},
+        call_types={"call_expression": "function", "new_expression": "type"},
         containers=frozenset({"class_specifier", "struct_specifier",
                               "field_declaration_list"}),
         heritage=frozenset({"base_class_clause"}),
@@ -94,7 +96,8 @@ SPECS: dict[str, LangSpec] = {
         defs={"method_declaration": M, "constructor_declaration": M,
               "class_declaration": C, "struct_declaration": C,
               "interface_declaration": C, "local_function_statement": F},
-        call_types={"invocation_expression": "function"},
+        call_types={"invocation_expression": "function",
+                    "object_creation_expression": "type"},
         containers=frozenset({"class_declaration", "struct_declaration",
                               "interface_declaration", "declaration_list"}),
         heritage=frozenset({"base_list"}),
