@@ -1,0 +1,16 @@
+{
+  "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md.",
+  "package": "stitchgraph",
+  "severity_weights": {"CRITICAL": 40, "HIGH": 10, "MEDIUM": 4, "LOW": 1, "NIT": 0.2},
+  "available_models": ["opus", "sonnet", "haiku"],
+  "tau": 2,
+  "coverage_target": 0.85,
+  "contract_coverage_estimate": 0.75,
+  "known_open_defects": 0,
+  "signals": {
+    "property_tests": {"file": "tests/test_properties.py", "needle": "hypothesis"},
+    "security": {"file": "tests/test_safety.py", "needles": ["read_only", "malformed", "traversal"]},
+    "docs": ["LIMITATIONS.md", "CONTRIBUTING.md", "README.md"]
+  },
+  "panels": []
+}

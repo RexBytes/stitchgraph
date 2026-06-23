@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import stitchgraph as sg
 
 
@@ -50,6 +52,7 @@ def test_route_links_to_handler(tmp_path):
 
 
 def test_sql_tables_extracted(tmp_path):
+    pytest.importorskip("sqlglot")
     with _index(tmp_path) as store:
         from stitchgraph.core.model import NodeKind
         tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
@@ -57,6 +60,7 @@ def test_sql_tables_extracted(tmp_path):
 
 
 def test_full_stack_trace_route_to_table(tmp_path):
+    pytest.importorskip("sqlglot")
     """The headline 'gem': a path from an HTTP route down to a DB table."""
     with _index(tmp_path) as store:
         res = sg.trace_path(store, "GET /users", "users")
@@ -66,6 +70,7 @@ def test_full_stack_trace_route_to_table(tmp_path):
 
 
 def test_write_vs_read_relation(tmp_path):
+    pytest.importorskip("sqlglot")
     with _index(tmp_path) as store:
         from stitchgraph.core.model import Relation
         writes = store.resolved_edges(Relation.WRITES)
@@ -118,6 +123,7 @@ def test_orm_maps_model_to_table_and_columns(tmp_path):
 
 
 def test_orm_and_sql_converge_on_same_table(tmp_path):
+    pytest.importorskip("sqlglot")
     """The ORM model and a raw SQL query land on the SAME db::users node."""
     with _index_orm(tmp_path) as store:
         from stitchgraph.core.model import Relation
@@ -144,6 +150,7 @@ def _write_fullstack(root: Path) -> None:
 
 
 def test_full_stack_html_to_table(tmp_path):
+    pytest.importorskip("sqlglot")
     """The complete gem: HTML form -> route -> handler -> DB table in one trace."""
     _write_fullstack(tmp_path)
     store = sg.Store(":memory:")
