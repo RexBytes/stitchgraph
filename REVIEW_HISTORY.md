@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 9 (Panels A–I) |
+| Multi-model review panels | 10 (Panels A–J) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 112 passing, 1 skipped |
+| Tests | 115 passing, 1 skipped |
 | Coverage | ~84% |
-| Release-Readiness Score | 79.2 / 100 |
-| Convergence | Panel H clean (0) → Panel I found a real HIGH (11); clean streak **reset to 0 of 2** |
-| Verdict | NOT RELEASABLE — the confirmation gate worked: Panel I caught a live-code-flagged-dead bug Panel H missed. Streak restarts. |
+| Release-Readiness Score | 73.7 / 100 |
+| Convergence | Panel I (11) + Panel J (30) exposed the "use-form not modeled" class (5 HIGHs over I+J); a general by-name-reference pass now closes it. Clean streak 0 of 2 |
+| Verdict | NOT RELEASABLE — the use-form class is now fixed *generally* (all by-name references modelled); needs ≥2 clean panels to confirm closure |
 
 ## Trajectory
 
@@ -31,6 +31,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | G | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | **no HIGH; haiku clean** — parallel-edge dedup (fan_in/get_matrix), get_matrix cells, ORM relationship() phantom column |
 | H | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN** — all three returned FINDINGS: none; regression-checked every recent fix, precision invariant on adversarial input, envelope contract, GraphBLAS agreement |
 | I | opus · sonnet · haiku | 1 HIGH · 1 LOW | 11.0 | **confirmation gate caught a real HIGH** — `new Foo()` not edged in JS/TS/C#/C++ (live class flagged dead); read-only `global` false data_loop. Streak resets. |
+| J | opus · sonnet · haiku | 3 HIGH | 30.0 | **use-form class fully exposed** — bare-name refs (opus); PHP `new` + Ruby `.new` missed by I's fix (sonnet). One general by-name-reference pass closes the class. |
 
 ## What each panel found and how it was fixed
 
@@ -221,6 +222,31 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 
   Clean streak **reset to 0**; RRS back to 79.2. The two-clean-panel rule paid for
   itself here — Panel H alone would have shipped the `new`-expression bug.
+
+- **Panel J (opus · sonnet · haiku)** — exposed the full extent of the *use-form not
+  modeled* class that Panel I cracked open. Three HIGHs, all "a symbol used only by
+  name from a live entry is flagged dead":
+  - **HIGH (opus)** — bare-name value references weren't modeled at all: a function
+    passed as a callback (`register(handler)`), a class accessed as `Color.RED`, a
+    factory `Widget.create()` — the symbol got no edge and looked dead. (`Widget`
+    flagged while `Widget.create` stayed live was internally contradictory.)
+  - **HIGH (sonnet)** — Panel I's `new` fix missed **PHP** (`object_creation_expression`
+    has no `type` field) and **Ruby** (`Service.new` parses as method `new` on receiver
+    `Service`), so those constructors still flagged the class dead.
+  - **haiku** — read the bare-name cases as the documented advisory limitation
+    (`FINDINGS: none`); the maintainer adjudicated them as real per opus/sonnet, since
+    the extractor already models attr-reads/decorators/constructors precisely to avoid
+    this, making by-name references an unintended omission.
+
+  **The fix is general, not case-by-case:** a single `_direct_names` pass (Python) /
+  `_direct_refs` pass (tree-sitter) now emits a REFERENCES edge for *every* identifier
+  used by name in a function body (over-approximated through `_ref`, so only project
+  symbols resolve). That closes the entire class — callbacks, enum/factory access, and
+  any-grammar constructor idiom — in one mechanism. `find_stale` on stitchgraph's own
+  source dropped to 3 advisory candidates (the genuinely-questionable + documented
+  module-level cases), no longer false-flagging common patterns. Module-level uses
+  (the `SPECS` table) remain the documented limitation. RRS 79.2 → 73.7; the next
+  panels test whether the class is truly closed.
 
 ## Standing themes
 

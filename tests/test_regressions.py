@@ -658,3 +658,60 @@ def test_readonly_global_is_not_a_write(tmp_path):
         loops = [i for i in sg.scan(store).result if i["kind"] == "data_loop"]
         members = {m for i in loops for m in i["members"]}
         assert not any(m.endswith("::reader") for m in members)  # no false data loop
+
+
+# -- Panel J / opus (HIGH): bare-name references keep a symbol live -------------
+def test_python_bare_name_references_are_modeled(tmp_path):
+    """A function/class used only by name from a live entry — passed as a callback,
+    accessed as `Color.RED`, or a factory `Widget.create()` — must not be flagged
+    dead. Genuinely-unreferenced code is still flagged (precision preserved)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["run"]\nfrom .m import run\n',
+        "pkg/m.py": (
+            "import enum\n"
+            "class Color(enum.Enum):\n    RED = 1\n"
+            "class Widget:\n    @classmethod\n    def create(cls):\n        return cls()\n"
+            "def handler(x):\n    return x\n"
+            "def really_dead():\n    return 99\n"
+            "def register(cb):\n    return cb(1)\n"
+            "def run():\n    register(handler)\n    Color.RED\n    return Widget.create()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert {"handler", "Color", "Widget"} & stale == set()  # all used by name
+        assert "really_dead" in stale                            # truly unreferenced
+
+
+# -- Panel J / opus + sonnet (HIGH): tree-sitter by-name refs + constructors ----
+def test_tree_sitter_by_name_and_constructor_uses_keep_symbol_live(tmp_path):
+    """The tree-sitter reference pass keeps a class/function used only by name live:
+    a JS callback (`const cb = handler`), a PHP `new UserRepository()`, and a Ruby
+    `Service.new` — the latter two are constructor idioms the Panel I `new` fix
+    didn't reach. Genuinely-dead code stays flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    cases = {
+        "app.js": ("function handler(e){ return e; }\n"
+                   "function jsDead(){ return 9; }\n"
+                   "export function init(){ const cb = handler; return cb(1); }\n"),
+        "app.php": ("<?php\nclass UserRepository { public function findById($id){ return $id; } }\n"
+                    "function phpDead(){ return 9; }\n"
+                    "function main(){ $r = new UserRepository(); return $r->findById(1); }\n"),
+        "app.rb": ("class Service\n  def run; 1; end\nend\n"
+                   "def rbDead; 9; end\n"
+                   "def main\n  svc = Service.new\n  svc.run\nend\n"),
+    }
+    for fname, code in cases.items():
+        d = tmp_path / fname.split(".")[-1]   # one dir per language
+        d.mkdir()
+        (d / fname).write_text(code)
+        with sg.Store(":memory:") as store:
+            sg.reindex(store, str(d))
+            stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+            assert "handler" not in stale if fname.endswith(".js") else True
+            assert "UserRepository" not in stale if fname.endswith(".php") else True
+            assert "Service" not in stale if fname.endswith(".rb") else True
+            dead = {"js": "jsDead", "php": "phpDead", "rb": "rbDead"}[fname.split(".")[-1]]
+            assert dead in stale, f"{dead} should still be flagged in {fname}"

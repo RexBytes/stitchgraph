@@ -66,6 +66,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "LOW": 1},
       "theme": "confirmation gate caught a real one: new Foo() constructor calls not edged in JS/TS/C#/C++ (live class flagged dead) — eight panels missed it; plus read-only global false data_loop. Streak resets."
+    },
+    {
+      "id": "J",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 3},
+      "theme": "the use-form class, fully exposed: bare-name references not modeled (opus, Python+JS), PHP new and Ruby .new constructors missed by the Panel I fix (sonnet). One general _direct_refs/_direct_names pass now models ALL by-name references, closing the whole class. haiku read these as the documented advisory limitation."
     }
   ]
 }

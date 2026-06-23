@@ -221,6 +221,14 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         by_name = by_lang.get(lang, {})
         for name, line in _direct_calls(body, src_by[rel], SPECS[lang]):
             _ref(edges, def_id, name, by_name, rel, line)
+        # Bare-name *references*: a symbol named by value/type (`const cb = handler`,
+        # a class as the receiver of `Service.new` / `Color.RED`, a `new X()` class
+        # name) is a real use the extractor sees. Edge it -> REFERENCES (only project
+        # symbols resolve via `_ref`) so a live symbol used only by name isn't flagged
+        # dead — closing the same gap the Python extractor's `_direct_names` does, and
+        # covering constructor idioms whose grammar lacks a clean callee field.
+        for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
+            _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
 
     # Build a set of class IDs that inherit from external bases (framework classes).
     # This will be used to mark their methods as callbacks.
@@ -446,6 +454,29 @@ def _is_bare_call(parent, ident):
                 ident.start_byte, ident.end_byte):
             return False
     return True
+
+
+def _direct_refs(body, src, spec):
+    """Identifier/type references in a def body (not crossing nested defs, excluding
+    the def's own name): a symbol used by name as a value or type. Emitted as
+    REFERENCES so a symbol used only by name — passed as a callback, a class as a
+    `new`/`.new` receiver, a type annotation — isn't false-flagged dead. Over-
+    approximated through `_ref` (only project symbols resolve)."""
+    out: list[tuple[str, int]] = []
+    name_node = body.child_by_field_name("name")
+    skip = id(name_node) if name_node is not None else None
+
+    def rec(n, top):
+        for c in n.children:
+            if not top and (c.type in spec.defs or c.type in spec.container_only):
+                continue
+            if c.type in ("identifier", "type_identifier", "constant", "name") \
+                    and id(c) != skip:
+                out.append((_text(c, src), c.start_point[0] + 1))
+            rec(c, False)
+
+    rec(body, True)
+    return out
 
 
 def _callee(call, src, field):

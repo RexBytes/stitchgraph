@@ -322,6 +322,14 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                                       attr.attr, attr.value)
                 if tid:
                     _add_ref(proj, cid, attr.attr, tid, rel, attr.lineno)
+            # Bare-name *value* references (not the callee of a call): a function or
+            # class passed by name (`register(handler)`, `fn = worker`), or a class
+            # accessed as `Color.RED` / `Widget.create()` (the receiver is a bare
+            # Name). These are real uses the extractor sees, so edge them -> REFERENCES
+            # or the live symbol is wrongly flagged dead. Over-approximated through
+            # `_ref_edges` (only project symbols resolve), like the attr-read pass.
+            for nm in _direct_names(child, call_funcs):
+                _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
             # `with EXPR as ...` exercises the context manager's __enter__/__exit__.
             for cm in _direct_withs(child):
                 _with_edges(proj, rel, cid, class_qual, local_types, cm)
@@ -422,6 +430,27 @@ def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribut
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load) \
+                    and id(child) not in call_funcs:
+                out.append(child)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        rec(stmt)
+    return out
+
+
+def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
+    """Load-context `Name` nodes in the function's own scope (not crossing nested
+    defs), excluding the callee of a call (already modelled as CALLS). These are
+    by-name value references — a symbol passed/assigned by name, or the bare-class
+    receiver of `Class.member`."""
+    out: list[ast.Name] = []
+
+    def rec(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) \
                     and id(child) not in call_funcs:
                 out.append(child)
             rec(child)
