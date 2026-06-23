@@ -176,6 +176,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name in _import_names(tree.root_node, src, spec):
             imports.append((mod_id, name, lang))
 
+    _seed_exported_class_methods(nodes)
+
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
     for n in nodes:
@@ -195,6 +197,22 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         _ref(edges, mod_id, name, by_lang.get(lang, {}),
              mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
     return nodes, edges
+
+
+def _seed_exported_class_methods(nodes):
+    """Public methods of an exported class are themselves public API — external
+    callers reach them, so they're never dead for lack of an internal caller
+    (precision over recall). Mirrors the Python extractor's `_apply_entrypoint_roles`,
+    closing the symmetry gap for JS/TS and any language where method visibility is
+    inherited from the class rather than tokenized per method (Go/Java/C#/PHP/Rust
+    already carry per-method visibility, so they're unaffected)."""
+    exported_class_ids = {n.id for n in nodes if n.kind is C and "exported" in n.roles}
+    if not exported_class_ids:
+        return
+    for n in nodes:
+        if n.kind is M and not n.name.startswith(("_", "#")) \
+                and n.id.rsplit(".", 1)[0] in exported_class_ids:
+            n.roles = n.roles | {"exported"}
 
 
 # -- pass 1: definitions ----------------------------------------------------

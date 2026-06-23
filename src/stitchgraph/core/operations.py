@@ -428,7 +428,8 @@ def risk(store: Store, path: str = ".") -> Result:
 
     churn = gitrisk.churn(path)
     if not churn:
-        return refuse("no git history found for .py files", confidence=0.0, result={})
+        return refuse("no git history found for indexed source files",
+                      confidence=0.0, result={})
 
     # Node files are relative to the indexed root; git paths to the repo root.
     # Translate node files into git-relative paths so the two spaces line up.

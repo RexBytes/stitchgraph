@@ -212,3 +212,79 @@ def test_config_review_threshold_gates_needs_review(tmp_path):
         assert envelope.ok({}, confidence=0.6).needs_review is False
     finally:
         envelope.set_review_threshold(original)
+
+
+# -- Panel B / opus + sonnet (HIGH): tree-sitter twin of F4 --------------------
+def test_public_methods_of_exported_jsts_class_are_not_stale(tmp_path):
+    """The tree-sitter extractor must mirror the Python extractor: public methods
+    of an exported JS/TS class are public API, never dead for lack of an internal
+    caller. (opus and sonnet converged on this — the tree-sitter twin of F4.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "widget.ts": """
+            export class Widget {
+                fetchUser(id) { return id; }
+                render() { return 1; }
+            }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Widget.fetchUser" not in stale  # public API of an exported class
+        assert "Widget.render" not in stale
+
+
+# -- Panel B / haiku (MEDIUM): same-path routes must all be linked -------------
+def test_html_form_links_to_all_routes_sharing_a_path(tmp_path):
+    """A form action `/items` with both GET and POST handlers must SUBMITS_TO both
+    routes — collapsing by path (dict setdefault) dropped one, so a `trace_path`
+    through the missed method silently failed."""
+    _mk(tmp_path, {
+        "app/__init__.py": "",
+        "app/views.py": """
+            app = object()
+
+            @app.get('/items')
+            def list_items():
+                return 1
+
+            @app.post('/items')
+            def create_item():
+                return 2
+        """,
+        "templates/items.html":
+            '<form action="/items" method="post"><input name="x"></form>\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        subs = [e for e in store.resolved_edges(Relation.SUBMITS_TO)]
+        targets = {e.dst_id.split("::")[-1] for e in subs}
+        assert {"route:GET /items", "route:POST /items"} <= targets
+
+
+# -- Panel B / sonnet (LOW): risk() is polyglot, not Python-only ---------------
+def test_risk_uses_non_python_git_history(tmp_path):
+    """`risk()` churn must cover every indexed source language, not just .py — the
+    git scraper hard-filtered to `.py`, so polyglot repos got an empty/misleading
+    refuse."""
+    pytest.importorskip("tree_sitter_language_pack")
+    import os
+    import subprocess
+
+    from stitchgraph.core import gitrisk
+
+    (tmp_path / "app.js").write_text("export function go(){ return 1; }\n")
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "add js")
+    assert gitrisk.churn(str(tmp_path)).get("app.js") == 1  # .js counted, not skipped

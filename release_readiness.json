@@ -18,6 +18,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 3, "MEDIUM": 3, "LOW": 1},
       "theme": "symmetry gaps: a liveness rule / ambiguity guard / type preserved in one extractor or resolver but missing in a sibling"
+    },
+    {
+      "id": "B",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 1},
+      "theme": "more symmetry gaps in the *other* siblings: tree-sitter twin of F4 (opus+sonnet converged), html/jsfetch route collapse, .py-only git risk"
     }
   ]
 }
