@@ -38,6 +38,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | N | opus · sonnet† · haiku | 1 HIGH | 10.0 | **opus + haiku converged** — a class/fn used only as a Python parameter *default value* (`def f(x=Strategy)`) flagged dead (`func.args.defaults`/`kw_defaults` not walked — 3rd "body-not-signature" gap after K's annotations). `_annotation_names` now covers defaults. Third-party "sonnet" (core-only) clean, re-confirming M's fixes. _(†third-party review)_ |
 | O | opus · sonnet† · haiku | 1 MEDIUM | **4.0** | **lightest since H** — opus + haiku converged on one narrow MEDIUM: a metaclass used only via `class X(metaclass=Meta)` flagged dead (`_walk_scope` edged `child.bases` not `child.keywords`). Now walks class-def keywords. Third-party "sonnet" (core-only) clean **2nd straight panel**. _(†third-party review)_ |
 | P | opus · sonnet† · haiku | 1 HIGH | 10.0 | **the last un-walked Python scope** — references in the class *body* itself (`h = Helper`, `TABLE = {"a": handle_a}`, class-level annotations) were never extracted: `_walk_scope` edged bases/keywords/ctors and recursed into method bodies, but never the class body's own statements → live symbols flagged dead (opus HIGH). Now walks class-body Load names, attributed to the class node (matching tree-sitter). haiku clean; third-party "sonnet" (core-only) clean **3rd straight panel**. _(†third-party review)_ |
+| Q | opus · sonnet† · haiku | 1 CRITICAL · 1 HIGH · 1 MEDIUM | **54.0** | **the confirmation gate caught a CRITICAL** — a symbol used only inside a function-*local* class/closure flagged dead (`_def_node` never descended into function bodies → function-local defs were never nodes, yet `_walk_scope` emitted edges from phantom qualnames; opus). Now models nested defs as real nodes + a `function → nested` containment edge (fixes decorator-registered `@app.command` handlers too). Third-party "sonnet" (core-only): public re-exports from `__init__` weren't export roots → live public API flagged dead (HIGH); version still `0.3.0` (MEDIUM, deferred to manual release). haiku clean. **Streak resets.** _(†third-party review)_ |
 
 ## What each panel found and how it was fixed
 
@@ -357,6 +358,45 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   clean streak holds at 0 (opus's HIGH resets it) — but the entire "live-code-flagged-dead"
   precision class is now closed along every axis the Python/tree-sitter asymmetry exposed:
   by-name refs, constructors, annotations, defaults, metaclass keywords, and class bodies.
+
+- **Panel Q (opus · sonnet† · haiku)** — **the confirmation gate earned its keep again**,
+  catching the first CRITICAL since the methodology began. The "next un-walked scope" after
+  Panel P's class bodies turned out to be the *nested* scope:
+  - **CRITICAL (opus)** — a symbol used only inside a **function-local class or closure**
+    (`def run(): class Local: def helper(self): return Tool()`) was flagged dead. Root
+    cause: `_def_node` descended into module-level and class children but **never into
+    function bodies**, so function-local classes/functions were never created as nodes —
+    yet `_walk_scope` *did* recurse and emitted edges from their qualnames
+    (`run.Local.helper → Tool`), which, having no node at the source id, never participated
+    in reachability. A shallow "leak" saved single-level nested functions but not
+    function-local classes or doubly-nested closures — exactly the misfiring cases. The
+    equivalent JS/TS is kept live by tree-sitter, so this was the same Python↔tree-sitter
+    asymmetry, one scope deeper. Fix: `_def_node` now models nested defs as real nodes
+    (quals aligned with `_walk_scope`), and `_walk_scope` adds a **`function → nested-def`
+    containment edge** — a function-local def is live iff its enclosing function is
+    reachable (it executes, is registered, returned, or called when the enclosing runs).
+    That containment edge also fixes the case the new nodes would otherwise have *newly*
+    false-flagged: function-local handlers whose liveness comes from **decorator
+    registration** (`@app.command def _watch(...)` inside `build_app`), not a direct call.
+    Verified the self-scan introduced no new candidates.
+  - **HIGH (sonnet, core-only)** — **public re-exports from a package `__init__`**
+    (`from .api import Public`) weren't treated as export roots: the `__init__`
+    export-surface scan only added nodes with a `.name` (physically-defined funcs/classes),
+    but `ast.ImportFrom` carries `.names` aliases, so re-exported public API — importable as
+    `pkg.Public` — was flagged dead despite the code's own docstring claiming re-exports are
+    roots. Now collects public `ImportFrom`/`Import` aliases (asname or leaf, skipping `_`
+    and `*`) as exported names, additive with `__all__`.
+  - **MEDIUM (sonnet)** — package version is still `0.3.0` in `pyproject.toml` /
+    `__version__`. **Adjudicated as deferred**, not fixed now: the version must read `1.0.0`
+    only when the release rule is actually met (RRS ≥ 90, two clean panels) and the
+    maintainer tags the release — bumping it pre-emptively would misrepresent the current
+    pre-release state. Tracked as a release-checklist item, not a code defect.
+  - **haiku** clean (`FINDINGS: none`) after re-verifying all A–P fixes end-to-end.
+
+  Weighted yield **54.0** (1 CRITICAL + 1 HIGH + 1 MEDIUM) — the heaviest panel since M,
+  and the clean streak **resets to 0**. The lesson stands: each "clean-looking" surface has
+  one scope deeper. With the nested scope now modeled, the function/class/module scope
+  trichotomy is fully covered (module-level uses remain the one documented limitation).
 
 ## Standing themes
 

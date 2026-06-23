@@ -108,6 +108,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1},
       "theme": "the last un-walked Python scope: references in the class *body* itself (attribute assignments `h = Helper`, dispatch tables `TABLE = {\"a\": handle_a}`, class-level annotations) were never extracted — _walk_scope edged class bases/keywords/ctors and recursed into method bodies, but never the class body's own statements -> live symbols flagged dead (opus HIGH). Now walks class-body Load names via _direct_names, attributed to the class node (matching tree-sitter, which walks the whole class node). haiku clean; third-party 'sonnet' (core-only) clean for the 3rd straight panel."
+    },
+    {
+      "id": "Q",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"CRITICAL": 1, "HIGH": 1, "MEDIUM": 1},
+      "theme": "the confirmation gate caught a CRITICAL: a symbol used only inside a function-LOCAL class/closure was flagged dead — _def_node never descended into function bodies, so function-local defs were never nodes, yet _walk_scope emitted edges from their phantom qualnames that couldn't reach (opus, Python<->tree-sitter asymmetry, the un-walked NESTED scope after class bodies). _def_node now models nested defs as real nodes + a function->nested containment edge (a local def is live iff its enclosing fn is reachable; fixes decorator-registered @app.command handlers). Third-party 'sonnet' (core-only): public re-exports from __init__ (`from .api import Public`) weren't export roots -> live public API flagged dead (HIGH); version still 0.3.0 not 1.0.0 (MEDIUM, deferred to the manual release step). haiku clean. Streak resets."
     }
   ]
 }

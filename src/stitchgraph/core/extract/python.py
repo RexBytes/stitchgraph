@@ -130,16 +130,31 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
             nm = getattr(node, "name", None)
             if nm and not nm.startswith("_"):
                 proj.exported_names.add(nm)
+            # Re-exports: `from .api import Public` in a package __init__ makes
+            # `pkg.Public` importable public API — an export root even though it
+            # isn't physically defined here. ast.ImportFrom/Import carry `.names`
+            # aliases, not a `.name`, so the check above misses them and the
+            # re-exported symbol is flagged dead (live public API as dead — the
+            # cardinal sin). The bound public name is the asname or the leaf.
+            elif isinstance(node, (ast.ImportFrom, ast.Import)):
+                for alias in node.names:
+                    if isinstance(node, ast.Import):
+                        bound = alias.asname or alias.name.split(".")[0]
+                    else:
+                        bound = alias.asname or alias.name
+                    if bound != "*" and not bound.startswith("_"):
+                        proj.exported_names.add(bound)
 
     for node in ast.iter_child_nodes(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
 
 
 def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
-              is_test_file: bool, in_abstract: bool = False) -> None:
+              is_test_file: bool, in_abstract: bool = False,
+              parent_is_class: bool = False) -> None:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         qual = f"{parent}.{node.name}" if parent else node.name
-        kind = NodeKind.METHOD if parent else NodeKind.FUNCTION
+        kind = NodeKind.METHOD if parent_is_class else NodeKind.FUNCTION
         roles: set[str] = set()
         if is_test_file and node.name.startswith("test"):
             roles.add("test")
@@ -154,6 +169,15 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
             is_stub=is_stub, arity=_arity(node), roles=frozenset(roles),
             summary=_docstring(node),
         ))
+        # Descend into the body so function-local classes/functions become real
+        # nodes. _walk_scope already emits edges from their qualnames (e.g.
+        # `run.Local.helper`); without a node at that id those edges have a phantom
+        # src and never participate in reachability, so a symbol used only inside a
+        # function-local class/closure is flagged dead (live code as dead — the
+        # cardinal sin; tree-sitter already models nested defs). Quals align with
+        # _walk_scope's, which also descends only into direct child defs.
+        for inner in node.body:
+            _def_node(proj, rel, inner, parent=qual, is_test_file=is_test_file)
     elif isinstance(node, ast.ClassDef):
         qual = f"{parent}.{node.name}" if parent else node.name
         proj.nodes.append(Node(
@@ -164,7 +188,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         abstract = _is_abstract_class(node)
         for child in ast.iter_child_nodes(node):
             _def_node(proj, rel, child, parent=qual, is_test_file=is_test_file,
-                      in_abstract=abstract)
+                      in_abstract=abstract, parent_is_class=True)
 
 
 def _index(proj: _Project) -> None:
@@ -295,10 +319,22 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                 class_qual: str | None) -> None:
     # `parent` is the relative dotted qual, threaded exactly as _def_node builds
     # node ids, so edge-source ids line up with node ids (incl. for methods).
+    #
+    # A function-local def (nested class/function) executes when its enclosing
+    # function runs — registered (`@app.command`), returned as a closure, or called
+    # locally — so it's live iff the enclosing function is reachable. Edge
+    # enclosing -> nested, or a handler whose liveness comes from decorator
+    # registration (not a direct call) is flagged dead once it's a node. This
+    # mirrors Panel P's class-body rule. Only function scopes get this: module and
+    # class scopes must NOT auto-reach their members — that is dead-code's whole job.
+    enclosing_is_func = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    enclosing_id = Node.make_id(rel, parent) if enclosing_is_func and parent else None
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.ClassDef):
             qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)
+            if enclosing_id:
+                _add_ref(proj, enclosing_id, child.name, cid, rel, child.lineno)
             for base in child.bases:
                 name = _name_of(base)
                 if name:
@@ -334,6 +370,8 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)
+            if enclosing_id:
+                _add_ref(proj, enclosing_id, child.name, cid, rel, child.lineno)
             _decorator_edges(proj, cid, child, rel)
             local_types = _local_types(proj, child)
             call_funcs = set()

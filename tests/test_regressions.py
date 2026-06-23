@@ -980,3 +980,104 @@ def test_class_body_references_are_modeled(tmp_path):
         assert "Helper" not in stale                       # class-body attribute ref
         assert {"handle_a", "handle_b"} & stale == set()   # class-body dispatch table
         assert "TrulyDead" in stale                        # genuinely unreferenced
+
+
+# -- Panel Q / sonnet (HIGH): public re-exports from __init__ are export roots -
+def test_package_reexport_is_an_export_root(tmp_path):
+    """`from .api import Public` in a package __init__ makes `pkg.Public` importable
+    public API, so it's a live root even with no internal caller. ast.ImportFrom
+    carries `.names` aliases (not a `.name`), so the __init__ export-surface scan
+    missed re-exports and flagged live public API dead. Underscore-prefixed and
+    non-re-exported symbols stay private."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "from .api import Public\nfrom .api import _hidden\n",
+        "pkg/api.py": (
+            "class Public:\n    def live_method(self):\n        return 1\n"
+            "class _hidden:\n    pass\n"
+            "class NotExported:\n    pass\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Public" not in stale          # re-exported public API
+        assert "live_method" not in stale      # public method of an exported class
+        assert "NotExported" in stale          # not re-exported -> genuinely dead
+        assert "_hidden" in stale              # underscore re-export stays private
+
+
+def test_reexport_root_survives_when_all_is_declared(tmp_path):
+    """A re-export not listed in __all__ is still importable as `pkg.Public`, so it
+    must remain a root (additive with __all__, never flagged dead)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["other"]\nfrom .api import Public\ndef other():\n    return 0\n',
+        "pkg/api.py": "class Public:\n    def m(self):\n        return 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Public" not in stale
+
+
+# -- Panel Q / opus (CRITICAL): function-local defs and their uses are live ----
+def test_function_local_class_use_is_live(tmp_path):
+    """A symbol used only inside a function-local class/closure is live when the
+    enclosing function is reachable. _def_node never descended into function bodies,
+    so function-local classes/functions weren't nodes; _walk_scope emitted edges from
+    their (phantom) qualnames that couldn't participate in reachability -> the used
+    symbol was flagged dead. _def_node now models nested defs as real nodes."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["run"]\nfrom .m import run\n',
+        "pkg/m.py": (
+            "def run():\n"
+            "    class Local:\n        def helper(self):\n            return Tool()\n"
+            "    return Local().helper()\n"
+            "class Tool:\n    pass\n"
+            "class TrulyDead:\n    pass\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Tool" not in stale         # constructed inside a function-local class
+        assert "TrulyDead" in stale         # genuinely unreferenced
+
+
+def test_doubly_nested_closure_use_is_live(tmp_path):
+    """The leak that saved single-level nested functions didn't reach two levels
+    deep; a symbol used in a doubly-nested closure was still flagged dead."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["run"]\nfrom .m import run\n',
+        "pkg/m.py": (
+            "def run():\n"
+            "    def mid():\n        def deep():\n            return Tool()\n"
+            "        return deep()\n"
+            "    return mid()\n"
+            "class Tool:\n    pass\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Tool" not in stale
+
+
+def test_decorator_registered_local_handler_is_live(tmp_path):
+    """A function-local handler whose liveness comes from decorator registration
+    (`@app.command()`), not a direct call, must not be flagged dead once it is a
+    node: a function-local def is live iff its enclosing function is reachable
+    (enclosing -> nested containment edge)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["build_app"]\nfrom .m import build_app\n',
+        "pkg/m.py": (
+            "class App:\n    def command(self, fn):\n        return fn\n"
+            "def build_app():\n"
+            "    app = App()\n"
+            "    @app.command\n    def handler():\n        return 1\n"
+            "    return app\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "handler" not in stale      # live via decorator registration
