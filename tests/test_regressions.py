@@ -932,3 +932,24 @@ def test_default_value_references_are_modeled(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert {"Strategy", "handler"} & stale == set()  # used as default values
         assert "TrulyDead" in stale                       # genuinely unreferenced
+
+
+# -- Panel O / opus (MEDIUM): a metaclass used only via keyword is live --------
+def test_metaclass_keyword_reference_is_modeled(tmp_path):
+    """A class used only as `class X(metaclass=Meta)` governs X's creation and is
+    live — class-definition keyword args sit at the same syntactic level as bases,
+    which were already edged; `child.keywords` wasn't walked."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["Thing"]\nfrom .lib import Thing\n',
+        "pkg/lib.py": (
+            "class Meta(type):\n"
+            "    def __call__(cls, *a, **k):\n        return super().__call__(*a, **k)\n"
+            "class Thing(metaclass=Meta):\n    def run(self):\n        return 1\n"
+            "class TrulyDead(type):\n    pass\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Meta" not in stale       # used as Thing's metaclass
+        assert "TrulyDead" in stale       # genuinely unreferenced

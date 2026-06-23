@@ -305,6 +305,13 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                     _ref_edges(proj, cid, name, Relation.INHERITS, rel, child.lineno)
                     if name not in proj.class_by_name and name not in _PLAIN_BASES:
                         proj.external_base_classes.add(cid)  # framework base
+            # Class-definition keyword args (`metaclass=Meta`, and similar) reference a
+            # symbol at the same syntactic level as the bases — a metaclass governs the
+            # class's creation, so it's live. Edge it -> REFERENCES or it's flagged dead.
+            for kw in child.keywords:
+                kw_name = _name_of(kw.value)
+                if kw_name:
+                    _ref_edges(proj, cid, kw_name, Relation.REFERENCES, rel, child.lineno)
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)
             # Constructing the class implicitly runs its constructor hooks, so link
