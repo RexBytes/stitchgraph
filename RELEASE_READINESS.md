@@ -64,6 +64,16 @@ Ship when **all gates green AND RRS ≥ 90 AND clean streak ≥ 2 at full
 diversity**. The streak requirement is the real safeguard: two independent,
 fully-briefed panels in a row finding nothing above LOW.
 
+> **Diversity definition (adapted 2026-06-23).** "Full diversity" means every
+> model in `available_models` participated. sonnet's API became unreliable for
+> agent slots (it had already degraded to a third-party core-only review in
+> Panels M–Q), so by maintainer decision the panel now runs on the two
+> reliably-available models — **opus + haiku** — and `available_models` is set to
+> them. This is a deliberate, documented weakening of the diversity signal: two
+> models catch fewer blind spots than three. When sonnet recovers (or a third
+> model such as Fable is added), restore it in `release_readiness.json` and the
+> next two clean panels must clear the higher bar.
+
 ## Visibility caveat (a clean panel only counts where it can see)
 
 stitchgraph has heavily **optional, gated surfaces** — tree-sitter (11

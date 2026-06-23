@@ -162,6 +162,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     parsers: dict[str, Parser] = {}
     nodes: list[Node] = []
     defs: list[tuple[str, str, object, str]] = []  # (rel, def_id, body_node, lang)
+    contains: list[tuple[str, str, str, int]] = []  # (func_id, nested_id, name, line)
     inherits: list[tuple[str, str, str]] = []      # (class_id, base_name, lang)
     imports: list[tuple[str, str, str]] = []       # (mod_id, name, lang)
     src_by: dict[str, bytes] = {}
@@ -193,7 +194,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
                           location=f"{rel}:1:0"))
         is_test = _is_test_file(rel)
         _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
-                 defs=defs, inherits=inherits, exported=False, is_test=is_test)
+                 defs=defs, inherits=inherits, exported=False, is_test=is_test,
+                 contains=contains, enclosing_func=None)
         for name in _import_names(tree.root_node, src, spec):
             imports.append((mod_id, name, lang))
         reexports |= _reexport_names(tree.root_node, src)
@@ -233,6 +235,16 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
             if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
                 _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
+
+    # `function -> nested def` containment edges (see _collect): the nested def's id is
+    # known exactly, so emit a direct REFERENCES edge rather than resolving by name. The
+    # store's _dedup_edges subsumes this under a CALLS edge if the enclosing also calls
+    # the nested def directly, so it never double-counts.
+    for func_id, nested_id, name, line in contains:
+        nrel = nested_id.split("::", 1)[0]
+        edges.append(Edge(src=func_id, relation=Relation.REFERENCES, dst_symbol=name,
+                          dst_id=nested_id, weight=1.0, provenance=Provenance.EXTRACTED,
+                          location=f"{nrel}:{line}:0", source="tree-sitter"))
 
     # Build a set of class IDs that inherit from external bases (framework classes).
     # This will be used to mark their methods as callbacks.
@@ -346,21 +358,24 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
 
 
 # -- pass 1: definitions ----------------------------------------------------
-def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test):
+def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test,
+             contains, enclosing_func):
     for child in node.children:
         t = child.type
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
-                     exported=True, is_test=is_test)
+                     exported=True, is_test=is_test, contains=contains,
+                     enclosing_func=enclosing_func)
         elif t in spec.container_only:
             qual = _join(parent, _name_of(child, src))
             _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
-                     exported=False, is_test=is_test)
+                     exported=False, is_test=is_test, contains=contains,
+                     enclosing_func=enclosing_func)
         elif t in spec.defs:
             name = _name_of(child, src)
             if not name:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
-                         False, is_test)
+                         False, is_test, contains=contains, enclosing_func=enclosing_func)
                 continue
             qual = _join(parent, name)
             roles = set(_roles(child, src, name, lang, exported))
@@ -374,9 +389,22 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             if kind is C:
                 for base in _bases(child, src, spec):
                     inherits.append((cid, base, lang))
-            inner = qual if (t in spec.containers or kind is C) else parent
-            _collect(child, src, rel, spec, lang, inner, nodes, defs, inherits,
-                     False, is_test)
+            # A def nested inside a *function/method* (not a class or module) is live
+            # iff its enclosing function is reachable — it executes, is returned as a
+            # closure, or registered when the enclosing runs. Edge enclosing -> nested
+            # so it isn't false-flagged dead, mirroring the Python extractor's
+            # `function -> nested` containment edge (Panel Q). Only function scopes get
+            # this: class/module scopes must NOT auto-reach their members — finding the
+            # dead ones is dead-code's whole job.
+            if enclosing_func is not None:
+                contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+            # Nest *every* def's children under its own qual (functions too, not only
+            # classes/containers), so a function-local def becomes `outer.inner`, not a
+            # module-scope `inner` that collides with a same-named sibling and merges
+            # two distinct functions into one node. Matches Python's nested quals.
+            child_func = cid if kind in (F, M) else None
+            _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
+                     False, is_test, contains=contains, enclosing_func=child_func)
         elif spec.arrow_decls and t == "variable_declarator":
             val = child.child_by_field_name("value")
             name = _field_text(child, "name", src)
@@ -385,13 +413,23 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 roles = {"exported"} if exported else set()
                 if _is_test_name(name):
                     roles.add("test")
-                nodes.append(Node(id=f"{rel}::{qual}", kind=F, name=name,
+                cid = f"{rel}::{qual}"
+                nodes.append(Node(id=cid, kind=F, name=name,
                                   location=_loc(rel, val), end_line=val.end_point[0] + 1,
                                   roles=frozenset(roles)))
-                defs.append((rel, f"{rel}::{qual}", val, lang))
+                defs.append((rel, cid, val, lang))
+                if enclosing_func is not None:
+                    contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                # Recurse into the arrow/function-expression body so defs nested inside
+                # it become real nodes with a containment edge — without this, a def in
+                # an arrow (`const h = () => { function w(){...} }`, pervasive in JS/TS)
+                # is never modeled and a symbol used only there is flagged dead (the
+                # regular-def branch above already does this; this is its arrow twin).
+                _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                         False, is_test, contains=contains, enclosing_func=cid)
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
-                     exported, is_test)
+                     exported, is_test, contains=contains, enclosing_func=enclosing_func)
 
 
 def _bases(node, src, spec):

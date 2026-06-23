@@ -8,13 +8,14 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 15 (Panels A–O) |
+| Multi-model review panels | 22 (Panels A–V) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 127 passing, 1 skipped |
-| Coverage | ~84% |
-| Release-Readiness Score | 81.3 / 100 |
-| Convergence | yield bottoming out: N (10, default values) → O (4, metaclass), both single narrow corners opus+haiku converged on; third-party core-only clean 2 straight. Streak 0 of 2 |
-| Verdict | NOT RELEASABLE — sonnet now supplied by a third party (API down for agents); needs ≥2 consecutive full-diversity clean panels |
+| Tests | 148 passing, 0 skipped (full extras) |
+| Coverage | 86.4% |
+| Release-Readiness Score | **93.3 / 100** |
+| Convergence | U (**0.0 CLEAN**) → V (**0.0 CLEAN**), both full-diversity, V steered onto less-trodden surfaces so the clean is earned. **Streak 2 of 2** |
+| Dogfood (self) | find_stale 3 advisory (no false-dead) · holes 0 · scan: 4 cycles / 1 data_loop / 12 god_objects · 349 nodes |
+| Verdict | **RELEASABLE** — gates green AND RRS ≥ 90 AND 2 consecutive full-diversity clean panels. Awaiting the maintainer's manual `1.0.0` tag (version stays `0.4.0` until then) |
 
 ## Trajectory
 
@@ -39,6 +40,11 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | O | opus · sonnet† · haiku | 1 MEDIUM | **4.0** | **lightest since H** — opus + haiku converged on one narrow MEDIUM: a metaclass used only via `class X(metaclass=Meta)` flagged dead (`_walk_scope` edged `child.bases` not `child.keywords`). Now walks class-def keywords. Third-party "sonnet" (core-only) clean **2nd straight panel**. _(†third-party review)_ |
 | P | opus · sonnet† · haiku | 1 HIGH | 10.0 | **the last un-walked Python scope** — references in the class *body* itself (`h = Helper`, `TABLE = {"a": handle_a}`, class-level annotations) were never extracted: `_walk_scope` edged bases/keywords/ctors and recursed into method bodies, but never the class body's own statements → live symbols flagged dead (opus HIGH). Now walks class-body Load names, attributed to the class node (matching tree-sitter). haiku clean; third-party "sonnet" (core-only) clean **3rd straight panel**. _(†third-party review)_ |
 | Q | opus · sonnet† · haiku | 1 CRITICAL · 1 HIGH · 1 MEDIUM | **54.0** | **the confirmation gate caught a CRITICAL** — a symbol used only inside a function-*local* class/closure flagged dead (`_def_node` never descended into function bodies → function-local defs were never nodes, yet `_walk_scope` emitted edges from phantom qualnames; opus). Now models nested defs as real nodes + a `function → nested` containment edge (fixes decorator-registered `@app.command` handlers too). Third-party "sonnet" (core-only): public re-exports from `__init__` weren't export roots → live public API flagged dead (HIGH); version still `0.3.0` (MEDIUM, deferred to manual release). haiku clean. **Streak resets.** _(†third-party review)_ |
+| R | opus · haiku ‡ | 2 MEDIUM | **8.0** | **the metric/nesting twin of Q's nested-def fix, one in each extractor — both err safe (no precision violation).** opus (sonnet converged on the class-body variant in a partial pass before its slot was stopped): the five Python `_direct_*` own-scope helpers leaked into nested defs — the driver loop ran `rec()` on a top-level stmt that was *itself* a nested def, mis-attributing its calls/refs/globals to the enclosing fn (162 spurious CALLS + 40 class→symbol REFERENCES on self; 15→11 god-objects). Q made it observable (nested defs are nodes now, so the spurious parent edge double-counts instead of being a dropped phantom). Fixed by skipping a top-level body stmt that is itself a def, in all five helpers. haiku: the **tree-sitter side** of Q's nesting — function-local defs were created at *module* scope (`app.ts::helper`), merging two same-named defs into one node; now nested under the enclosing qual + an `enclosing-fn → nested` containment edge (Python parity). Reproduced as errs-safe → **downgraded from haiku's CRITICAL to MEDIUM**. **Streak stays 0.** _(‡ sonnet slot stopped — API issues this session; diversity 2/3)_ |
+| S | opus · haiku | 1 CRITICAL | **40.0** | **the confirmation gate caught a CRITICAL regression Panel R itself introduced** — the textbook case for why consecutive clean panels are required. opus: R's body-skip made each `_direct_*` driver `continue` on a nested def statement, but a def's **header** (decorator args `@registry(make_validator())`, nested-class base exprs `class L(get_base())`) executes in the *enclosing* scope at def-time and was dropped — not recovered elsewhere → a symbol used only there had zero inbound edges and was flagged dead. Pre-R this erred safe (over-attributed to the enclosing fn); R flipped it to erring **unsafe** (false dead, the cardinal sin). Fixed with `_def_header_refs`: walk a nested def's header (decorators + class bases/keywords) in the enclosing scope while still skipping the body. haiku **clean** (48 adversarial tests, no findings). **Streak resets to 0.** |
+| T | opus · haiku | 2 CRITICAL | **80.0** | **the last two nesting hosts of the Panel Q class — both CRITICAL false-deads, both pre-existing (not regressions).** haiku: a Python def nested in a **control-flow block** (`if`/`for`/`while`/`try`/`with`/`match`) was never modeled (`_def_node`/`_walk_scope` walked only the *direct* body) → phantom-source edges → a symbol used only there flagged dead. opus: the tree-sitter twin — a def nested in a JS/TS **arrow function** (`const h = () => { function w(){…} }`) was never modeled (the arrow branch made the node but never recursed into the arrow body). Closed by a **systematic nesting-host audit** (function/class/control-flow/arrow are the only hosts; lambdas/comprehensions can't hold defs): Python `_scope_defs` looks *through* control flow in `_def_node`/`_walk_scope`/`_iter_funcs`/module loop; tree-sitter arrow branch now recurses + emits the containment edge. Test matrix pins every host (140→148). Dogfood: find_stale still 3 advisory, 0 holes. **Streak resets to 0; the enumeration is now believed complete.** |
+| U | opus · haiku | _none_ | **0.0** | **CLEAN** — both models `FINDINGS: none` at full diversity, the first clean panel since the nesting audit. Scope also included a **regression-test-quality audit** (after two test-authoring slips in R/S): both confirmed the Panel Q–T nesting tests are **non-vacuous** — opus monkeypatched `_scope_defs` back to a pre-fix variant in `/tmp` and saw **5/5** control-flow tests FAIL, then pass post-fix. No still-unmodeled def host found; body-leak (R) and header-leak (S) fixes hold; no metric inflation (`_dedup_edges` collapses the CALLS+REFERENCES pair, fan_in==1); module-level `try: import`/`TYPE_CHECKING` idioms sane. Dogfood: 3 advisory, 0 holes. **RRS crosses 90.4; clean streak 1 of 2.** |
+| V | opus · haiku | _none_ | **0.0** | **CLEAN — the second consecutive clean panel; the release gate is met.** Both `FINDINGS: none`, steered onto the less-trodden surfaces so the clean is earned: SQL/ORM/event resolvers (CTE/UNION/INSERT…SELECT/MERGE, `mapped_column`/`relationship` exclusion, additive-only events), the full envelope contract (every `urgency=` assignment vs the provenance ceiling; scan-RED needs an EXTRACTED-only `certain_live` path; `ingest_trace` refuses on zero grounding; no `ok=True`-with-vacuous-result), persistence/migration, metric dedup (`LIVENESS_RELATIONS` excludes QUERIES/READS/WRITES/MAPS_TO), a **2000-graph GraphBLAS-vs-pure-Python fuzz (0 mismatches)**, and precision use-forms (walrus/comprehensions/f-strings/forward-refs/`__all__`). Two non-defect sub-observations recorded (SQL MERGE labels target READS not WRITES — err-safe, uncommon; `find_holes` urgency=ORANGE on empty list — cosmetic), neither a finding. Dogfood: 3 advisory, 0 holes. **Gates green · RRS 93.3 · clean streak 2/2 → RELEASABLE.** |
 
 ## What each panel found and how it was fixed
 
@@ -396,6 +402,177 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   and the clean streak **resets to 0**. The lesson stands: each "clean-looking" surface has
   one scope deeper. With the nested scope now modeled, the function/class/module scope
   trichotomy is fully covered (module-level uses remain the one documented limitation).
+
+- **Panel R (opus · haiku; sonnet stopped)** — the **metric / nesting twin** of Panel Q,
+  with one finding in each extractor. Both **err in the safe direction** (over-attribution /
+  recall miss), so neither is a cardinal-invariant violation — the confirmation gate is now
+  catching residual *correctness* and *metric* defects, not precision violations. Each was
+  reproduced with real input and fixed with a regression test:
+  - **MEDIUM (opus + sonnet, converged)** — the five Python `_direct_*` "own-scope" walk
+    helpers (`_direct_nodes`, `_direct_attr_reads`, `_direct_names`, `_direct_withs`,
+    `_direct_calls`) promised "not crossing nested defs", but their driver loop
+    `for stmt in func.body: rec(stmt)` ran `rec()` on a top-level statement that was *itself*
+    a nested def. `rec()` guards def *children* but not the driver's own statement, so the
+    nested def's calls/refs/global-writes leaked up and were mis-attributed to the enclosing
+    function — **162** spurious parent→callee CALLS and **40** spurious class→symbol
+    REFERENCES on stitchgraph's own source, surfacing **15** false god-objects in `scan()`
+    (down to **11** after the fix). Latent for many panels, but **Panel Q made it
+    observable**: now that function-local defs are real nodes, the spurious parent edge
+    co-exists with the correct nested edge and *double-counts*, where before it was a
+    phantom-source edge that got dropped. The `_dedup_edges` boundary cannot catch it (the
+    spurious edge has a *different* src). Fixed by skipping a top-level body statement that
+    is itself a `FunctionDef/AsyncFunctionDef/ClassDef` in all five helpers — which also
+    correctly stops Panel P's class-body walk from absorbing method-body references. _(sonnet
+    converged on the class-body variant in a partial pass before its slot was stopped on
+    API issues this session.)_
+  - **MEDIUM (haiku)** — the **tree-sitter side** of Panel Q's Python nesting fix. The
+    tree-sitter `_collect` nested only *classes/containers* under their qual, never
+    functions, so a function-local def was created at **module** scope (`app.ts::helper`
+    instead of `app.ts::setup.helper`). Two same-named defs (a function-local one and a
+    module-level or sibling one) then **collided to a single node id**, merging two distinct
+    functions — corrupting `get_callers`/`get_callees`/`impact_of`/`get_matrix` for that
+    name and inflating its degree. haiku rated it CRITICAL, but it was reproduced as
+    **errs-safe** (the merged node stays reachable, so dead code is *under*-reported, never
+    live code flagged dead — opus independently cleared the same surface for precision), so
+    it was **downgraded to MEDIUM**. Fixed symmetrically with the Python extractor: nest
+    *every* def's children under its own qual, and emit an **enclosing-function → nested**
+    containment edge so a function-local def is live iff its enclosing function is reachable
+    (Panel Q parity; subsumed by `_dedup_edges` when the nested def is also called directly).
+
+  Weighted yield **8.0** (2 MEDIUM) — the convergence rate falls to **0.186**, the lowest of
+  the series, and RRS rises to **80.2**. The clean streak **stays 0** (both findings are
+  above LOW). sonnet's slot was stopped mid-review (API issues this session), so the panel
+  ran at **2/3 diversity**; a full-diversity clean confirmation is still owed. The standing
+  theme holds one more turn: after the *liveness* of the nested scope (Q), its *metrics* and
+  its *tree-sitter twin* (R) — the symmetry audit is converging.
+
+- **Panel S (opus · haiku)** — **the confirmation gate earned its keep again, catching a
+  CRITICAL regression that Panel R *itself* introduced** (after Panel K caught Panel J's
+  regression, this is the second time a fix's own side-effect was caught by the next panel —
+  the strongest argument for the two-consecutive-clean rule):
+  - **CRITICAL (opus)** — Panel R fixed the nested-def body leak by having each of the five
+    `_direct_*` driver loops `continue` on a top-level statement that is itself a def. But a
+    def's **header** expressions — decorator calls and their arguments
+    (`@registry(make_validator())`), and a nested class's base/keyword expressions
+    (`class Local(get_base())`) — are syntactically part of that skipped statement yet
+    *execute in the enclosing function's scope at definition time*. Skipping the whole
+    statement dropped them, and they aren't recovered elsewhere (`_decorator_edges` edges
+    only the decorator's *name*; `_walk_scope` edges a base only via `_name_of`, which is
+    `None` for a `Call`). So a symbol used only in such a header (e.g. `make_validator`,
+    reachable from a live `main` through `build` → decorator-arg call) got **zero inbound
+    edges and was flagged dead**. Pre-R this erred *safe* (the body-leak over-attributed the
+    call to the enclosing fn, keeping the symbol live); Panel R flipped it to erring
+    *unsafe* — a true false-dead, the cardinal sin. Fixed with `_def_header_refs`: when a
+    driver loop hits a nested def, it walks the def's **header** (decorators + class
+    bases/keywords) in the enclosing scope while still skipping the **body** — restoring the
+    dropped enclosing-scope refs without re-introducing the body leak R closed. Verified:
+    `make_validator`/`make_base` live again; `outer` still does *not* absorb a body-only
+    callee; self-scan unchanged at 3 advisory candidates; 138 → 140 tests.
+  - **haiku** — **clean** (`FINDINGS: none`) after 48 adversarial tests re-verifying the
+    Panel R fixes, the cardinal invariant across Python/TS/JS, metric dedup, the containment
+    edges, and cross-language parity.
+
+  Weighted yield **40.0** (1 CRITICAL) — the streak **resets to 0** and RRS falls to **70.9**.
+  The lesson, restated: an aggressive scope-narrowing fix (R) over-corrected by one syntactic
+  level (statement vs. header-within-statement), the same shape as Panel J→K. The header/body
+  split is now explicit. The first run of this panel stalled (both reviewers went silent ~36
+  min on agent-backend flakiness and were reaped without delivering); it was relaunched with a
+  time budget and completed normally — a process note, not a code signal.
+
+- **Panel T (opus · haiku)** — **both models found a CRITICAL**, each the same nested-scope
+  class (Panel Q) in one of the two remaining nesting hosts. Crucially, both were
+  *pre-existing* false-deads (not regressions from R/S):
+  - **CRITICAL (haiku)** — a Python def nested in a **control-flow block** (`if`/`elif`/
+    `else`/`for`/`while`/`try`/`except`/`finally`/`with`/`match`) was never modeled as a
+    node: `_def_node` and `_walk_scope` walked only a function's *direct* `body`, so a
+    `def inner()` inside `if c:` got no node, yet `_walk_scope` still emitted edges from its
+    qualname — a phantom source that can't reach, so a symbol used only there
+    (`def process(): \n  if c: \n    def inner(): return helper()`) was flagged dead.
+  - **CRITICAL (opus)** — the tree-sitter twin one host deeper: a def nested in a JS/TS
+    **arrow function** (`const handler = () => { function worker(){…} }`, idiomatic and
+    pervasive) was never modeled. The regular-def branch recurses into a def's body and
+    threads the containment edge; the arrow-declarator branch created the node but **never
+    recursed into the arrow body**, so nested defs (and their header expressions, the Panel S
+    parity case) were lost.
+
+  Rather than keep finding hosts one panel at a time, this was closed by a **systematic
+  nesting-host audit**. A def can nest only in: a function body (Q), a class body (P), a
+  control-flow block, or a function-expression/arrow — lambdas and comprehensions can't
+  contain `def`s, so the set is finite and now fully covered. Fixes: a shared Python
+  `_scope_defs` helper looks *through* control-flow blocks (which add no qual level) and is
+  used in `_def_node`, `_walk_scope`, and the module loop; `_iter_funcs` (data-loop scan)
+  likewise; the tree-sitter arrow branch now recurses into the arrow body and emits the
+  `arrow → nested` containment edge. A parametrised **test matrix** pins every host in both
+  extractors (140 → 148 tests). Dogfood after the fix: `find_stale` holds at the **3**
+  documented advisory candidates, **0** holes — precision intact, no false-dead introduced.
+
+  Weighted yield **80.0** (2 CRITICAL) — the heaviest panel yet, but the right kind of heavy:
+  two independent models each confirming a real pre-existing false-dead, now closed
+  *structurally* (by enumeration) rather than reactively. The streak **resets to 0**. If the
+  enumeration is complete, the nested-scope class — the dominant defect class since Panel I —
+  should at last be exhausted, and the next panels are its test.
+
+- **Panel U (opus · haiku)** — **CLEAN, and the first real test of the systematic audit.**
+  Both models returned `FINDINGS: none` after genuine probing, at full diversity. This panel
+  carried an extra mandate — a **regression-test-quality audit**, added after two
+  test-authoring slips in Panels R and S (an over-strict `CALLS`-vs-`REFERENCES` assertion;
+  a non-reachable fixture). The worry it targets is the *silent* class: a test that passes
+  without pinning its contract. Both models found the nesting regression suite **non-vacuous**;
+  opus made it concrete by monkeypatching `_scope_defs` back to a pre-fix, direct-body-only
+  variant (in `/tmp`, no repo edit) and observing the parametrised control-flow tests fail
+  **5/5** — `helper` flagged dead, `process.inner` not modeled — then pass once restored. On
+  the source side, neither could find a def host still unmodeled (the function/class/
+  control-flow/arrow enumeration held), the body-leak (R) and header-leak (S) fixes still
+  held, the containment edges introduced **no** metric inflation (`_dedup_edges` collapses the
+  CALLS+REFERENCES pair, store `fan_in == 1`), and module-level `try: import` fallback +
+  `TYPE_CHECKING` idioms behaved correctly. Dogfood on self: `find_stale` 3 advisory, 0 holes.
+
+  Weighted yield **0.0** — the convergence rate falls to **0.000** and **RRS crosses 90.4**.
+  Gates are green and RRS ≥ 90; the *only* remaining release blocker is the **second**
+  consecutive clean panel. **Clean streak 1 of 2.** One more clean panel at full diversity
+  clears the gate, at which point the maintainer can tag `1.0.0`.
+
+- **Panel V (opus · haiku)** — **CLEAN, and the gate-clearing panel.** To keep a clean
+  verdict from being a rubber-stamp on the same code Panel U saw (U changed no source), both
+  reviewers were steered *away* from the now-closed nesting class and *toward* the
+  less-trodden surfaces. They still came back `FINDINGS: none` after genuine probing:
+  - **opus** — SQL/ORM/event resolvers (CTE/UNION/`INSERT…SELECT`/MERGE, `mapped_column` vs
+    `relationship`/`ManyToManyField` exclusion, additive-only events); the full envelope
+    contract (audited every `operations.py` `urgency=` assignment against the provenance
+    ceiling; `scan`-RED requires an EXTRACTED-only `certain_live` path; `find_stale`
+    0.6/INFERRED/needs_review; `ingest_trace` refuses on zero grounding; no
+    `ok=True`-with-vacuous-result); persistence/migration; metric dedup
+    (`LIVENESS_RELATIONS` excludes QUERIES/READS/WRITES/MAPS_TO, so resolver edges don't
+    inflate fan_in); `get_matrix` N/N+1 bounds; a **2000-random-graph GraphBLAS-vs-pure-Python
+    reachability fuzz with 0 mismatches**; and precision use-forms (walrus, nested
+    comprehensions, f-string calls, string forward-refs, `__all__` re-exports,
+    `@property`/`@staticmethod`).
+  - **haiku** — per-language call graphs across the 12 languages, cross-language resolvers
+    (Django routes as roots, SQL CTE not a phantom table), envelope-field validity on every
+    operation, parallel-edge dedup, and robustness (unicode identifiers, malformed/empty
+    files, the read-only invariant).
+  - Two **non-defect sub-observations** were recorded, neither flagged as a finding: SQL
+    `MERGE` labels its target READS rather than WRITES (a recall-only label gap, err-safe,
+    and MERGE is uncommon), and `find_holes` sets `urgency=ORANGE` even on an empty hole list
+    (cosmetic — the result is a valid `ok=True`, `count=0`, `[]`). These are noted for a
+    future cleanup; they do not affect the cardinal invariant or the release decision.
+
+  Weighted yield **0.0**. With **two consecutive full-diversity clean panels (U, V)**, all
+  hard gates green, and **RRS 93.3** (coverage 86.4%), `scripts/readiness.py` returns
+  **RELEASABLE**. Per the methodology the maintainer now tags/releases manually; the package
+  version reads `1.0.0` only at that point (it stays `0.4.0` in-repo until the tag).
+
+## Release status (2026-06-23)
+
+`scripts/readiness.py` → **RELEASABLE**: gates (pytest/ruff/mypy/no-open-defects) green,
+RRS **93.3 / 100**, clean streak **2** at full diversity (opus + haiku). The dominant
+historical defect class — "a live symbol used in a way not modeled → flagged dead," the
+Python↔tree-sitter nesting-scope asymmetry — is closed across all four nesting hosts
+(function / class / control-flow / arrow) by the Panel T systematic audit and re-confirmed
+clean by Panels U and V. **Next step is the maintainer's manual release** (tag `v1.0.0`,
+bump the in-repo version + CHANGELOG). Deferred non-blockers for after 1.0.0: SQL MERGE
+WRITES label; `find_holes` empty-list urgency; the LSP backend and variable-granularity
+data flow (see `STATUS.md` roadmap).
 
 ## Standing themes
 

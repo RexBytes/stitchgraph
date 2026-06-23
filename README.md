@@ -29,7 +29,7 @@ for the agent rules that teach an LLM when to call which tool.
 
 Full support matrix in [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
 
-## Status (v0.3.0)
+## Status (v1.0.0)
 
 Working end-to-end and dogfooding on its own source. See
 [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
