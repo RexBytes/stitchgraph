@@ -37,6 +37,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | M | opus · sonnet† · haiku | 2 HIGH · 3 MEDIUM | 32.0 | PHP public class flagged dead (opus). Third-party "sonnet" (core-only env) found the blind spot: config from cwd not indexed root (HIGH); ingest_trace success on zero grounding; old-DB edge migration + index ordering; core-only CI red (unguarded test imports). haiku clean. _(†sonnet API down — review supplied by a third party)_ |
 | N | opus · sonnet† · haiku | 1 HIGH | 10.0 | **opus + haiku converged** — a class/fn used only as a Python parameter *default value* (`def f(x=Strategy)`) flagged dead (`func.args.defaults`/`kw_defaults` not walked — 3rd "body-not-signature" gap after K's annotations). `_annotation_names` now covers defaults. Third-party "sonnet" (core-only) clean, re-confirming M's fixes. _(†third-party review)_ |
 | O | opus · sonnet† · haiku | 1 MEDIUM | **4.0** | **lightest since H** — opus + haiku converged on one narrow MEDIUM: a metaclass used only via `class X(metaclass=Meta)` flagged dead (`_walk_scope` edged `child.bases` not `child.keywords`). Now walks class-def keywords. Third-party "sonnet" (core-only) clean **2nd straight panel**. _(†third-party review)_ |
+| P | opus · sonnet† · haiku | 1 HIGH | 10.0 | **the last un-walked Python scope** — references in the class *body* itself (`h = Helper`, `TABLE = {"a": handle_a}`, class-level annotations) were never extracted: `_walk_scope` edged bases/keywords/ctors and recursed into method bodies, but never the class body's own statements → live symbols flagged dead (opus HIGH). Now walks class-body Load names, attributed to the class node (matching tree-sitter). haiku clean; third-party "sonnet" (core-only) clean **3rd straight panel**. _(†third-party review)_ |
 
 ## What each panel found and how it was fixed
 
@@ -294,6 +295,68 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   fixed **language-agnostically at the dedup boundary** (`_dedup_edges`: a CALLS edge
   subsumes a REFERENCES edge to the same target; REFERENCES self-loops are dropped),
   which should stop this twin class recurring. RRS 78.4 → 77.3.
+
+- **Panel M (opus · sonnet† · haiku)** — the panel that reached the **core-only /
+  persistence** blind spot. opus (full extras) found one more precision corner; the
+  third-party "sonnet", running in a *core-only* environment (no extras installed),
+  found the class of defects the all-extras agents structurally cannot see:
+  - **HIGH (opus)** — a **PHP public class** with only public methods was flagged dead:
+    `exported` was set on the methods but never propagated up to the class node, so the
+    class looked unreferenced. `_seed_classes_from_exported_methods` now up-propagates
+    `exported` from public methods to their class (tree-sitter).
+  - **HIGH (sonnet, core-only)** — config (`stitchgraph.toml`: roots, ignores) was
+    loaded from the **current working directory**, not the indexed project root, so
+    every operation run from outside the project silently used the wrong (or no) config
+    — entry-point roots vanished and live code flagged dead. `_hub_ranking` and
+    `_default_detector` now read config from `store.get_meta("root")`.
+  - **MEDIUM (sonnet)** — `ingest_trace` returned `ok=True` even when the trace grounded
+    *nothing* (no node matched any executed line), claiming a runtime grounding that
+    didn't exist. It now refuses (`ok=False`, no `has_runtime`) when `hits` is empty.
+  - **MEDIUM (sonnet)** — `_migrate()` only patched the `nodes` table; an old DB missing
+    the new `edges` columns crashed, and `CREATE INDEX … ON edges(file)` ran *before*
+    migration. Split `_SCHEMA`/`_INDEXES` so indexes run after `_migrate`, and migrate
+    both tables.
+  - **MEDIUM (sonnet)** — the core-only CI job went red: `test_properties.py` /
+    `test_runtime.py` imported `hypothesis` / `tree_sitter_language_pack` unguarded.
+    Added `pytest.importorskip` so the core-only suite passes (32 skips, 0 failures).
+  haiku clean. The lesson: **a panel is blind to whatever its environment doesn't
+  install** — rotating a core-only reviewer in is how those defects surface. RRS 77.3 → ~78.
+
+- **Panel N (opus · sonnet† · haiku)** — **opus + haiku converged** on a single HIGH, the
+  3rd instance of the recurring "Python walks the body, not the signature" asymmetry
+  (after Panel K's annotations):
+  - **HIGH (opus + haiku)** — a class/function used only as a **parameter default value**
+    (`def f(x=Strategy)`, `cb=handler`) was flagged dead: defaults live in
+    `func.args.defaults`/`kw_defaults`, which neither the body pass nor the annotation
+    pass walked. `_annotation_names` now also walks `a.defaults` + `a.kw_defaults`.
+  Third-party "sonnet" (core-only) clean, re-confirming Panel M's fixes. Two independent
+  models converging on the same omission is the signal the surface is nearly exhausted.
+
+- **Panel O (opus · sonnet† · haiku)** — the **lightest panel since clean H**: opus +
+  haiku converged on one narrow MEDIUM:
+  - **MEDIUM (opus + haiku)** — a class used only as a **metaclass**
+    (`class X(metaclass=Meta)`) was flagged dead: `_walk_scope` edged `child.bases` but
+    not `child.keywords`, where the metaclass (and similar class-def kwargs) sit. Now
+    walks class-definition keywords and edges them as REFERENCES.
+  Third-party "sonnet" (core-only) clean for the **2nd straight panel**. RRS held ~79.
+
+- **Panel P (opus · sonnet† · haiku)** — the **last un-walked Python scope**. opus found
+  one HIGH; haiku and the third-party "sonnet" were clean:
+  - **HIGH (opus)** — references in the **class body itself** were never extracted.
+    `_walk_scope` edged a class's bases, keywords, and constructor links, and *recursed
+    into its method bodies*, but never processed the class body's own statements:
+    class-level attribute assignments (`h = Helper`), dispatch tables
+    (`TABLE = {"a": handle_a, "b": handle_b}`), and class-level annotations. A symbol
+    used only there — live iff the class is reachable — was flagged dead. The fix walks
+    the class-body Load-context names via `_direct_names` and attributes the REFERENCES
+    to the class node, matching tree-sitter (which walks the whole class node). Verified:
+    in `class Container: h = Helper` / `class Router: TABLE = {…handle_a…}` reachable from
+    a live `run()`, `Helper`/`handle_a`/`handle_b` are now live while `truly_dead` stays
+    flagged.
+  haiku clean; third-party "sonnet" (core-only) clean for the **3rd straight panel**. The
+  clean streak holds at 0 (opus's HIGH resets it) — but the entire "live-code-flagged-dead"
+  precision class is now closed along every axis the Python/tree-sitter asymmetry exposed:
+  by-name refs, constructors, annotations, defaults, metaclass keywords, and class bodies.
 
 ## Standing themes
 

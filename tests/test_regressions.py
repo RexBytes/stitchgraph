@@ -953,3 +953,30 @@ def test_metaclass_keyword_reference_is_modeled(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "Meta" not in stale       # used as Thing's metaclass
         assert "TrulyDead" in stale       # genuinely unreferenced
+
+
+# -- Panel P / opus (HIGH): references in the class *body* are live ------------
+def test_class_body_references_are_modeled(tmp_path):
+    """Symbols referenced directly in a class body — attribute assignments
+    (`h = Helper`), dispatch tables (`TABLE = {"a": handle_a}`), class-level
+    annotations — are live iff the class is reachable. The Python ast walked only
+    method (FunctionDef) bodies, never the class body itself, so such symbols were
+    flagged dead (the tree-sitter extractor walks the whole class node)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["main"]\nfrom .m import main\n',
+        "pkg/m.py": (
+            "class Helper:\n    def assist(self):\n        return 1\n"
+            "def handle_a():\n    return 'a'\n"
+            "def handle_b():\n    return 'b'\n"
+            "class TrulyDead:\n    pass\n"
+            "class Container:\n    h = Helper\n"
+            "class Router:\n    TABLE = {'a': handle_a, 'b': handle_b}\n"
+            "def main():\n    return Container(), Router()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Helper" not in stale                       # class-body attribute ref
+        assert {"handle_a", "handle_b"} & stale == set()   # class-body dispatch table
+        assert "TrulyDead" in stale                        # genuinely unreferenced

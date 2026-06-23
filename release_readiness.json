@@ -102,6 +102,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"MEDIUM": 1},
       "theme": "lightest panel since clean H: opus+haiku CONVERGED on one narrow MEDIUM — a metaclass used only via class X(metaclass=Meta) flagged dead (_walk_scope edged child.bases but not child.keywords). Now walks class-def keywords. Third-party 'sonnet' (core-only) clean for the 2nd straight panel."
+    },
+    {
+      "id": "P",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1},
+      "theme": "the last un-walked Python scope: references in the class *body* itself (attribute assignments `h = Helper`, dispatch tables `TABLE = {\"a\": handle_a}`, class-level annotations) were never extracted — _walk_scope edged class bases/keywords/ctors and recursed into method bodies, but never the class body's own statements -> live symbols flagged dead (opus HIGH). Now walks class-body Load names via _direct_names, attributed to the class node (matching tree-sitter, which walks the whole class node). haiku clean; third-party 'sonnet' (core-only) clean for the 3rd straight panel."
     }
   ]
 }

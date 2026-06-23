@@ -312,6 +312,15 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                 kw_name = _name_of(kw.value)
                 if kw_name:
                     _ref_edges(proj, cid, kw_name, Relation.REFERENCES, rel, child.lineno)
+            # References in the class *body* itself (not in any method) — class-level
+            # attribute assignments (`handler = Helper`), dispatch tables
+            # (`TABLE = {"a": handle_a}`), and class-level annotations. These are live
+            # iff the class is reachable, so attribute them to the class node. The
+            # Python ast walks only FunctionDef bodies below; without this the class
+            # body's symbols are never edged -> live code flagged dead (matches the
+            # tree-sitter extractor, which walks the whole class node).
+            for nm in _direct_names(child, set()):
+                _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)
             # Constructing the class implicitly runs its constructor hooks, so link
