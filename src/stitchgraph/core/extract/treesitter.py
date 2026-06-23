@@ -17,6 +17,7 @@ parse error -> those files are skipped; Python extraction is unaffected.
 
 from __future__ import annotations
 
+import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -378,6 +379,27 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
                 n.roles = n.roles | {"callback"}
 
 
+def _is_rust_test_attr(attr_text: str) -> bool:
+    """True for a Rust *test* attribute — matched on the attribute PATH, not a raw
+    substring, so `#[cfg(feature="testing")]`, `#[doc="...test..."]`, a feature named
+    `latest`, etc. do NOT count (issue #8, Panel W). Matches `#[test]`, `#[tokio::test]`
+    / any `*::test`, and a bare `#[cfg(test)]` (incl. `cfg(all(test, ...))`)."""
+    m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
+    if not m:
+        return False
+    body = m.group(1)
+    path = re.split(r"[(\s=]", body, maxsplit=1)[0].strip()  # attribute path before ( / = / ws
+    if path == "test" or path.endswith("::test"):
+        return True
+    if path == "cfg" and "(" in body:
+        # `cfg(test)` is test-gated; `cfg(feature="testing")` is not. Drop quoted string
+        # values first so a feature *value* containing "test" can't match, then look for
+        # a bare `test` config option token.
+        inner = re.sub(r"\"[^\"]*\"", "", body[body.find("(") + 1: body.rfind(")")])
+        return "test" in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", inner)
+    return False
+
+
 # -- pass 1: definitions ----------------------------------------------------
 def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test,
              contains, enclosing_func):
@@ -391,7 +413,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             pending_attrs.append(_text(child, src))
             continue
         attrs, pending_attrs = pending_attrs, []
-        attr_test = any("test" in a for a in attrs)
+        attr_test = any(_is_rust_test_attr(a) for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported=True, is_test=is_test, contains=contains,

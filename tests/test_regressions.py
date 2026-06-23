@@ -1424,3 +1424,27 @@ def test_impact_of_ambiguous_name_lists_candidates_and_scopes(tmp_path):
         assert scoped.ok and scoped.result["symbol"].endswith("::LmdbStorage.get")
         full = sg.impact_of(store, "src/a.rs::Cache.get")      # full id scopes
         assert full.ok and full.result["symbol"] == "src/a.rs::Cache.get"
+
+
+# -- Panel W (1.0.1 confirmation): #8 attr match must be path-based, not substring ----
+def test_rust_non_test_attribute_is_not_a_test_root(tmp_path):
+    """The #8 fix must match the attribute PATH, not a raw "test" substring: a
+    production fn carrying `#[cfg(feature="testing")]` or `#[doc="...test..."]` must
+    NOT be seeded a test root (which would hide it from dead-code detection). Genuine
+    `#[test]`/`#[cfg(test)]` still count (opus+haiku converged, Panel W)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/lib.rs": (
+        '#[cfg(feature = "testing")]\n'
+        "fn feature_gated_unused() -> i32 { 1 }\n"        # private + not a test → flag dead
+        '#[doc = "a test of the docs"]\n'
+        "fn documented_unused() -> i32 { 2 }\n"           # private + not a test → flag dead
+        "#[cfg(test)]\nmod tests {\n"
+        "    #[test]\n    fn real_test() { assert_eq!(1, 1); }\n}\n"  # genuine test → root
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "feature_gated_unused" in stale    # #[cfg(feature="testing")] is NOT a test
+        assert "documented_unused" in stale        # #[doc="...test..."] is NOT a test
+        assert "real_test" not in stale             # genuine #[test] is a root
