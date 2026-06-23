@@ -45,6 +45,7 @@ class _Project:
     packages: set[str] = field(default_factory=set)
     exported_names: set[str] = field(default_factory=set)
     main_calls: set[str] = field(default_factory=set)
+    module_consts: set[str] = field(default_factory=set)  # module-level assigned names
 
 
 def extract_project(root: str | Path,
@@ -86,6 +87,11 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     if exported:
         proj.exported_names.update(exported)
     proj.main_calls.update(_main_block_calls(tree))
+    for stmt in tree.body:  # module-level constants (not graphed as nodes)
+        if isinstance(stmt, ast.Assign):
+            proj.module_consts.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            proj.module_consts.add(stmt.target.id)
     has_main = _has_main_block(tree)
 
     proj.nodes.append(Node(
@@ -486,6 +492,8 @@ def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
     cands = proj.by_name.get(symbol, [])
     loc = f"{rel}:{line}:0"
     if not cands:
+        if symbol in proj.module_consts:
+            return  # a module-level constant (not graphed as a node) — not a hole
         # Internal import that doesn't resolve -> a genuine hole (design §6.D).
         proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS, dst_symbol=symbol,
                                dst_id=None, weight=0.6, provenance=Provenance.INFERRED,

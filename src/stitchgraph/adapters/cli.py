@@ -32,6 +32,15 @@ def build_app():
 
     for op in registry():
         app.command(name=op.name.replace("_", "-"), help=op.summary)(_make_command(typer, op))
+
+    @app.command(name="report", help="Full Markdown report (orientation + issues + risk).")
+    def _report(
+        db: str = typer.Option("stitchgraph.db", help="index database path"),
+        repo: str = typer.Option(".", help="repo root (for git risk)"),
+    ) -> None:
+        from .report import build_report
+        typer.echo(build_report(db, repo))
+
     return app
 
 

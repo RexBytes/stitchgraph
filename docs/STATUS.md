@@ -15,7 +15,8 @@ spec and section references.
 | **Surfaces** | Library API = operation registry | ✅ Done | the source of truth |
 | Surfaces | CLI (Typer, generated from registry) | ✅ Done | `--json`, exit codes |
 | Surfaces | MCP server (FastMCP, generated from registry) | ✅ Done | optional dep |
-| Surfaces | Markdown report (urgency tiers) | ✅ Done | `report.py` |
+| Surfaces | Markdown report (orientation + issues + risk) | ✅ Done | `stitchgraph report` |
+| Surfaces | Agent rule file (adoption) | ✅ Done | AGENTS.md |
 | **Extraction** | Python extractor (stdlib `ast`) | ✅ Done | Module/Class/Function/Method/Test |
 | Extraction | Scope-aware resolution (`self.`, locally-typed `var.`) | ✅ Done | + decorator refs |
 | Extraction | jedi precise resolver (`--precise`) | ✅ Done | optional, in-process LSP-grade |

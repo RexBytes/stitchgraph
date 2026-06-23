@@ -14,7 +14,9 @@ One core library, three thin surfaces over the same operations:
 > Every result is advisory — it returns ranked options for a human/LLM to act
 > on; it never edits or deletes source.
 
-See [`docs/design.md`](docs/design.md) for the full design & capability map.
+See [`docs/design.md`](docs/design.md) for the full design & capability map,
+[`docs/STATUS.md`](docs/STATUS.md) for what's built, and [`AGENTS.md`](AGENTS.md)
+for the agent rules that teach an LLM when to call which tool.
 
 ## Status
 
