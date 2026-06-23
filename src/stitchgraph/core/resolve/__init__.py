@@ -71,11 +71,13 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
 
 def default_resolvers() -> list[Resolver]:
     from .html import HtmlRouteResolver
+    from .jsfetch import JsFetchResolver
     from .orm import OrmResolver
     from .routes import WebRouteResolver
     from .sql import SqlResolver
-    # Routes first (HTML links to the Route nodes it creates).
-    return [WebRouteResolver(), HtmlRouteResolver(), OrmResolver(), SqlResolver()]
+    # Routes first (HTML/JS link to the Route nodes it creates).
+    return [WebRouteResolver(), HtmlRouteResolver(), JsFetchResolver(),
+            OrmResolver(), SqlResolver()]
 
 
 # -- shared helper: iterate function defs with their stable node ids ---------
