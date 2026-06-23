@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -129,16 +130,31 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
             nm = getattr(node, "name", None)
             if nm and not nm.startswith("_"):
                 proj.exported_names.add(nm)
+            # Re-exports: `from .api import Public` in a package __init__ makes
+            # `pkg.Public` importable public API — an export root even though it
+            # isn't physically defined here. ast.ImportFrom/Import carry `.names`
+            # aliases, not a `.name`, so the check above misses them and the
+            # re-exported symbol is flagged dead (live public API as dead — the
+            # cardinal sin). The bound public name is the asname or the leaf.
+            elif isinstance(node, (ast.ImportFrom, ast.Import)):
+                for alias in node.names:
+                    if isinstance(node, ast.Import):
+                        bound = alias.asname or alias.name.split(".")[0]
+                    else:
+                        bound = alias.asname or alias.name
+                    if bound != "*" and not bound.startswith("_"):
+                        proj.exported_names.add(bound)
 
     for node in ast.iter_child_nodes(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
 
 
 def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
-              is_test_file: bool, in_abstract: bool = False) -> None:
+              is_test_file: bool, in_abstract: bool = False,
+              parent_is_class: bool = False) -> None:
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         qual = f"{parent}.{node.name}" if parent else node.name
-        kind = NodeKind.METHOD if parent else NodeKind.FUNCTION
+        kind = NodeKind.METHOD if parent_is_class else NodeKind.FUNCTION
         roles: set[str] = set()
         if is_test_file and node.name.startswith("test"):
             roles.add("test")
@@ -153,6 +169,15 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
             is_stub=is_stub, arity=_arity(node), roles=frozenset(roles),
             summary=_docstring(node),
         ))
+        # Descend into the body so function-local classes/functions become real
+        # nodes. _walk_scope already emits edges from their qualnames (e.g.
+        # `run.Local.helper`); without a node at that id those edges have a phantom
+        # src and never participate in reachability, so a symbol used only inside a
+        # function-local class/closure is flagged dead (live code as dead — the
+        # cardinal sin; tree-sitter already models nested defs). Quals align with
+        # _walk_scope's, which also descends only into direct child defs.
+        for inner in node.body:
+            _def_node(proj, rel, inner, parent=qual, is_test_file=is_test_file)
     elif isinstance(node, ast.ClassDef):
         qual = f"{parent}.{node.name}" if parent else node.name
         proj.nodes.append(Node(
@@ -163,7 +188,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         abstract = _is_abstract_class(node)
         for child in ast.iter_child_nodes(node):
             _def_node(proj, rel, child, parent=qual, is_test_file=is_test_file,
-                      in_abstract=abstract)
+                      in_abstract=abstract, parent_is_class=True)
 
 
 def _index(proj: _Project) -> None:
@@ -180,10 +205,20 @@ def _index(proj: _Project) -> None:
 def _apply_entrypoint_roles(proj: _Project) -> None:
     """Mark roots once the whole symbol table is known: exported names (public
     API, incl. re-exports) and functions invoked from `__main__` blocks."""
+    # Public methods of an exported class are themselves public API: external code
+    # holding an instance can call them, so they are never dead for lack of an
+    # internal caller (precision over recall). Underscore-prefixed methods stay
+    # private — reached only if something internal calls them.
+    exported_class_ids = {n.id for n in proj.nodes
+                          if n.kind is NodeKind.CLASS and n.name in proj.exported_names}
     for node in proj.nodes:
         extra: set[str] = set()
         if node.name in proj.exported_names and node.kind in (
                 NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS):
+            extra.add("exported")
+        if node.kind is NodeKind.METHOD and "." in node.id \
+                and not node.name.startswith("_") \
+                and node.id.rsplit(".", 1)[0] in exported_class_ids:
             extra.add("exported")
         if node.name in proj.main_calls and node.kind == NodeKind.FUNCTION:
             extra.add("main")
@@ -231,23 +266,25 @@ def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
     for func, fid in _iter_funcs(tree, rel):
         decl: set[str] = set()
         reads: set[str] = set()
+        stores: set[str] = set()
         for child in _direct_nodes(func):
             if isinstance(child, ast.Global):
                 decl.update(child.names)
-            elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) \
-                    and child.id in mutable:
-                reads.add(child.id)
-        for name in decl & mutable:
+            elif isinstance(child, ast.Name) and child.id in mutable:
+                if isinstance(child.ctx, ast.Load):
+                    reads.add(child.id)
+                elif isinstance(child.ctx, ast.Store):
+                    stores.add(child.id)
+        # A WRITES edge requires the function to actually *assign* a declared global,
+        # not merely declare it: `global x; return x` (read-only) must not get a
+        # spurious WRITES (which faked a read+write data feedback loop in scan()).
+        writes = decl & stores
+        for name in writes:
             proj.edges.append(Edge(src=fid, relation=Relation.WRITES, dst_symbol=name,
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,
                                    location=f"{rel}:{func.lineno}:0", source="ast"))
-        for name in reads - decl:  # pure reads (writers already covered above)
-            proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
-                                   dst_id=f"var::{rel}::{name}", weight=1.0,
-                                   provenance=Provenance.EXTRACTED,
-                                   location=f"{rel}:{func.lineno}:0", source="ast"))
-        for name in reads & decl:  # read-and-write -> emit both (feedback)
+        for name in reads:  # a read is a read whether or not the function also writes
             proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,
@@ -282,21 +319,59 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                 class_qual: str | None) -> None:
     # `parent` is the relative dotted qual, threaded exactly as _def_node builds
     # node ids, so edge-source ids line up with node ids (incl. for methods).
+    #
+    # A function-local def (nested class/function) executes when its enclosing
+    # function runs — registered (`@app.command`), returned as a closure, or called
+    # locally — so it's live iff the enclosing function is reachable. Edge
+    # enclosing -> nested, or a handler whose liveness comes from decorator
+    # registration (not a direct call) is flagged dead once it's a node. This
+    # mirrors Panel P's class-body rule. Only function scopes get this: module and
+    # class scopes must NOT auto-reach their members — that is dead-code's whole job.
+    enclosing_is_func = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    enclosing_id = Node.make_id(rel, parent) if enclosing_is_func and parent else None
     for child in ast.iter_child_nodes(node):
         if isinstance(child, ast.ClassDef):
             qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)
+            if enclosing_id:
+                _add_ref(proj, enclosing_id, child.name, cid, rel, child.lineno)
             for base in child.bases:
                 name = _name_of(base)
                 if name:
                     _ref_edges(proj, cid, name, Relation.INHERITS, rel, child.lineno)
                     if name not in proj.class_by_name and name not in _PLAIN_BASES:
                         proj.external_base_classes.add(cid)  # framework base
+            # Class-definition keyword args (`metaclass=Meta`, and similar) reference a
+            # symbol at the same syntactic level as the bases — a metaclass governs the
+            # class's creation, so it's live. Edge it -> REFERENCES or it's flagged dead.
+            for kw in child.keywords:
+                kw_name = _name_of(kw.value)
+                if kw_name:
+                    _ref_edges(proj, cid, kw_name, Relation.REFERENCES, rel, child.lineno)
+            # References in the class *body* itself (not in any method) — class-level
+            # attribute assignments (`handler = Helper`), dispatch tables
+            # (`TABLE = {"a": handle_a}`), and class-level annotations. These are live
+            # iff the class is reachable, so attribute them to the class node. The
+            # Python ast walks only FunctionDef bodies below; without this the class
+            # body's symbols are never edged -> live code flagged dead (matches the
+            # tree-sitter extractor, which walks the whole class node).
+            for nm in _direct_names(child, set()):
+                _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)
+            # Constructing the class implicitly runs its constructor hooks, so link
+            # class -> __init__/__new__/__post_init__. Without this, a class built only
+            # via `Foo()` leaves its __init__ (and whatever __init__ constructs, e.g.
+            # `Resource()`) unreachable -> false dead-code (live code flagged dead).
+            for dunder in ("__init__", "__new__", "__post_init__"):
+                mid = Node.make_id(rel, f"{qual}.{dunder}")
+                if mid in proj.ids:
+                    _add_ref(proj, cid, dunder, mid, rel, child.lineno)
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)
+            if enclosing_id:
+                _add_ref(proj, enclosing_id, child.name, cid, rel, child.lineno)
             _decorator_edges(proj, cid, child, rel)
             local_types = _local_types(proj, child)
             call_funcs = set()
@@ -310,6 +385,21 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                                       attr.attr, attr.value)
                 if tid:
                     _add_ref(proj, cid, attr.attr, tid, rel, attr.lineno)
+            # Bare-name *value* references (not the callee of a call): a function or
+            # class passed by name (`register(handler)`, `fn = worker`), or a class
+            # accessed as `Color.RED` / `Widget.create()` (the receiver is a bare
+            # Name). These are real uses the extractor sees, so edge them -> REFERENCES
+            # or the live symbol is wrongly flagged dead. Over-approximated through
+            # `_ref_edges` (only project symbols resolve), like the attr-read pass.
+            for nm in _direct_names(child, call_funcs):
+                _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
+            # Parameter / return *type annotations* live in `child.args` / `child.returns`,
+            # not the body, so the passes above never see them. A class used only as a
+            # type annotation from a live function is still a real use -> REFERENCES, or
+            # it is wrongly flagged dead (the tree-sitter extractor already covers this
+            # by walking the whole def node).
+            for ann_name in _annotation_names(child):
+                _ref_edges(proj, cid, ann_name, Relation.REFERENCES, rel, child.lineno)
             # `with EXPR as ...` exercises the context manager's __enter__/__exit__.
             for cm in _direct_withs(child):
                 _with_edges(proj, rel, cid, class_qual, local_types, cm)
@@ -323,7 +413,7 @@ def _decorator_edges(proj: _Project, node_id: str, node: ast.AST, rel: str) -> N
         name = _name_of(d.func) if isinstance(d, ast.Call) else _name_of(d)
         if name:
             _ref_edges(proj, node_id, name, Relation.REFERENCES, rel,
-                       getattr(d, "lineno", node.lineno))
+                       getattr(d, "lineno", getattr(node, "lineno", 0)))
 
 
 def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
@@ -410,6 +500,55 @@ def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribut
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load) \
+                    and id(child) not in call_funcs:
+                out.append(child)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        rec(stmt)
+    return out
+
+
+def _annotation_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Symbol names referenced in a function's *signature*: parameter/return type
+    annotations (incl. generic args `list[T]` and string forward refs `"T"`) AND
+    parameter default-value expressions (`def f(x=Strategy, cb=handler)`). All live
+    in `func.args`/`func.returns`, not the body, so the body pass misses them; a
+    class/fn used only as an annotation or a default executes at runtime and must
+    not be flagged dead (tree-sitter's `_direct_refs` already walks the whole def)."""
+    a = func.args
+    exprs: list[ast.expr | None] = [arg.annotation
+                                    for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    exprs += [a.vararg.annotation if a.vararg else None,
+              a.kwarg.annotation if a.kwarg else None, func.returns]
+    exprs += list(a.defaults) + list(a.kw_defaults)  # default *values* reference symbols
+    out: list[str] = []
+    for ex in exprs:
+        if ex is None:
+            continue
+        for n in ast.walk(ex):
+            if isinstance(n, ast.Name):
+                out.append(n.id)
+            elif isinstance(n, ast.Attribute):
+                out.append(n.attr)
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+                # forward ref like "Config" or "list[Config]" -> the bare identifiers
+                out += re.findall(r"[A-Za-z_]\w*", n.value)
+    return out
+
+
+def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
+    """Load-context `Name` nodes in the function's own scope (not crossing nested
+    defs), excluding the callee of a call (already modelled as CALLS). These are
+    by-name value references — a symbol passed/assigned by name, or the bare-class
+    receiver of `Class.member`."""
+    out: list[ast.Name] = []
+
+    def rec(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) \
                     and id(child) not in call_funcs:
                 out.append(child)
             rec(child)
@@ -593,7 +732,7 @@ def _is_docstring(stmt: ast.stmt) -> bool:
 
 def _docstring(node: ast.AST) -> str | None:
     try:
-        doc = ast.get_docstring(node)
+        doc = ast.get_docstring(node)  # type: ignore[arg-type]
     except TypeError:
         return None
     if not doc:

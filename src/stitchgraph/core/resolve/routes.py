@@ -70,10 +70,28 @@ def _django_routes(tree, rel, ctx, nodes, edges):
         rid = f"{rel}::route:ANY {path}"
         nodes.append(Node(id=rid, kind=NodeKind.ROUTE, name=f"ANY {path}",
                           location=f"{rel}:{node.lineno}:0", roles=frozenset({"route"})))
-        if len(cands) == 1:
-            edges.append(Edge(src=rid, relation=Relation.ROUTES_TO, dst_symbol=handler,
-                              dst_id=cands[0], weight=0.85, provenance=Provenance.INFERRED,
-                              location=f"{rel}:{node.lineno}:0", source="heuristic"))
+        # Link to *all* same-named handlers: under-counting reachability would flag
+        # a live handler dead (destructive); over-counting only under-reports dead
+        # code (safe). Ambiguity is recorded on the edge (AMBIGUOUS, split weight).
+        _route_edges(edges, rid, handler, cands, node.lineno, rel, base_weight=0.85)
+
+
+def _route_edges(edges, rid, handler, cands, line, rel, base_weight):
+    """One ROUTES_TO edge per candidate handler. A single candidate is INFERRED at
+    full weight; several are AMBIGUOUS with the weight split across them."""
+    loc = f"{rel}:{line}:0"
+    if not cands:
+        return
+    if len(cands) == 1:
+        edges.append(Edge(src=rid, relation=Relation.ROUTES_TO, dst_symbol=handler,
+                          dst_id=cands[0], weight=base_weight,
+                          provenance=Provenance.INFERRED, location=loc, source="heuristic"))
+        return
+    w = round(base_weight / len(cands), 3)
+    for cid in cands:
+        edges.append(Edge(src=rid, relation=Relation.ROUTES_TO, dst_symbol=handler,
+                          dst_id=cid, weight=w, provenance=Provenance.AMBIGUOUS,
+                          location=loc, source="heuristic"))
 
 
 def _name_of(node):

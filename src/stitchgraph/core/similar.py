@@ -45,6 +45,7 @@ def _try_model2vec() -> bool:
     _M2V_TRIED = True
     try:
         from model2vec import StaticModel
+
         from .config import load_config
         model = load_config().embed_model or "minishlab/potion-base-8M"
         m = StaticModel.from_pretrained(model)
@@ -123,8 +124,10 @@ def find_similar(store: Store, snippet: str, limit: int = 10) -> list[tuple[str,
 
 
 def _dense(snippet, store, code, callees, limit) -> list[tuple[str, float]]:
+    embed = _EMBEDDER
+    assert embed is not None
     texts = [" ".join(_node_tokens(store, n, callees)) or n.name for n in code]
-    vecs = _EMBEDDER([snippet, *texts])
+    vecs = embed([snippet, *texts])
     q = vecs[0]
     scored = [(code[i].id, _dot_cos(q, vecs[i + 1])) for i in range(len(code))]
     scored.sort(key=lambda kv: kv[1], reverse=True)
@@ -132,7 +135,7 @@ def _dense(snippet, store, code, callees, limit) -> list[tuple[str, float]]:
 
 
 def _dot_cos(a, b) -> float:
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     na = math.sqrt(sum(x * x for x in a)) or 1.0
     nb = math.sqrt(sum(y * y for y in b)) or 1.0
     return dot / (na * nb)

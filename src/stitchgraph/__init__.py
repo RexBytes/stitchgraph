@@ -13,16 +13,37 @@ operations — same names, same params (design §3).
 from __future__ import annotations
 
 from .core import (
-    Edge, Node, NodeKind, Provenance, Relation, Result, Store, Urgency,
-    ok, refuse, registry,
+    Edge,
+    Node,
+    NodeKind,
+    Provenance,
+    Relation,
+    Result,
+    Store,
+    Urgency,
+    ok,
+    refuse,
+    registry,
 )
 from .core.operations import (
-    find_holes, find_similar, find_stale, find_symbol, get_callees, get_callers,
-    get_matrix, impact_of, ingest_trace, orient, reindex, risk, scan,
-    summarize_subsystem, trace_path,
+    find_holes,
+    find_similar,
+    find_stale,
+    find_symbol,
+    get_callees,
+    get_callers,
+    get_matrix,
+    impact_of,
+    ingest_trace,
+    orient,
+    reindex,
+    risk,
+    scan,
+    summarize_subsystem,
+    trace_path,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     # types

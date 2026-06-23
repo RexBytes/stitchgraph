@@ -20,6 +20,12 @@ from collections import Counter
 from itertools import combinations
 from pathlib import Path
 
+from .extract.treesitter import EXT_LANG
+
+# Source extensions stitchgraph indexes — git churn/co-change is computed over the
+# same files the graph models, so `risk()` works for polyglot repos, not just .py.
+_SRC_EXTS = tuple(sorted({".py", *EXT_LANG}))
+
 
 def toplevel(path: str | Path) -> str | None:
     try:
@@ -53,7 +59,7 @@ def _commits(path: str | Path, max_commits: int = 2000) -> list[list[str]]:
     commits: list[list[str]] = []
     for block in r.stdout.split("\x00"):
         files = [ln.strip() for ln in block.splitlines() if ln.strip()
-                 and ln.strip().endswith(".py")]
+                 and ln.strip().endswith(_SRC_EXTS)]
         if files:
             commits.append(files)
     return commits

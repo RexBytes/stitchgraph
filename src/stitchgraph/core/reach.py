@@ -12,22 +12,29 @@ under (max, x) with weights <= 1 products only shrink, so SCCs do not blow up.
 from __future__ import annotations
 
 from collections import defaultdict, deque
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
-from .model import Relation
+from .model import Edge, Relation
 from .store import Store
 
 # Relations that propagate "liveness" — used by reachability / dead-code.
+# EMITS/HANDLES carry liveness across a pub/sub boundary: if an emit is reachable,
+# the event's handlers can run, so they must not be flagged dead (precision over
+# recall). Omitting them flagged live event handlers stale — a symmetry gap with
+# the other decoupled edges (ROUTES_TO/RENDERS) that already propagate liveness.
 LIVENESS_RELATIONS = (Relation.CALLS, Relation.IMPORTS, Relation.INHERITS,
-                      Relation.ROUTES_TO, Relation.REFERENCES, Relation.RENDERS)
+                      Relation.ROUTES_TO, Relation.REFERENCES, Relation.RENDERS,
+                      Relation.EMITS, Relation.HANDLES)
 
 
-def _adjacency(store: Store, relations: Iterable[Relation]) -> dict[str, list[str]]:
+def _adjacency(store: Store, relations: Iterable[Relation],
+               edge_filter: Callable[[Edge], bool] | None = None) -> dict[str, list[str]]:
     adj: dict[str, list[str]] = defaultdict(list)
     rels = set(relations)
     for edge in store.resolved_edges():
         if edge.relation in rels and edge.dst_id is not None:
-            adj[edge.src].append(edge.dst_id)
+            if edge_filter is None or edge_filter(edge):
+                adj[edge.src].append(edge.dst_id)
     return adj
 
 
@@ -41,16 +48,21 @@ def _graphblas():
 
 
 def reachable_from(store: Store, seeds: Iterable[str],
-                   relations: Iterable[Relation] = LIVENESS_RELATIONS) -> set[str]:
+                   relations: Iterable[Relation] = LIVENESS_RELATIONS,
+                   edge_filter: Callable[[Edge], bool] | None = None) -> set[str]:
     """Forward closure: every node reachable from any seed.
 
     Uses the GraphBLAS sweep when available (design §2b), else this pure-Python
     frontier BFS — identical results, the BFS is the reference implementation.
+
+    `edge_filter` restricts which edges propagate liveness (e.g. EXTRACTED-only,
+    to tell a certain path from an inferred one); it forces the pure-Python sweep
+    since GraphBLAS works on the raw relation matrices.
     """
     gb = _graphblas()
-    if gb is not None:
+    if gb is not None and edge_filter is None:
         return gb.reachable_from(store, seeds, relations)
-    adj = _adjacency(store, relations)
+    adj = _adjacency(store, relations, edge_filter)
     seen: set[str] = set()
     frontier = deque(s for s in seeds if store.get_node(s) is not None)
     seen.update(frontier)

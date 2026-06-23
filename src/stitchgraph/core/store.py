@@ -47,7 +47,11 @@ CREATE TABLE IF NOT EXISTS edges (
     source      TEXT NOT NULL DEFAULT 'tree-sitter',
     file        TEXT NOT NULL DEFAULT ''     -- owning (source) file path
 );
+"""
 
+# Indexes are created *after* migration so they never reference a column an older
+# index file hasn't gained yet (e.g. `edges.file`).
+_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_nodes_file   ON nodes(file);
 CREATE INDEX IF NOT EXISTS idx_nodes_name   ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_edges_src    ON edges(src);
@@ -67,8 +71,10 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         with closing(self.conn.cursor()) as cur:
-            cur.executescript(_SCHEMA)
-        self._migrate()
+            cur.executescript(_SCHEMA)   # tables (IF NOT EXISTS)
+        self._migrate()                  # add columns an older file is missing
+        with closing(self.conn.cursor()) as cur:
+            cur.executescript(_INDEXES)  # indexes, now every column exists
         self.conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -76,12 +82,20 @@ class Store:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Add columns missing from an older index file (forward-compatible)."""
-        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(nodes)")}
-        for col, ddl in (("roles", "roles TEXT NOT NULL DEFAULT ''"),
-                         ("end_line", "end_line INTEGER")):
-            if col not in have:
-                self.conn.execute(f"ALTER TABLE nodes ADD COLUMN {ddl}")
+        """Add columns missing from an older index file (forward-compatible). Covers
+        both tables: `_row_to_edge` reads `source`/`file` unconditionally, so an index
+        built before those edge columns existed must gain them or edge reads fail."""
+        tables = {
+            "nodes": (("roles", "roles TEXT NOT NULL DEFAULT ''"),
+                      ("end_line", "end_line INTEGER")),
+            "edges": (("source", "source TEXT NOT NULL DEFAULT 'tree-sitter'"),
+                      ("file", "file TEXT NOT NULL DEFAULT ''")),
+        }
+        for table, cols in tables.items():
+            have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in cols:
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
     # -- context manager ---------------------------------------------------
     def __enter__(self) -> Store:
@@ -152,13 +166,38 @@ class Store:
             self._invalidate_dangling()
 
     def _resolve_worklist(self) -> None:
-        """Relink unresolved edges whose dst_symbol now matches a known node."""
+        """Relink unresolved edges whose dst_symbol now matches known node(s).
+
+        A unique match resolves in place. An *ambiguous* match (the name now resolves
+        to several nodes) over-approximates to every candidate as AMBIGUOUS edges —
+        mirroring the extractors (`python.py:_ref_edges`, `treesitter.py:_ref`) so the
+        incremental path never under-counts reachability and calls a live symbol dead
+        (precision over recall). This was the lone resolution site that linked to only
+        one candidate.
+        """
         self.conn.execute(
             """UPDATE edges
                   SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol LIMIT 1)
                 WHERE dst_id IS NULL
                   AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) = 1"""
         )
+        ambiguous = self.conn.execute(
+            """SELECT * FROM edges
+                WHERE dst_id IS NULL
+                  AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) >= 2"""
+        ).fetchall()
+        for row in ambiguous:
+            cands = [r["id"] for r in self.conn.execute(
+                "SELECT id FROM nodes WHERE name = ?", (row["dst_symbol"],)).fetchall()]
+            w = round(1.0 / len(cands), 3)
+            self.conn.execute("DELETE FROM edges WHERE id = ?", (row["id"],))
+            for cid in cands:
+                self.conn.execute(
+                    """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                         provenance, location, source, file)
+                       VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
+                    (row["src"], row["relation"], row["dst_symbol"], cid, w,
+                     row["location"], row["source"], row["file"]))
 
     def _invalidate_dangling(self) -> None:
         """Any resolved edge pointing at a now-missing node reverts to a hole."""

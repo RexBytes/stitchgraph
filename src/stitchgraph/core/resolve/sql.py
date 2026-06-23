@@ -47,17 +47,34 @@ class SqlResolver:
 def _link(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
           line: int, sql: str) -> None:
     try:
-        tree = sqlglot.parse_one(sql)
+        # parse() (not parse_one()) so a multi-statement string
+        # (`DELETE ...; SELECT ...`) is classified per statement, not as one Block
+        # that would mislabel the DML target as a read.
+        trees = sqlglot.parse(sql)
     except Exception:  # noqa: BLE001 — malformed/unsupported SQL, skip
         return
-    if tree is None:
-        return
+    for tree in trees:
+        if tree is not None:
+            _link_one(nodes, edges, fid, rel, line, tree)
+
+
+def _link_one(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
+              line: int, tree) -> None:
     writes = isinstance(tree, (exp.Insert, exp.Update, exp.Delete, exp.Create))
-    rel_kind = Relation.WRITES if writes else Relation.READS
+    # The DML *target* is a write; tables read by a nested SELECT/subquery are reads
+    # (e.g. `INSERT INTO archive SELECT ... FROM users` writes `archive`, reads
+    # `users`). The target lives in the statement's `this`; everything else is a read.
+    write_tables = ({id(t) for t in tree.this.find_all(exp.Table)}
+                    if writes and tree.this is not None else set())
+    # CTE names (`WITH recent AS (...)`) parse as Tables when referenced, but they
+    # are query-local aliases, not real db tables — skip them so they don't become
+    # phantom `db::` nodes that pollute trace_path / get_matrix.
+    cte_names = {cte.alias for cte in tree.find_all(exp.CTE) if cte.alias}
     for table in tree.find_all(exp.Table):
         name = table.name
-        if not name:
+        if not name or name in cte_names:
             continue
+        rel_kind = Relation.WRITES if id(table) in write_tables else Relation.READS
         tid = f"db::{name}"
         nodes.setdefault(tid, Node(id=tid, kind=NodeKind.DB_TABLE, name=name,
                                    location="db", roles=frozenset()))

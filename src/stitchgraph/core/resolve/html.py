@@ -41,23 +41,40 @@ class HtmlRouteResolver:
             tid = f"{rel}::template"
             nodes.append(Node(id=tid, kind=NodeKind.TEMPLATE, name=rel,
                               location=f"{rel}:1:0"))
-            for action, method in forms:
-                rid = route_by_path.get(action) or route_by_path.get(action.rstrip("/"))
-                if rid:
-                    edges.append(Edge(
-                        src=tid, relation=Relation.SUBMITS_TO, dst_symbol=action,
-                        dst_id=rid, weight=0.8, provenance=Provenance.INFERRED,
-                        location=f"{rel}:1:0", source="heuristic"))
+            for action, _method in forms:
+                rids = (route_by_path.get(action)
+                        or route_by_path.get(action.rstrip("/")) or [])
+                _submits_edges(edges, tid, action, rids, rel)
         return nodes, edges
 
 
-def _routes_by_path(nodes: list[Node]) -> dict[str, str]:
-    out: dict[str, str] = {}
+def _submits_edges(edges: list[Edge], src: str, action: str, rids: list[str],
+                   rel: str, base_weight: float = 0.8) -> None:
+    """One SUBMITS_TO edge per route sharing the path. Several routes can share a
+    path (e.g. GET and POST /x); link to *all* so `trace_path` can't miss the one
+    the form actually targets. A single match is INFERRED; many are AMBIGUOUS."""
+    if not rids:
+        return
+    if len(rids) == 1:
+        edges.append(Edge(src=src, relation=Relation.SUBMITS_TO, dst_symbol=action,
+                          dst_id=rids[0], weight=base_weight,
+                          provenance=Provenance.INFERRED, location=f"{rel}:1:0",
+                          source="heuristic"))
+        return
+    w = round(base_weight / len(rids), 3)
+    for rid in rids:
+        edges.append(Edge(src=src, relation=Relation.SUBMITS_TO, dst_symbol=action,
+                          dst_id=rid, weight=w, provenance=Provenance.AMBIGUOUS,
+                          location=f"{rel}:1:0", source="heuristic"))
+
+
+def _routes_by_path(nodes: list[Node]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
     for n in nodes:
         if n.kind == NodeKind.ROUTE:
             parts = n.name.split(" ", 1)  # "METHOD /path"
             if len(parts) == 2:
-                out.setdefault(parts[1], n.id)
+                out.setdefault(parts[1], []).append(n.id)
     return out
 
 

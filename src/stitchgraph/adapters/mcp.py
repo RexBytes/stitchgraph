@@ -51,7 +51,7 @@ def _make_tool(op: Operation, db: str):
                                       else str))
         for p in op.exposed_params()
     ]
-    tool.__signature__ = inspect.Signature(params)
+    tool.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
     tool.__name__ = op.name
     tool.__doc__ = op.summary
     return tool

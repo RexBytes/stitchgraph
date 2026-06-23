@@ -1,0 +1,119 @@
+{
+  "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md.",
+  "package": "stitchgraph",
+  "severity_weights": {"CRITICAL": 40, "HIGH": 10, "MEDIUM": 4, "LOW": 1, "NIT": 0.2},
+  "available_models": ["opus", "sonnet", "haiku"],
+  "tau": 2,
+  "coverage_target": 0.85,
+  "contract_coverage_estimate": 0.75,
+  "known_open_defects": 0,
+  "signals": {
+    "property_tests": {"file": "tests/test_properties.py", "needle": "hypothesis"},
+    "security": {"file": "tests/test_safety.py", "needles": ["read_only", "malformed", "traversal"]},
+    "docs": ["LIMITATIONS.md", "CONTRIBUTING.md", "README.md"]
+  },
+  "panels": [
+    {
+      "id": "A",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 3, "MEDIUM": 3, "LOW": 1},
+      "theme": "symmetry gaps: a liveness rule / ambiguity guard / type preserved in one extractor or resolver but missing in a sibling"
+    },
+    {
+      "id": "B",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 1},
+      "theme": "more symmetry gaps in the *other* siblings: tree-sitter twin of F4 (opus+sonnet converged), html/jsfetch route collapse, .py-only git risk"
+    },
+    {
+      "id": "C",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 2},
+      "theme": "deeper surfaces: tree-sitter callback-role twin of _apply_callback_roles, single-arg signal .connect(), SQL CTE phantom table"
+    },
+    {
+      "id": "D",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 2},
+      "theme": "incremental/edge surfaces: _resolve_worklist ambiguity (opus+sonnet converged), tree-sitter recursion self-edge, malformed-coverage crash"
+    },
+    {
+      "id": "E",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "LOW": 2, "NIT": 1},
+      "theme": "untested language path: C/C++ functions silently dropped (return type read before declarator); plus exported-method over-seeding for Java/C#, INSERT...SELECT read/write label, jsfetch route guard"
+    },
+    {
+      "id": "F",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 2},
+      "theme": "Ruby paren-less calls dropped (all three converged); TS export{} re-export not seeded; trace_path vacuous-ok; SQL multi-statement label"
+    },
+    {
+      "id": "G",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 2},
+      "theme": "no HIGH, haiku clean — metrics/data-side polish: parallel-edge dedup (fan_in/get_matrix), get_matrix cells, ORM relationship() phantom column"
+    },
+    {
+      "id": "H",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {},
+      "theme": "CLEAN — all three models returned FINDINGS: none; verified every recent fix for regressions, the precision invariant on adversarial input, the envelope contract, and GraphBLAS agreement"
+    },
+    {
+      "id": "I",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "LOW": 1},
+      "theme": "confirmation gate caught a real one: new Foo() constructor calls not edged in JS/TS/C#/C++ (live class flagged dead) — eight panels missed it; plus read-only global false data_loop. Streak resets."
+    },
+    {
+      "id": "J",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 3},
+      "theme": "the use-form class, fully exposed: bare-name references not modeled (opus, Python+JS), PHP new and Ruby .new constructors missed by the Panel I fix (sonnet). One general _direct_refs/_direct_names pass now models ALL by-name references, closing the whole class. haiku read these as the documented advisory limitation."
+    },
+    {
+      "id": "K",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 1},
+      "theme": "tail of the use-form class + a self-inflicted regression: Python signature type annotations not modeled (opus HIGH); the Panel J _direct_refs id()-skip was ineffective on tree-sitter wrappers, spurious REFERENCES self-loops + callee double-edges inflating fan_in (opus+sonnet converged, MEDIUM). haiku clean."
+    },
+    {
+      "id": "L",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 2},
+      "theme": "constructing a class didn't reach its constructor -> constructions in __init__ flagged dead (haiku HIGH); Python twins of Panel K's tree-sitter metric fixes — CALLS+REFERENCES double-edge (opus) and REFERENCES self-loop (sonnet) — now fixed language-agnostically at the dedup boundary. (sonnet's slot hit a 500; finding salvaged from transcript and fixed.)"
+    },
+    {
+      "id": "M",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 2, "MEDIUM": 3},
+      "theme": "PHP public class flagged dead (opus HIGH). Third-party 'sonnet' (core-only env) found the blind spot the all-extras agents miss: config loaded from cwd not the indexed root (HIGH); ingest_trace claims success grounding nothing (MEDIUM); edges-table migration + index-ordering on old DBs (MEDIUM); core-only CI red — unguarded hypothesis/tree-sitter test imports (MEDIUM). haiku clean."
+    },
+    {
+      "id": "N",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1},
+      "theme": "opus+haiku CONVERGED: a class/fn used only as a Python parameter default value (def f(x=Strategy)) was flagged dead — func.args.defaults/kw_defaults weren't walked (the 3rd instance of Python-walks-body-not-signature, after Panel K annotations). _annotation_names -> _signature_ref_names now covers defaults too. Third-party 'sonnet' (core-only) clean, re-confirming Panel M's fixes."
+    },
+    {
+      "id": "O",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1},
+      "theme": "lightest panel since clean H: opus+haiku CONVERGED on one narrow MEDIUM — a metaclass used only via class X(metaclass=Meta) flagged dead (_walk_scope edged child.bases but not child.keywords). Now walks class-def keywords. Third-party 'sonnet' (core-only) clean for the 2nd straight panel."
+    },
+    {
+      "id": "P",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1},
+      "theme": "the last un-walked Python scope: references in the class *body* itself (attribute assignments `h = Helper`, dispatch tables `TABLE = {\"a\": handle_a}`, class-level annotations) were never extracted — _walk_scope edged class bases/keywords/ctors and recursed into method bodies, but never the class body's own statements -> live symbols flagged dead (opus HIGH). Now walks class-body Load names via _direct_names, attributed to the class node (matching tree-sitter, which walks the whole class node). haiku clean; third-party 'sonnet' (core-only) clean for the 3rd straight panel."
+    },
+    {
+      "id": "Q",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"CRITICAL": 1, "HIGH": 1, "MEDIUM": 1},
+      "theme": "the confirmation gate caught a CRITICAL: a symbol used only inside a function-LOCAL class/closure was flagged dead — _def_node never descended into function bodies, so function-local defs were never nodes, yet _walk_scope emitted edges from their phantom qualnames that couldn't reach (opus, Python<->tree-sitter asymmetry, the un-walked NESTED scope after class bodies). _def_node now models nested defs as real nodes + a function->nested containment edge (a local def is live iff its enclosing fn is reachable; fixes decorator-registered @app.command handlers). Third-party 'sonnet' (core-only): public re-exports from __init__ (`from .api import Public`) weren't export roots -> live public API flagged dead (HIGH); version still 0.3.0 not 1.0.0 (MEDIUM, deferred to the manual release step). haiku clean. Streak resets."
+    }
+  ]
+}

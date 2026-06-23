@@ -117,7 +117,7 @@ def transitive_fan_in(store: Store,
     # `plus` on BOOL is OR (always 1) rather than a count.
     counts = reach.dup(dtype="INT64").reduce_columnwise(gb.monoid.plus).new()
     coo = counts.to_coo()
-    return {adj.ids[i]: int(v) for i, v in zip(coo[0].tolist(), coo[1].tolist())}
+    return {adj.ids[i]: int(v) for i, v in zip(coo[0].tolist(), coo[1].tolist(), strict=False)}
 
 
 def pagerank(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS,
@@ -148,13 +148,13 @@ def pagerank(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS,
         new(gb.binary.plus) << spread.apply(gb.binary.times, damping)
         rank = new
     scores = rank.to_coo()
-    return {adj.ids[i]: float(v) for i, v in zip(scores[0].tolist(), scores[1].tolist())}
+    return {adj.ids[i]: float(v) for i, v in zip(scores[0].tolist(), scores[1].tolist(), strict=False)}
 
 
 def _row_scale(A, inv_vec, n):
     """Return A with each row i scaled by inv_vec[i] (diag(inv) @ A)."""
     D = Matrix(float, n, n)
     coo = inv_vec.to_coo()
-    for i, v in zip(coo[0].tolist(), coo[1].tolist()):
+    for i, v in zip(coo[0].tolist(), coo[1].tolist(), strict=False):
         D[i, i] = v
     return D.mxm(A, semiring.plus_times[float]).new()

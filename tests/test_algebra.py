@@ -20,7 +20,8 @@ def _chain_graph() -> sg.Store:
         store.add_node(Node(f"m.py::{name}", NodeKind.FUNCTION, name))
     def call(s, d):
         store.add_edge(Edge(f"m.py::{s}", Relation.CALLS, d, dst_id=f"m.py::{d}"))
-    call("a", "b"); call("b", "c"); call("c", "d"); call("b", "e")
+    for s, d in [("a","b"),("b","c"),("c","d"),("b","e")]:
+        call(s, d)
     store.commit()
     return store
 
@@ -33,7 +34,8 @@ def _pure_reach(store, seeds):
         nxt = frontier.pop()
         for w in adj.get(nxt, ()):
             if w not in seen:
-                seen.add(w); frontier.append(w)
+                seen.add(w)
+                frontier.append(w)
     return seen
 
 

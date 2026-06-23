@@ -34,8 +34,12 @@ class JsFetchResolver:
     def resolve(self, ctx: ResolveContext) -> tuple[list, list[Edge]]:
         if not _HAVE_TS:
             return [], []
-        routes = {n.name.split(" ", 1)[-1]: n.id
-                  for n in ctx.nodes if n.kind == NodeKind.ROUTE}
+        routes: dict[str, list[str]] = {}
+        for n in ctx.nodes:
+            if n.kind == NodeKind.ROUTE:
+                parts = n.name.split(" ", 1)  # "METHOD /path" (guard like html.py)
+                if len(parts) == 2:
+                    routes.setdefault(parts[1], []).append(n.id)
         if not routes:
             return [], []
         edges: list[Edge] = []
@@ -89,13 +93,23 @@ def _scan_calls(func, src, rel, owner, routes, ids, edges, parent):
                 continue
             if c.type == "call_expression":
                 path = _http_path(c, src)
-                if path is not None:
-                    rid = routes.get(path) or routes.get(path.rstrip("/"))
-                    if rid and owner:
+                if path is not None and owner:
+                    rids = routes.get(path) or routes.get(path.rstrip("/")) or []
+                    # Link to *all* routes sharing the path (e.g. GET and POST /x),
+                    # never just one, so trace_path can't miss the real target.
+                    loc = f"{rel}:{c.start_point[0] + 1}:0"
+                    if len(rids) == 1:
                         edges.append(Edge(
                             src=owner, relation=Relation.SUBMITS_TO, dst_symbol=path,
-                            dst_id=rid, weight=0.75, provenance=Provenance.INFERRED,
-                            location=f"{rel}:{c.start_point[0] + 1}:0", source="heuristic"))
+                            dst_id=rids[0], weight=0.75, provenance=Provenance.INFERRED,
+                            location=loc, source="heuristic"))
+                    elif len(rids) > 1:
+                        w = round(0.75 / len(rids), 3)
+                        for rid in rids:
+                            edges.append(Edge(
+                                src=owner, relation=Relation.SUBMITS_TO, dst_symbol=path,
+                                dst_id=rid, weight=w, provenance=Provenance.AMBIGUOUS,
+                                location=loc, source="heuristic"))
             rec(c)
     rec(func)
 

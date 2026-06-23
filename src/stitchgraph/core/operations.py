@@ -14,12 +14,17 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from .entrypoints import EntryPointDetector, PythonLibraryDetector
 from .envelope import Provenance, Result, Urgency, ok, refuse
 from .model import NodeKind, Relation
 from .reach import (
-    best_path, fan_in, fan_out, reachable_from, reverse_reachable_from,
+    best_path,
+    fan_in,
+    fan_out,
+    reachable_from,
+    reverse_reachable_from,
     strongly_connected_components,
 )
 from .store import Store
@@ -160,7 +165,7 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     set is unreliable, so results are low-confidence + needs_review by contract
     (a false 'dead' is destructive — design principle 4).
     """
-    detector = detector or _default_detector()
+    detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     all_ids = set(store.all_node_ids())
     reachable = reachable_from(store, seeds)
@@ -225,7 +230,9 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     from . import algebra
     from .config import load_config
 
-    metric = load_config().hub_metric
+    # Config from the *indexed* root (stored at reindex), not the process cwd — an
+    # operation run from another directory must still honour the project's config.
+    metric = load_config(store.get_meta("root")).hub_metric
     if algebra.HAS_GRAPHBLAS and metric != "fan_in":
         if metric == "pagerank":
             ranks = algebra.pagerank(store)
@@ -275,8 +282,11 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
         return refuse("source or sink is not a unique/known symbol", confidence=0.0)
     found = best_path(store, src.id, dst.id)
     if found is None:
+        # A genuine "no path" is a refusal (ok=False), not a vacuous empty success:
+        # passing result=[] would make `refuse` set ok=True (result is not None) and
+        # let callers that check `.ok` believe a path was found.
         return refuse(f"no path from {src.id} to {dst.id} in the graph",
-                      confidence=0.0, result=[])
+                      confidence=0.0)
     path, conf = found
     prov = Provenance.EXTRACTED if conf >= 0.99 else Provenance.INFERRED
     return ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
@@ -286,21 +296,31 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
 def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
     diagnosis: wiring/structure defects only, each ranked by liveness."""
-    detector = detector or _default_detector()
+    detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
     # data loops, god objects) don't — so report what we can even without roots.
     reachable = reachable_from(store, seeds) if seeds else set()
+    # A stub only shouts RED when its liveness rests on EXTRACTED edges; if it is
+    # reachable only through an INFERRED/AMBIGUOUS hop (a heuristic route, an
+    # ambiguous name) the liveness itself is uncertain, so the provenance ceiling
+    # caps it at ORANGE (envelope §7: nothing low-confidence shouts red).
+    certain = (reachable_from(store, seeds,
+                              edge_filter=lambda e: e.provenance is Provenance.EXTRACTED)
+               if seeds else set())
     issues: list[dict] = []
 
     # Live stubs on a reachable path: a NotImplementedError that actually runs.
     for node in store.stub_nodes():
         live = node.id in reachable
+        certain_live = node.id in certain
         issues.append({
             "kind": "live_stub" if live else "stub",
             "node": node.id, "location": node.location,
-            "urgency": Urgency.RED.value if live else Urgency.GREEN.value,
-            "reason": "unimplemented body on a reachable path" if live
+            "urgency": (Urgency.RED.value if certain_live
+                        else Urgency.ORANGE.value if live else Urgency.GREEN.value),
+            "reason": "unimplemented body on a reachable path" if certain_live
+            else "unimplemented body on an inferred (heuristic) path" if live
             else "unimplemented body, not reachable",
         })
 
@@ -390,6 +410,14 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
                       "JSON, LCOV .info, Go coverprofile)", confidence=0.0)
     root = store.get_meta("root") or "."
     hits = runtime.hit_node_ids(store, covmap, root)
+    if not hits:
+        # The file parsed but nothing it covers maps to an indexed symbol (wrong
+        # project, an unindexed language, or stale line ranges). Grounding nothing is
+        # not a success: don't set has_runtime (which would wrongly raise find_stale
+        # confidence as if liveness were trace-grounded) — refuse for review instead.
+        return refuse(f"coverage in '{trace}' grounded no indexed symbols "
+                      "(its files/lines map to no node) — not marking runtime",
+                      confidence=0.1, files=len(covmap), executed=0)
     for nid in hits:
         store.add_role(nid, "runtime")
     store.set_meta("has_runtime", "1")
@@ -413,7 +441,8 @@ def risk(store: Store, path: str = ".") -> Result:
 
     churn = gitrisk.churn(path)
     if not churn:
-        return refuse("no git history found for .py files", confidence=0.0, result={})
+        return refuse("no git history found for indexed source files",
+                      confidence=0.0, result={})
 
     # Node files are relative to the indexed root; git paths to the repo root.
     # Translate node files into git-relative paths so the two spaces line up.
@@ -426,7 +455,7 @@ def risk(store: Store, path: str = ".") -> Result:
         f = to_git(nid.split("::", 1)[0])
         file_centrality[f] = file_centrality.get(f, 0.0) + ranking.get(nid, 0.0)
 
-    hotspots = []
+    hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():
         cen = file_centrality.get(f, 0.0)
         if cen <= 0:
@@ -472,6 +501,7 @@ def _connected_file_pairs(store: Store, to_git) -> set[frozenset[str]]:
 def _git_path_mapper(store: Store, path: str):
     """Map an indexed-root-relative file to a repo-root-relative (git) path."""
     import os
+
     from . import gitrisk
 
     root = store.get_meta("root")
@@ -508,7 +538,7 @@ def summarize_subsystem(store: Store, path: str) -> Result:
 
     fi = fan_in(store)
     hubs = sorted((n.id for n in members), key=lambda i: fi.get(i, 0), reverse=True)
-    public = sorted(inbound, key=inbound.get, reverse=True)
+    public = sorted(inbound, key=lambda k: inbound[k], reverse=True)
     payload = {
         "node_counts": counts,
         "read_first": [h.split("::", 1)[-1] for h in hubs[:8]],
@@ -543,11 +573,15 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
             confidence=0.0, node_count=len(members))
 
     idx = {nid: i for i, nid in enumerate(members)}
-    cells = [
-        {"src": idx[e.src], "dst": idx[e.dst_id], "w": round(e.weight, 2)}
-        for e in store.resolved_edges(rel)
-        if e.src in idx and e.dst_id in idx
-    ]
+    # One cell per (src, dst): collapse repeated call sites to a single edge (keep the
+    # max weight) so the sparse list and `density` don't double-count — the dense grid
+    # is already idempotent.
+    cell_w: dict[tuple[int, int], float] = {}
+    for e in store.resolved_edges(rel):
+        if e.src in idx and e.dst_id in idx:
+            k = (idx[e.src], idx[e.dst_id])
+            cell_w[k] = max(cell_w.get(k, 0.0), round(e.weight, 2))
+    cells = [{"src": s, "dst": d, "w": w} for (s, d), w in sorted(cell_w.items())]
     labels = [m.split("::", 1)[-1] for m in members]
     payload = {
         "relation": rel.value,
@@ -559,8 +593,8 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     if len(members) <= 12:
         grid = [[0] * len(members) for _ in members]
         for c in cells:
-            grid[c["src"]][c["dst"]] = 1
-        payload["grid"] = grid
+            grid[int(c["src"])][int(c["dst"])] = 1
+        payload["grid"] = grid  # type: ignore[assignment]
     return ok(payload, density=f"{len(cells)}/{len(members)**2}")
 
 
@@ -584,6 +618,7 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         from .resolve.jedi_resolver import JediResolver
         resolvers.append(JediResolver())
     nodes, edges = run_resolvers(path, nodes, edges, resolvers)
+    edges = _dedup_edges(edges)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     # Full rebuild: the extractor already resolved every edge against the complete
     # symbol table, so bulk-insert (nodes first) and keep those resolutions rather
@@ -605,16 +640,55 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
 
 
 # --------------------------------------------------------------------------
+def _dedup_edges(edges: list) -> list:
+    """Collapse parallel resolved edges (same src, relation, dst_id) to one, keeping
+    the highest weight. Two call sites to the same target — or the jedi resolver
+    re-confirming an AST edge under `--precise` — otherwise double-count direct-degree
+    metrics (fan_in/fan_out, the `fan_in`-fallback hubs) and `get_matrix` cells. The
+    boolean reachability/GraphBLAS layer already dedups, so this aligns the adjacency
+    store with it. Unresolved holes (dst_id is None) are distinct reference sites and
+    are kept as-is.
+
+    A CALLS edge also subsumes a REFERENCES edge to the *same* (src, dst): a called
+    symbol is already a dependency, so the by-name REFERENCES is redundant and would
+    double-count fan_in / pagerank (a function that both calls and names/annotates a
+    class). The strong relation wins. A REFERENCES *self-loop* (a def naming itself)
+    is likewise dropped — it carries no liveness/impact meaning and only inflates
+    degree metrics (unlike a recursive CALLS self-loop, which is kept)."""
+    best: dict[tuple, Any] = {}
+    order: list[tuple] = []
+    holes: list = []
+    for e in edges:
+        if e.dst_id is None:
+            holes.append(e)
+            continue
+        key = (e.src, e.relation, e.dst_id)
+        if key not in best:
+            best[key] = e
+            order.append(key)
+        elif e.weight > best[key].weight:
+            best[key] = e
+    called = {(e.src, e.dst_id) for e in best.values() if e.relation is Relation.CALLS}
+
+    def _drop(e) -> bool:  # a redundant or self-looping REFERENCES edge
+        return e.relation is Relation.REFERENCES and (
+            e.src == e.dst_id or (e.src, e.dst_id) in called)
+
+    return holes + [best[k] for k in order if not _drop(best[k])]
+
+
 def _resolve_one(store: Store, name: str):
     nodes = store.nodes_by_name(name)
     return nodes[0] if len(nodes) == 1 else None
 
 
-def _default_detector() -> PythonLibraryDetector:
+def _default_detector(store: Store) -> PythonLibraryDetector:
     """Build the detector from `stitchgraph.toml` — the entry-point override is
-    the trust escape hatch (design §4)."""
+    the trust escape hatch (design §4). Config is loaded from the *indexed* root
+    (stored at reindex), not the process cwd, so entry-point overrides / test
+    inclusion follow the project even when the operation runs from elsewhere."""
     from .config import load_config
-    cfg = load_config()
+    cfg = load_config(store.get_meta("root"))
     return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests)
 
 

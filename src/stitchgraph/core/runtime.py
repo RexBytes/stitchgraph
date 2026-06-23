@@ -50,7 +50,13 @@ def _parse_json(text: str, base: str) -> dict[str, set[int]]:
     out: dict[str, set[int]] = {}
     for rel, info in (data.get("files") or {}).items():
         lines = info.get("executed_lines") or []
-        out[os.path.normpath(os.path.join(base, rel))] = set(lines)
+        # Coerce to ints and drop anything non-integer: a malformed/hand-crafted
+        # report must not crash the later `lo <= ln <= end` range test (the LCOV and
+        # Go parsers already cast defensively; JSON was the lone gap).
+        out[os.path.normpath(os.path.join(base, rel))] = {
+            int(ln) for ln in lines if isinstance(ln, int)
+            or (isinstance(ln, str) and ln.strip().lstrip("-").isdigit())
+        }
     return out
 
 

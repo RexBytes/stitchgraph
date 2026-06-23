@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import stitchgraph as sg
 from stitchgraph.core.entrypoints import ConfigOnlyDetector
-from stitchgraph.core.model import Edge, Node, NodeKind, Provenance, Relation
+from stitchgraph.core.model import Edge, Node, NodeKind, Relation
 
 
 def _node(path: str, qname: str, kind=NodeKind.FUNCTION, **kw) -> Node:

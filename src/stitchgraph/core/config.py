@@ -41,6 +41,15 @@ def find_config(start: str | Path | None = None) -> Path | None:
 
 
 def load_config(start: str | Path | None = None) -> Config:
+    cfg = _load(start)
+    # Apply the review threshold to the envelope so `[review] threshold` actually
+    # gates needs_review (the documented promise in stitchgraph.toml.example).
+    from .envelope import set_review_threshold
+    set_review_threshold(cfg.threshold)
+    return cfg
+
+
+def _load(start: str | Path | None) -> Config:
     path = find_config(start)
     if path is None:
         return Config()

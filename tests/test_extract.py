@@ -156,7 +156,8 @@ def test_store_migration_adds_columns(tmp_path):
         "CREATE TABLE edges(id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT, "
         "relation TEXT, dst_symbol TEXT, dst_id TEXT, weight REAL, provenance TEXT, "
         "location TEXT, source TEXT, file TEXT);")
-    con.commit(); con.close()
+    con.commit()
+    con.close()
     store = sg.Store(str(db))  # must not raise; migrates columns
     cols = {r[1] for r in store.conn.execute("PRAGMA table_info(nodes)")}
     assert {"roles", "end_line"} <= cols
