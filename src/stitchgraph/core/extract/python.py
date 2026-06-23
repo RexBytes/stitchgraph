@@ -176,6 +176,75 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
                              node.lineno, leaf=alias.name, internal=internal)
 
     _walk_scope(proj, rel, tree, parent="", class_qual=None)
+    _global_state(proj, rel, tree)
+
+
+def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
+    """Model mutable module-level state for data-loop detection (design §6.F).
+
+    A name is tracked only if some function declares it `global` (intent to
+    rebind shared state) — this targets the feedback/accumulator pattern and
+    avoids flooding the graph with every constant. Emits WRITES (writer -> var)
+    and READS (reader -> var) so a function that both reads and writes a global
+    forms a data feedback loop.
+    """
+    mutable: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Global):
+            mutable.update(node.names)
+    if not mutable:
+        return
+    for name in mutable:
+        proj.nodes.append(Node(id=f"var::{rel}::{name}", kind=NodeKind.VARIABLE,
+                               name=name, location=f"{rel}:0:0"))
+    for func, fid in _iter_funcs(tree, rel):
+        decl: set[str] = set()
+        reads: set[str] = set()
+        for child in _direct_nodes(func):
+            if isinstance(child, ast.Global):
+                decl.update(child.names)
+            elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) \
+                    and child.id in mutable:
+                reads.add(child.id)
+        for name in decl & mutable:
+            proj.edges.append(Edge(src=fid, relation=Relation.WRITES, dst_symbol=name,
+                                   dst_id=f"var::{rel}::{name}", weight=1.0,
+                                   provenance=Provenance.EXTRACTED,
+                                   location=f"{rel}:{func.lineno}:0", source="ast"))
+        for name in reads - decl:  # pure reads (writers already covered above)
+            proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
+                                   dst_id=f"var::{rel}::{name}", weight=1.0,
+                                   provenance=Provenance.EXTRACTED,
+                                   location=f"{rel}:{func.lineno}:0", source="ast"))
+        for name in reads & decl:  # read-and-write -> emit both (feedback)
+            proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
+                                   dst_id=f"var::{rel}::{name}", weight=1.0,
+                                   provenance=Provenance.EXTRACTED,
+                                   location=f"{rel}:{func.lineno}:0", source="ast"))
+
+
+def _iter_funcs(tree: ast.Module, rel: str):
+    def walk(node, parent):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                qual = f"{parent}.{child.name}" if parent else child.name
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    yield child, Node.make_id(rel, qual)
+                yield from walk(child, qual)
+    yield from walk(tree, "")
+
+
+def _direct_nodes(func: ast.AST):
+    """All descendant nodes in a function's own scope (not crossing nested defs)."""
+    def rec(node):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            yield child
+            yield from rec(child)
+    for stmt in getattr(func, "body", []):
+        yield from rec(stmt)
+        yield stmt
 
 
 def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,

@@ -39,7 +39,7 @@ spec and section references.
 | Cross-language | SQL resolver (sqlglot → table, READS/WRITES) | ✅ Done | query string literals |
 | Cross-language | ORM resolver (model → table/column, MAPS_TO) | ✅ Done | SQLAlchemy/Django; converges with SQL |
 | Cross-language | Full-stack trace (form → route → handler → table) | ✅ Done | the "gem", end to end |
-| **Data flow** | Data-loop detection (🟡) | ⬜ To do | needs READS/WRITES at var granularity |
+| **Data flow** | Data-loop detection (🟡) | ✅ Done | mutable-global feedback; surfaced in `scan` |
 | **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`ingest_trace`) | ✅ Done | coverage.json → live seeds, +confidence |
 | **Semantic** | `find_similar` retrieval | ✅ Done | token similarity; embedding model = drop-in |
@@ -48,7 +48,7 @@ spec and section references.
 
 ## Test coverage
 
-48 tests (`tests/`): envelope, store + incremental, extractor, operations,
+51 tests (`tests/`): envelope, store + incremental, extractor, operations,
 config, `get_matrix`, cross-language resolvers (routes/HTML/SQL/ORM) + full-stack
 trace, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
 reference), git-risk fusion, runtime-trace fusion, and a precision/recall eval

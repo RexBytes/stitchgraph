@@ -258,13 +258,9 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     diagnosis: wiring/structure defects only, each ranked by liveness."""
     detector = detector or _default_detector()
     seeds = detector.detect(store)
-    if not seeds:
-        return refuse(
-            "no entry points known — liveness can't be ranked, so issues can't "
-            "be prioritised; run reindex on a project with detectable roots",
-            confidence=0.1, provenance=Provenance.AMBIGUOUS, result=[])
-
-    reachable = reachable_from(store, seeds)
+    # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
+    # data loops, god objects) don't — so report what we can even without roots.
+    reachable = reachable_from(store, seeds) if seeds else set()
     issues: list[dict] = []
 
     # Live stubs on a reachable path: a NotImplementedError that actually runs.
@@ -300,6 +296,16 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             "reason": f"circular dependency among {len(comp)} symbols",
         })
 
+    # Data loops: feedback through mutable global state (design §6.F).
+    from .dataloop import find_data_loops
+    for comp in find_data_loops(store):
+        var = next((c for c in comp if c.startswith("var::")), comp[0])
+        issues.append({
+            "kind": "data_loop", "node": var, "members": comp,
+            "urgency": Urgency.ORANGE.value,
+            "reason": f"data feedback loop through state '{var.rsplit('::', 1)[-1]}'",
+        })
+
     # God objects: high fan-in AND fan-out.
     fi, fo = fan_in(store), fan_out(store)
     for nid in set(fi) & set(fo):
@@ -318,6 +324,9 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
              red=sum(i["urgency"] == "red" for i in issues),
              orange=sum(i["urgency"] == "orange" for i in issues))
     res.urgency = Urgency(top) if issues else Urgency.GREEN
+    if not seeds:
+        res.add_reason("no entry points found — liveness-ranked issues (stubs, "
+                       "holes) are omitted; only structural issues are shown")
     return res
 
 
