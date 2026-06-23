@@ -1253,3 +1253,101 @@ def test_nested_class_base_expression_is_attributed_to_enclosing(tmp_path):
         reached = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.CALLS)} \
             | {(e.src, e.dst_id) for e in store.resolved_edges(Relation.REFERENCES)}
         assert ("pkg/m.py::build", "pkg/m.py::make_base") in reached
+
+
+# -- Panel T: the nested-scope class, remaining hosts (systematic audit) --------
+# A def can be nested in: a function body (Panel Q), a class body (Panel P), a
+# control-flow block, or a function-expression/arrow. The last two were unmodeled
+# -> live code flagged dead. These pin every host in both extractors.
+
+# Panel T / haiku (CRITICAL): Python def inside a control-flow block
+@pytest.mark.parametrize("block", [
+    "if True:\n        {d}",
+    "for _ in range(1):\n        {d}",
+    "while True:\n        {d}\n        break",
+    "try:\n        {d}\n    except Exception:\n        pass",
+    "with open('x') as _f:\n        {d}",
+])
+def test_python_def_inside_control_flow_block_is_live(tmp_path, block):
+    """`_def_node`/`_walk_scope` only walked a function's *direct* body, so a def
+    nested in an `if`/`for`/`while`/`try`/`with` was never modeled as a node, yet
+    `_walk_scope` emitted edges from its qualname -> phantom source -> a symbol used
+    only there was flagged dead. Now both look *through* control flow via
+    `_scope_defs` (the block adds no qual level)."""
+    inner = "def inner():\n            return helper()"
+    body = block.format(d=inner)
+    src = (
+        "def helper():\n    return 1\n"
+        f"def process():\n    {body}\n    return inner()\n"
+    )
+    _mk(tmp_path, {"pkg/__init__.py": '__all__ = ["process"]\nfrom .m import process\n',
+                   "pkg/m.py": src})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale                       # reached via process->inner->helper
+        assert "pkg/m.py::process.inner" in set(store.all_node_ids())  # modeled as a node
+
+
+def test_python_class_inside_control_flow_block_is_live(tmp_path):
+    """The control-flow gap applied to a nested *class* too. A class defined in an
+    `if` inside a live function, referencing `Tool` in its class body, is live iff the
+    function is reachable -> `Tool` must stay live (containment edge + Panel P
+    class-body walk, both now reaching through control flow)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["build"]\nfrom .m import build\n',
+        "pkg/m.py": (
+            "class Tool:\n    pass\n"
+            "def build():\n"
+            "    if True:\n        class Local:\n            x = Tool\n"
+            "    return Local\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Tool" not in stale                          # referenced in the nested class body
+        assert "pkg/m.py::build.Local" in set(store.all_node_ids())  # nested class modeled
+
+
+def test_python_control_flow_nested_def_body_does_not_leak_to_enclosing(tmp_path):
+    """The body-leak fix (Panel R) must still hold for control-flow-nested defs: a
+    call inside the nested def's body stays on the nested def, not the enclosing fn."""
+    from stitchgraph.core.model import Relation
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/m.py": (
+            "def callee():\n    return 1\n"
+            "def process():\n    if True:\n        def inner():\n            return callee()\n"
+            "    return inner()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.CALLS)}
+        assert ("pkg/m.py::process.inner", "pkg/m.py::callee") in calls   # correct scope
+        assert ("pkg/m.py::process", "pkg/m.py::callee") not in calls     # not leaked up
+
+
+# Panel T / opus (CRITICAL): tree-sitter def inside a JS/TS arrow function
+def test_tree_sitter_def_inside_arrow_function_is_live(tmp_path):
+    """The arrow-function declarator branch created the node but never recursed into
+    the arrow body, so a def nested in an arrow (pervasive in JS/TS) was never
+    modeled -> a symbol used only there was flagged dead. Now it recurses + threads
+    the containment edge, mirroring the regular-def branch."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.ts": (
+            "function privHelper(){ return 1; }\n"
+            "export const handler = () => {\n"
+            "  function worker(){ return privHelper(); }\n"
+            "  return worker();\n"
+            "};\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "privHelper" not in stale                    # handler->worker->privHelper
+        assert "app.ts::handler.worker" in set(store.all_node_ids())  # nested def modeled

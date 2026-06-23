@@ -413,10 +413,20 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 roles = {"exported"} if exported else set()
                 if _is_test_name(name):
                     roles.add("test")
-                nodes.append(Node(id=f"{rel}::{qual}", kind=F, name=name,
+                cid = f"{rel}::{qual}"
+                nodes.append(Node(id=cid, kind=F, name=name,
                                   location=_loc(rel, val), end_line=val.end_point[0] + 1,
                                   roles=frozenset(roles)))
-                defs.append((rel, f"{rel}::{qual}", val, lang))
+                defs.append((rel, cid, val, lang))
+                if enclosing_func is not None:
+                    contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                # Recurse into the arrow/function-expression body so defs nested inside
+                # it become real nodes with a containment edge — without this, a def in
+                # an arrow (`const h = () => { function w(){...} }`, pervasive in JS/TS)
+                # is never modeled and a symbol used only there is flagged dead (the
+                # regular-def branch above already does this; this is its arrow twin).
+                _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                         False, is_test, contains=contains, enclosing_func=cid)
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)

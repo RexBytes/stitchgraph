@@ -145,8 +145,32 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                     if bound != "*" and not bound.startswith("_"):
                         proj.exported_names.add(bound)
 
-    for node in ast.iter_child_nodes(tree):
+    for node in _scope_defs(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
+
+
+def _scope_defs(scope: ast.AST) -> list[ast.AST]:
+    """Function/class defs that belong to `scope`'s own namespace — looking *through*
+    control-flow blocks (`if`/`elif`/`else`/`for`/`while`/`try`/`except`/`finally`/
+    `with`/`match`), which do NOT create a scope in Python, but NOT crossing into a
+    nested def/class (each owns its own nested defs). So in
+    `def f():\n    if c:\n        def g(): ...` this yields `g` for f's scope, at qual
+    `f.g` (control flow adds no qual level). Without it, a def nested in a control-flow
+    block is never modeled as a node, yet `_walk_scope` (which walks the same way) emits
+    edges from its qualname — a phantom source that can't reach, so a symbol used only
+    there is flagged dead (live code as dead — the cardinal sin). `_def_node` and
+    `_walk_scope` MUST traverse identically so edge-source ids line up with node ids."""
+    out: list[ast.AST] = []
+
+    def rec(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.append(child)  # a scope-level def; its own nested defs recurse later
+            else:
+                rec(child)         # look through control flow (and inert expressions)
+
+    rec(scope)
+    return out
 
 
 def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
@@ -174,9 +198,10 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         # `run.Local.helper`); without a node at that id those edges have a phantom
         # src and never participate in reachability, so a symbol used only inside a
         # function-local class/closure is flagged dead (live code as dead — the
-        # cardinal sin; tree-sitter already models nested defs). Quals align with
-        # _walk_scope's, which also descends only into direct child defs.
-        for inner in node.body:
+        # cardinal sin; tree-sitter already models nested defs). `_scope_defs` looks
+        # through control-flow blocks (a def in an `if`/`for`/`try`), matching
+        # _walk_scope, so the two stay aligned (qual = enclosing scope, no block level).
+        for inner in _scope_defs(node):
             _def_node(proj, rel, inner, parent=qual, is_test_file=is_test_file)
     elif isinstance(node, ast.ClassDef):
         qual = f"{parent}.{node.name}" if parent else node.name
@@ -186,7 +211,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
             end_line=getattr(node, "end_lineno", None), summary=_docstring(node),
         ))
         abstract = _is_abstract_class(node)
-        for child in ast.iter_child_nodes(node):
+        for child in _scope_defs(node):
             _def_node(proj, rel, child, parent=qual, is_test_file=is_test_file,
                       in_abstract=abstract, parent_is_class=True)
 
@@ -299,6 +324,10 @@ def _iter_funcs(tree: ast.Module, rel: str):
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     yield child, Node.make_id(rel, qual)
                 yield from walk(child, qual)
+            else:
+                # Look through control-flow blocks (a func defined in an `if`/`for`/
+                # `try`) without adding a qual level — they aren't a scope in Python.
+                yield from walk(child, parent)
     yield from walk(tree, "")
 
 
@@ -357,7 +386,10 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
     # class scopes must NOT auto-reach their members — that is dead-code's whole job.
     enclosing_is_func = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     enclosing_id = Node.make_id(rel, parent) if enclosing_is_func and parent else None
-    for child in ast.iter_child_nodes(node):
+    # `_scope_defs` looks through control-flow blocks (a def in an `if`/`for`/`try`) so
+    # a control-flow-nested def gets its edges + containment edge — must match the
+    # identical traversal in `_def_node`, which models the nodes these edges target.
+    for child in _scope_defs(node):
         if isinstance(child, ast.ClassDef):
             qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)

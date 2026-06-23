@@ -8,13 +8,14 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 19 (Panels A–S) |
+| Multi-model review panels | 20 (Panels A–T) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 140 passing, 0 skipped (full extras) |
+| Tests | 148 passing, 0 skipped (full extras) |
 | Coverage | ~85% |
-| Release-Readiness Score | 70.9 / 100 |
-| Convergence | R (8, the metric/nesting twin) → S (40, a CRITICAL **regression R introduced** — caught by the very next panel, the gate working as designed). Streak 0 of 2 |
-| Verdict | NOT RELEASABLE — needs ≥2 consecutive clean panels. **Diversity redefined 2026-06-23**: sonnet's API is unreliable, so `available_models` is now **opus + haiku** (full diversity = both); S reset the streak |
+| Release-Readiness Score | 70.0 / 100 |
+| Convergence | S (40, a CRITICAL regression R introduced) → T (80, 2 CRITICALs: the last two nesting hosts — control-flow blocks + arrow functions). Now closed by a **systematic nesting-host audit** rather than panel-by-panel. Streak 0 of 2 |
+| Dogfood (self) | find_stale 3 advisory (no false-dead) · holes 0 · scan: 4 cycles / 1 data_loop / 12 god_objects · 349 nodes |
+| Verdict | NOT RELEASABLE — needs ≥2 consecutive clean panels (opus+haiku). T reset the streak |
 
 ## Trajectory
 
@@ -41,6 +42,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | Q | opus · sonnet† · haiku | 1 CRITICAL · 1 HIGH · 1 MEDIUM | **54.0** | **the confirmation gate caught a CRITICAL** — a symbol used only inside a function-*local* class/closure flagged dead (`_def_node` never descended into function bodies → function-local defs were never nodes, yet `_walk_scope` emitted edges from phantom qualnames; opus). Now models nested defs as real nodes + a `function → nested` containment edge (fixes decorator-registered `@app.command` handlers too). Third-party "sonnet" (core-only): public re-exports from `__init__` weren't export roots → live public API flagged dead (HIGH); version still `0.3.0` (MEDIUM, deferred to manual release). haiku clean. **Streak resets.** _(†third-party review)_ |
 | R | opus · haiku ‡ | 2 MEDIUM | **8.0** | **the metric/nesting twin of Q's nested-def fix, one in each extractor — both err safe (no precision violation).** opus (sonnet converged on the class-body variant in a partial pass before its slot was stopped): the five Python `_direct_*` own-scope helpers leaked into nested defs — the driver loop ran `rec()` on a top-level stmt that was *itself* a nested def, mis-attributing its calls/refs/globals to the enclosing fn (162 spurious CALLS + 40 class→symbol REFERENCES on self; 15→11 god-objects). Q made it observable (nested defs are nodes now, so the spurious parent edge double-counts instead of being a dropped phantom). Fixed by skipping a top-level body stmt that is itself a def, in all five helpers. haiku: the **tree-sitter side** of Q's nesting — function-local defs were created at *module* scope (`app.ts::helper`), merging two same-named defs into one node; now nested under the enclosing qual + an `enclosing-fn → nested` containment edge (Python parity). Reproduced as errs-safe → **downgraded from haiku's CRITICAL to MEDIUM**. **Streak stays 0.** _(‡ sonnet slot stopped — API issues this session; diversity 2/3)_ |
 | S | opus · haiku | 1 CRITICAL | **40.0** | **the confirmation gate caught a CRITICAL regression Panel R itself introduced** — the textbook case for why consecutive clean panels are required. opus: R's body-skip made each `_direct_*` driver `continue` on a nested def statement, but a def's **header** (decorator args `@registry(make_validator())`, nested-class base exprs `class L(get_base())`) executes in the *enclosing* scope at def-time and was dropped — not recovered elsewhere → a symbol used only there had zero inbound edges and was flagged dead. Pre-R this erred safe (over-attributed to the enclosing fn); R flipped it to erring **unsafe** (false dead, the cardinal sin). Fixed with `_def_header_refs`: walk a nested def's header (decorators + class bases/keywords) in the enclosing scope while still skipping the body. haiku **clean** (48 adversarial tests, no findings). **Streak resets to 0.** |
+| T | opus · haiku | 2 CRITICAL | **80.0** | **the last two nesting hosts of the Panel Q class — both CRITICAL false-deads, both pre-existing (not regressions).** haiku: a Python def nested in a **control-flow block** (`if`/`for`/`while`/`try`/`with`/`match`) was never modeled (`_def_node`/`_walk_scope` walked only the *direct* body) → phantom-source edges → a symbol used only there flagged dead. opus: the tree-sitter twin — a def nested in a JS/TS **arrow function** (`const h = () => { function w(){…} }`) was never modeled (the arrow branch made the node but never recursed into the arrow body). Closed by a **systematic nesting-host audit** (function/class/control-flow/arrow are the only hosts; lambdas/comprehensions can't hold defs): Python `_scope_defs` looks *through* control flow in `_def_node`/`_walk_scope`/`_iter_funcs`/module loop; tree-sitter arrow branch now recurses + emits the containment edge. Test matrix pins every host (140→148). Dogfood: find_stale still 3 advisory, 0 holes. **Streak resets to 0; the enumeration is now believed complete.** |
 
 ## What each panel found and how it was fixed
 
@@ -474,6 +476,39 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   split is now explicit. The first run of this panel stalled (both reviewers went silent ~36
   min on agent-backend flakiness and were reaped without delivering); it was relaunched with a
   time budget and completed normally — a process note, not a code signal.
+
+- **Panel T (opus · haiku)** — **both models found a CRITICAL**, each the same nested-scope
+  class (Panel Q) in one of the two remaining nesting hosts. Crucially, both were
+  *pre-existing* false-deads (not regressions from R/S):
+  - **CRITICAL (haiku)** — a Python def nested in a **control-flow block** (`if`/`elif`/
+    `else`/`for`/`while`/`try`/`except`/`finally`/`with`/`match`) was never modeled as a
+    node: `_def_node` and `_walk_scope` walked only a function's *direct* `body`, so a
+    `def inner()` inside `if c:` got no node, yet `_walk_scope` still emitted edges from its
+    qualname — a phantom source that can't reach, so a symbol used only there
+    (`def process(): \n  if c: \n    def inner(): return helper()`) was flagged dead.
+  - **CRITICAL (opus)** — the tree-sitter twin one host deeper: a def nested in a JS/TS
+    **arrow function** (`const handler = () => { function worker(){…} }`, idiomatic and
+    pervasive) was never modeled. The regular-def branch recurses into a def's body and
+    threads the containment edge; the arrow-declarator branch created the node but **never
+    recursed into the arrow body**, so nested defs (and their header expressions, the Panel S
+    parity case) were lost.
+
+  Rather than keep finding hosts one panel at a time, this was closed by a **systematic
+  nesting-host audit**. A def can nest only in: a function body (Q), a class body (P), a
+  control-flow block, or a function-expression/arrow — lambdas and comprehensions can't
+  contain `def`s, so the set is finite and now fully covered. Fixes: a shared Python
+  `_scope_defs` helper looks *through* control-flow blocks (which add no qual level) and is
+  used in `_def_node`, `_walk_scope`, and the module loop; `_iter_funcs` (data-loop scan)
+  likewise; the tree-sitter arrow branch now recurses into the arrow body and emits the
+  `arrow → nested` containment edge. A parametrised **test matrix** pins every host in both
+  extractors (140 → 148 tests). Dogfood after the fix: `find_stale` holds at the **3**
+  documented advisory candidates, **0** holes — precision intact, no false-dead introduced.
+
+  Weighted yield **80.0** (2 CRITICAL) — the heaviest panel yet, but the right kind of heavy:
+  two independent models each confirming a real pre-existing false-dead, now closed
+  *structurally* (by enumeration) rather than reactively. The streak **resets to 0**. If the
+  enumeration is complete, the nested-scope class — the dominant defect class since Panel I —
+  should at last be exhausted, and the next panels are its test.
 
 ## Standing themes
 
