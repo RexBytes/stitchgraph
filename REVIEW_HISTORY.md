@@ -386,11 +386,10 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     `pkg.Public` — was flagged dead despite the code's own docstring claiming re-exports are
     roots. Now collects public `ImportFrom`/`Import` aliases (asname or leaf, skipping `_`
     and `*`) as exported names, additive with `__all__`.
-  - **MEDIUM (sonnet)** — package version is still `0.3.0` in `pyproject.toml` /
-    `__version__`. **Adjudicated as deferred**, not fixed now: the version must read `1.0.0`
-    only when the release rule is actually met (RRS ≥ 90, two clean panels) and the
-    maintainer tags the release — bumping it pre-emptively would misrepresent the current
-    pre-release state. Tracked as a release-checklist item, not a code defect.
+  - **MEDIUM (sonnet)** — package version was still `0.3.0` in `pyproject.toml` /
+    `__version__`. Bumped to **`0.4.0`** to mark the hardening progress so far; `1.0.0`
+    is reserved for the actual release (RRS ≥ 90 + two clean panels + the maintainer's
+    manual tag), so the version never claims release-readiness prematurely.
   - **haiku** clean (`FINDINGS: none`) after re-verifying all A–P fixes end-to-end.
 
   Weighted yield **54.0** (1 CRITICAL + 1 HIGH + 1 MEDIUM) — the heaviest panel since M,

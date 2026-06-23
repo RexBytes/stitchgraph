@@ -112,6 +112,31 @@ deps**; without them installed those tests *skip* and a "clean" panel means
 nothing for that surface. Before trusting convergence, install the extras (CI's
 `[all,dev]` job does) and list the paths a panel could not run.
 
+### Resuming the review in a fresh session
+
+Everything needed to run the next panel lives in the repo — a new session can pick
+up cold:
+
+- **`review-kit/panel_prompt.template.md`** — the panel brief. Send the same filled
+  text to one reviewer per available model.
+- **`REVIEW_HISTORY.md`** — the trajectory table, the per-panel narrative, and the
+  running already-fixed list (so reviewers hunt only what's left).
+- **`release_readiness.json`** — config (severity weights, `tau`, `available_models`)
+  and the panel records.
+- **`RELEASE_READINESS.md`** + **`python scripts/readiness.py`** — the release gate
+  and the live RRS / convergence / clean-streak verdict.
+- **`LIMITATIONS.md`** — documented tradeoffs reviewers must not re-flag.
+
+**To start the next panel**, ask the session to: run the next review panel — one
+slot per available model (opus + haiku, plus sonnet when its API is up; otherwise a
+pasted third-party core-only review fills the sonnet slot), using
+`review-kit/panel_prompt.template.md` filled with the current `HEAD` sha and the
+already-fixed list from `REVIEW_HISTORY.md`. Then adjudicate, fix in batches with
+regression tests, append the panel to `release_readiness.json` + `REVIEW_HISTORY.md`,
+re-run `scripts/readiness.py`, and commit. **Release gate:** hard gates green AND
+RRS ≥ 90 AND **2 consecutive full-diversity clean panels** (weighted yield < `tau`).
+The maintainer tags/releases manually; the version reads `1.0.0` only at that point.
+
 ## Lessons (reusable)
 
 1. **Multi-model panels beat any single reviewer** — diverse blind spots.
