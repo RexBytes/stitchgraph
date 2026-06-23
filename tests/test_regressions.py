@@ -549,3 +549,37 @@ def test_sql_multistatement_labels_each_statement(tmp_path):
     reads = {e.dst_id for e in edges if e.relation is Relation.READS}
     assert "db::old_users" in writes   # DELETE target
     assert "db::backup" in reads        # SELECT source
+
+
+# -- Panel G / opus (MEDIUM): parallel edges are deduped (degree metrics) -------
+def test_repeated_call_sites_are_one_edge(tmp_path):
+    """Two call sites to the same target are one CALLS relationship, not two —
+    parallel edges otherwise inflate fan_in/fan_out and the fan_in-fallback hubs
+    (and `--precise` made it worse by re-confirming every AST edge via jedi)."""
+    from stitchgraph.core.model import Relation
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {"pkg/__init__.py": "",
+                   "pkg/m.py": "def caller():\n    helper()\n    helper()\n"
+                               "def helper():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = [e for e in store.resolved_edges(Relation.CALLS)
+                 if e.dst_id.endswith("::helper")]
+        assert len(calls) == 1                       # collapsed, not two
+        assert fan_in(store).get("pkg/m.py::helper") == 1
+
+
+# -- Panel G / opus (LOW): get_matrix sparse cells are distinct -----------------
+def test_get_matrix_cells_are_deduped(tmp_path):
+    """`get_matrix` sparse cells (and density) must count distinct (src,dst) edges,
+    not call sites — repeated calls produced duplicate cells and an inflated density
+    (the dense grid was already correct)."""
+    _mk(tmp_path, {"pkg/__init__.py": "",
+                   "pkg/m.py": "def caller():\n    helper()\n    helper()\n"
+                               "def helper():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.get_matrix(store, "pkg/m.py", "CALLS")
+        cells = res.result["cells"]
+        keys = {(c["src"], c["dst"]) for c in cells}
+        assert len(cells) == len(keys)   # no duplicate (src,dst)

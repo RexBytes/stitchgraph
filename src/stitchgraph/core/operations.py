@@ -563,11 +563,15 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
             confidence=0.0, node_count=len(members))
 
     idx = {nid: i for i, nid in enumerate(members)}
-    cells = [
-        {"src": idx[e.src], "dst": idx[e.dst_id], "w": round(e.weight, 2)}
-        for e in store.resolved_edges(rel)
-        if e.src in idx and e.dst_id in idx
-    ]
+    # One cell per (src, dst): collapse repeated call sites to a single edge (keep the
+    # max weight) so the sparse list and `density` don't double-count — the dense grid
+    # is already idempotent.
+    cell_w: dict[tuple[int, int], float] = {}
+    for e in store.resolved_edges(rel):
+        if e.src in idx and e.dst_id in idx:
+            k = (idx[e.src], idx[e.dst_id])
+            cell_w[k] = max(cell_w.get(k, 0.0), round(e.weight, 2))
+    cells = [{"src": s, "dst": d, "w": w} for (s, d), w in sorted(cell_w.items())]
     labels = [m.split("::", 1)[-1] for m in members]
     payload = {
         "relation": rel.value,
@@ -604,6 +608,7 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         from .resolve.jedi_resolver import JediResolver
         resolvers.append(JediResolver())
     nodes, edges = run_resolvers(path, nodes, edges, resolvers)
+    edges = _dedup_edges(edges)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     # Full rebuild: the extractor already resolved every edge against the complete
     # symbol table, so bulk-insert (nodes first) and keep those resolutions rather
@@ -625,6 +630,30 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
 
 
 # --------------------------------------------------------------------------
+def _dedup_edges(edges: list) -> list:
+    """Collapse parallel resolved edges (same src, relation, dst_id) to one, keeping
+    the highest weight. Two call sites to the same target — or the jedi resolver
+    re-confirming an AST edge under `--precise` — otherwise double-count direct-degree
+    metrics (fan_in/fan_out, the `fan_in`-fallback hubs) and `get_matrix` cells. The
+    boolean reachability/GraphBLAS layer already dedups, so this aligns the adjacency
+    store with it. Unresolved holes (dst_id is None) are distinct reference sites and
+    are kept as-is."""
+    best: dict[tuple, Any] = {}
+    order: list[tuple] = []
+    holes: list = []
+    for e in edges:
+        if e.dst_id is None:
+            holes.append(e)
+            continue
+        key = (e.src, e.relation, e.dst_id)
+        if key not in best:
+            best[key] = e
+            order.append(key)
+        elif e.weight > best[key].weight:
+            best[key] = e
+    return holes + [best[k] for k in order]
+
+
 def _resolve_one(store: Store, name: str):
     nodes = store.nodes_by_name(name)
     return nodes[0] if len(nodes) == 1 else None
