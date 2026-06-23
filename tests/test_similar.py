@@ -44,3 +44,27 @@ def test_find_similar_empty_query_refuses(tmp_path):
     with _project(tmp_path) as store:
         res = sg.find_similar(store, "!!! ???", limit=3)
         assert not res.ok and res.needs_review
+
+
+def test_pluggable_dense_embedder(tmp_path):
+    """Injecting a dense embedder switches find_similar to cosine over vectors."""
+    from stitchgraph.core import similar
+
+    # A deterministic fake embedder: 2-d vector from two keyword counts.
+    def fake(texts):
+        out = []
+        for t in texts:
+            tl = t.lower()
+            out.append([float(tl.count("sql") + tl.count("table")),
+                        float(tl.count("draw") + tl.count("widget"))])
+        return out
+
+    store = _project(tmp_path)
+    try:
+        similar.set_embedder(fake)
+        res = sg.find_similar(store, "extract tables from a sql statement", limit=3)
+        assert res.ok
+        assert res.result[0]["id"].endswith("::parse_sql_query")
+    finally:
+        similar.set_embedder(None)
+        store.close()

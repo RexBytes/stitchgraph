@@ -14,9 +14,44 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Callable, Sequence
 
 from .model import NodeKind, Relation
 from .store import Store
+
+# Optional dense-embedding backend. Inject any `texts -> vectors` callable
+# (sentence-transformers, model2vec, an API) and find_similar switches to cosine
+# over real embeddings. Unset -> the token-similarity default below.
+_EMBEDDER: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None = None
+
+
+def set_embedder(fn: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None) -> None:
+    """Register (or clear) the dense embedding backend used by find_similar."""
+    global _EMBEDDER
+    _EMBEDDER = fn
+
+
+_M2V_TRIED = False
+
+
+def _try_model2vec() -> bool:
+    """Best-effort: wire model2vec as the embedder if installed + a model loads.
+    Attempted at most once (loading can hit the network)."""
+    global _M2V_TRIED
+    if _EMBEDDER is not None:
+        return True
+    if _M2V_TRIED:
+        return False
+    _M2V_TRIED = True
+    try:
+        from model2vec import StaticModel
+        from .config import load_config
+        model = load_config().embed_model or "minishlab/potion-base-8M"
+        m = StaticModel.from_pretrained(model)
+        set_embedder(lambda texts: m.encode(list(texts)).tolist())
+        return True
+    except Exception:  # noqa: BLE001 — no model / offline -> token fallback
+        return False
 
 # Tokens too generic to carry signal.
 _STOP = {"self", "cls", "return", "def", "class", "the", "a", "an", "of", "to",
@@ -60,22 +95,44 @@ def _node_tokens(store: Store, node, callees: dict[str, list[str]]) -> list[str]
 
 
 def find_similar(store: Store, snippet: str, limit: int = 10) -> list[tuple[str, float]]:
-    """Return [(node_id, score)] most similar to the snippet, best first."""
-    query = _vector(tokenise(snippet))
-    if not query:
-        return []
-    # Precompute callee name lists per source node (cheap join).
+    """Return [(node_id, score)] most similar to the snippet, best first.
+
+    Uses the dense embedder if one is registered (or model2vec auto-loads), else
+    falls back to token cosine — identical interface, better ranking with a model.
+    """
     callees: dict[str, list[str]] = {}
     for edge in store.resolved_edges(Relation.CALLS):
         if edge.dst_id:
             callees.setdefault(edge.src, []).append(edge.dst_symbol)
+    code = [n for n in store.all_nodes_full()
+            if n.kind in (NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS)]
+    if not code:
+        return []
 
-    scored: list[tuple[str, float]] = []
-    for node in store.all_nodes_full():
-        if node.kind not in (NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS):
-            continue
-        s = _cosine(query, _vector(_node_tokens(store, node, callees)))
-        if s > 0:
-            scored.append((node.id, s))
+    if _EMBEDDER is not None or _try_model2vec():
+        return _dense(snippet, store, code, callees, limit)
+
+    query = _vector(tokenise(snippet))
+    if not query:
+        return []
+    scored = [(n.id, _cosine(query, _vector(_node_tokens(store, n, callees))))
+              for n in code]
+    scored = [s for s in scored if s[1] > 0]
     scored.sort(key=lambda kv: kv[1], reverse=True)
     return scored[:limit]
+
+
+def _dense(snippet, store, code, callees, limit) -> list[tuple[str, float]]:
+    texts = [" ".join(_node_tokens(store, n, callees)) or n.name for n in code]
+    vecs = _EMBEDDER([snippet, *texts])
+    q = vecs[0]
+    scored = [(code[i].id, _dot_cos(q, vecs[i + 1])) for i in range(len(code))]
+    scored.sort(key=lambda kv: kv[1], reverse=True)
+    return [s for s in scored if s[1] > 0][:limit]
+
+
+def _dot_cos(a, b) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a)) or 1.0
+    nb = math.sqrt(sum(y * y for y in b)) or 1.0
+    return dot / (na * nb)
