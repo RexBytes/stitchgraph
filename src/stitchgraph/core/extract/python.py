@@ -311,6 +311,13 @@ def _direct_nodes(func: ast.AST):
             yield child
             yield from rec(child)
     for stmt in getattr(func, "body", []):
+        # A top-level body statement that is *itself* a nested def belongs to that
+        # def's own scope, not this one. rec() already guards def *children*, but the
+        # driver must guard the top-level stmt too, or the nested def's calls/refs/
+        # globals leak up and get mis-attributed to the enclosing scope (double-
+        # counting fan_in/pagerank, false god-objects — the metric-inflation class).
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
         yield from rec(stmt)
         yield stmt
 
@@ -505,6 +512,13 @@ def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribut
             rec(child)
 
     for stmt in getattr(func, "body", []):
+        # Skip a top-level body statement that is itself a nested def: its contents
+        # belong to that def's own scope (rec() guards def children, but not the
+        # driver's own stmt), or its calls/refs leak up into this scope. For a class
+        # passed here (Panel P class-body walk), this correctly keeps only the class
+        # body's own statements and excludes method bodies.
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
         rec(stmt)
     return out
 
@@ -554,6 +568,13 @@ def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
             rec(child)
 
     for stmt in getattr(func, "body", []):
+        # Skip a top-level body statement that is itself a nested def: its contents
+        # belong to that def's own scope (rec() guards def children, but not the
+        # driver's own stmt), or its calls/refs leak up into this scope. For a class
+        # passed here (Panel P class-body walk), this correctly keeps only the class
+        # body's own statements and excludes method bodies.
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
         rec(stmt)
     return out
 
@@ -570,6 +591,13 @@ def _direct_withs(func: ast.AST) -> list[ast.withitem]:
             rec(child)
 
     for stmt in getattr(func, "body", []):
+        # Skip a top-level body statement that is itself a nested def: its contents
+        # belong to that def's own scope (rec() guards def children, but not the
+        # driver's own stmt), or its calls/refs leak up into this scope. For a class
+        # passed here (Panel P class-body walk), this correctly keeps only the class
+        # body's own statements and excludes method bodies.
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
         rec(stmt)
     return out
 
@@ -624,6 +652,13 @@ def _direct_calls(func: ast.AST) -> list[ast.Call]:
             rec(child)
 
     for stmt in getattr(func, "body", []):
+        # Skip a top-level body statement that is itself a nested def: its contents
+        # belong to that def's own scope (rec() guards def children, but not the
+        # driver's own stmt), or its calls/refs leak up into this scope. For a class
+        # passed here (Panel P class-body walk), this correctly keeps only the class
+        # body's own statements and excludes method bodies.
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
         rec(stmt)
     return out
 

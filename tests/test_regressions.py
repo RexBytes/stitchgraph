@@ -1081,3 +1081,114 @@ def test_decorator_registered_local_handler_is_live(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "handler" not in stale      # live via decorator registration
+
+
+# -- Panel R / opus + sonnet (MEDIUM): own-scope walk helpers must not descend
+#    into nested defs -- their calls/refs/globals leaked up to the enclosing
+#    scope, double-counting fan_in/pagerank and surfacing false god-objects ------
+def test_nested_def_calls_not_attributed_to_enclosing_scope(tmp_path):
+    """The five `_direct_*` helpers promise "not crossing nested defs", but their
+    driver loop ran rec() on a top-level body statement that was *itself* a nested
+    def, leaking that def's calls/refs up into the enclosing function. A symbol
+    used only inside `nested` must be edged from `outer.nested`, never `outer`, and
+    counted once (Panel Q made the leak observable by giving the nested def a node)."""
+    from stitchgraph.core.model import Relation
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/m.py": (
+            "def callee():\n    return 1\n"
+            "class Strategy:\n    pass\n"
+            "def outer():\n"
+            "    def nested():\n        s = Strategy\n        return callee()\n"
+            "    return nested\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.CALLS)}
+        refs = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.REFERENCES)}
+        assert ("pkg/m.py::outer.nested", "pkg/m.py::callee") in calls    # correct scope
+        assert ("pkg/m.py::outer", "pkg/m.py::callee") not in calls       # was leaked up
+        assert ("pkg/m.py::outer.nested", "pkg/m.py::Strategy") in refs   # correct scope
+        assert ("pkg/m.py::outer", "pkg/m.py::Strategy") not in refs      # was leaked up
+        assert fan_in(store).get("pkg/m.py::callee") == 1                 # counted once
+
+
+def test_class_body_does_not_absorb_method_body_references(tmp_path):
+    """The same driver-loop leak hit Panel P's class-body walk (`_direct_names` on
+    the ClassDef descended into method bodies), so a symbol used only inside a
+    method was wrongly attributed to the class node. The class body's own refs are
+    kept; method-body refs belong to the method, not the class."""
+    from stitchgraph.core.model import Relation
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/m.py": (
+            "def helper_a():\n    return 1\n"
+            "def helper_b():\n    return 2\n"
+            "class C:\n"
+            "    table = helper_a\n"                                # class-body ref
+            "    def meth(self):\n        return helper_b()\n"      # method-body call
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        refs = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.REFERENCES)}
+        calls = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.CALLS)}
+        assert ("pkg/m.py::C", "pkg/m.py::helper_a") in refs        # class body's own ref
+        assert ("pkg/m.py::C", "pkg/m.py::helper_b") not in refs    # method body, not class
+        assert ("pkg/m.py::C.meth", "pkg/m.py::helper_b") in calls  # correct scope
+
+
+# -- Panel R / haiku: tree-sitter must nest function-local defs under their
+#    enclosing function (not module scope, where same-named siblings collide into
+#    one node) and keep them live via a containment edge -- Python (Panel Q) parity
+def test_tree_sitter_function_local_def_is_nested_and_live(tmp_path):
+    """A function-local def was created at module scope (`app.ts::handler`), so two
+    same-named defs merged into one node and the qual lost its scope. Now nested as
+    `app.ts::setup.handler`, kept live by an enclosing->nested containment edge so a
+    nested def whose liveness comes from execution (not a by-name call) isn't flagged
+    dead, while a genuinely-unreferenced top-level def still is."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.ts": (
+            "export function setup(){\n"
+            "    function handler(){ return doWork(); }\n"
+            "    return handler;\n"
+            "}\n"
+            "function doWork(){ return 1; }\n"
+            "function neverReached(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = set(store.all_node_ids())
+        assert "app.ts::setup.handler" in ids        # nested under its enclosing fn
+        assert "app.ts::handler" not in ids          # not at module scope
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "handler" not in stale                # live via containment edge
+        assert "doWork" not in stale                 # called by the nested handler
+        assert "neverReached" in stale               # genuinely unreferenced
+
+
+def test_tree_sitter_same_name_nested_and_module_def_do_not_merge(tmp_path):
+    """A function-local def sharing a name with a module-level def must not collapse
+    into one node (the module-scope-id collision merged their callers/callees,
+    corrupting get_callers/get_callees/impact_of/get_matrix for that name)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.ts": (
+            "export function main(){\n"
+            "    function helper(){ return 1; }\n"
+            "    return helper();\n"
+            "}\n"
+            "function helper(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = set(store.all_node_ids())
+        assert "app.ts::main.helper" in ids          # the nested one
+        assert "app.ts::helper" in ids               # the distinct module-level one

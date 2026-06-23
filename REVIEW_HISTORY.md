@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 15 (Panels A–O) |
+| Multi-model review panels | 18 (Panels A–R) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 127 passing, 1 skipped |
-| Coverage | ~84% |
-| Release-Readiness Score | 81.3 / 100 |
-| Convergence | yield bottoming out: N (10, default values) → O (4, metaclass), both single narrow corners opus+haiku converged on; third-party core-only clean 2 straight. Streak 0 of 2 |
-| Verdict | NOT RELEASABLE — sonnet now supplied by a third party (API down for agents); needs ≥2 consecutive full-diversity clean panels |
+| Tests | 138 passing, 0 skipped (full extras) |
+| Coverage | ~85% |
+| Release-Readiness Score | 80.2 / 100 |
+| Convergence | Q (54, the function-local CRITICAL) → R (8, the metric/nesting twin in both extractors). Rate 0.186, trending down; both R findings err safe (no precision violation). Streak 0 of 2 |
+| Verdict | NOT RELEASABLE — needs ≥2 consecutive full-diversity clean panels; sonnet's slot was stopped this session (API issues), so R is 2/3 diversity |
 
 ## Trajectory
 
@@ -39,6 +39,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | O | opus · sonnet† · haiku | 1 MEDIUM | **4.0** | **lightest since H** — opus + haiku converged on one narrow MEDIUM: a metaclass used only via `class X(metaclass=Meta)` flagged dead (`_walk_scope` edged `child.bases` not `child.keywords`). Now walks class-def keywords. Third-party "sonnet" (core-only) clean **2nd straight panel**. _(†third-party review)_ |
 | P | opus · sonnet† · haiku | 1 HIGH | 10.0 | **the last un-walked Python scope** — references in the class *body* itself (`h = Helper`, `TABLE = {"a": handle_a}`, class-level annotations) were never extracted: `_walk_scope` edged bases/keywords/ctors and recursed into method bodies, but never the class body's own statements → live symbols flagged dead (opus HIGH). Now walks class-body Load names, attributed to the class node (matching tree-sitter). haiku clean; third-party "sonnet" (core-only) clean **3rd straight panel**. _(†third-party review)_ |
 | Q | opus · sonnet† · haiku | 1 CRITICAL · 1 HIGH · 1 MEDIUM | **54.0** | **the confirmation gate caught a CRITICAL** — a symbol used only inside a function-*local* class/closure flagged dead (`_def_node` never descended into function bodies → function-local defs were never nodes, yet `_walk_scope` emitted edges from phantom qualnames; opus). Now models nested defs as real nodes + a `function → nested` containment edge (fixes decorator-registered `@app.command` handlers too). Third-party "sonnet" (core-only): public re-exports from `__init__` weren't export roots → live public API flagged dead (HIGH); version still `0.3.0` (MEDIUM, deferred to manual release). haiku clean. **Streak resets.** _(†third-party review)_ |
+| R | opus · haiku ‡ | 2 MEDIUM | **8.0** | **the metric/nesting twin of Q's nested-def fix, one in each extractor — both err safe (no precision violation).** opus (sonnet converged on the class-body variant in a partial pass before its slot was stopped): the five Python `_direct_*` own-scope helpers leaked into nested defs — the driver loop ran `rec()` on a top-level stmt that was *itself* a nested def, mis-attributing its calls/refs/globals to the enclosing fn (162 spurious CALLS + 40 class→symbol REFERENCES on self; 15→11 god-objects). Q made it observable (nested defs are nodes now, so the spurious parent edge double-counts instead of being a dropped phantom). Fixed by skipping a top-level body stmt that is itself a def, in all five helpers. haiku: the **tree-sitter side** of Q's nesting — function-local defs were created at *module* scope (`app.ts::helper`), merging two same-named defs into one node; now nested under the enclosing qual + an `enclosing-fn → nested` containment edge (Python parity). Reproduced as errs-safe → **downgraded from haiku's CRITICAL to MEDIUM**. **Streak stays 0.** _(‡ sonnet slot stopped — API issues this session; diversity 2/3)_ |
 
 ## What each panel found and how it was fixed
 
@@ -396,6 +397,49 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   and the clean streak **resets to 0**. The lesson stands: each "clean-looking" surface has
   one scope deeper. With the nested scope now modeled, the function/class/module scope
   trichotomy is fully covered (module-level uses remain the one documented limitation).
+
+- **Panel R (opus · haiku; sonnet stopped)** — the **metric / nesting twin** of Panel Q,
+  with one finding in each extractor. Both **err in the safe direction** (over-attribution /
+  recall miss), so neither is a cardinal-invariant violation — the confirmation gate is now
+  catching residual *correctness* and *metric* defects, not precision violations. Each was
+  reproduced with real input and fixed with a regression test:
+  - **MEDIUM (opus + sonnet, converged)** — the five Python `_direct_*` "own-scope" walk
+    helpers (`_direct_nodes`, `_direct_attr_reads`, `_direct_names`, `_direct_withs`,
+    `_direct_calls`) promised "not crossing nested defs", but their driver loop
+    `for stmt in func.body: rec(stmt)` ran `rec()` on a top-level statement that was *itself*
+    a nested def. `rec()` guards def *children* but not the driver's own statement, so the
+    nested def's calls/refs/global-writes leaked up and were mis-attributed to the enclosing
+    function — **162** spurious parent→callee CALLS and **40** spurious class→symbol
+    REFERENCES on stitchgraph's own source, surfacing **15** false god-objects in `scan()`
+    (down to **11** after the fix). Latent for many panels, but **Panel Q made it
+    observable**: now that function-local defs are real nodes, the spurious parent edge
+    co-exists with the correct nested edge and *double-counts*, where before it was a
+    phantom-source edge that got dropped. The `_dedup_edges` boundary cannot catch it (the
+    spurious edge has a *different* src). Fixed by skipping a top-level body statement that
+    is itself a `FunctionDef/AsyncFunctionDef/ClassDef` in all five helpers — which also
+    correctly stops Panel P's class-body walk from absorbing method-body references. _(sonnet
+    converged on the class-body variant in a partial pass before its slot was stopped on
+    API issues this session.)_
+  - **MEDIUM (haiku)** — the **tree-sitter side** of Panel Q's Python nesting fix. The
+    tree-sitter `_collect` nested only *classes/containers* under their qual, never
+    functions, so a function-local def was created at **module** scope (`app.ts::helper`
+    instead of `app.ts::setup.helper`). Two same-named defs (a function-local one and a
+    module-level or sibling one) then **collided to a single node id**, merging two distinct
+    functions — corrupting `get_callers`/`get_callees`/`impact_of`/`get_matrix` for that
+    name and inflating its degree. haiku rated it CRITICAL, but it was reproduced as
+    **errs-safe** (the merged node stays reachable, so dead code is *under*-reported, never
+    live code flagged dead — opus independently cleared the same surface for precision), so
+    it was **downgraded to MEDIUM**. Fixed symmetrically with the Python extractor: nest
+    *every* def's children under its own qual, and emit an **enclosing-function → nested**
+    containment edge so a function-local def is live iff its enclosing function is reachable
+    (Panel Q parity; subsumed by `_dedup_edges` when the nested def is also called directly).
+
+  Weighted yield **8.0** (2 MEDIUM) — the convergence rate falls to **0.186**, the lowest of
+  the series, and RRS rises to **80.2**. The clean streak **stays 0** (both findings are
+  above LOW). sonnet's slot was stopped mid-review (API issues this session), so the panel
+  ran at **2/3 diversity**; a full-diversity clean confirmation is still owed. The standing
+  theme holds one more turn: after the *liveness* of the nested scope (Q), its *metrics* and
+  its *tree-sitter twin* (R) — the symmetry audit is converging.
 
 ## Standing themes
 

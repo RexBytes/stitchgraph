@@ -114,6 +114,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"CRITICAL": 1, "HIGH": 1, "MEDIUM": 1},
       "theme": "the confirmation gate caught a CRITICAL: a symbol used only inside a function-LOCAL class/closure was flagged dead — _def_node never descended into function bodies, so function-local defs were never nodes, yet _walk_scope emitted edges from their phantom qualnames that couldn't reach (opus, Python<->tree-sitter asymmetry, the un-walked NESTED scope after class bodies). _def_node now models nested defs as real nodes + a function->nested containment edge (a local def is live iff its enclosing fn is reachable; fixes decorator-registered @app.command handlers). Third-party 'sonnet' (core-only): public re-exports from __init__ (`from .api import Public`) weren't export roots -> live public API flagged dead (HIGH); version still 0.3.0 not 1.0.0 (MEDIUM, deferred to the manual release step). haiku clean. Streak resets."
+    },
+    {
+      "id": "R",
+      "models": ["opus", "haiku"],
+      "findings": {"MEDIUM": 2},
+      "theme": "the metric twin of Panel Q's nested-def fix, in both extractors. opus+sonnet (sonnet partial, stopped on API issues but converged on the class-body variant first): the five Python `_direct_*` own-scope helpers leaked into nested defs — the driver loop ran rec() on a top-level stmt that was itself a nested def, so the nested def's calls/refs/globals were mis-attributed to the enclosing function (162 spurious CALLS + 40 spurious class->symbol REFERENCES on self; 15 false god-objects -> 11). Panel Q made it observable by giving nested defs real nodes, so the spurious parent edge now double-counts instead of being a dropped phantom. Fixed by skipping a top-level body stmt that is itself a def, in all five helpers (MEDIUM, metric inflation, errs safe). haiku: the tree-sitter SIDE of Panel Q's Python nesting — function-local defs were created at MODULE scope (`app.ts::helper` not `app.ts::setup.helper`), so two same-named defs merged into one node (corrupting get_callers/callees/impact_of for that name). Reproduced; errs safe for the cardinal invariant (no live-flagged-dead, confirmed by opus too) so downgraded from haiku's CRITICAL to MEDIUM. Fixed symmetrically: nest every def's children under its own qual + emit an enclosing-function->nested containment edge (Python parity, Panel Q), kept live iff the enclosing fn is reachable. sonnet's slot was stopped (API issues this session); diversity 2/3. Streak stays 0."
     }
   ]
 }
