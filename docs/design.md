@@ -513,7 +513,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 | `trace_path(src, sink, relations?)` | full-stack cross-language path + confidence | B |
 | `structure_smells(path?)` | cycles, god objects, layering violations, data loops | C/F |
 | `scan(path?)` | ranked issue list with `urgency` + confidence + reasons | §7 |
-| `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading | — |
+| `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading | ✅ |
 | `find_symbol / get_callers / get_callees / type_at` | structural primitives | A |
 | `reindex(path)` | incremental update (admin) | — |
 

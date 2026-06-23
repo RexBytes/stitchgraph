@@ -130,7 +130,7 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     set is unreliable, so results are low-confidence + needs_review by contract
     (a false 'dead' is destructive — design principle 4).
     """
-    detector = detector or PythonLibraryDetector()
+    detector = detector or _default_detector()
     seeds = detector.detect(store)
     all_ids = set(store.all_node_ids())
     reachable = reachable_from(store, seeds)
@@ -187,10 +187,18 @@ def orient(store: Store) -> Result:
 
 def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     from . import algebra
-    if algebra.HAS_GRAPHBLAS:
-        ranks = algebra.pagerank(store)
-        if ranks:
-            return ranks, "pagerank"
+    from .config import load_config
+
+    metric = load_config().hub_metric
+    if algebra.HAS_GRAPHBLAS and metric != "fan_in":
+        if metric == "pagerank":
+            ranks = algebra.pagerank(store)
+            if ranks:
+                return ranks, "pagerank"
+        else:  # transitive_fan_in (default) — most-depended-on
+            tfi = algebra.transitive_fan_in(store)
+            if tfi:
+                return {k: float(v) for k, v in tfi.items()}, "transitive_fan_in"
     return {k: float(v) for k, v in fan_in(store).items()}, "fan_in"
 
 
@@ -242,7 +250,7 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
 def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
     diagnosis: wiring/structure defects only, each ranked by liveness."""
-    detector = detector or PythonLibraryDetector()
+    detector = detector or _default_detector()
     seeds = detector.detect(store)
     if not seeds:
         return refuse(
@@ -307,6 +315,45 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     return res
 
 
+@operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
+def get_matrix(store: Store, scope: str, relation: str = "CALLS",
+               limit: int = 25) -> Result:
+    """Return a *bounded* sparse submatrix for the nodes under `scope` (an id
+    prefix, e.g. a file or class), for one relation (design §8).
+
+    Never the whole-repo N×N matrix — that's the dense anti-pattern (design §12).
+    Refuses when the scope exceeds `limit` so the result stays small enough for an
+    LLM to actually reason over.
+    """
+    try:
+        rel = Relation(relation.upper())
+    except ValueError:
+        return refuse(f"unknown relation '{relation}'", confidence=0.0)
+
+    members = sorted(nid for nid in store.all_node_ids() if nid.startswith(scope))
+    if not members:
+        return refuse(f"no nodes under scope '{scope}'", confidence=0.0)
+    if len(members) > limit:
+        return refuse(
+            f"scope has {len(members)} nodes (> limit {limit}); narrow the scope "
+            "(e.g. a single file or class) — full matrices are the dense anti-pattern",
+            confidence=0.0, node_count=len(members))
+
+    idx = {nid: i for i, nid in enumerate(members)}
+    cells = [
+        {"src": idx[e.src], "dst": idx[e.dst_id], "w": round(e.weight, 2)}
+        for e in store.resolved_edges(rel)
+        if e.src in idx and e.dst_id in idx
+    ]
+    payload = {
+        "relation": rel.value,
+        "labels": [m.split("::", 1)[-1] for m in members],
+        "cells": cells,        # sparse (src_index, dst_index, weight)
+        "n": len(members),
+    }
+    return ok(payload, density=f"{len(cells)}/{len(members)**2}")
+
+
 @operation("Incrementally (re)index a path into the graph (admin).")
 def reindex(store: Store, path: str, precise: bool = False) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
@@ -315,10 +362,11 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
     """
+    from .config import load_config
     from .extract import extract_project
     from .resolve import default_resolvers, run_resolvers
 
-    nodes, edges = extract_project(path)
+    nodes, edges = extract_project(path, ignore=load_config(path).ignore)
     # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
     # optional jedi precision pass.
     resolvers = default_resolvers()
@@ -348,6 +396,14 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
 def _resolve_one(store: Store, name: str):
     nodes = store.nodes_by_name(name)
     return nodes[0] if len(nodes) == 1 else None
+
+
+def _default_detector() -> PythonLibraryDetector:
+    """Build the detector from `stitchgraph.toml` — the entry-point override is
+    the trust escape hatch (design §4)."""
+    from .config import load_config
+    cfg = load_config()
+    return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests)
 
 
 _CODE_KINDS = {NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS}

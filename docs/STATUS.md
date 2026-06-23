@@ -20,8 +20,8 @@ spec and section references.
 | Extraction | Scope-aware resolution (`self.`, locally-typed `var.`) | ✅ Done | + decorator refs |
 | Extraction | jedi precise resolver (`--precise`) | ✅ Done | optional, in-process LSP-grade |
 | Extraction | tree-sitter / external LSP backend | ⬜ To do | incremental, polyglot, live types |
-| **Entry points** | Python library+CLI detector | ✅ Done | exported API, main, scripts, tests |
-| Entry points | `stitchgraph.toml` override | ⬜ To do | config escape hatch (spec'd) |
+| **Entry points** | Python library+CLI detector | ✅ Done | exported API, main, scripts, tests, routes |
+| Entry points | `stitchgraph.toml` override | ✅ Done | include roots, ignore globs, threshold, hub metric |
 | **Operations** | `find_symbol` / `get_callers` / `get_callees` | ✅ Done | structural primitives |
 | Operations | `orient` (counts + hubs) | ✅ Done | PageRank hubs via GraphBLAS |
 | Operations | `find_stale` (dead code) | ✅ Done | honest `needs_review` (name-based) |
@@ -29,14 +29,16 @@ spec and section references.
 | Operations | `impact_of` (blast radius + tests) | ✅ Done | reverse reachability |
 | Operations | `trace_path` (best-confidence path) | ✅ Done | full-stack, (max,×) semiring |
 | Operations | `scan` (ranked issues + urgency) | ✅ Done | stubs/holes/cycles/god-objects |
-| Operations | `reindex` | ✅ Done | full rebuild; `--precise` |
+| Operations | `reindex` | ✅ Done | full rebuild; `--precise`; ignore globs |
+| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope (no dense dump) |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
-| Algebra | GraphBLAS PageRank centrality | ✅ Done | whole-graph hub ranking |
-| Algebra | CSR matrix export (`get_matrix`) | ⬜ To do | bounded submatrix for an LLM |
+| Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
+| Algebra | GraphBLAS PageRank centrality | ✅ Done | alt hub metric via config |
 | **Cross-language** | Web-route resolver (decorator → Route → handler) | ✅ Done | Flask/FastAPI patterns |
+| Cross-language | HTML template → route (`SUBMITS_TO`) | ✅ Done | `<form action>` → Route |
 | Cross-language | SQL resolver (sqlglot → table, READS/WRITES) | ✅ Done | query string literals |
 | Cross-language | ORM resolver (model → table/column, MAPS_TO) | ✅ Done | SQLAlchemy/Django; converges with SQL |
-| Cross-language | HTML template → route (`SUBMITS_TO`) | ⬜ To do | next resolver |
+| Cross-language | Full-stack trace (form → route → handler → table) | ✅ Done | the "gem", end to end |
 | **Data flow** | Data-loop detection (🟡) | ⬜ To do | needs READS/WRITES at var granularity |
 | **Risk** | git-history churn × centrality | ⬜ To do | hidden coupling, hotspots |
 | **Runtime** | runtime-trace fusion (`RUNTIME_HITS`) | ⬜ To do | observed vs static |

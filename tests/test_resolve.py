@@ -125,3 +125,32 @@ def test_orm_and_sql_converge_on_same_table(tmp_path):
         reads = {e.dst_id for e in store.resolved_edges(Relation.READS)}
         assert "db::users" in maps   # from the model
         assert "db::users" in reads  # from the SQL — same node
+
+
+def _write_fullstack(root: Path) -> None:
+    app = root / "app"
+    app.mkdir()
+    (app / "__init__.py").write_text("")
+    (app / "views.py").write_text(
+        "app = object()\n\n"
+        "@app.post('/users')\n"
+        "def create_user():\n"
+        '    return db.execute("INSERT INTO users (email) VALUES (?)")\n'
+    )
+    tmpl = root / "templates"
+    tmpl.mkdir()
+    (tmpl / "signup.html").write_text(
+        '<form action="/users" method="post"><input name="email"></form>\n')
+
+
+def test_full_stack_html_to_table(tmp_path):
+    """The complete gem: HTML form -> route -> handler -> DB table in one trace."""
+    _write_fullstack(tmp_path)
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    res = sg.trace_path(store, "templates/signup.html", "users")
+    assert res.ok, res.review_reasons
+    assert res.result[0].endswith("signup.html::template")
+    assert any("route:POST /users" in step for step in res.result)
+    assert res.result[-1] == "db::users"
+    store.close()

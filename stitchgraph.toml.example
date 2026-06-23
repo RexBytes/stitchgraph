@@ -1,0 +1,25 @@
+# stitchgraph configuration (copy to `stitchgraph.toml`). All keys are optional.
+
+[entry_points]
+# Extra roots the detector can't see — the trust escape hatch. Pin anything that
+# is reached dynamically (reflection, plugin registries, framework magic) so live
+# code is never wrongly flagged stale. Use full node ids (path::qualified.name).
+include = [
+  # "myapp/plugins.py::register",
+]
+include_tests = true        # treat test functions as entry points
+
+[index]
+# Globs (relative to the indexed root) skipped during reindex.
+ignore = [
+  # "**/migrations/**",
+  # "**/_vendor/**",
+]
+
+[review]
+threshold = 0.80            # results below this confidence are flagged needs_review
+
+[orient]
+# Hub ranking for `orient`: transitive_fan_in (default, most-depended-on) |
+# pagerank | fan_in (direct in-degree, fast).
+hub_metric = "transitive_fan_in"

@@ -47,10 +47,15 @@ class _Project:
     main_calls: set[str] = field(default_factory=set)
 
 
-def extract_project(root: str | Path) -> tuple[list[Node], list[Edge]]:
-    """Two passes: (1) collect definitions + symbol table, (2) resolve references."""
+def extract_project(root: str | Path,
+                    ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
+    """Two passes: (1) collect definitions + symbol table, (2) resolve references.
+
+    `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
+    """
     proj = _Project(root=Path(root))
-    files = sorted(p for p in proj.root.rglob("*.py") if _wanted(p, proj.root))
+    files = sorted(p for p in proj.root.rglob("*.py")
+                   if _wanted(p, proj.root) and not _ignored(p, proj.root, ignore))
     proj.packages = _project_packages(files, proj.root)
 
     parsed: dict[str, ast.Module] = {}
@@ -461,3 +466,10 @@ def _wanted(path: Path, root: Path) -> bool:
     parts = path.relative_to(root).parts
     skip = {".venv", "venv", "build", "dist", "__pycache__", ".git", ".tox"}
     return not any(p in skip for p in parts)
+
+
+def _ignored(path: Path, root: Path, ignore: list[str] | None) -> bool:
+    if not ignore:
+        return False
+    rel = path.relative_to(root)
+    return any(rel.match(pattern) for pattern in ignore)

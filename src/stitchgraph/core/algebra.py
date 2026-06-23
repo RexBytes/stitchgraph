@@ -92,6 +92,34 @@ def _bfs(adj: _Adjacency, seeds: Iterable[str], transpose: bool) -> set[str]:
     return {adj.ids[i] for i in idx}
 
 
+def transitive_fan_in(store: Store,
+                      relations: Iterable[Relation] = LIVENESS_RELATIONS,
+                      max_nodes: int = 4000) -> dict[str, int]:
+    """For each node, how many *distinct* nodes can transitively reach it — the
+    'most-depended-on, read these first' ranking (design §6.A).
+
+    Computed as the boolean transitive closure (repeated squaring of the
+    adjacency matrix under the any_pair semiring — frontier-free but still sparse)
+    then a column count. Bounded by `max_nodes`; above it, callers should fall
+    back to direct fan-in (the closure densifies on big graphs)."""
+    adj = _Adjacency(store, relations)
+    if adj.n == 0 or adj.n > max_nodes or not adj.rows:
+        return {}
+    A = adj.boolean()
+    reach = A.dup()
+    while True:
+        squared = reach.mxm(A, semiring.any_pair[bool]).new()
+        combined = reach.ewise_add(squared, gb.monoid.lor).new()
+        if combined.nvals == reach.nvals:
+            break
+        reach = combined
+    # column j count = number of sources that reach j. Cast bool->int first, else
+    # `plus` on BOOL is OR (always 1) rather than a count.
+    counts = reach.dup(dtype="INT64").reduce_columnwise(gb.monoid.plus).new()
+    coo = counts.to_coo()
+    return {adj.ids[i]: int(v) for i, v in zip(coo[0].tolist(), coo[1].tolist())}
+
+
 def pagerank(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS,
              damping: float = 0.85, iters: int = 40) -> dict[str, float]:
     """Transitive importance via PageRank — the 'read these first' hub ranking

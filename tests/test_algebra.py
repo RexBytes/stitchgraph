@@ -65,6 +65,14 @@ def test_pagerank_ranks_sink_highest():
         assert top in {"m.py::d", "m.py::c"}
 
 
+def test_transitive_fan_in_ranks_sink_highest():
+    with _chain_graph() as store:
+        tfi = algebra.transitive_fan_in(store)
+        # d is reachable from a, b, c -> highest transitive fan-in; a from none.
+        assert tfi["m.py::d"] == 3          # a, b, c reach d
+        assert tfi.get("m.py::a", 0) == 0   # nothing reaches a
+
+
 def test_reach_dispatch_uses_graphblas_consistently():
     with _chain_graph() as store:
         # reach.reachable_from should route through graphblas and still be correct

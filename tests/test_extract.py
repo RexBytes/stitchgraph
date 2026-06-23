@@ -114,3 +114,14 @@ def test_reindex_is_idempotent(tmp_path):
         n1 = store.node_count()
         sg.reindex(store, str(tmp_path))
         assert store.node_count() == n1  # rebuild, not duplicate
+
+
+def test_get_matrix_bounded_and_refuses(tmp_path):
+    with _index(tmp_path) as store:
+        m = sg.get_matrix(store, "mypkg/api.py", "CALLS")
+        assert m.ok
+        assert "public_api" in m.result["labels"]
+        assert m.result["relation"] == "CALLS"
+        # too-broad scope refuses rather than dumping a huge matrix
+        big = sg.get_matrix(store, "mypkg", "CALLS", limit=1)
+        assert big.needs_review and not big.ok
