@@ -4,6 +4,50 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-06-23
+
+**Depth & breadth.** Polyglot languages get first-class structure, the
+cross-language web of frameworks widens, runtime fusion goes multi-language, and
+the toolchain gets CI + packaging. See [`docs/STATUS.md`](docs/STATUS.md) for the
+full table and the **Roadmap** of what's left.
+
+### Added
+
+- **Framework routes:** Django URLconf, Express (JS), and Spring (Java `@*Mapping`)
+  join Flask/FastAPI — all produce `Route` nodes linked to handlers.
+- **JS `fetch` → backend route:** client-side calls link to the matching route, so
+  `trace_path` runs from a JS function through the backend to the DB table.
+- **Events (EMITS/HANDLES):** `emit`/`publish` + `on`/`subscribe` create `Event`
+  nodes, so `trace_path` crosses decoupled pub/sub boundaries.
+- **Polyglot depth:** imports, inheritance (`INHERITS` from class heritage), and
+  per-language test entry points for the tree-sitter languages; `impact_of` now
+  flows through inheritance.
+- **Framework-callback handling:** methods overriding an *external* base (e.g.
+  `HTMLParser.handle_starttag`) are treated as roots — the last dead-code
+  false-positive class is gone.
+- **Multi-language runtime traces:** `ingest_trace` now reads coverage.py JSON,
+  **LCOV** (JS/nyc, C/C++ gcov), and **Go coverprofiles**.
+- **`summarize_subsystem`** operation; **`get_matrix`** small dense grid.
+- **`watch`** command: re-index on file changes.
+- **Pluggable embeddings:** `set_embedder()` for `find_similar` (token default;
+  optional model2vec/sentence-transformers — no model bundled).
+- **CI** (GitHub Actions) + **PyPI** publish workflow; SQLite schema migration for
+  older index files.
+
+### Notes
+
+- The **LSP backend** (type-grade resolution) and **variable-granularity data
+  flow** remain the two largest deferred items — see the Roadmap. `find_stale`
+  stays advisory (`needs_review`); `--precise` (jedi) is the Python type-grade path.
+
+### Tests
+
+72 (up from 58): polyglot extraction, framework/event resolvers, multi-format
+runtime traces, pluggable embedder, file-watching, schema migration, and the
+precision/recall harness.
+
+[0.3.0]: https://github.com/RexBytes/stitchgraph/releases/tag/v0.3.0
+
 ## [0.2.0] — 2026-06-23
 
 **stitchgraph goes polyglot.** The headline: a config-driven tree-sitter

@@ -22,7 +22,7 @@ from .core.operations import (
     summarize_subsystem, trace_path,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # types
