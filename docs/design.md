@@ -113,6 +113,24 @@ Handler, Template, HTMLElement, ORMModel, DBTable, DBColumn, Query, Test`
 Each node: stable id, kind, name, source location (`file:line:col`), optional
 embedding, optional summary, optional payload flags (e.g. `is_stub`, arity).
 
+#### Node identity (stable ids)
+The id is `path::qualified.name` — e.g. `app/users.py::UserService.save` — **not**
+line-based. Overloads / duplicate names within the same scope get a `#n`
+disambiguator (`...save#2`). Consequences, by design:
+
+- Reformatting, comment edits, and line moves **do not** change the id, so edges
+  survive a re-parse. This is what makes incremental updates cheap.
+- A genuine rename **does** change the id (old id disappears, new one appears) —
+  correct, because a rename *is* an identity change for our purposes.
+
+#### Granularity (default vs opt-in)
+Default node granularity is **File / Module / Package / Class / Function /
+Method** plus the cross-language nodes (`Route, Endpoint, Handler, Template,
+ORMModel, DBTable, Test`). Variable/field-level nodes (`Variable, DBColumn`) are
+**opt-in**, switched on only for the 🟡 data-flow features (data loops, argument
+provenance), because variable-level granularity multiplies graph size and isn't
+needed for M0–M3. Keeps the common-case graph small.
+
 ### Edges (typed, weighted, provenanced)
 Relations: `CALLS, IMPORTS, INHERITS, READS, WRITES, QUERIES, ROUTES_TO,
 RENDERS, SUBMITS_TO, MAPS_TO, RETURNS, REFERENCES, TESTS, EMITS, HANDLES,
@@ -120,9 +138,11 @@ RUNTIME_HITS`
 
 ```
 Edge {
-  src, dst:    node_id
+  src:         node_id
+  dst_id:      node_id | null   # null = unresolved (a dangling reference)
+  dst_symbol:  str              # the raw name we tried to resolve
   relation:    RelationType
-  weight:      float          # 0..1 confidence in THIS edge
+  weight:      float            # 0..1 confidence in THIS edge
   provenance:  EXTRACTED | INFERRED | AMBIGUOUS
   location:    file:line:col
   source:      tree-sitter | lsp | heuristic | runtime | config
@@ -132,6 +152,32 @@ Edge {
 `EXTRACTED` = read directly from syntax/LSP (weight ~1.0). `INFERRED` = heuristic
 (weight < 1.0). `AMBIGUOUS` = multiple candidates, none dominant (low weight,
 alternatives recorded).
+
+#### Unresolved edges *are* the hole substrate
+An edge always records `dst_symbol` (the name at the call/reference site) and a
+nullable `dst_id`. **`dst_id IS NULL` means the reference didn't resolve to any
+known node — i.e. a dangling reference, the raw material of `find_holes`.** This
+makes hole detection a single indexed query rather than a separate analysis, and
+it gives the incremental updater a worklist (see *Incremental updates* below):
+when a new node appears, re-resolve any unresolved edge whose `dst_symbol`
+matches.
+
+#### Confidence weights & thresholds
+Confidence must be load-bearing, not decoration, so the source→weight mapping is
+pinned (all values overridable in `stitchgraph.toml`):
+
+| Edge source | Default weight | Provenance |
+|---|---|---|
+| Syntax-extracted (tree-sitter, unambiguous) | 1.0 | EXTRACTED |
+| LSP-resolved (def/ref/type) | 0.95 | EXTRACTED |
+| Single-candidate heuristic | 0.7 | INFERRED |
+| Cross-language inferred (form→route, model→column) | 0.6 | INFERRED |
+| Multiple candidates, none dominant | 0.3 × (1 / n_candidates) | AMBIGUOUS |
+
+**`needs_review` fires when confidence < 0.80 OR provenance = AMBIGUOUS.** A
+result's confidence is the propagated path confidence (max-× over its edges,
+§13.2), so a chain of strong edges stays high and one weak link drags it toward
+review.
 
 ### The universal result envelope (every operation, every surface)
 
@@ -151,6 +197,40 @@ Result {
 
 `needs_review` is true whenever confidence is below threshold or an ambiguity is
 named. Payloads stay compact — the token tax is real on a local model.
+
+### Store & incremental updates
+
+SQLite is the source of truth. Reindexing one file is *not* just "delete its rows
+and re-insert," because edges cross file boundaries: an edge is **owned** by the
+source file but **points** into another. The rule:
+
+1. Delete all nodes and all edges **owned by** (originating in) the changed file.
+2. Re-extract that file → insert its nodes and edges. New edges resolve against
+   the current node table; unresolved ones store `dst_id = null` + `dst_symbol`.
+3. **Re-resolve the unresolved worklist:** any existing edge with `dst_id IS NULL`
+   whose `dst_symbol` now matches a newly-inserted node gets relinked.
+4. **Invalidate stale inbound edges:** any resolved edge pointing *into* this file
+   whose target id no longer exists reverts to `dst_id = null` (becoming a hole
+   candidate until/unless re-resolved).
+
+This keeps the graph correct under edits without a full rebuild, and it means
+deletes and renames surface as holes automatically rather than as silent
+corruption. Edges are indexed by both `dst_id` and `dst_symbol` to make steps 3–4
+cheap.
+
+### Entry-point detection contract
+
+Dead-code and hole *liveness* are entirely bounded by the entry-point set, so this
+is the linchpin — and no static detector catches every dynamic root. Two parts:
+
+- **Detector plugin:** `detect(repo) -> set[node_id]`, one implementation per
+  stack (Flask routes, Click commands, `__main__`, pytest collection, cron/entry
+  registries…). Pluggable; M0 ships a stub detector + the interface.
+- **User override (the escape hatch):** a `stitchgraph.toml` `[entry_points]`
+  allowlist (and `[entry_points.ignore]`) lets a human pin "these are roots even
+  if they look dead" and "this really is dead." Without this, the first
+  false-positive stale flag on live code burns trust permanently — so the override
+  ships in M0 alongside the detector, not later.
 
 ---
 
@@ -501,3 +581,47 @@ target stack.
 - **Forty MCP tools.** ~8 task-level; the schema list is a per-turn context cost.
 - **Confidence as decoration.** It gates `needs_review` and propagates through the
   algebra, or it isn't worth carrying.
+
+---
+
+## 13. Open decisions & defaults
+
+Resolved-but-revisitable choices. Each has a working default so implementation
+isn't blocked; revisit if reality disagrees.
+
+### 13.1 Evaluation & a precision stance
+A tool that suggests deletions must answer "is it *right*?" in the spec, not after.
+
+- **Golden fixtures:** `tests/fixtures/` holds tiny repos with *known* dead code,
+  holes, and entry points; every operation is asserted against them.
+- **Stance — precision over recall on 🔴:** never flag live code as dead. A missed
+  dead function is acceptable; a wrongly-flagged live one is not. Red is reserved
+  for unambiguous, live, high-impact structural certainties (§7).
+
+### 13.2 Semiring per query + cycle convergence
+Different questions want different semirings; pin them:
+
+| Query | Semiring (⊕, ⊗) |
+|---|---|
+| Reachability / dead code | boolean (OR, AND) — LAGraph BFS |
+| Confidence-weighted path | (max, ×) — best path wins, confidence multiplies |
+| Blast-radius size / fan-in | (plus, ×) or count — how many, not how sure |
+
+**Cycle convergence:** under (max, ×) with all weights ≤ 1, products only shrink,
+so reachability/confidence closures **converge** even through SCCs — cycles don't
+blow up the algebra. Boolean reachability converges trivially (fixed point).
+
+### 13.3 Config file & CLI exit codes
+- **`stitchgraph.toml`** is the single config home: confidence weights/threshold,
+  `[entry_points]` overrides, `ignore` globs, granularity toggle, urgency tuning.
+- **`scan` exit codes:** `0` = no 🔴, `1` = 🔴 issues present, `2` = error. Makes
+  `stitchgraph scan` drop into CI / pre-commit, useful beyond the LLM loop.
+- **Output:** human text by default; `--json` emits the raw envelope on every
+  command (same object the library returns), keeping CLI↔API parity exact.
+
+### 13.4 Scale target
+Design target: **correct and snappy to ~100k nodes / ~10k files** on a single
+machine. This is the line that justifies GraphBLAS over networkx for the
+whole-graph sweeps (reachability, centrality, `scan`); below a few thousand nodes
+networkx would do, but the sweeps are where the matrix design earns its place at
+the stated scale.
