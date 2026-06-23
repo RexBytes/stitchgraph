@@ -455,6 +455,40 @@ def _git_path_mapper(store: Store, path: str):
     return lambda f: f"{prefix}/{f}".replace(os.sep, "/")
 
 
+@operation("Compact structural summary of a subsystem (path prefix), for an LLM.")
+def summarize_subsystem(store: Store, path: str) -> Result:
+    """A terse map of one subsystem (design §8): node counts, the hubs to read
+    first, its public surface (who calls in), and what it depends on (calls out)."""
+    members = [n for n in store.all_nodes_full() if n.id.startswith(path)]
+    if not members:
+        return refuse(f"no nodes under '{path}'", confidence=0.0)
+    mids = {n.id for n in members}
+    counts: dict[str, int] = {}
+    for n in members:
+        counts[n.kind.value] = counts.get(n.kind.value, 0) + 1
+
+    inbound: dict[str, int] = {}   # external -> member (public surface)
+    outbound: set[str] = set()     # member -> external (dependencies)
+    for e in store.resolved_edges():
+        if e.dst_id is None:
+            continue
+        if e.dst_id in mids and e.src not in mids:
+            inbound[e.dst_id] = inbound.get(e.dst_id, 0) + 1
+        elif e.src in mids and e.dst_id not in mids:
+            outbound.add(e.dst_id.split("::", 1)[0])
+
+    fi = fan_in(store)
+    hubs = sorted((n.id for n in members), key=lambda i: fi.get(i, 0), reverse=True)
+    public = sorted(inbound, key=inbound.get, reverse=True)
+    payload = {
+        "node_counts": counts,
+        "read_first": [h.split("::", 1)[-1] for h in hubs[:8]],
+        "public_surface": [p.split("::", 1)[-1] for p in public[:8]],
+        "depends_on_files": sorted(outbound)[:12],
+    }
+    return ok(payload, total=len(members))
+
+
 @operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
 def get_matrix(store: Store, scope: str, relation: str = "CALLS",
                limit: int = 25) -> Result:
@@ -485,12 +519,19 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         for e in store.resolved_edges(rel)
         if e.src in idx and e.dst_id in idx
     ]
+    labels = [m.split("::", 1)[-1] for m in members]
     payload = {
         "relation": rel.value,
-        "labels": [m.split("::", 1)[-1] for m in members],
+        "labels": labels,
         "cells": cells,        # sparse (src_index, dst_index, weight)
         "n": len(members),
     }
+    # A small dense 0/1 grid is easy for an LLM to read directly.
+    if len(members) <= 12:
+        grid = [[0] * len(members) for _ in members]
+        for c in cells:
+            grid[c["src"]][c["dst"]] = 1
+        payload["grid"] = grid
     return ok(payload, density=f"{len(cells)}/{len(members)**2}")
 
 

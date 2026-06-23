@@ -68,11 +68,20 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         with closing(self.conn.cursor()) as cur:
             cur.executescript(_SCHEMA)
+        self._migrate()
         self.conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
         )
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns missing from an older index file (forward-compatible)."""
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(nodes)")}
+        for col, ddl in (("roles", "roles TEXT NOT NULL DEFAULT ''"),
+                         ("end_line", "end_line INTEGER")):
+            if col not in have:
+                self.conn.execute(f"ALTER TABLE nodes ADD COLUMN {ddl}")
 
     # -- context manager ---------------------------------------------------
     def __enter__(self) -> Store:
