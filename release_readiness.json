@@ -60,6 +60,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {},
       "theme": "CLEAN — all three models returned FINDINGS: none; verified every recent fix for regressions, the precision invariant on adversarial input, the envelope contract, and GraphBLAS agreement"
+    },
+    {
+      "id": "I",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "LOW": 1},
+      "theme": "confirmation gate caught a real one: new Foo() constructor calls not edged in JS/TS/C#/C++ (live class flagged dead) — eight panels missed it; plus read-only global false data_loop. Streak resets."
     }
   ]
 }

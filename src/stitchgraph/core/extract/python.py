@@ -241,23 +241,25 @@ def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
     for func, fid in _iter_funcs(tree, rel):
         decl: set[str] = set()
         reads: set[str] = set()
+        stores: set[str] = set()
         for child in _direct_nodes(func):
             if isinstance(child, ast.Global):
                 decl.update(child.names)
-            elif isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load) \
-                    and child.id in mutable:
-                reads.add(child.id)
-        for name in decl & mutable:
+            elif isinstance(child, ast.Name) and child.id in mutable:
+                if isinstance(child.ctx, ast.Load):
+                    reads.add(child.id)
+                elif isinstance(child.ctx, ast.Store):
+                    stores.add(child.id)
+        # A WRITES edge requires the function to actually *assign* a declared global,
+        # not merely declare it: `global x; return x` (read-only) must not get a
+        # spurious WRITES (which faked a read+write data feedback loop in scan()).
+        writes = decl & stores
+        for name in writes:
             proj.edges.append(Edge(src=fid, relation=Relation.WRITES, dst_symbol=name,
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,
                                    location=f"{rel}:{func.lineno}:0", source="ast"))
-        for name in reads - decl:  # pure reads (writers already covered above)
-            proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
-                                   dst_id=f"var::{rel}::{name}", weight=1.0,
-                                   provenance=Provenance.EXTRACTED,
-                                   location=f"{rel}:{func.lineno}:0", source="ast"))
-        for name in reads & decl:  # read-and-write -> emit both (feedback)
+        for name in reads:  # a read is a read whether or not the function also writes
             proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,

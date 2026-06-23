@@ -636,3 +636,25 @@ def test_new_expression_constructor_is_a_call(tmp_path):
         calls = {(e.src.split("::")[-1], e.dst_id.split("::")[-1])
                  for e in store.resolved_edges(Relation.CALLS)}
         assert ("run", "Widget") in calls   # new Widget() -> CALLS edge
+
+
+# -- Panel I / sonnet (LOW): read-only `global x` is not a write ---------------
+def test_readonly_global_is_not_a_write(tmp_path):
+    """`global x; return x` (declare-without-assign) must not emit a WRITES edge —
+    that faked a read+write data feedback loop in scan(). Only an actual assignment
+    to a declared global is a write."""
+    from stitchgraph.core.model import Relation
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/m.py": "counter = 0\n"
+                    "def reader():\n    global counter\n    return counter\n"
+                    "def writer():\n    global counter\n    counter = counter + 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        writers = {e.src.split("::")[-1] for e in store.resolved_edges(Relation.WRITES)}
+        assert "reader" not in writers   # read-only: no spurious WRITES
+        assert "writer" in writers        # genuine assignment
+        loops = [i for i in sg.scan(store).result if i["kind"] == "data_loop"]
+        members = {m for i in loops for m in i["members"]}
+        assert not any(m.endswith("::reader") for m in members)  # no false data loop

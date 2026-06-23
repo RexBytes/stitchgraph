@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 8 (Panels A–H) |
+| Multi-model review panels | 9 (Panels A–I) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 111 passing, 1 skipped |
-| Coverage | 84.1% |
-| Release-Readiness Score | **90.2 / 100** (≥90 ✅) |
-| Convergence | weighted yield … → 6 → 0 (Panel H fully clean); clean streak **1 of 2** required |
-| Verdict | NOT RELEASABLE — one gate left: needs a 2nd consecutive clean full-diversity panel (Panel I) |
+| Tests | 112 passing, 1 skipped |
+| Coverage | ~84% |
+| Release-Readiness Score | 79.2 / 100 |
+| Convergence | Panel H clean (0) → Panel I found a real HIGH (11); clean streak **reset to 0 of 2** |
+| Verdict | NOT RELEASABLE — the confirmation gate worked: Panel I caught a live-code-flagged-dead bug Panel H missed. Streak restarts. |
 
 ## Trajectory
 
@@ -30,6 +30,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | F | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM · 2 LOW | 16.0 | Ruby paren-less calls (all 3 converged); TS `export{}` re-export; trace_path vacuous-ok; SQL multi-statement |
 | G | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | **no HIGH; haiku clean** — parallel-edge dedup (fan_in/get_matrix), get_matrix cells, ORM relationship() phantom column |
 | H | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN** — all three returned FINDINGS: none; regression-checked every recent fix, precision invariant on adversarial input, envelope contract, GraphBLAS agreement |
+| I | opus · sonnet · haiku | 1 HIGH · 1 LOW | 11.0 | **confirmation gate caught a real HIGH** — `new Foo()` not edged in JS/TS/C#/C++ (live class flagged dead); read-only `global` false data_loop. Streak resets. |
 
 ## What each panel found and how it was fixed
 
@@ -201,6 +202,25 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   exported `__all__` API + `__main__` + private helpers → only genuinely-unreferenced
   symbols flagged, advisory, never live code), and confirmed the envelope contract and
   GraphBLAS-vs-pure-Python agreement. RRS crossed **90.2**; clean streak **1 of 2**.
+
+- **Panel I (opus · sonnet · haiku)** — **the confirmation gate did its job.** After a
+  fully-clean Panel H, opus found a real precision violation on novel input, proving
+  why two consecutive clean panels are required (one clean panel is not proof):
+  - **HIGH (opus)** — a `new Foo()` constructor call produced no CALLS edge in
+    tree-sitter JS/TS/C#/C++, so a class instantiated only via `new` inside a live
+    function was flagged dead (live code flagged dead — the cardinal sin). Java's
+    `object_creation_expression` and Python's `ClassName()` already model constructor
+    calls, so this was a Python/Java ↔ JS/TS/C#/C++ symmetry gap. Added the
+    constructor-call node type to each LangSpec (JS/TS `new_expression.constructor`,
+    C# `object_creation_expression.type`, C++ `new_expression.type`; Rust unchanged).
+  - **LOW (sonnet)** — `_global_state` emitted a WRITES edge for a *declared but
+    never-assigned* global (`global x; return x`), faking a read+write data feedback
+    loop in `scan()`. A WRITES now requires an actual `ast.Store` assignment; a genuine
+    read-modify-write still forms its loop. (Sonnet judged the rest clean at
+    release-blocking severity after 52 scenarios.)
+
+  Clean streak **reset to 0**; RRS back to 79.2. The two-clean-panel rule paid for
+  itself here — Panel H alone would have shipped the `new`-expression bug.
 
 ## Standing themes
 
