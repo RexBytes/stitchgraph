@@ -583,3 +583,25 @@ def test_get_matrix_cells_are_deduped(tmp_path):
         cells = res.result["cells"]
         keys = {(c["src"], c["dst"]) for c in cells}
         assert len(cells) == len(keys)   # no duplicate (src,dst)
+
+
+# -- Panel G / sonnet (LOW): ORM relationship()/M2M are not columns ------------
+def test_orm_relationship_is_not_a_phantom_column(tmp_path):
+    """A SQLAlchemy `relationship()` (and a Django ManyToManyField) is not a table
+    column — emitting it as a DBColumn made a phantom `db::<table>.<attr>` node that
+    polluted the schema view and trace_path. Real `Column(...)` fields still map."""
+    _mk(tmp_path, {
+        "models.py": "from sqlalchemy.orm import DeclarativeBase, relationship\n"
+                     "class Base(DeclarativeBase):\n    pass\n"
+                     "class User(Base):\n"
+                     '    __tablename__ = "users"\n'
+                     "    id = Column(Integer, primary_key=True)\n"
+                     "    email = Column(String)\n"
+                     '    orders = relationship("Order")\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import NodeKind
+        cols = {n.id for n in store.nodes_by_kind(NodeKind.DB_COLUMN)}
+        assert {"db::users.id", "db::users.email"} <= cols  # real columns kept
+        assert "db::users.orders" not in cols                # relationship is not a column

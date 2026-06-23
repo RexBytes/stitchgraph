@@ -19,6 +19,11 @@ from . import ResolveContext, iter_class_defs
 
 _MODEL_BASES = {"Model", "Base", "DeclarativeBase"}
 _COLUMN_CALLS = {"Column", "mapped_column"}
+# Virtual / non-column attributes: a SQLAlchemy `relationship()` is a Python-side
+# association (no column), and a Django `ManyToManyField` is backed by a junction
+# table, not a column in the owning table. Emitting these as DBColumn nodes made
+# phantom `db::<table>.<attr>` columns that polluted the schema view and trace_path.
+_NOT_COLUMNS = {"relationship", "ManyToManyField"}
 
 
 class OrmResolver:
@@ -101,4 +106,6 @@ def _columns(cls: ast.ClassDef) -> list[str]:
 def _is_column_call(func: ast.AST) -> bool:
     name = func.attr if isinstance(func, ast.Attribute) else (
         func.id if isinstance(func, ast.Name) else "")
-    return name in _COLUMN_CALLS or name.endswith("Field") or name == "relationship"
+    if name in _NOT_COLUMNS:
+        return False
+    return name in _COLUMN_CALLS or name.endswith("Field")

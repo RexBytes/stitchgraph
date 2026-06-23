@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 6 (Panels A–F) |
+| Multi-model review panels | 7 (Panels A–G) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 108 passing, 1 skipped |
+| Tests | 111 passing, 1 skipped |
 | Coverage | ~83% |
-| Release-Readiness Score | 77.7 / 100 |
-| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 → 16 (non-monotonic); clean streak 0 of 2 required |
-| Verdict | NOT RELEASABLE — Panels E/F fixed the last untested language paths (C/C++, Ruby); all 11 languages now verified. Needs ≥2 clean panels |
+| Release-Readiness Score | 80.6 / 100 |
+| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 → 16 → 6 (no HIGH in G; haiku clean); clean streak 0 of 2 |
+| Verdict | NOT RELEASABLE — G found no HIGH and one model came back clean; findings now metrics/data-side. Needs ≥2 clean panels |
 
 ## Trajectory
 
@@ -28,6 +28,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | D | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | incremental/edge surfaces — `_resolve_worklist` ambiguity, recursion self-edge, malformed-coverage crash |
 | E | opus · sonnet · haiku | 1 HIGH · 2 LOW · 1 NIT | 12.2 | untested language path — C/C++ functions silently dropped; exported-method over-seeding, INSERT…SELECT label, jsfetch guard |
 | F | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM · 2 LOW | 16.0 | Ruby paren-less calls (all 3 converged); TS `export{}` re-export; trace_path vacuous-ok; SQL multi-statement |
+| G | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | **no HIGH; haiku clean** — parallel-edge dedup (fan_in/get_matrix), get_matrix cells, ORM relationship() phantom column |
 
 ## What each panel found and how it was fixed
 
@@ -169,6 +170,26 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 
   With C/C++ (Panel E) and Ruby (Panel F) fixed, **all 11 tree-sitter languages are
   now verified to extract defs + a call graph** (opus exercised each on real input).
+
+- **Panel G (opus · sonnet · haiku)** — the lightest panel: **no HIGH, no precision
+  violation, and haiku came back fully clean** (`FINDINGS: none` after 41 custom
+  tests). The findings moved off the core onto metrics/data-side polish, and the
+  panel confirmed large swaths clean (SQL UNION/INTERSECT/window/`INSERT…SELECT`/
+  `ON CONFLICT`/CTE-writes, `get_matrix` bounds, `find_similar` degenerate inputs,
+  trace_path confidence math, LCOV/Go coverage edges).
+  - **MEDIUM (opus)** — parallel resolved edges (two call sites to the same target,
+    or the jedi resolver re-confirming an AST edge under `--precise`) were stored
+    separately, inflating `fan_in`/`fan_out` and the `fan_in`-fallback hubs. `reindex`
+    now collapses parallel `(src, relation, dst_id)` edges (max weight), matching the
+    boolean/GraphBLAS layer that already dedups.
+  - **LOW (opus)** — `get_matrix` sparse `cells` and `density` double-counted repeated
+    call sites (the dense grid was already idempotent). Cells are now one per (src,dst).
+  - **LOW (sonnet)** — the ORM resolver emitted phantom `DBColumn` nodes for a
+    SQLAlchemy `relationship()` / Django `ManyToManyField` (virtual / junction-table,
+    not a column), polluting the schema view and trace_path. Those are no longer
+    treated as columns; real `Column(...)`/`*Field` mappings are unchanged.
+    (Sonnet also probed an LCOV all-zero-coverage case and correctly *dismissed* it —
+    "the trace ran, nothing hit" is the right semantics, not a bug.)
 
 ## Standing themes
 
