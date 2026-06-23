@@ -208,6 +208,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
                 n.roles = n.roles | {"exported"}
 
     _seed_exported_class_methods(nodes, file_lang)
+    _seed_classes_from_exported_methods(nodes)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
@@ -310,6 +311,24 @@ def _seed_constructors(nodes, edges, file_lang) -> None:
                 edges.append(Edge(src=n.id, relation=Relation.REFERENCES, dst_symbol=ctor,
                                   dst_id=mid, weight=1.0, provenance=Provenance.EXTRACTED,
                                   location=n.location, source="tree-sitter"))
+
+
+def _seed_classes_from_exported_methods(nodes) -> None:
+    """Up-propagate `exported`: a class with an exported (public) method is itself
+    public API. Languages with per-method visibility but no class-level export token
+    — notably PHP, whose classes are implicitly public — otherwise seed the methods
+    as roots while leaving the class flagged dead (the contradictory 'method live,
+    class dead' shape). Over-marking the class as a root is the precision-safe
+    direction."""
+    class_ids = {n.id for n in nodes if n.kind is C}
+    exported_classes = {n.id.rsplit(".", 1)[0] for n in nodes
+                        if n.kind is M and "exported" in n.roles and "." in n.id
+                        and n.id.rsplit(".", 1)[0] in class_ids}
+    if not exported_classes:
+        return
+    for n in nodes:
+        if n.id in exported_classes:
+            n.roles = n.roles | {"exported"}
 
 
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:

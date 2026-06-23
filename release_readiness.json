@@ -84,6 +84,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "MEDIUM": 2},
       "theme": "constructing a class didn't reach its constructor -> constructions in __init__ flagged dead (haiku HIGH); Python twins of Panel K's tree-sitter metric fixes — CALLS+REFERENCES double-edge (opus) and REFERENCES self-loop (sonnet) — now fixed language-agnostically at the dedup boundary. (sonnet's slot hit a 500; finding salvaged from transcript and fixed.)"
+    },
+    {
+      "id": "M",
+      "models": ["opus", "haiku"],
+      "findings": {"HIGH": 1},
+      "theme": "PHP public class flagged dead while its public methods are live roots (opus HIGH) — PHP classes carry no `public` token, so up-propagate `exported` from public methods to the class. haiku clean. (sonnet slot unavailable: 3x API 500/529 — partial-diversity panel; non-clean anyway.)"
     }
   ]
 }

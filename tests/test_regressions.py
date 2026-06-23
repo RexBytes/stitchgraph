@@ -831,3 +831,24 @@ def test_python_reference_self_loop_is_dropped(tmp_path):
         sg.reindex(store, str(tmp_path))
         assert not any(e.src == e.dst_id for e in store.resolved_edges(Relation.REFERENCES))
         assert fan_in(store).get("pkg/m.py::dispatcher") in (None, 0)
+
+
+# -- Panel M / opus (HIGH): a PHP public class is public API (live) -------------
+def test_php_public_class_is_not_stale(tmp_path):
+    """PHP classes carry no `public` token (they're implicitly public), so the class
+    node wasn't seeded `exported` though its `public function` methods were — flagging
+    a library public class dead while its method is a live root. A class with an
+    exported method is itself public API."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.php": ("<?php\n"
+                    "class Helper { public function work(){ return 1; } }\n"
+                    "class PublicApi { public function entry(){ $h = new Helper(); return $h->work(); } }\n"
+                    "class TrulyDead { private function x(){ return 1; } }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "PublicApi" not in stale   # public class = public API
+        assert "TrulyDead" in stale        # only a private method -> not public API
