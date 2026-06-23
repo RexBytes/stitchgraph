@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stitchgraph"
+version = "0.0.1"
+description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "RexBytes" }]
+keywords = ["code-intelligence", "mcp", "graph", "static-analysis", "dead-code"]
+
+# Core is intentionally stdlib-only so `import stitchgraph` is light and always
+# runs. Interface and extraction deps are optional extras (see below).
+dependencies = []
+
+[project.optional-dependencies]
+cli = ["typer>=0.12"]
+mcp = ["mcp>=1.0"]
+extract = ["tree-sitter>=0.21", "tree-sitter-python>=0.21"]
+algebra = ["python-graphblas>=2023.0"]
+# Everything needed to run all surfaces.
+all = [
+  "typer>=0.12",
+  "mcp>=1.0",
+  "tree-sitter>=0.21",
+  "tree-sitter-python>=0.21",
+  "python-graphblas>=2023.0",
+]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+stitchgraph = "stitchgraph.adapters.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/RexBytes/stitchgraph"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/stitchgraph"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

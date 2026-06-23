@@ -251,6 +251,13 @@ genuinely useful answer for a package.
 first real fixture is stitchgraph pointed at its own `core/` + `adapters/` — a
 codebase whose structure we know cold and can eyeball for correctness.
 
+**Read-only invariant.** Dogfooding is for *observation*, not *action*:
+stitchgraph **never mutates analyzed source** — it only ever writes to its own
+index DB. Every operation is advisory; it returns ranked options for a
+human/LLM to act on, never edits or deletes code itself. Acting on stitchgraph's
+own suggestions about its own code stays off the table until the tool's precision
+is trusted on independent fixtures first.
+
 ---
 
 ## 5. The three regimes
