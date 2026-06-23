@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     is_stub   INTEGER NOT NULL DEFAULT 0,
     arity     INTEGER,
     summary   TEXT,
-    roles     TEXT NOT NULL DEFAULT ''      -- entry-point signals, comma-joined
+    roles     TEXT NOT NULL DEFAULT '',     -- entry-point signals, comma-joined
+    end_line  INTEGER                       -- last line of the def
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -86,12 +87,19 @@ class Store:
     # -- writes ------------------------------------------------------------
     def add_node(self, node: Node, file: str = "") -> None:
         self.conn.execute(
-            """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles, end_line)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node.id, node.kind.value, node.name, node.location,
              file or _file_of(node.id), int(node.is_stub), node.arity, node.summary,
-             ",".join(sorted(node.roles))),
+             ",".join(sorted(node.roles)), node.end_line),
         )
+
+    def add_role(self, node_id: str, role: str) -> None:
+        node = self.get_node(node_id)
+        if node is None or role in node.roles:
+            return
+        roles = ",".join(sorted(node.roles | {role}))
+        self.conn.execute("UPDATE nodes SET roles = ? WHERE id = ?", (roles, node_id))
 
     def add_edge(self, edge: Edge, file: str = "") -> None:
         self.conn.execute(
@@ -167,6 +175,9 @@ class Store:
     def all_node_ids(self) -> list[str]:
         return [r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
 
+    def all_nodes_full(self) -> list[Node]:
+        return [_row_to_node(r) for r in self.conn.execute("SELECT * FROM nodes").fetchall()]
+
     def nodes_with_role(self, role: str) -> list[Node]:
         rows = self.conn.execute(
             "SELECT * FROM nodes WHERE (',' || roles || ',') LIKE ?",
@@ -213,11 +224,13 @@ class Store:
 
 # -- row mappers -----------------------------------------------------------
 def _row_to_node(row: sqlite3.Row) -> Node:
-    roles = row["roles"] if "roles" in row.keys() else ""
+    keys = row.keys()
+    roles = row["roles"] if "roles" in keys else ""
     return Node(
         id=row["id"], kind=NodeKind(row["kind"]), name=row["name"],
-        location=row["location"], is_stub=bool(row["is_stub"]),
-        arity=row["arity"], summary=row["summary"],
+        location=row["location"],
+        end_line=row["end_line"] if "end_line" in keys else None,
+        is_stub=bool(row["is_stub"]), arity=row["arity"], summary=row["summary"],
         roles=frozenset(r for r in roles.split(",") if r),
     )
 

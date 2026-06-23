@@ -155,9 +155,15 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
             confidence=0.5, provenance=Provenance.INFERRED,
             result=candidates, count=len(candidates),
         )
-    # Real detector, but resolution is name-based (no type info yet) so method/
-    # attribute reachability is approximate — present as review candidates, not a
-    # confident verdict (design §5: live types beat inferred; LSP raises this).
+    # Grounding in a runtime trace raises confidence: these were neither reached
+    # statically nor observed executing (design §2c). Otherwise resolution is
+    # name-based, so present as review candidates (design §5: LSP raises this).
+    if store.get_meta("has_runtime") == "1":
+        res = ok(candidates, confidence=0.78, provenance=Provenance.INFERRED,
+                 count=len(candidates))
+        res.add_reason("not reached statically AND not executed in the ingested "
+                       "trace (may still be used on paths the trace didn't cover)")
+        return res
     res = ok(candidates, confidence=0.6, provenance=Provenance.INFERRED,
              count=len(candidates))
     res.add_reason("reachability is from name-based resolution (no type info yet); "
@@ -313,6 +319,28 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
              orange=sum(i["urgency"] == "orange" for i in issues))
     res.urgency = Urgency(top) if issues else Urgency.GREEN
     return res
+
+
+@operation("Fuse a coverage.json runtime trace: mark what actually executed.")
+def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
+    """Ingest a coverage.py JSON report (design §2c). Marks executed nodes with a
+    `runtime` role so they seed reachability and are never flagged dead — grounding
+    the graph in what actually ran. Writes only to the index (read-only invariant).
+    """
+    from . import runtime
+
+    covmap, _ = runtime.load_coverage(trace)
+    if not covmap:
+        return refuse(f"no usable coverage data in '{trace}' "
+                      "(generate with: coverage run -m pytest && coverage json)",
+                      confidence=0.0)
+    root = store.get_meta("root") or "."
+    hits = runtime.hit_node_ids(store, covmap, root)
+    for nid in hits:
+        store.add_role(nid, "runtime")
+    store.set_meta("has_runtime", "1")
+    return ok({"executed_nodes": len(hits)}, executed=len(hits),
+              files=len(covmap))
 
 
 @operation("Risk hotspots (churn × centrality) and hidden coupling from git history.")

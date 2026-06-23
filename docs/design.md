@@ -597,8 +597,11 @@ it as a backend.
   (model → table/column, MAPS_TO). ORM and SQL converge on the same `db::<table>`
   node, so full-stack `trace_path` crosses route → handler → … → table → column.
   `stitchgraph report` shipped. Next resolver: HTML template → route.
-- **M4 — Optional / later.** Data-loop detection (🟡), git-history risk fusion,
-  runtime-trace fusion, vector `find_similar`.
+- **M4 — Optional / later.** *Partly implemented:* git-history risk fusion
+  (`risk` — churn × centrality + hidden coupling) and runtime-trace fusion
+  (`ingest_trace` — coverage.json marks executed nodes as live seeds and raises
+  dead-code confidence) are done. Still open: data-loop detection (🟡) and vector
+  `find_similar`.
 
 The one piece that can't be stack-agnostic is **entry-point detection**, and
 dead-code/hole quality is entirely bounded by it (miss an entry point → flag live

@@ -61,7 +61,8 @@ class PythonLibraryDetector:
 
     def detect(self, store: Store) -> set[str]:
         roots: set[str] = set()
-        for role in ("exported", "main", "script", "route"):
+        # 'runtime' = observed executing in a trace -> definitely live (design §2c).
+        for role in ("exported", "main", "script", "route", "runtime"):
             roots.update(n.id for n in store.nodes_with_role(role))
         if self.include_tests:
             roots.update(n.id for n in store.nodes_with_role("test"))

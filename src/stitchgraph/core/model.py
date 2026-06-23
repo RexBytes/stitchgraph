@@ -60,6 +60,7 @@ class Node:
     kind: NodeKind
     name: str
     location: str = ""  # file:line:col
+    end_line: int | None = None  # last line of the def (for runtime mapping)
     is_stub: bool = False
     arity: int | None = None
     summary: str | None = None

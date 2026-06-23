@@ -118,6 +118,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         proj.nodes.append(Node(
             id=Node.make_id(rel, qual), kind=kind, name=node.name,
             location=f"{rel}:{node.lineno}:{node.col_offset}",
+            end_line=getattr(node, "end_lineno", None),
             is_stub=is_stub, arity=_arity(node), roles=frozenset(roles),
         ))
     elif isinstance(node, ast.ClassDef):
@@ -125,6 +126,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         proj.nodes.append(Node(
             id=Node.make_id(rel, qual), kind=NodeKind.CLASS, name=node.name,
             location=f"{rel}:{node.lineno}:{node.col_offset}",
+            end_line=getattr(node, "end_lineno", None),
         ))
         abstract = _is_abstract_class(node)
         for child in ast.iter_child_nodes(node):
