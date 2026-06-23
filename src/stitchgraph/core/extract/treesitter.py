@@ -80,12 +80,39 @@ SPECS: dict[str, LangSpec] = {
         defs={"function_definition": F},
         call_types={"command": None},
     ),
+    "go": LangSpec(
+        defs={"function_declaration": F, "method_declaration": M, "type_spec": C},
+        call_types={"call_expression": "function"},
+        containers=frozenset({"type_spec"}),
+    ),
+    "java": LangSpec(
+        defs={"method_declaration": M, "constructor_declaration": M,
+              "class_declaration": C, "interface_declaration": C,
+              "enum_declaration": C, "record_declaration": C},
+        call_types={"method_invocation": "name", "object_creation_expression": "type"},
+        containers=frozenset({"class_declaration", "class_body", "interface_declaration",
+                              "interface_body", "enum_declaration", "enum_body"}),
+    ),
+    "ruby": LangSpec(
+        defs={"method": M, "singleton_method": M, "class": C, "module": C},
+        call_types={"call": "method"},
+        containers=frozenset({"class", "module"}),
+    ),
+    "php": LangSpec(
+        defs={"function_definition": F, "method_declaration": M, "class_declaration": C,
+              "interface_declaration": C, "trait_declaration": C},
+        call_types={"function_call_expression": "function",
+                    "member_call_expression": "name", "scoped_call_expression": "name"},
+        containers=frozenset({"class_declaration", "declaration_list",
+                              "interface_declaration", "trait_declaration"}),
+    ),
 }
 EXT_LANG = {
     ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".ts": "typescript", ".tsx": "tsx", ".rs": "rust", ".c": "c", ".h": "c",
     ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".hpp": "cpp", ".cs": "csharp",
-    ".sh": "bash", ".bash": "bash",
+    ".sh": "bash", ".bash": "bash", ".go": "go", ".java": "java", ".rb": "ruby",
+    ".php": "php",
 }
 _SKIP = {".venv", "venv", "build", "dist", "__pycache__", ".git", "node_modules", "target"}
 
@@ -207,7 +234,7 @@ def _trailing_id(node, src):
     if node is None:
         return None
     if node.type in ("identifier", "type_identifier", "field_identifier",
-                     "property_identifier", "word"):
+                     "property_identifier", "word", "name", "constant"):
         return _text(node, src)
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:
@@ -261,11 +288,25 @@ def _roles(node, src, name, lang, exported):
     roles = set()
     if exported:
         roles.add("exported")
-    if name == "main":
+    if name in ("main", "Main"):
         roles.add("main")
     if lang == "rust" and any(c.type == "visibility_modifier" for c in node.children):
         roles.add("exported")
+    elif lang == "go" and name[:1].isupper():        # Go: capitalised = exported
+        roles.add("exported")
+    elif lang in ("java", "php", "csharp") and _has_public(node, src):
+        roles.add("exported")
     return frozenset(roles)
+
+
+def _has_public(node, src) -> bool:
+    for c in node.children:
+        if c.type in ("modifiers", "modifier", "visibility_modifier") \
+                and "public" in _text(c, src):
+            return True
+        if c.type == "public":
+            return True
+    return False
 
 
 def _join(parent, name):

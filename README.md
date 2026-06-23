@@ -22,7 +22,7 @@ for the agent rules that teach an LLM when to call which tool.
 
 - **Deepest:** Python 3.11+ (stdlib `ast`; optional `jedi` for `--precise`).
 - **Extracted via tree-sitter** (definitions + call graph → dead-code, orient,
-  impact, trace): **JavaScript, TypeScript/TSX, Rust, C, C++, C#, Bash**.
+  impact, trace): **JavaScript, TypeScript/TSX, Rust, C, C++, C#, Go, Java, Ruby, PHP, Bash**.
 - **Detected at the cross-language boundary:** web routes (Flask/FastAPI), HTML
   templates (`<form action>`), SQL (sqlglot), ORM (SQLAlchemy/Django) — powering
   the full-stack `trace_path`.

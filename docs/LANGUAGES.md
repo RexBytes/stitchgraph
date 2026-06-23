@@ -1,10 +1,15 @@
 # Languages & frameworks
 
 stitchgraph extracts a unified graph across languages. **Python** is the deepest
-(stdlib `ast` with scope/type-aware resolution); **JS/TS, Rust, C/C++, C#, Bash**
-are extracted via **tree-sitter** (definitions + call graph); and a set of
-**cross-language resolvers** stitch the boundaries (routes, HTML forms, SQL, ORM)
-so a full-stack trace works end to end.
+(stdlib `ast` with scope/type-aware resolution); **JS/TS, Rust, C/C++, C#, Go,
+Java, Ruby, PHP, Bash** are extracted via **tree-sitter** (definitions + call
+graph); and a set of **cross-language resolvers** stitch the boundaries (routes,
+HTML forms, SQL, ORM) so a full-stack trace works end to end.
+
+Adding a language is a small `LangSpec` (node types → kinds, the call node +
+callee field): name-based call graphs are cheap. The genuinely hard part — and
+the reason an LSP is the deferred upgrade — is *type-correct* resolution
+(which `save` does `x.save()` mean?), not parsing.
 
 ## Language progress table
 
@@ -18,7 +23,11 @@ Legend: ✅ full · 🟡 partial · ⬜ not yet · — n/a
 | **Rust** | tree-sitter | ✅ (fn/struct/enum/trait/impl) | ✅ | ⬜ | ⬜ | 🟡 `pub`, `main` | ✅ |
 | **C** | tree-sitter | ✅ (fn/struct) | ✅ | ⬜ | — | 🟡 `main` | ✅ |
 | **C++** | tree-sitter | ✅ (fn/class/struct/methods) | ✅ | ⬜ | ⬜ | 🟡 `main` | ✅ |
-| **C#** | tree-sitter | ✅ (class/struct/iface/methods) | ✅ | ⬜ | ⬜ | 🟡 `Main` | ✅ |
+| **C#** | tree-sitter | ✅ (class/struct/iface/methods) | ✅ | ⬜ | ⬜ | 🟡 `public`/`Main` | ✅ |
+| **Go** | tree-sitter | ✅ (func/method/type) | ✅ | ⬜ | — | 🟡 capitalised/`main` | ✅ |
+| **Java** | tree-sitter | ✅ (class/iface/enum/methods) | ✅ | ⬜ | ⬜ | 🟡 `public`/`main` | ✅ |
+| **Ruby** | tree-sitter | ✅ (class/module/methods) | ✅ | ⬜ | ⬜ | ⬜ | ✅ (with config roots) |
+| **PHP** | tree-sitter | ✅ (class/trait/methods) | ✅ | ⬜ | ⬜ | 🟡 `public` | ✅ |
 | **Bash / Shell** | tree-sitter | ✅ (functions) | ✅ | ⬜ | — | ⬜ | ✅ (with config roots) |
 | **HTML** | resolver | — | — | — | — | — | detected: `<form action>` → route |
 | **SQL** | resolver (sqlglot) | — | — | — | — | — | detected: query → table, READS/WRITES |

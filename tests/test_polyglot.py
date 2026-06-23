@@ -57,6 +57,32 @@ def test_dead_code_across_languages(tmp_path):
         assert "jsHelper" not in stale and "rsHelper" not in stale  # reached -> live
 
 
+def test_go_java_ruby_php(tmp_path):
+    (tmp_path / "m.go").write_text(
+        "package m\nfunc GoEntry() int { return goWork() }\n"
+        "func goWork() int { return 1 }\nfunc goDead() int { return 0 }\n")
+    (tmp_path / "C.java").write_text(
+        "class C { public int javaRun(){ return javaHelp(); }\n"
+        "  int javaHelp(){ return 1; } int javaDead(){ return 2; } }\n")
+    (tmp_path / "s.rb").write_text(
+        "def rbEntry\n rbWork\nend\ndef rbWork\n 1\nend\ndef rbDead\n 0\nend\n")
+    (tmp_path / "a.php").write_text(
+        "<?php\nfunction phpEntry(){ return phpWork(); }\n"
+        "function phpWork(){ return 1; }\nfunction phpDead(){ return 2; }\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    names = {n.name for n in store.all_nodes_full()}
+    assert {"GoEntry", "javaRun", "rbEntry", "phpEntry"} <= names
+    # call graph per language
+    for a, b in [("GoEntry", "goWork"), ("javaRun", "javaHelp"),
+                 ("rbEntry", "rbWork"), ("phpEntry", "phpWork")]:
+        assert sg.trace_path(store, a, b).ok, f"{a}->{b}"
+    # dead code across all four
+    stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert {"goDead", "C.javaDead", "rbDead", "phpDead"} <= stale
+    store.close()
+
+
 def test_no_cross_language_false_links(tmp_path):
     # jsHelper and rsHelper share a suffix but must not link across languages.
     (tmp_path / "a.js").write_text("function shared(){ return 1; }\nfunction useJs(){ return shared(); }\n")
