@@ -18,20 +18,28 @@ See [`docs/design.md`](docs/design.md) for the full design & capability map.
 
 ## Status
 
-Early scaffold (M0 in progress). Working today:
+M0 working end-to-end on Python projects (dogfoods on its own source):
 
-- SQLite adjacency store (source of truth) with the `dst_id`/`dst_symbol` edge
-  schema and incremental, cross-file-correct updates.
-- The universal `Result` envelope (confidence / provenance / `needs_review` /
-  urgency), with provenance gating the urgency ceiling.
-- Operations backed by the store: `find_symbol`, `get_callers`, `get_callees`,
-  `find_holes` (dangling references), `find_stale` (reachability), `orient`.
-- All three surfaces generated from one operation registry (CLI + MCP + library),
-  plus a Markdown `report`.
+- **Python extractor** (stdlib `ast`) → nodes (Module/Class/Function/Method/Test)
+  and edges (CALLS/IMPORTS/INHERITS), with precision-biased resolution and
+  entry-point role tagging. tree-sitter + an LSP are the documented upgrade for
+  incremental/polyglot/live-types.
+- **SQLite adjacency store** (source of truth) with the `dst_id`/`dst_symbol`
+  edge schema and incremental, cross-file-correct updates.
+- **Entry-point detector** for the Python library+CLI shape (public API, `main`,
+  scripts, tests) with a config override.
+- **Universal `Result` envelope** (confidence / provenance / `needs_review` /
+  urgency), provenance gating the urgency ceiling.
+- **Operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
+  `orient`, `find_holes`, `find_stale` (reachability), `impact_of` (reverse
+  reachability + tests), `trace_path` (max-× best path), `scan` (ranked issues +
+  urgency), `reindex`.
+- **All three surfaces** generated from one operation registry (CLI + MCP +
+  library), plus a Markdown `report` in urgency tiers.
 
-Not yet wired (refuse honestly for now): the Python extractor (tree-sitter +
-LSP), the entry-point detector, and the algebra layer (`impact_of`, `trace_path`,
-`scan`).
+Next: the cross-language resolver (M3), GraphBLAS for whole-graph sweeps at
+scale (M2 algebra), and an LSP for live types (raising `find_stale` confidence
+above today's name-based resolution).
 
 ## Quick look
 

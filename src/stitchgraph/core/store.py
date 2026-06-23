@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     file      TEXT NOT NULL DEFAULT '',     -- owning file path (for incremental)
     is_stub   INTEGER NOT NULL DEFAULT 0,
     arity     INTEGER,
-    summary   TEXT
+    summary   TEXT,
+    roles     TEXT NOT NULL DEFAULT ''      -- entry-point signals, comma-joined
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -85,10 +86,11 @@ class Store:
     # -- writes ------------------------------------------------------------
     def add_node(self, node: Node, file: str = "") -> None:
         self.conn.execute(
-            """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (node.id, node.kind.value, node.name, node.location,
-             file or _file_of(node.id), int(node.is_stub), node.arity, node.summary),
+             file or _file_of(node.id), int(node.is_stub), node.arity, node.summary,
+             ",".join(sorted(node.roles))),
         )
 
     def add_edge(self, edge: Edge, file: str = "") -> None:
@@ -156,6 +158,20 @@ class Store:
     def all_node_ids(self) -> list[str]:
         return [r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
 
+    def all_nodes(self) -> list[Node]:
+        return [_row_to_node(r) for r in self.conn.execute("SELECT * FROM nodes").fetchall()]
+
+    def nodes_with_role(self, role: str) -> list[Node]:
+        rows = self.conn.execute(
+            "SELECT * FROM nodes WHERE (',' || roles || ',') LIKE ?",
+            (f"%,{role},%",),
+        ).fetchall()
+        return [_row_to_node(r) for r in rows]
+
+    def stub_nodes(self) -> list[Node]:
+        rows = self.conn.execute("SELECT * FROM nodes WHERE is_stub = 1").fetchall()
+        return [_row_to_node(r) for r in rows]
+
     def callers_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
         rows = self.conn.execute(
             "SELECT * FROM edges WHERE dst_id = ? AND relation = ?",
@@ -191,10 +207,12 @@ class Store:
 
 # -- row mappers -----------------------------------------------------------
 def _row_to_node(row: sqlite3.Row) -> Node:
+    roles = row["roles"] if "roles" in row.keys() else ""
     return Node(
         id=row["id"], kind=NodeKind(row["kind"]), name=row["name"],
         location=row["location"], is_stub=bool(row["is_stub"]),
         arity=row["arity"], summary=row["summary"],
+        roles=frozenset(r for r in roles.split(",") if r),
     )
 
 

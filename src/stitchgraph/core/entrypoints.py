@@ -40,7 +40,36 @@ class ConfigOnlyDetector:
         return {nid for nid in self.overrides if store.get_node(nid) is not None}
 
 
-# Roots a real Python library+CLI detector will collect (design §4):
+class PythonLibraryDetector:
+    """Real detector for the Python library + CLI shape (design §4).
+
+    Roots = the export surface (public API) ∪ __main__ modules ∪ console-script
+    targets ∪ tests ∪ user overrides. Critically, **exported public symbols are
+    roots** — a library's public API is called by unknown external code, so it is
+    never dead for lack of internal callers.
+
+    Role tags are recorded by the extractor (exported / main / script / test);
+    this detector applies policy over them.
+    """
+
+    not_implemented = False
+
+    def __init__(self, overrides: set[str] | None = None, *,
+                 include_tests: bool = True) -> None:
+        self.overrides = overrides or set()
+        self.include_tests = include_tests
+
+    def detect(self, store: Store) -> set[str]:
+        roots: set[str] = set()
+        for role in ("exported", "main", "script"):
+            roots.update(n.id for n in store.nodes_with_role(role))
+        if self.include_tests:
+            roots.update(n.id for n in store.nodes_with_role("test"))
+        roots.update(nid for nid in self.overrides if store.get_node(nid) is not None)
+        return roots
+
+
+# Roots a Python library+CLI detector collects (design §4):
 #   - public API: __all__ / __init__ exports  (NEVER flag these dead)
 #   - [project.scripts] / [project.entry-points]
 #   - if __name__ == "__main__"

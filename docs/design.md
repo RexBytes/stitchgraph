@@ -573,9 +573,16 @@ it as a backend.
 
 ## 11. Build order
 
-- **M0 — Structural base (mostly borrow).** tree-sitter + LSP extraction into the
-  SQLite adjacency store; `find_symbol / get_callers / get_callees / type_at`
-  across all surfaces. Stack-agnostic core + a pluggable `EntryPointDetector`.
+- **M0 — Structural base (mostly borrow).** *Implemented.* Extraction into the
+  SQLite adjacency store; `find_symbol / get_callers / get_callees / orient /
+  find_holes / find_stale / impact_of / trace_path / scan / reindex` across all
+  three surfaces + report. Stack-agnostic core + a pluggable `EntryPointDetector`
+  (Python library+CLI detector shipped). *Implementation note:* the M0 Python
+  extractor uses the stdlib `ast` module — exact for Python, zero-dependency,
+  keeping the core stdlib-only; reachability is a pure-Python frontier BFS.
+  tree-sitter + an LSP (live types, incremental, polyglot) and python-graphblas
+  (whole-graph sweeps at scale) are the documented drop-in upgrades — same
+  contracts, so they swap in without touching the store or operations.
 - **M1 — House style.** Weight + provenance on every edge; the refuse-when-unsure
   envelope on every operation. Cheap, high payoff.
 - **M2 — Reachability engine (the core value).** Derive CSR matrices, wire

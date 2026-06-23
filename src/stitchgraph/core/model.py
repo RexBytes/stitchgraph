@@ -50,7 +50,11 @@ class Relation(str, Enum):
 
 @dataclass
 class Node:
-    """A code entity. `id` is `path::qualified.name` (design §4 — stable ids)."""
+    """A code entity. `id` is `path::qualified.name` (design §4 — stable ids).
+
+    `roles` are entry-point signals the extractor records for the detector to
+    interpret (design §4): "exported" (public API), "main", "script", "test".
+    """
 
     id: str
     kind: NodeKind
@@ -59,6 +63,7 @@ class Node:
     is_stub: bool = False
     arity: int | None = None
     summary: str | None = None
+    roles: frozenset[str] = frozenset()
     meta: dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
@@ -67,8 +72,13 @@ class Node:
         return base if disambiguator == 0 else f"{base}#{disambiguator}"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "kind": self.kind.value, "name": self.name,
-                "location": self.location, **({"is_stub": True} if self.is_stub else {})}
+        out = {"id": self.id, "kind": self.kind.value, "name": self.name,
+               "location": self.location}
+        if self.is_stub:
+            out["is_stub"] = True
+        if self.roles:
+            out["roles"] = sorted(self.roles)
+        return out
 
 
 @dataclass
