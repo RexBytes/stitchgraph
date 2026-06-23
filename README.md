@@ -18,6 +18,16 @@ See [`docs/design.md`](docs/design.md) for the full design & capability map,
 [`docs/STATUS.md`](docs/STATUS.md) for what's built, and [`AGENTS.md`](AGENTS.md)
 for the agent rules that teach an LLM when to call which tool.
 
+## Languages
+
+- **Fully analysed:** Python 3.11+ (stdlib `ast`; optional `jedi` for `--precise`).
+- **Detected at the cross-language boundary:** web routes (Flask/FastAPI/
+  blueprints), HTML templates (`<form action>`), SQL (via sqlglot), ORM models
+  (SQLAlchemy/Django) — powering the full-stack `trace_path`.
+- **Planned:** first-class JS/TS, Java, … behind a tree-sitter/LSP backend.
+
+Details in [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
+
 ## Status
 
 M0 working end-to-end on Python projects (dogfoods on its own source):

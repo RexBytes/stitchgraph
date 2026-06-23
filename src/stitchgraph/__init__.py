@@ -21,7 +21,7 @@ from .core.operations import (
     get_matrix, impact_of, ingest_trace, orient, reindex, risk, scan, trace_path,
 )
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = [
     # types
