@@ -4,6 +4,50 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.0] — 2026-06-23
+
+**First stable release — precision, certified.** 1.0.0 is not a feature release;
+it is the point at which the **release-readiness gate** is met: all hard gates
+green (pytest / ruff / mypy / no-open-defects), **RRS 93.3 / 100**, and **two
+consecutive full-diversity clean review panels**. The full trajectory is in
+[`REVIEW_HISTORY.md`](REVIEW_HISTORY.md); the rubric in
+[`RELEASE_READINESS.md`](RELEASE_READINESS.md). See the
+[release notes](docs/RELEASE_NOTES_v1.0.0.md).
+
+### Hardened
+
+- **The cardinal invariant — live code is never flagged dead — is closed across
+  every scope.** The dominant defect class through 22 review panels was a
+  Python↔tree-sitter asymmetry where a live symbol used in some unmodeled way was
+  reported stale. It is now resolved for by-name references, constructors (every
+  language), type annotations, parameter default values, metaclass keywords, class
+  bodies, public re-exports, and — closing the class — **defs nested in any host**:
+  function bodies, class bodies, **control-flow blocks** (`if`/`for`/`while`/`try`/
+  `with`/`match`), and **function-expression/arrow functions**. A shared
+  `_scope_defs` traversal (Python) and full arrow-body recursion (tree-sitter) cover
+  the complete, finite set of nesting hosts.
+- **Metric integrity** — `_dedup_edges` collapses parallel and CALLS-subsumes-
+  REFERENCES edges language-agnostically; `LIVENESS_RELATIONS` excludes
+  query/read/write/ORM relations so cross-language edges don't inflate `fan_in` /
+  PageRank; the GraphBLAS sweep and the pure-Python reference agree on thousands of
+  random graphs (0 mismatches).
+- **Envelope contract** — provenance gates the urgency ceiling on every operation;
+  `find_stale` stays advisory (`needs_review`, name-based confidence); `ingest_trace`
+  refuses when it grounds nothing; no operation returns `ok=True` with a vacuous
+  result.
+- **Regression suite** grew to **148 tests** (from 134), every review-panel finding
+  pinned by a test confirmed to fail on the pre-fix code (non-vacuous).
+
+### Notes
+
+- No API changes from 0.4.0 — the 14 operations and three surfaces (library / CLI /
+  MCP) are unchanged. Deferred, non-blocking polish tracked for a future release: SQL
+  `MERGE` WRITES labelling; `find_holes` empty-list urgency. The **LSP backend** and
+  **variable-granularity data flow** remain the two largest roadmap items
+  ([`docs/STATUS.md`](docs/STATUS.md)).
+
+[1.0.0]: https://github.com/RexBytes/stitchgraph/releases/tag/v1.0.0
+
 ## [0.3.0] — 2026-06-23
 
 **Depth & breadth.** Polyglot languages get first-class structure, the
