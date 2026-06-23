@@ -120,13 +120,14 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
             location=f"{rel}:{node.lineno}:{node.col_offset}",
             end_line=getattr(node, "end_lineno", None),
             is_stub=is_stub, arity=_arity(node), roles=frozenset(roles),
+            summary=_docstring(node),
         ))
     elif isinstance(node, ast.ClassDef):
         qual = f"{parent}.{node.name}" if parent else node.name
         proj.nodes.append(Node(
             id=Node.make_id(rel, qual), kind=NodeKind.CLASS, name=node.name,
             location=f"{rel}:{node.lineno}:{node.col_offset}",
-            end_line=getattr(node, "end_lineno", None),
+            end_line=getattr(node, "end_lineno", None), summary=_docstring(node),
         ))
         abstract = _is_abstract_class(node)
         for child in ast.iter_child_nodes(node):
@@ -406,6 +407,16 @@ def _raises_notimplemented(node: ast.Raise) -> bool:
 def _is_docstring(stmt: ast.stmt) -> bool:
     return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) \
         and isinstance(stmt.value.value, str)
+
+
+def _docstring(node: ast.AST) -> str | None:
+    try:
+        doc = ast.get_docstring(node)
+    except TypeError:
+        return None
+    if not doc:
+        return None
+    return " ".join(doc.split())[:200]  # first ~200 chars, whitespace-collapsed
 
 
 def _arity(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int:

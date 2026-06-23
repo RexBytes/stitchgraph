@@ -321,6 +321,22 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     return res
 
 
+@operation("Find code most similar to a snippet (where's the code that does X).")
+def find_similar(store: Store, snippet: str, limit: int = 10) -> Result:
+    """Semantic-ish retrieval over the graph (design §1). Ranks functions/methods/
+    classes by token similarity (name + docstring + callees) to the snippet."""
+    from . import similar
+
+    matches = similar.find_similar(store, snippet, limit)
+    if not matches:
+        return refuse("no similar code found (or snippet had no usable tokens)",
+                      confidence=0.0)
+    payload = [{"id": nid, "score": round(s, 3)} for nid, s in matches]
+    top = matches[0][1]
+    return ok(payload, confidence=min(top + 0.3, 0.9),
+              provenance=Provenance.INFERRED, count=len(payload))
+
+
 @operation("Fuse a coverage.json runtime trace: mark what actually executed.")
 def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
     """Ingest a coverage.py JSON report (design §2c). Marks executed nodes with a

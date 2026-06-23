@@ -42,13 +42,13 @@ spec and section references.
 | **Data flow** | Data-loop detection (🟡) | ⬜ To do | needs READS/WRITES at var granularity |
 | **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`ingest_trace`) | ✅ Done | coverage.json → live seeds, +confidence |
-| **Semantic** | vector `find_similar` | ⬜ To do | embeddings + sqlite-vec |
+| **Semantic** | `find_similar` retrieval | ✅ Done | token similarity; embedding model = drop-in |
 | **Quality** | precision/recall eval harness | ✅ Done | precision-over-recall stance asserted |
 | Quality | dogfood on own source | ✅ Done | genuine dead code found; risk hotspots ranked |
 
 ## Test coverage
 
-45 tests (`tests/`): envelope, store + incremental, extractor, operations,
+48 tests (`tests/`): envelope, store + incremental, extractor, operations,
 config, `get_matrix`, cross-language resolvers (routes/HTML/SQL/ORM) + full-stack
 trace, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
 reference), git-risk fusion, runtime-trace fusion, and a precision/recall eval
