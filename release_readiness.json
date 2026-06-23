@@ -90,6 +90,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 2, "MEDIUM": 3},
       "theme": "PHP public class flagged dead (opus HIGH). Third-party 'sonnet' (core-only env) found the blind spot the all-extras agents miss: config loaded from cwd not the indexed root (HIGH); ingest_trace claims success grounding nothing (MEDIUM); edges-table migration + index-ordering on old DBs (MEDIUM); core-only CI red — unguarded hypothesis/tree-sitter test imports (MEDIUM). haiku clean."
+    },
+    {
+      "id": "N",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1},
+      "theme": "opus+haiku CONVERGED: a class/fn used only as a Python parameter default value (def f(x=Strategy)) was flagged dead — func.args.defaults/kw_defaults weren't walked (the 3rd instance of Python-walks-body-not-signature, after Panel K annotations). _annotation_names -> _signature_ref_names now covers defaults too. Third-party 'sonnet' (core-only) clean, re-confirming Panel M's fixes."
     }
   ]
 }

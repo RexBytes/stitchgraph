@@ -456,19 +456,23 @@ def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribut
 
 
 def _annotation_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
-    """Type names referenced in a function's parameter and return annotations,
-    including generic args (`list[T]`) and string forward refs (`"T"`). Used to keep
-    a class used only as an annotation from being flagged dead."""
+    """Symbol names referenced in a function's *signature*: parameter/return type
+    annotations (incl. generic args `list[T]` and string forward refs `"T"`) AND
+    parameter default-value expressions (`def f(x=Strategy, cb=handler)`). All live
+    in `func.args`/`func.returns`, not the body, so the body pass misses them; a
+    class/fn used only as an annotation or a default executes at runtime and must
+    not be flagged dead (tree-sitter's `_direct_refs` already walks the whole def)."""
     a = func.args
-    anns = [arg.annotation
-            for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
-    anns += [a.vararg.annotation if a.vararg else None,
-             a.kwarg.annotation if a.kwarg else None, func.returns]
+    exprs: list[ast.expr | None] = [arg.annotation
+                                    for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    exprs += [a.vararg.annotation if a.vararg else None,
+              a.kwarg.annotation if a.kwarg else None, func.returns]
+    exprs += list(a.defaults) + list(a.kw_defaults)  # default *values* reference symbols
     out: list[str] = []
-    for ann in anns:
-        if ann is None:
+    for ex in exprs:
+        if ex is None:
             continue
-        for n in ast.walk(ann):
+        for n in ast.walk(ex):
             if isinstance(n, ast.Name):
                 out.append(n.id)
             elif isinstance(n, ast.Attribute):
