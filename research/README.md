@@ -78,6 +78,15 @@ single repo whose history is skewed by its own development.
   maintainer offered to provide them). §2/§3 can grow on registry packages alone.
 
 ## Suggested next steps
+
+> **▶ RESUME HERE (parked 2026-06-23):** promote `find_component` (§3) toward a real
+> feature — (a) swap token similarity for `find_similar`'s pluggable **dense embedder**
+> (`set_embedder`); (b) fold the cross-language **boundary signals** stitchgraph already
+> extracts (routes / SQL tables / events) into the archetype fingerprint; (c) build a
+> first **archetype classifier** ("this package is a web framework") and expose an
+> advisory `find_component(query)` op. §1 stays parked (needs external repos with git
+> history we can't move); §4 stays gated on a stronger §2 structural signal.
+
 1. **§2/§3:** swap the TF-IDF bag for `find_similar`'s dense embedder; add the
    cross-language boundary signals stitchgraph already extracts (routes/SQL/events)
    to the fingerprint; grow the corpus; build an archetype classifier — the basis for
