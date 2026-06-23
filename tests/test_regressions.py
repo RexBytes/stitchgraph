@@ -481,3 +481,39 @@ def test_insert_select_marks_source_as_read(tmp_path):
         assert "db::archive" in writes      # the target
         assert "db::users" in reads         # the SELECT source
         assert "db::users" not in writes    # not a write
+
+
+# -- Panel F / opus + haiku (HIGH): Ruby bare (paren-less) method calls --------
+def test_ruby_bare_method_calls_are_linked(tmp_path):
+    """In Ruby, `validate` (no parens, no receiver) is an idiomatic call but parses
+    as a bare `identifier`, not a `call` node — those CALLS edges were dropped, so a
+    method reached only that way looked dead (precision violation)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "svc.rb": "class Service\n"
+                  "  def run\n    validate\n    x = 1\n    y = x\n    process(x)\n  end\n"
+                  "  def validate\n    1\n  end\n"
+                  "  def process(n)\n    n\n  end\n"
+                  "end\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        callees = {e.dst_id.split("::")[-1] for e in store.callees_of("svc.rb::Service.run")}
+        assert "Service.validate" in callees   # bare call linked
+        assert "Service.process" in callees     # paren call still linked
+        assert sg.trace_path(store, "run", "validate").ok
+
+
+# -- Panel F / opus (LOW): trace_path "no path" is a refusal, not vacuous ok ----
+def test_trace_path_no_path_is_not_ok(tmp_path):
+    """A genuine 'no path' must return ok=False — returning ok=True with an empty
+    result let callers that check `.ok` believe a path was found (and masked the
+    Ruby bare-call bug in the test suite)."""
+    _mk(tmp_path, {"pkg/__init__.py": "",
+                   "pkg/m.py": "def a():\n    return 1\ndef b():\n    return 2\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.trace_path(store, "a", "b")  # a and b are unconnected
+        assert res.ok is False
+        assert res.needs_review

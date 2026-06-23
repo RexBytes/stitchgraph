@@ -42,6 +42,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "LOW": 2, "NIT": 1},
       "theme": "untested language path: C/C++ functions silently dropped (return type read before declarator); plus exported-method over-seeding for Java/C#, INSERT...SELECT read/write label, jsfetch route guard"
+    },
+    {
+      "id": "F",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "LOW": 1},
+      "theme": "last untested language path: Ruby paren-less calls dropped (all three models converged); plus trace_path no-path returning vacuous ok=True"
     }
   ]
 }

@@ -57,6 +57,7 @@ class LangSpec:
     arrow_decls: bool = False           # JS `const f = () => …`
     heritage: frozenset[str] = frozenset()          # child types holding base classes
     imports: frozenset[str] = frozenset()           # import statement node types
+    bare_calls: bool = False            # Ruby: paren-less `foo` calls parse as identifier
 
 
 _JS = LangSpec(
@@ -124,6 +125,7 @@ SPECS: dict[str, LangSpec] = {
         call_types={"call": "method"},
         containers=frozenset({"class", "module"}),
         heritage=frozenset({"superclass"}),
+        bare_calls=True,  # `validate` (no parens/receiver) is an idiomatic Ruby call
     ),
     "php": LangSpec(
         defs={"function_definition": F, "method_declaration": M, "class_declaration": C,
@@ -385,10 +387,33 @@ def _direct_calls(body, src, spec):
                 name = _callee(c, src, spec.call_types[c.type])
                 if name:
                     out.append((name, c.start_point[0] + 1))
+            elif spec.bare_calls and c.type == "identifier" and _is_bare_call(n, c):
+                out.append((_text(c, src), c.start_point[0] + 1))
             rec(c, False)
 
     rec(body, True)
     return out
+
+
+def _is_bare_call(parent, ident):
+    """Ruby: a paren-less, receiver-less method call (`validate`) parses as a bare
+    `identifier`, indistinguishable from a local-variable read. Treat one as a call
+    unless it is structurally *not* a call — a def/class name, a parameter, an
+    assignment target, or the method/receiver inside an enclosing `call` (already
+    handled by `call_types`). Anything else over-approximates through `_ref`, which
+    links only to project-defined methods and drops unknowns — the precision-safe
+    direction (it can over-count reachability, never under-count)."""
+    pt = parent.type
+    if pt in ("method", "singleton_method", "class", "module", "call",
+              "method_parameters", "block_parameters", "lambda_parameters",
+              "keyword_parameter", "optional_parameter"):
+        return False
+    if pt in ("assignment", "operator_assignment"):
+        left = parent.child_by_field_name("left")
+        if left is not None and (left.start_byte, left.end_byte) == (
+                ident.start_byte, ident.end_byte):
+            return False
+    return True
 
 
 def _callee(call, src, field):

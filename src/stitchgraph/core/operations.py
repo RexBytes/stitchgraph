@@ -280,8 +280,11 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
         return refuse("source or sink is not a unique/known symbol", confidence=0.0)
     found = best_path(store, src.id, dst.id)
     if found is None:
+        # A genuine "no path" is a refusal (ok=False), not a vacuous empty success:
+        # passing result=[] would make `refuse` set ok=True (result is not None) and
+        # let callers that check `.ok` believe a path was found.
         return refuse(f"no path from {src.id} to {dst.id} in the graph",
-                      confidence=0.0, result=[])
+                      confidence=0.0)
     path, conf = found
     prov = Provenance.EXTRACTED if conf >= 0.99 else Provenance.INFERRED
     return ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)

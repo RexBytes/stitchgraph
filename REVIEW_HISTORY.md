@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 5 (Panels A–E) |
+| Multi-model review panels | 6 (Panels A–F) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 104 passing, 1 skipped |
+| Tests | 106 passing, 1 skipped |
 | Coverage | ~83% |
-| Release-Readiness Score | 78.7 / 100 |
-| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 (non-monotonic); clean streak 0 of 2 required |
-| Verdict | NOT RELEASABLE — Panel E found a real HIGH (C/C++ untested path); needs ≥2 clean (<2) full-diversity panels |
+| Release-Readiness Score | 79.1 / 100 |
+| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 → 11 (non-monotonic); clean streak 0 of 2 required |
+| Verdict | NOT RELEASABLE — Panels E/F fixed the last untested language paths (C/C++, Ruby); all 11 languages now verified. Needs ≥2 clean panels |
 
 ## Trajectory
 
@@ -27,6 +27,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | C | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | deeper surfaces — tree-sitter callback roles, signal `.connect()`, SQL CTE phantom |
 | D | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | incremental/edge surfaces — `_resolve_worklist` ambiguity, recursion self-edge, malformed-coverage crash |
 | E | opus · sonnet · haiku | 1 HIGH · 2 LOW · 1 NIT | 12.2 | untested language path — C/C++ functions silently dropped; exported-method over-seeding, INSERT…SELECT label, jsfetch guard |
+| F | opus · sonnet · haiku | 1 HIGH · 1 LOW | 11.0 | last untested language path — Ruby paren-less calls dropped (all 3 converged); trace_path vacuous-ok |
 
 ## What each panel found and how it was fixed
 
@@ -141,6 +142,25 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 > the editable install at a stale worktree copy — caught when a verified fix appeared
 > not to take. Worktrees are now pruned and the install repointed to the main tree;
 > all fixes re-verified there. Review worktrees must not install the package.
+
+- **Panel F (opus · sonnet · haiku)** — review-only on the main tree (worktree
+  isolation was retired after the Panel E contamination). All three models
+  **independently converged** on the same defect — the strongest confirmation in the
+  series — closing the last untested language path:
+  - **HIGH (opus + sonnet + haiku, converged)** — Ruby's idiomatic paren-less,
+    receiver-less call (`validate`) parses as a bare `identifier`, not a `call`
+    node, so those CALLS edges were dropped and a method reached only that way looked
+    dead (precision violation). Added a `bare_calls` LangSpec flag and `_is_bare_call`,
+    which treats a bare identifier as a call unless it is structurally a def/param/
+    assignment-target/receiver; resolution goes through `_ref`, which links only to
+    project-defined methods (the safe over-approximating direction).
+  - **LOW (opus)** — `trace_path` returned `refuse(..., result=[])` for "no path",
+    and `refuse` sets `ok = result is not None`, so a genuine no-path came back
+    `ok=True` with an empty result — which had masked the Ruby bug (the polyglot test
+    asserted only `.ok`). "No path" is now a clean refusal (`ok=False`).
+
+  With C/C++ (Panel E) and Ruby (Panel F) fixed, **all 11 tree-sitter languages are
+  now verified to extract defs + a call graph** (opus exercised each on real input).
 
 ## Standing themes
 
