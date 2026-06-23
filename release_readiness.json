@@ -1,8 +1,9 @@
 {
   "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md.",
+  "_available_models_note": "sonnet's API was unavailable for agent slots this cycle (it had already degraded to a third-party core-only review in Panels M-Q). Per the maintainer's decision (2026-06-23), the convergence panel is run on the two reliably-available models, opus + haiku, and 'full diversity' is defined as both of them. This weakens the diversity signal vs. the original three models; restore sonnet (or add a third model such as fable) here when available.",
   "package": "stitchgraph",
   "severity_weights": {"CRITICAL": 40, "HIGH": 10, "MEDIUM": 4, "LOW": 1, "NIT": 0.2},
-  "available_models": ["opus", "sonnet", "haiku"],
+  "available_models": ["opus", "haiku"],
   "tau": 2,
   "coverage_target": 0.85,
   "contract_coverage_estimate": 0.75,

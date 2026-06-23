@@ -14,7 +14,7 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Coverage | ~85% |
 | Release-Readiness Score | 80.2 / 100 |
 | Convergence | Q (54, the function-local CRITICAL) → R (8, the metric/nesting twin in both extractors). Rate 0.186, trending down; both R findings err safe (no precision violation). Streak 0 of 2 |
-| Verdict | NOT RELEASABLE — needs ≥2 consecutive full-diversity clean panels; sonnet's slot was stopped this session (API issues), so R is 2/3 diversity |
+| Verdict | NOT RELEASABLE — needs ≥2 consecutive full-diversity clean panels. **Diversity redefined 2026-06-23**: sonnet's API is unreliable, so `available_models` is now **opus + haiku** (full diversity = both); R is therefore full-diversity but not clean (2 MEDIUM) |
 
 ## Trajectory
 
