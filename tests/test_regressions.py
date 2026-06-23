@@ -413,11 +413,12 @@ def test_malformed_executed_lines_do_not_crash_ingest(tmp_path):
     _mk(tmp_path, {"pkg/__init__.py": "",
                    "pkg/m.py": "def f():\n    return 1\n"})
     bad = tmp_path / "cov.json"
-    bad.write_text('{"files": {"pkg/m.py": {"executed_lines": ["oops", 1, null]}}}')
+    # line 2 (f's body) is a real hit; "oops"/null are coerced away, not fatal.
+    bad.write_text('{"files": {"pkg/m.py": {"executed_lines": ["oops", 2, null]}}}')
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
         res = sg.ingest_trace(store, str(bad))  # must not raise
-        assert res.ok
+        assert res.ok                            # the valid line still grounds f
 
 
 # -- Panel E / sonnet (HIGH): C/C++ functions must be extracted -----------------
@@ -852,3 +853,59 @@ def test_php_public_class_is_not_stale(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "PublicApi" not in stale   # public class = public API
         assert "TrulyDead" in stale        # only a private method -> not public API
+
+
+# -- Panel M / sonnet (HIGH): ingest_trace that grounds nothing is not success --
+def test_ingest_trace_grounding_nothing_is_refused(tmp_path):
+    """Coverage that parses but maps to no indexed symbol must NOT report success
+    or set has_runtime (which would wrongly raise find_stale confidence as if
+    liveness were trace-grounded)."""
+    import json as _json
+    _mk(tmp_path, {"pkg/__init__.py": "", "pkg/m.py": "def f():\n    return 1\n"})
+    cov = tmp_path / "cov.json"
+    cov.write_text(_json.dumps({"files": {"NOT_INDEXED.py": {"executed_lines": [1, 2]}}}))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.ingest_trace(store, str(cov))
+        assert res.ok is False and res.needs_review     # grounded nothing -> refusal
+        assert store.get_meta("has_runtime") is None      # not marked as runtime
+
+
+# -- Panel M / sonnet (HIGH): config loads from the indexed root, not cwd -------
+def test_config_loaded_from_indexed_root_not_cwd(tmp_path, monkeypatch):
+    """A config-dependent operation (find_stale via the entry-point detector) must
+    honour the indexed project's stitchgraph.toml even when run from another cwd."""
+    proj = tmp_path / "proj"
+    _mk(proj, {"pkg/__init__.py": "", "pkg/m.py": "def orphan():\n    return 1\n"})
+    (proj / "stitchgraph.toml").write_text('[entry_points]\ninclude = ["pkg/m.py::orphan"]\n')
+    other = tmp_path / "other"
+    other.mkdir()
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(proj))
+        monkeypatch.chdir(other)   # different cwd than the indexed root
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "orphan" not in stale   # the project's [entry_points] override is honoured
+
+
+# -- Panel M / sonnet (MEDIUM): old index DBs migrate edge columns -------------
+def test_old_index_db_migrates_edge_columns(tmp_path):
+    """`_migrate` must add `edges.source`/`edges.file` to an index built before those
+    columns existed — `_row_to_edge` reads them unconditionally, so reads would fail."""
+    import sqlite3
+    dbp = tmp_path / "old.db"
+    con = sqlite3.connect(dbp)
+    con.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        "  location TEXT, file TEXT, is_stub INTEGER, arity INTEGER, summary TEXT);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        "  relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT, weight REAL,"
+        "  provenance TEXT, location TEXT);"
+        "INSERT INTO nodes(id,kind,name,location,is_stub) VALUES ('a.py::f','Function','f','a.py:1:0',0);"
+        "INSERT INTO edges(src,relation,dst_symbol,weight,provenance,location)"
+        "  VALUES ('a.py::f','CALLS','g',0.6,'inferred','a.py:1:0');")
+    con.commit()
+    con.close()
+    with sg.Store(str(dbp)) as store:      # opening triggers _migrate
+        holes = store.unresolved_edges()    # reads edges.source/file -> must not raise
+        assert any(e.src == "a.py::f" for e in holes)

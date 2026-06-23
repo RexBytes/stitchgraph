@@ -165,7 +165,7 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     set is unreliable, so results are low-confidence + needs_review by contract
     (a false 'dead' is destructive — design principle 4).
     """
-    detector = detector or _default_detector()
+    detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     all_ids = set(store.all_node_ids())
     reachable = reachable_from(store, seeds)
@@ -230,7 +230,9 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     from . import algebra
     from .config import load_config
 
-    metric = load_config().hub_metric
+    # Config from the *indexed* root (stored at reindex), not the process cwd — an
+    # operation run from another directory must still honour the project's config.
+    metric = load_config(store.get_meta("root")).hub_metric
     if algebra.HAS_GRAPHBLAS and metric != "fan_in":
         if metric == "pagerank":
             ranks = algebra.pagerank(store)
@@ -294,7 +296,7 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
 def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
     diagnosis: wiring/structure defects only, each ranked by liveness."""
-    detector = detector or _default_detector()
+    detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
     # data loops, god objects) don't — so report what we can even without roots.
@@ -408,6 +410,14 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
                       "JSON, LCOV .info, Go coverprofile)", confidence=0.0)
     root = store.get_meta("root") or "."
     hits = runtime.hit_node_ids(store, covmap, root)
+    if not hits:
+        # The file parsed but nothing it covers maps to an indexed symbol (wrong
+        # project, an unindexed language, or stale line ranges). Grounding nothing is
+        # not a success: don't set has_runtime (which would wrongly raise find_stale
+        # confidence as if liveness were trace-grounded) — refuse for review instead.
+        return refuse(f"coverage in '{trace}' grounded no indexed symbols "
+                      "(its files/lines map to no node) — not marking runtime",
+                      confidence=0.1, files=len(covmap), executed=0)
     for nid in hits:
         store.add_role(nid, "runtime")
     store.set_meta("has_runtime", "1")
@@ -672,11 +682,13 @@ def _resolve_one(store: Store, name: str):
     return nodes[0] if len(nodes) == 1 else None
 
 
-def _default_detector() -> PythonLibraryDetector:
+def _default_detector(store: Store) -> PythonLibraryDetector:
     """Build the detector from `stitchgraph.toml` — the entry-point override is
-    the trust escape hatch (design §4)."""
+    the trust escape hatch (design §4). Config is loaded from the *indexed* root
+    (stored at reindex), not the process cwd, so entry-point overrides / test
+    inclusion follow the project even when the operation runs from elsewhere."""
     from .config import load_config
-    cfg = load_config()
+    cfg = load_config(store.get_meta("root"))
     return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests)
 
 

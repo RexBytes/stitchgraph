@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import stitchgraph as sg
 
 
@@ -66,6 +68,7 @@ def test_ingest_refuses_missing_trace(tmp_path):
 
 
 def test_lcov_format(tmp_path):
+    pytest.importorskip("tree_sitter_language_pack")  # JS extraction needs tree-sitter
     (tmp_path / "u.js").write_text(
         "export function ran(){ return 1; }\nexport function notRun(){ return 2; }\n")
     (tmp_path / "lcov.info").write_text("SF:u.js\nDA:1,5\nDA:2,0\nend_of_record\n")
@@ -77,6 +80,7 @@ def test_lcov_format(tmp_path):
 
 
 def test_go_coverprofile_format(tmp_path):
+    pytest.importorskip("tree_sitter_language_pack")  # Go extraction needs tree-sitter
     (tmp_path / "m.go").write_text(
         "package m\nfunc GoRan() int {\n return 1\n}\nfunc GoNot() int {\n return 2\n}\n")
     (tmp_path / "cover.out").write_text(

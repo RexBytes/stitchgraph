@@ -87,9 +87,9 @@
     },
     {
       "id": "M",
-      "models": ["opus", "haiku"],
-      "findings": {"HIGH": 1},
-      "theme": "PHP public class flagged dead while its public methods are live roots (opus HIGH) — PHP classes carry no `public` token, so up-propagate `exported` from public methods to the class. haiku clean. (sonnet slot unavailable: 3x API 500/529 — partial-diversity panel; non-clean anyway.)"
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 2, "MEDIUM": 3},
+      "theme": "PHP public class flagged dead (opus HIGH). Third-party 'sonnet' (core-only env) found the blind spot the all-extras agents miss: config loaded from cwd not the indexed root (HIGH); ingest_trace claims success grounding nothing (MEDIUM); edges-table migration + index-ordering on old DBs (MEDIUM); core-only CI red — unguarded hypothesis/tree-sitter test imports (MEDIUM). haiku clean."
     }
   ]
 }

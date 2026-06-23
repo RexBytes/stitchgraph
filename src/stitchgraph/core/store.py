@@ -47,7 +47,11 @@ CREATE TABLE IF NOT EXISTS edges (
     source      TEXT NOT NULL DEFAULT 'tree-sitter',
     file        TEXT NOT NULL DEFAULT ''     -- owning (source) file path
 );
+"""
 
+# Indexes are created *after* migration so they never reference a column an older
+# index file hasn't gained yet (e.g. `edges.file`).
+_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_nodes_file   ON nodes(file);
 CREATE INDEX IF NOT EXISTS idx_nodes_name   ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_edges_src    ON edges(src);
@@ -67,8 +71,10 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         with closing(self.conn.cursor()) as cur:
-            cur.executescript(_SCHEMA)
-        self._migrate()
+            cur.executescript(_SCHEMA)   # tables (IF NOT EXISTS)
+        self._migrate()                  # add columns an older file is missing
+        with closing(self.conn.cursor()) as cur:
+            cur.executescript(_INDEXES)  # indexes, now every column exists
         self.conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)",
             (str(SCHEMA_VERSION),),
@@ -76,12 +82,20 @@ class Store:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Add columns missing from an older index file (forward-compatible)."""
-        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(nodes)")}
-        for col, ddl in (("roles", "roles TEXT NOT NULL DEFAULT ''"),
-                         ("end_line", "end_line INTEGER")):
-            if col not in have:
-                self.conn.execute(f"ALTER TABLE nodes ADD COLUMN {ddl}")
+        """Add columns missing from an older index file (forward-compatible). Covers
+        both tables: `_row_to_edge` reads `source`/`file` unconditionally, so an index
+        built before those edge columns existed must gain them or edge reads fail."""
+        tables = {
+            "nodes": (("roles", "roles TEXT NOT NULL DEFAULT ''"),
+                      ("end_line", "end_line INTEGER")),
+            "edges": (("source", "source TEXT NOT NULL DEFAULT 'tree-sitter'"),
+                      ("file", "file TEXT NOT NULL DEFAULT ''")),
+        }
+        for table, cols in tables.items():
+            have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in cols:
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
     # -- context manager ---------------------------------------------------
     def __enter__(self) -> Store:

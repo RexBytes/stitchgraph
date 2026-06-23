@@ -10,13 +10,16 @@ These assert *promises* over many generated inputs rather than one happy path:
 
 from __future__ import annotations
 
-from hypothesis import given, settings
-from hypothesis import strategies as st
+import pytest
 
 import stitchgraph as sg
 from stitchgraph.core import reach
 from stitchgraph.core.envelope import REVIEW_THRESHOLD, Provenance, Result, Urgency
 from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+pytest.importorskip("hypothesis")  # optional dev dep — core-only runs skip these
+from hypothesis import given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
 
 # A random directed graph: n nodes (m0..m{n-1}), a set of distinct edges.
 _graphs = st.integers(min_value=1, max_value=8).flatmap(
