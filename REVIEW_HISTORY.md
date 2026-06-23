@@ -10,10 +10,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 |---|---|
 | Multi-model review panels | 6 (Panels A–F) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 106 passing, 1 skipped |
+| Tests | 108 passing, 1 skipped |
 | Coverage | ~83% |
-| Release-Readiness Score | 79.1 / 100 |
-| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 → 11 (non-monotonic); clean streak 0 of 2 required |
+| Release-Readiness Score | 77.7 / 100 |
+| Convergence | weighted yield 43 → 15 → 18 → 6 → 12.2 → 16 (non-monotonic); clean streak 0 of 2 required |
 | Verdict | NOT RELEASABLE — Panels E/F fixed the last untested language paths (C/C++, Ruby); all 11 languages now verified. Needs ≥2 clean panels |
 
 ## Trajectory
@@ -27,7 +27,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | C | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | deeper surfaces — tree-sitter callback roles, signal `.connect()`, SQL CTE phantom |
 | D | opus · sonnet · haiku | 1 MEDIUM · 2 LOW | 6.0 | incremental/edge surfaces — `_resolve_worklist` ambiguity, recursion self-edge, malformed-coverage crash |
 | E | opus · sonnet · haiku | 1 HIGH · 2 LOW · 1 NIT | 12.2 | untested language path — C/C++ functions silently dropped; exported-method over-seeding, INSERT…SELECT label, jsfetch guard |
-| F | opus · sonnet · haiku | 1 HIGH · 1 LOW | 11.0 | last untested language path — Ruby paren-less calls dropped (all 3 converged); trace_path vacuous-ok |
+| F | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM · 2 LOW | 16.0 | Ruby paren-less calls (all 3 converged); TS `export{}` re-export; trace_path vacuous-ok; SQL multi-statement |
 
 ## What each panel found and how it was fixed
 
@@ -158,6 +158,14 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     and `refuse` sets `ok = result is not None`, so a genuine no-path came back
     `ok=True` with an empty result — which had masked the Ruby bug (the polyglot test
     asserted only `.ok`). "No path" is now a clean refusal (`ok=False`).
+
+  - **MEDIUM (sonnet)** — a TypeScript named re-export `export { Widget }` did not
+    seed the `exported` role (only inline `export class` did), so the re-exported
+    class and its methods were false-flagged dead. A re-export post-pass now marks
+    matching nodes exported (mirroring Python's `__all__`).
+  - **LOW (sonnet)** — a multi-statement SQL string (`DELETE …; SELECT …`) parsed via
+    `parse_one` as a single `Block`, so the DML target was mislabelled READS. Now
+    parsed with `parse()` and classified per statement.
 
   With C/C++ (Panel E) and Ruby (Panel F) fixed, **all 11 tree-sitter languages are
   now verified to extract defs + a call graph** (opus exercised each on real input).

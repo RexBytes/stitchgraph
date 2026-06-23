@@ -46,8 +46,8 @@
     {
       "id": "F",
       "models": ["opus", "sonnet", "haiku"],
-      "findings": {"HIGH": 1, "LOW": 1},
-      "theme": "last untested language path: Ruby paren-less calls dropped (all three models converged); plus trace_path no-path returning vacuous ok=True"
+      "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 2},
+      "theme": "Ruby paren-less calls dropped (all three converged); TS export{} re-export not seeded; trace_path vacuous-ok; SQL multi-statement label"
     }
   ]
 }

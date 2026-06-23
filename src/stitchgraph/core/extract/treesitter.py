@@ -163,6 +163,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     imports: list[tuple[str, str, str]] = []       # (mod_id, name, lang)
     src_by: dict[str, bytes] = {}
     file_lang: dict[str, str] = {}
+    reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
 
     files = [p for p in sorted(root.rglob("*"))
              if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
@@ -192,6 +193,16 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
                  defs=defs, inherits=inherits, exported=False, is_test=is_test)
         for name in _import_names(tree.root_node, src, spec):
             imports.append((mod_id, name, lang))
+        reexports |= _reexport_names(tree.root_node, src)
+
+    # A named re-export (`export { Widget }`) marks its symbol as public API just like
+    # `export class Widget` — without this the re-exported class/fn (and its methods)
+    # are false-flagged dead (a precision gap with the inline-export and Python __all__
+    # paths). Over-marking by name is the safe direction.
+    if reexports:
+        for n in nodes:
+            if n.kind in (C, F, M) and n.name in reexports:
+                n.roles = n.roles | {"exported"}
 
     _seed_exported_class_methods(nodes, file_lang)
 
@@ -344,6 +355,24 @@ def _identifiers(node, src):
     for c in node.children:
         out += _identifiers(c, src)
     return out
+
+
+def _reexport_names(root, src):
+    """Local symbol names in JS/TS `export { A, B as C }` clauses (the `name` field
+    of each export_specifier — the local symbol, not the alias)."""
+    names: set[str] = set()
+
+    def rec(n):
+        if n.type == "export_specifier":
+            nm = n.child_by_field_name("name")
+            t = _trailing_id(nm, src) if nm is not None else None
+            if t:
+                names.add(t)
+        for c in n.children:
+            rec(c)
+
+    rec(root)
+    return names
 
 
 def _import_names(root, src, spec):

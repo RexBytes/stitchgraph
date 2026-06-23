@@ -517,3 +517,35 @@ def test_trace_path_no_path_is_not_ok(tmp_path):
         res = sg.trace_path(store, "a", "b")  # a and b are unconnected
         assert res.ok is False
         assert res.needs_review
+
+
+# -- Panel F / sonnet (MEDIUM): TS `export { X }` re-export seeds exported ------
+def test_ts_named_reexport_is_public_api(tmp_path):
+    """`export { Widget }` (named re-export) marks Widget as public API just like
+    `export class Widget` — without it the class and its methods were false-flagged
+    dead (a symmetry gap with inline export and Python __all__)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"api.ts": "class Widget {\n  visible(){ return 1; }\n}\nexport { Widget };\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Widget" not in stale
+        assert "Widget.visible" not in stale
+
+
+# -- Panel F / sonnet (LOW): multi-statement SQL classifies each statement ------
+def test_sql_multistatement_labels_each_statement(tmp_path):
+    """`DELETE FROM old; SELECT FROM backup` parses as a Block via parse_one, so the
+    DELETE target was mislabelled READS. parse() splits it; the DELETE target is a
+    write, the SELECT source a read."""
+    pytest.importorskip("sqlglot")
+    from stitchgraph.core.model import Relation
+    from stitchgraph.core.resolve.sql import _link
+    nodes: dict = {}
+    edges: list = []
+    _link(nodes, edges, "f", "a.py", 1, "DELETE FROM old_users; SELECT id FROM backup")
+    writes = {e.dst_id for e in edges if e.relation is Relation.WRITES}
+    reads = {e.dst_id for e in edges if e.relation is Relation.READS}
+    assert "db::old_users" in writes   # DELETE target
+    assert "db::backup" in reads        # SELECT source

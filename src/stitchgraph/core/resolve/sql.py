@@ -47,11 +47,19 @@ class SqlResolver:
 def _link(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
           line: int, sql: str) -> None:
     try:
-        tree = sqlglot.parse_one(sql)
+        # parse() (not parse_one()) so a multi-statement string
+        # (`DELETE ...; SELECT ...`) is classified per statement, not as one Block
+        # that would mislabel the DML target as a read.
+        trees = sqlglot.parse(sql)
     except Exception:  # noqa: BLE001 — malformed/unsupported SQL, skip
         return
-    if tree is None:
-        return
+    for tree in trees:
+        if tree is not None:
+            _link_one(nodes, edges, fid, rel, line, tree)
+
+
+def _link_one(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
+              line: int, tree) -> None:
     writes = isinstance(tree, (exp.Insert, exp.Update, exp.Delete, exp.Create))
     # The DML *target* is a write; tables read by a nested SELECT/subquery are reads
     # (e.g. `INSERT INTO archive SELECT ... FROM users` writes `archive`, reads
