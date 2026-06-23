@@ -31,9 +31,25 @@ def _adjacency(store: Store, relations: Iterable[Relation]) -> dict[str, list[st
     return adj
 
 
+def _graphblas():
+    """Return the GraphBLAS algebra module if available, else None."""
+    try:
+        from . import algebra
+        return algebra if algebra.HAS_GRAPHBLAS else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def reachable_from(store: Store, seeds: Iterable[str],
                    relations: Iterable[Relation] = LIVENESS_RELATIONS) -> set[str]:
-    """Forward closure: every node reachable from any seed."""
+    """Forward closure: every node reachable from any seed.
+
+    Uses the GraphBLAS sweep when available (design §2b), else this pure-Python
+    frontier BFS — identical results, the BFS is the reference implementation.
+    """
+    gb = _graphblas()
+    if gb is not None:
+        return gb.reachable_from(store, seeds, relations)
     adj = _adjacency(store, relations)
     seen: set[str] = set()
     frontier = deque(s for s in seeds if store.get_node(s) is not None)
@@ -62,6 +78,9 @@ def reverse_reachable_from(store: Store, targets: Iterable[str],
 
     This is the blast radius for impact_of (design §6.B): who depends on X.
     """
+    gb = _graphblas()
+    if gb is not None:
+        return gb.reverse_reachable_from(store, targets, relations)
     radj = _reverse_adjacency(store, relations)
     seen: set[str] = set()
     frontier = deque(t for t in targets if store.get_node(t) is not None)

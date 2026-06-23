@@ -41,12 +41,15 @@ M0 working end-to-end on Python projects (dogfoods on its own source):
   resolve precisely (not just by name), with an optional **jedi** precision pass
   (`reindex --precise`) for LSP-grade go-to-definition.
 - **Cross-language resolver pipeline** — plugins that enrich the graph after
-  extraction: a **web-route resolver** (`@app.get("/x")` → Route → handler) and a
-  **SQL resolver** (sqlglot: query → table, READS/WRITES). This powers full-stack
-  `trace_path` (route → handler → … → DB table).
+  extraction: a **web-route resolver** (`@app.get("/x")` → Route → handler), a
+  **SQL resolver** (sqlglot: query → table, READS/WRITES), and an **ORM resolver**
+  (model → table/column, MAPS_TO). ORM and SQL converge on the same `db::<table>`
+  node, so full-stack `trace_path` crosses route → handler → … → table → column.
+- **GraphBLAS algebra layer** — whole-graph reachability sweeps and PageRank hub
+  ranking via python-graphblas (pure-Python fallback; the two agree by test).
 
-Next: GraphBLAS for whole-graph sweeps at scale (M2 algebra), more framework
-resolvers, and runtime-trace fusion.
+See [`docs/STATUS.md`](docs/STATUS.md) for the full done/to-do table. Next:
+HTML-template → route edges, data-loop detection, and runtime-trace fusion.
 
 ## Quick look
 

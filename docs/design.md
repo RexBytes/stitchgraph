@@ -585,16 +585,18 @@ it as a backend.
   contracts, so they swap in without touching the store or operations.
 - **M1 — House style.** Weight + provenance on every edge; the refuse-when-unsure
   envelope on every operation. Cheap, high payoff.
-- **M2 — Reachability engine (the core value).** *Implemented* (pure-Python
-  frontier BFS; python-graphblas / LAGraph is the documented swap for scale).
-  `find_stale`, `find_holes`, `orient`, `impact_of`, `scan` (issue flagging +
-  urgency). Resolution is scope-aware (self / locally-typed receivers) with an
-  optional jedi precision pass.
-- **M3 — Cross-language resolver + report.** *Implemented (initial).* A
-  post-extraction resolver pipeline (`core/resolve/`): web-route resolver
-  (decorator → Route → handler) and sqlglot SQL resolver (query → table,
-  READS/WRITES), powering full-stack `trace_path`; `stitchgraph report` shipped.
-  Next resolver: ORM model → column.
+- **M2 — Reachability engine (the core value).** *Implemented.* `find_stale`,
+  `find_holes`, `orient`, `impact_of`, `scan` (issue flagging + urgency). The
+  **GraphBLAS algebra layer** (`core/algebra.py`) runs whole-graph reachability
+  sweeps and PageRank hub ranking via python-graphblas, with the pure-Python
+  frontier BFS as the reference fallback (the two agree by test). Resolution is
+  scope-aware (self / locally-typed receivers) with an optional jedi precision pass.
+- **M3 — Cross-language resolver + report.** *Implemented.* A post-extraction
+  resolver pipeline (`core/resolve/`): web-route resolver (decorator → Route →
+  handler), sqlglot SQL resolver (query → table, READS/WRITES), and ORM resolver
+  (model → table/column, MAPS_TO). ORM and SQL converge on the same `db::<table>`
+  node, so full-stack `trace_path` crosses route → handler → … → table → column.
+  `stitchgraph report` shipped. Next resolver: HTML template → route.
 - **M4 — Optional / later.** Data-loop detection (🟡), git-history risk fusion,
   runtime-trace fusion, vector `find_similar`.
 

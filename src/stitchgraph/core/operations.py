@@ -174,12 +174,24 @@ def orient(store: Store) -> Result:
         n = len(store.nodes_by_kind(kind))
         if n:
             counts[kind.value] = n
-    hubs = sorted(fan_in(store).items(), key=lambda kv: kv[1], reverse=True)[:10]
+    # Transitive importance (PageRank over the whole graph) when GraphBLAS is
+    # available; direct fan-in otherwise (design §6.A).
+    ranking, metric = _hub_ranking(store)
+    hubs = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)[:10]
     payload = {
         "node_counts": counts,
-        "top_hubs": [{"id": nid, "fan_in": deg} for nid, deg in hubs],
+        "top_hubs": [{"id": nid, metric: round(score, 4)} for nid, score in hubs],
     }
-    return ok(payload, total_nodes=store.node_count())
+    return ok(payload, total_nodes=store.node_count(), hub_metric=metric)
+
+
+def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
+    from . import algebra
+    if algebra.HAS_GRAPHBLAS:
+        ranks = algebra.pagerank(store)
+        if ranks:
+            return ranks, "pagerank"
+    return {k: float(v) for k, v in fan_in(store).items()}, "fan_in"
 
 
 # --------------------------------------------------------------------------

@@ -70,9 +70,10 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
 
 
 def default_resolvers() -> list[Resolver]:
+    from .orm import OrmResolver
     from .routes import WebRouteResolver
     from .sql import SqlResolver
-    return [WebRouteResolver(), SqlResolver()]
+    return [WebRouteResolver(), OrmResolver(), SqlResolver()]
 
 
 # -- shared helper: iterate function defs with their stable node ids ---------
@@ -92,6 +93,21 @@ def iter_function_defs(tree: ast.Module, rel: str) -> Iterator[tuple[ast.AST, st
                 cid = f"{rel}::{qual}"
                 if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     yield child, cid, mod_id
+                yield from walk(child, qual)
+
+    yield from walk(tree, "")
+
+
+def iter_class_defs(tree: ast.Module, rel: str) -> Iterator[tuple[ast.ClassDef, str]]:
+    """Yield (class_ast, node_id) for every class, matching the extractor's ids."""
+    def walk(node: ast.AST, parent: str) -> Iterator[tuple[ast.ClassDef, str]]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                qual = f"{parent}.{child.name}" if parent else child.name
+                yield child, f"{rel}::{qual}"
+                yield from walk(child, qual)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qual = f"{parent}.{child.name}" if parent else child.name
                 yield from walk(child, qual)
 
     yield from walk(tree, "")

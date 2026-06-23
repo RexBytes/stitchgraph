@@ -80,3 +80,48 @@ def test_routes_are_live_not_dead(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "list_users" not in stale
         assert "query_users" not in stale  # reached via the handler
+
+
+def _write_orm(root: Path) -> None:
+    pkg = root / "orm"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "models.py").write_text(
+        "from sqlalchemy.orm import DeclarativeBase\n\n"
+        "class Base(DeclarativeBase):\n    pass\n\n"
+        "class User(Base):\n"
+        '    __tablename__ = "users"\n'
+        "    id = Column(Integer, primary_key=True)\n"
+        "    email = Column(String)\n"
+    )
+    (pkg / "svc.py").write_text(
+        "def report():\n"
+        '    return db.execute("SELECT email FROM users")\n'
+    )
+
+
+def _index_orm(tmp_path: Path) -> sg.Store:
+    _write_orm(tmp_path)
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    return store
+
+
+def test_orm_maps_model_to_table_and_columns(tmp_path):
+    with _index_orm(tmp_path) as store:
+        from stitchgraph.core.model import NodeKind
+        tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
+        cols = {n.id for n in store.nodes_by_kind(NodeKind.DB_COLUMN)}
+        assert "users" in tables
+        assert "base" not in tables  # bare declarative Base is not a model
+        assert {"db::users.id", "db::users.email"} <= cols
+
+
+def test_orm_and_sql_converge_on_same_table(tmp_path):
+    """The ORM model and a raw SQL query land on the SAME db::users node."""
+    with _index_orm(tmp_path) as store:
+        from stitchgraph.core.model import Relation
+        maps = {e.dst_id for e in store.resolved_edges(Relation.MAPS_TO)}
+        reads = {e.dst_id for e in store.resolved_edges(Relation.READS)}
+        assert "db::users" in maps   # from the model
+        assert "db::users" in reads  # from the SQL — same node
