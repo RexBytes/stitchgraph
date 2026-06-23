@@ -20,13 +20,14 @@ for the agent rules that teach an LLM when to call which tool.
 
 ## Languages
 
-- **Fully analysed:** Python 3.11+ (stdlib `ast`; optional `jedi` for `--precise`).
-- **Detected at the cross-language boundary:** web routes (Flask/FastAPI/
-  blueprints), HTML templates (`<form action>`), SQL (via sqlglot), ORM models
-  (SQLAlchemy/Django) — powering the full-stack `trace_path`.
-- **Planned:** first-class JS/TS, Java, … behind a tree-sitter/LSP backend.
+- **Deepest:** Python 3.11+ (stdlib `ast`; optional `jedi` for `--precise`).
+- **Extracted via tree-sitter** (definitions + call graph → dead-code, orient,
+  impact, trace): **JavaScript, TypeScript/TSX, Rust, C, C++, C#, Go, Java, Ruby, PHP, Bash**.
+- **Detected at the cross-language boundary:** web routes (Flask/FastAPI), HTML
+  templates (`<form action>`), SQL (sqlglot), ORM (SQLAlchemy/Django) — powering
+  the full-stack `trace_path`.
 
-Details in [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
+Full support matrix in [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
 
 ## Status
 

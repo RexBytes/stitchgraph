@@ -4,6 +4,50 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [0.2.0] — 2026-06-23
+
+**stitchgraph goes polyglot.** The headline: a config-driven tree-sitter
+extractor adds **11 more languages** alongside Python, all in one graph — so
+dead-code, orientation, impact, and full-stack tracing now work across a
+multi-language codebase.
+
+### Added
+
+- **Polyglot extraction (tree-sitter).** JavaScript, TypeScript/TSX, Rust, C,
+  C++, C#, Go, Java, Ruby, PHP, and Bash — definitions (functions / methods /
+  classes / structs / traits) and the call graph, in the same node/edge ontology
+  as the Python `ast` extractor.
+- **Config-driven languages.** Each language is a small `LangSpec` (node types →
+  kinds, the call node + callee field). Adding a language is a spec, not new code.
+- **Per-language resolution.** A JS call never binds to a Rust function of the
+  same name; precision-biased (single match → confident, several → AMBIGUOUS to
+  all, unknown → dropped as external).
+- **Per-language entry-point roles.** `export` (JS/TS), `pub` (Rust), `public`
+  (Java/PHP/C#), capitalised (Go), and `main` seed reachability.
+- **Polyglot dispatcher.** `extract_project` merges Python + tree-sitter into one
+  graph; a parse error in one language never breaks another.
+- **[`docs/LANGUAGES.md`](docs/LANGUAGES.md)** — a language progress / support
+  matrix (defs · calls · imports · inheritance · entry points per language).
+- Packaging extras reorganised: `treesitter`, `precise` (jedi), `resolve`
+  (sqlglot), `algebra` (graphblas), `all`.
+
+### Notes / honest limits
+
+- For the tree-sitter languages, **imports and inheritance aren't modelled yet**
+  (calls still resolve cross-file by name, so dead-code/orient/trace work), and
+  **entry-point detection is thin** (export/pub/public/capitalised/main) — so
+  `find_stale` leans on `stitchgraph.toml` roots or honestly refuses without them.
+- The hard part of any language is *type-correct* resolution (which `save` does
+  `x.save()` mean?), not parsing — that's the deferred LSP upgrade.
+
+### Tests
+
+58 tests (up from 53), including a polyglot suite covering JS/Rust/Bash/Go/Java/
+Ruby/PHP extraction, per-language call graphs, cross-language dead code, and the
+no-cross-language-false-links guarantee.
+
+[0.2.0]: https://github.com/RexBytes/stitchgraph/releases/tag/v0.2.0
+
 ## [0.1.0] — 2026-06-23
 
 First tagged release. A local-first, MCP-native code-intelligence graph for

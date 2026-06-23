@@ -20,7 +20,8 @@ spec and section references.
 | **Extraction** | Python extractor (stdlib `ast`) | ✅ Done | Module/Class/Function/Method/Test |
 | Extraction | Scope-aware resolution (`self.`, locally-typed `var.`) | ✅ Done | + decorator refs |
 | Extraction | jedi precise resolver (`--precise`) | ✅ Done | optional, in-process LSP-grade |
-| Extraction | tree-sitter / external LSP backend | ⬜ To do | incremental, polyglot, live types |
+| Extraction | **Polyglot tree-sitter extractor** | ✅ Done | JS/TS, Rust, C/C++, C#, Go, Java, Ruby, PHP, Bash (defs + call graph) |
+| Extraction | External multi-language LSP backend | ⬜ To do | type-grade resolution per language |
 | **Entry points** | Python library+CLI detector | ✅ Done | exported API, main, scripts, tests, routes |
 | Entry points | `stitchgraph.toml` override | ✅ Done | include roots, ignore globs, threshold, hub metric |
 | **Operations** | `find_symbol` / `get_callers` / `get_callees` | ✅ Done | structural primitives |
@@ -49,7 +50,7 @@ spec and section references.
 
 ## Test coverage
 
-53 tests (`tests/`): envelope, store + incremental, extractor, operations,
+58 tests (`tests/`): envelope, store + incremental, extractor, operations,
 config, `get_matrix`, cross-language resolvers (routes/HTML/SQL/ORM) + full-stack
 trace, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
 reference), git-risk fusion, runtime-trace fusion, and a precision/recall eval
