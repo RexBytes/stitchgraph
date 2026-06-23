@@ -1,0 +1,69 @@
+"""Polyglot extraction (tree-sitter): JS / TS / Rust / Bash in one graph."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+import stitchgraph as sg
+
+pytest.importorskip("tree_sitter")
+pytest.importorskip("tree_sitter_language_pack")
+from stitchgraph.core.extract import treesitter  # noqa: E402
+
+if not treesitter.HAS_TREE_SITTER:
+    pytest.skip("tree-sitter not installed", allow_module_level=True)
+
+
+def _project(root: Path) -> sg.Store:
+    (root / "app.js").write_text(
+        "export function jsEntry(){ return jsHelper(); }\n"
+        "function jsHelper(){ return 1; }\n"
+        "function jsDead(){ return 2; }\n"
+    )
+    (root / "lib.rs").write_text(
+        "pub fn rsEntry() -> i32 { rsHelper(1) }\n"
+        "fn rsHelper(x: i32) -> i32 { x + 1 }\n"
+        "fn rsDead() -> i32 { 0 }\n"
+    )
+    (root / "run.sh").write_text(
+        "deploy(){ build; }\n"
+        "build(){ echo hi; }\n"
+    )
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(root))
+    return store
+
+
+def test_languages_extracted(tmp_path):
+    with _project(tmp_path) as store:
+        names = {n.name for n in store.all_nodes_full()}
+        assert {"jsEntry", "jsHelper", "rsEntry", "rsHelper", "deploy", "build"} <= names
+
+
+def test_call_graph_per_language(tmp_path):
+    with _project(tmp_path) as store:
+        # rust entry calls helper; trace works.
+        assert sg.trace_path(store, "rsEntry", "rsHelper").ok
+        # js entry calls helper.
+        assert sg.trace_path(store, "jsEntry", "jsHelper").ok
+
+
+def test_dead_code_across_languages(tmp_path):
+    with _project(tmp_path) as store:
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "jsDead" in stale and "rsDead" in stale     # unused -> dead
+        assert "jsHelper" not in stale and "rsHelper" not in stale  # reached -> live
+
+
+def test_no_cross_language_false_links(tmp_path):
+    # jsHelper and rsHelper share a suffix but must not link across languages.
+    (tmp_path / "a.js").write_text("function shared(){ return 1; }\nfunction useJs(){ return shared(); }\n")
+    (tmp_path / "b.rs").write_text("fn shared() -> i32 { 1 }\nfn useRs() -> i32 { shared() }\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    js_shared = next(n.id for n in store.nodes_by_name("shared") if n.id.endswith("a.js::shared"))
+    callers = {e.src for e in store.callers_of(js_shared)}
+    assert all(".js" in c for c in callers)  # only the JS caller, not the Rust one
+    store.close()

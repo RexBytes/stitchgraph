@@ -19,14 +19,19 @@ dependencies = []
 [project.optional-dependencies]
 cli = ["typer>=0.12"]
 mcp = ["mcp>=1.0"]
-extract = ["tree-sitter>=0.21", "tree-sitter-python>=0.21"]
+# Polyglot extraction (JS/TS, Rust, C/C++, C#, Bash) via tree-sitter.
+treesitter = ["tree-sitter>=0.22", "tree-sitter-language-pack>=0.1"]
+precise = ["jedi>=0.19"]            # jedi-accurate Python resolution (reindex --precise)
+resolve = ["sqlglot>=20"]           # SQL resolver
 algebra = ["python-graphblas>=2023.0"]
-# Everything needed to run all surfaces.
+# Everything.
 all = [
   "typer>=0.12",
   "mcp>=1.0",
-  "tree-sitter>=0.21",
-  "tree-sitter-python>=0.21",
+  "tree-sitter>=0.22",
+  "tree-sitter-language-pack>=0.1",
+  "jedi>=0.19",
+  "sqlglot>=20",
   "python-graphblas>=2023.0",
 ]
 dev = ["pytest>=8.0"]
