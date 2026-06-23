@@ -1192,3 +1192,64 @@ def test_tree_sitter_same_name_nested_and_module_def_do_not_merge(tmp_path):
         ids = set(store.all_node_ids())
         assert "app.ts::main.helper" in ids          # the nested one
         assert "app.ts::helper" in ids               # the distinct module-level one
+
+
+# -- Panel S / opus (CRITICAL): Panel R's body-skip dropped a nested def's *header*
+#    expressions (decorator args, class bases), which run in the ENCLOSING scope ---
+def test_nested_def_decorator_argument_call_is_attributed_to_enclosing(tmp_path):
+    """`@registry(make_validator())` on a function-local `handler` calls
+    `make_validator` in the *enclosing* function's scope at definition time. Panel R
+    skipped the whole nested-def statement, dropping that call (it isn't recovered:
+    `_decorator_edges` edges only the decorator's name) -> `make_validator` had zero
+    inbound edges and was flagged dead (a cardinal-invariant regression). The body
+    leak must still NOT return: a call inside the nested def's *body* stays on the
+    nested def, not the enclosing function."""
+    from stitchgraph.core.model import Relation
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["main"]\nfrom .m import main\n',
+        "pkg/m.py": (
+            "def make_validator():\n    return 1\n"
+            "def body_only():\n    return 2\n"
+            "def registry(v):\n    def deco(fn):\n        return fn\n    return deco\n"
+            "def build():\n"
+            "    @registry(make_validator())\n"
+            "    def handler(req):\n        return body_only()\n"
+            "    return handler\n"
+            "def main():\n    return build()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "make_validator" not in stale          # decorator arg runs in build's scope
+        calls = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.CALLS)}
+        assert ("pkg/m.py::build", "pkg/m.py::make_validator") in calls   # header -> enclosing
+        assert ("pkg/m.py::build", "pkg/m.py::body_only") not in calls    # body stays nested
+        assert ("pkg/m.py::build.handler", "pkg/m.py::body_only") in calls
+
+
+def test_nested_class_base_expression_is_attributed_to_enclosing(tmp_path):
+    """A function-local class whose base is a *call* (`class L(make_base())`) invokes
+    `make_base` in the enclosing scope at definition time; Panel R's statement-skip
+    dropped it. `_walk_scope` only edges a base via `_name_of`, which is None for a
+    Call base, so it isn't recovered there either."""
+    from stitchgraph.core.model import Relation
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["main"]\nfrom .m import main\n',
+        "pkg/m.py": (
+            "def make_base():\n    return object\n"
+            "def build():\n"
+            "    class Local(make_base()):\n        pass\n"
+            "    return Local\n"
+            "def main():\n    return build()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "make_base" not in stale               # base expr runs in build's scope
+        # reached from the enclosing fn via a liveness edge (CALLS or REFERENCES — the
+        # outermost call's func name resolves as a REFERENCES, which still keeps it live)
+        reached = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.CALLS)} \
+            | {(e.src, e.dst_id) for e in store.resolved_edges(Relation.REFERENCES)}
+        assert ("pkg/m.py::build", "pkg/m.py::make_base") in reached

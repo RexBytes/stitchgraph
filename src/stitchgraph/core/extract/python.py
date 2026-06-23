@@ -302,6 +302,23 @@ def _iter_funcs(tree: ast.Module, rel: str):
     yield from walk(tree, "")
 
 
+def _def_header_refs(stmt: ast.AST):
+    """Expressions in a *nested* def's header that execute in the ENCLOSING scope at
+    definition time, not in the def's own body: decorator expressions (incl. their
+    argument calls, e.g. `@registry(make_validator())`) and a nested class's base /
+    keyword expressions (e.g. `class L(get_base())`). The body-skip that stops a
+    nested def's *body* leaking up (Panel R) must NOT also drop these — they run when
+    the enclosing function runs, so a symbol used only here is live and would
+    otherwise be flagged dead. Parameter defaults/annotations are intentionally
+    excluded: `_annotation_names` already attributes them to the nested def itself."""
+    yield from getattr(stmt, "decorator_list", [])
+    if isinstance(stmt, ast.ClassDef):
+        yield from stmt.bases
+        for kw in stmt.keywords:
+            if kw.value is not None:
+                yield kw.value
+
+
 def _direct_nodes(func: ast.AST):
     """All descendant nodes in a function's own scope (not crossing nested defs)."""
     def rec(node):
@@ -316,7 +333,11 @@ def _direct_nodes(func: ast.AST):
         # driver must guard the top-level stmt too, or the nested def's calls/refs/
         # globals leak up and get mis-attributed to the enclosing scope (double-
         # counting fan_in/pagerank, false god-objects — the metric-inflation class).
+        # Its *header* expressions (decorators/bases) still run in THIS scope, though.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for h in _def_header_refs(stmt):
+                yield from rec(h)
+                yield h
             continue
         yield from rec(stmt)
         yield stmt
@@ -518,6 +539,8 @@ def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribut
         # passed here (Panel P class-body walk), this correctly keeps only the class
         # body's own statements and excludes method bodies.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for h in _def_header_refs(stmt):  # decorators/bases run in THIS scope
+                rec(h)
             continue
         rec(stmt)
     return out
@@ -574,6 +597,8 @@ def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
         # passed here (Panel P class-body walk), this correctly keeps only the class
         # body's own statements and excludes method bodies.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for h in _def_header_refs(stmt):  # decorators/bases run in THIS scope
+                rec(h)
             continue
         rec(stmt)
     return out
@@ -597,6 +622,8 @@ def _direct_withs(func: ast.AST) -> list[ast.withitem]:
         # passed here (Panel P class-body walk), this correctly keeps only the class
         # body's own statements and excludes method bodies.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for h in _def_header_refs(stmt):  # decorators/bases run in THIS scope
+                rec(h)
             continue
         rec(stmt)
     return out
@@ -658,6 +685,8 @@ def _direct_calls(func: ast.AST) -> list[ast.Call]:
         # passed here (Panel P class-body walk), this correctly keeps only the class
         # body's own statements and excludes method bodies.
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for h in _def_header_refs(stmt):  # decorators/bases run in THIS scope
+                rec(h)
             continue
         rec(stmt)
     return out
