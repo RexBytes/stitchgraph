@@ -24,6 +24,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 1},
       "theme": "more symmetry gaps in the *other* siblings: tree-sitter twin of F4 (opus+sonnet converged), html/jsfetch route collapse, .py-only git risk"
+    },
+    {
+      "id": "C",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 2},
+      "theme": "deeper surfaces: tree-sitter callback-role twin of _apply_callback_roles, single-arg signal .connect(), SQL CTE phantom table"
     }
   ]
 }

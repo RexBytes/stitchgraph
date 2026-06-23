@@ -288,3 +288,83 @@ def test_risk_uses_non_python_git_history(tmp_path):
     git("add", "-A")
     git("commit", "-m", "add js")
     assert gitrisk.churn(str(tmp_path)).get("app.js") == 1  # .js counted, not skipped
+
+
+# -- Panel C (HIGH): tree-sitter callback role symmetry gap ---------------------
+def test_tree_sitter_methods_of_external_base_classes_get_callback_role(tmp_path):
+    """Methods of a class that inherits from an external (framework) base class
+    should have the 'callback' role so they're treated as entry points and never
+    flagged dead. Python extractor did this; tree-sitter didn't — a symmetry gap.
+    Framework callbacks (React.Component.render, EventEmitter.onError, etc.) are
+    invoked by the framework, not internally, so they must not be flagged stale."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.tsx": """
+            class MyButton extends React.Component {
+                handleClick() {
+                    console.log("clicked");
+                }
+                render() {
+                    return <button onClick={this.handleClick}>Click</button>;
+                }
+            }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        # Both callback methods must not be stale, even though they're not called
+        # internally (React/framework invokes them).
+        assert "MyButton.handleClick" not in stale
+        assert "MyButton.render" not in stale
+
+
+# -- Panel C / opus (MEDIUM): single-arg signal .connect(handler) ---------------
+def test_signal_connect_handler_is_not_stale(tmp_path):
+    """`signal.connect(handler)` (blinker/Django signals/Qt) is single-arg with a
+    function, keyed on the receiver object — the resolver required a string event
+    name and >=2 args, so registered signal handlers were flagged dead despite the
+    docstring promising `.connect(handler)` support."""
+    _mk(tmp_path, {
+        "app/__init__.py": '__all__ = ["run"]\nfrom .main import run\n',
+        "app/main.py": """
+            post_save = object()
+
+            def on_save(sender, **kw):
+                return audit(sender)
+
+            def audit(x):
+                return x
+
+            def run():
+                post_save.connect(on_save)
+                post_save.send(None)
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "on_save" not in stale   # registered via .connect, fired via .send
+        assert "audit" not in stale     # reached through the handler
+
+
+# -- Panel C / sonnet (MEDIUM): SQL CTE names aren't real tables ----------------
+def test_sql_cte_is_not_a_phantom_table(tmp_path):
+    """A `WITH recent AS (...)` CTE is a query-local alias, not a db table — it must
+    not become a phantom `db::recent` node (it parses as a Table when referenced)."""
+    pytest.importorskip("sqlglot")
+    _mk(tmp_path, {
+        "q/__init__.py": "",
+        "q/svc.py": """
+            def report():
+                return db.execute(
+                    "WITH recent AS (SELECT id FROM orders) SELECT id FROM recent")
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import NodeKind
+        tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
+        assert "orders" in tables       # the real table
+        assert "recent" not in tables   # the CTE alias is not a table

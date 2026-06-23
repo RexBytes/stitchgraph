@@ -54,9 +54,13 @@ def _link(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
         return
     writes = isinstance(tree, (exp.Insert, exp.Update, exp.Delete, exp.Create))
     rel_kind = Relation.WRITES if writes else Relation.READS
+    # CTE names (`WITH recent AS (...)`) parse as Tables when referenced, but they
+    # are query-local aliases, not real db tables — skip them so they don't become
+    # phantom `db::` nodes that pollute trace_path / get_matrix.
+    cte_names = {cte.alias for cte in tree.find_all(exp.CTE) if cte.alias}
     for table in tree.find_all(exp.Table):
         name = table.name
-        if not name:
+        if not name or name in cte_names:
             continue
         tid = f"db::{name}"
         nodes.setdefault(tid, Node(id=tid, kind=NodeKind.DB_TABLE, name=name,

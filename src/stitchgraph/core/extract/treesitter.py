@@ -32,6 +32,21 @@ except ModuleNotFoundError:  # pragma: no cover
 
 F, M, C = NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS
 
+# Built-in base classes that don't trigger callback role (framework bases do).
+# Languages with per-method visibility keywords (Go, Java, C#, PHP, Rust) handle
+# visibility explicitly and don't need callback role seeding; only JS/TS and
+# similar languages (where method visibility is inherited from class) use this.
+_PLAIN_BASES = {
+    # Built-in JS/TS value constructors — subclassing these is ordinary OOP, not a
+    # framework-callback contract, so their methods stay dead-code eligible. Only
+    # *plain* bases belong here: framework bases (React.Component, HTMLElement,
+    # EventTarget, EventEmitter, …) must be ABSENT so their subclass methods get
+    # the callback role — over-marking is the safe (precision-over-recall) direction.
+    "Object", "Array", "Function", "Error", "TypeError", "RangeError",
+    "SyntaxError", "Promise", "Map", "Set", "WeakMap", "WeakSet",
+    "Symbol", "BigInt", "Number", "String", "Boolean", "Date", "RegExp",
+}
+
 
 @dataclass(frozen=True)
 class LangSpec:
@@ -190,6 +205,24 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         by_name = by_lang.get(lang, {})
         for name, line in _direct_calls(body, src_by[rel], SPECS[lang]):
             _ref(edges, def_id, name, by_name, rel, line)
+
+    # Build a set of class IDs that inherit from external bases (framework classes).
+    # This will be used to mark their methods as callbacks.
+    external_base_classes: set[str] = set()
+    class_by_name: dict[str, set[str]] = {}
+    for n in nodes:
+        if n.kind is C:
+            class_by_name.setdefault(n.name, set()).add(n.id)
+
+    for class_id, base, _lang in inherits:
+        # Check if the base is external (not defined in this project, not a plain base).
+        # A base is external if it doesn't resolve to any project class and isn't plain.
+        project_bases = class_by_name.get(base, set())
+        if not project_bases and base not in _PLAIN_BASES:
+            external_base_classes.add(class_id)
+
+    _seed_callback_roles(nodes, external_base_classes)
+
     for class_id, base, lang in inherits:
         _ref(edges, class_id, base, by_lang.get(lang, {}),
              class_id.split("::", 1)[0], 0, relation=Relation.INHERITS)
@@ -213,6 +246,20 @@ def _seed_exported_class_methods(nodes):
         if n.kind is M and not n.name.startswith(("_", "#")) \
                 and n.id.rsplit(".", 1)[0] in exported_class_ids:
             n.roles = n.roles | {"exported"}
+
+
+def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
+    """Methods of a class with a framework base are framework-invoked overrides
+    (e.g. React.Component.render, Express middleware). Mark them 'callback' so
+    they're roots, not dead-code false positives (design §7 caveat, precision
+    over recall). Mirrors the Python extractor's `_apply_callback_roles`."""
+    if not external_base_classes:
+        return
+    for n in nodes:
+        if n.kind is M and "." in n.id:
+            class_id = n.id.rsplit(".", 1)[0]
+            if class_id in external_base_classes:
+                n.roles = n.roles | {"callback"}
 
 
 # -- pass 1: definitions ----------------------------------------------------

@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2 (Panels A, B) |
+| Multi-model review panels | 3 (Panels A, B, C) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 95 passing, 1 skipped |
-| Coverage | 83.1% |
-| Release-Readiness Score | 77.8 / 100 |
-| Convergence | weighted yield 43 → 15 (rate 0.35); clean streak 0 of 2 required |
-| Verdict | NOT RELEASABLE — yield declining as predicted; needs ≥2 clean full-diversity panels to converge |
+| Tests | 98 passing, 1 skipped |
+| Coverage | ~83% |
+| Release-Readiness Score | 77.0 / 100 |
+| Convergence | weighted yield 43 → 15 → 18 (non-monotonic); clean streak 0 of 2 required |
+| Verdict | NOT RELEASABLE — still surfacing real sibling gaps; needs ≥2 clean full-diversity panels to converge |
 
 ## Trajectory
 
@@ -24,6 +24,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 |---|---|---|---|---|
 | A | opus · sonnet · haiku | 3 HIGH · 3 MEDIUM · 1 LOW | 43.0 | symmetry gaps — a rule present in one sibling, missing in another |
 | B | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM · 1 LOW | 15.0 | the *same* gaps in the other siblings (tree-sitter, html/jsfetch, git risk) |
+| C | opus · sonnet · haiku | 1 HIGH · 2 MEDIUM | 18.0 | deeper surfaces — tree-sitter callback roles, signal `.connect()`, SQL CTE phantom |
 
 ## What each panel found and how it was fixed
 
@@ -72,6 +73,30 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   - **LOW (sonnet)** — `gitrisk` hard-filtered git history to `.py`, so `risk()`
     was silently empty (and misleadingly refused) on polyglot repos. The churn /
     co-change scraper now accepts every indexed source extension.
+
+- **Panel C (opus · sonnet · haiku)** — yield ticked up to 18 (non-monotonic, as
+  the methodology expects) as the panel reached surfaces the first two hadn't.
+  All reproduced and fixed with regression tests:
+  - **HIGH (haiku)** — the tree-sitter extractor lacked the Python extractor's
+    `_apply_callback_roles`, so methods of a framework-base subclass (e.g.
+    `class MyButton extends React.Component`) were flagged dead though the
+    framework invokes them. Added `_seed_callback_roles`. (The agent proposed the
+    fix directly in the tree; on review its `_PLAIN_BASES` wrongly listed framework
+    bases like `HTMLElement`/`EventTarget` as "plain" — the unsafe direction — so
+    that set was trimmed to built-in value constructors only.)
+  - **MEDIUM (opus)** — the event resolver documented and listed `.connect` but
+    only matched the 2-arg string form, so single-arg signal registration
+    (`signal.connect(handler)`, blinker/Django/Qt) never linked and handlers were
+    flagged dead. Added receiver-keyed events so `signal.connect(h)` and a bare
+    `signal.send(...)` meet on the same event node — a broken docstring promise,
+    now kept.
+  - **MEDIUM (sonnet)** — a `WITH x AS (...)` CTE parses as a Table when
+    referenced, so the SQL resolver minted a phantom `db::x` node. CTE aliases are
+    now collected and skipped.
+
+> Process note: Panel C agents shared the working tree and one edited source
+> directly. Subsequent panels run in **isolated worktrees, strictly review-only**
+> — they report findings; the maintainer adjudicates and applies.
 
 ## Standing themes
 
