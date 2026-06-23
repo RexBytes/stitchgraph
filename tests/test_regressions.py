@@ -909,3 +909,26 @@ def test_old_index_db_migrates_edge_columns(tmp_path):
     with sg.Store(str(dbp)) as store:      # opening triggers _migrate
         holes = store.unresolved_edges()    # reads edges.source/file -> must not raise
         assert any(e.src == "a.py::f" for e in holes)
+
+
+# -- Panel N / opus (HIGH): a symbol used only as a default value is live ------
+def test_default_value_references_are_modeled(tmp_path):
+    """A class/function used only as a parameter *default value* (`def f(x=Strategy)`,
+    `cb=handler`) executes at call time, so it must not be flagged dead — defaults
+    live in `func.args`, which the body/annotation passes don't walk (the Python twin
+    of the tree-sitter whole-def walk)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["main"]\nfrom .m import main\n',
+        "pkg/m.py": (
+            "class Strategy:\n    def run(self):\n        return 1\n"
+            "def handler():\n    return 2\n"
+            "class TrulyDead:\n    pass\n"
+            "def configure(strategy=Strategy, cb=handler):\n    return strategy(), cb\n"
+            "def main():\n    return configure()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert {"Strategy", "handler"} & stale == set()  # used as default values
+        assert "TrulyDead" in stale                       # genuinely unreferenced
