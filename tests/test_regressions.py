@@ -777,3 +777,42 @@ def test_python_call_and_reference_to_same_target_not_doubled(tmp_path):
                 if e.src.endswith("build") and e.dst_id and e.dst_id.endswith("::Node")}
         assert Relation.CALLS in rels and Relation.REFERENCES not in rels  # CALLS wins
         assert fan_in(store).get("pkg/m.py::Node") == 1                     # counted once
+
+
+# -- Panel L / haiku (HIGH): constructing a class reaches its constructor ------
+def test_constructor_body_is_reachable_python(tmp_path):
+    """Constructing `Service()` implicitly runs `Service.__init__`, so a class built
+    inside `__init__` (`self.r = Resource()`) is live — without a class->__init__ link
+    the constructor body is unreachable and its constructions are flagged dead."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["main"]\nfrom .m import main\n',
+        "pkg/m.py": (
+            "class Resource:\n    def use(self):\n        return 1\n"
+            "class Service:\n    def __init__(self):\n        self.r = Resource()\n"
+            "    def run(self):\n        return self.r.use()\n"
+            "class TrulyDead:\n    pass\n"
+            "def main():\n    return Service().run()\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Resource" not in stale   # constructed in Service.__init__, live
+        assert "TrulyDead" in stale       # genuinely unreferenced
+
+
+def test_constructor_body_is_reachable_tree_sitter(tmp_path):
+    """Same for tree-sitter: a JS `class Service { constructor(){ new Resource() } }`
+    built via `new Service()` keeps Resource live (class -> constructor link)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.js": ("class Resource { use(){ return 1; } }\n"
+                   "class Service { constructor(){ this.r = new Resource(); } "
+                   "run(){ return this.r.use(); } }\n"
+                   "export function main(){ return new Service().run(); }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Resource" not in stale

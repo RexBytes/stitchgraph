@@ -256,6 +256,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     for mod_id, name, lang in imports:
         _ref(edges, mod_id, name, by_lang.get(lang, {}),
              mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
+    _seed_constructors(nodes, edges, file_lang)
     return nodes, edges
 
 
@@ -283,6 +284,32 @@ def _seed_exported_class_methods(nodes, file_lang):
                 and file_lang.get(n.id.split("::", 1)[0]) in _CLASS_VISIBILITY_LANGS \
                 and n.id.rsplit(".", 1)[0] in exported_class_ids:
             n.roles = n.roles | {"exported"}
+
+
+# Fixed-name constructor methods per language (Java/C#/C++ name the constructor
+# after the class, handled separately via the class's own name).
+_CTOR_NAMES = {
+    "javascript": ("constructor",), "typescript": ("constructor",), "tsx": ("constructor",),
+    "ruby": ("initialize",), "php": ("__construct",),
+}
+
+
+def _seed_constructors(nodes, edges, file_lang) -> None:
+    """Link class -> constructor: constructing a class implicitly runs its
+    constructor, so a class built only via `new X()` / `X.new` otherwise leaves the
+    constructor (and whatever it constructs) unreachable -> false dead-code. Mirrors
+    the Python extractor's class -> __init__ edge."""
+    method_ids = {n.id for n in nodes if n.kind is M}
+    for n in nodes:
+        if n.kind is not C:
+            continue
+        lang = file_lang.get(n.id.split("::", 1)[0])
+        for ctor in (*_CTOR_NAMES.get(lang, ()), n.name):  # n.name: class-named ctor
+            mid = f"{n.id}.{ctor}"
+            if mid in method_ids:
+                edges.append(Edge(src=n.id, relation=Relation.REFERENCES, dst_symbol=ctor,
+                                  dst_id=mid, weight=1.0, provenance=Provenance.EXTRACTED,
+                                  location=n.location, source="tree-sitter"))
 
 
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:

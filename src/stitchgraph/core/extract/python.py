@@ -307,6 +307,14 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                         proj.external_base_classes.add(cid)  # framework base
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)
+            # Constructing the class implicitly runs its constructor hooks, so link
+            # class -> __init__/__new__/__post_init__. Without this, a class built only
+            # via `Foo()` leaves its __init__ (and whatever __init__ constructs, e.g.
+            # `Resource()`) unreachable -> false dead-code (live code flagged dead).
+            for dunder in ("__init__", "__new__", "__post_init__"):
+                mid = Node.make_id(rel, f"{qual}.{dunder}")
+                if mid in proj.ids:
+                    _add_ref(proj, cid, dunder, mid, rel, child.lineno)
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)
