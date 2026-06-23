@@ -14,6 +14,7 @@ resolvers, and tools are untouched.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 from ..model import Edge, Node
@@ -29,8 +30,13 @@ def extract_project(root: str | Path,
             jn, je = treesitter.extract(root, ignore)
             nodes += jn
             edges += je
-    except Exception:  # noqa: BLE001 — a polyglot extractor must never break Python
-        pass
+    except Exception as exc:  # noqa: BLE001 — must never break Python extraction
+        # Keep Python results, but do NOT vanish silently: a blanket swallow turned a
+        # broken tree-sitter install into "ran fine, found nothing" (issue #7).
+        warnings.warn(
+            f"tree-sitter extraction failed ({type(exc).__name__}: {exc}); non-Python "
+            f"files were not analysed. Python results are unaffected.",
+            RuntimeWarning, stacklevel=2)
     return nodes, edges
 
 

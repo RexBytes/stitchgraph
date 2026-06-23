@@ -17,6 +17,7 @@ parse error -> those files are skipped; Python extraction is unaffected.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -171,19 +172,27 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
 
     files = [p for p in sorted(root.rglob("*"))
              if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
+    grammar_failed: dict[str, int] = {}  # lang -> files skipped (grammar unavailable)
     for path in files:
         lang = EXT_LANG[path.suffix]
         if lang not in SPECS:
             continue
+        if lang in grammar_failed:  # already known-unavailable; don't retry, just count
+            grammar_failed[lang] += 1
+            continue
         if lang not in parsers:
             try:
                 parsers[lang] = Parser(get_language(lang))
-            except Exception:  # noqa: BLE001 — grammar unavailable
+            except Exception:  # noqa: BLE001 — grammar unavailable (download/build/version)
+                # Do NOT swallow into a silent empty graph: a grammar that won't load
+                # would otherwise make every file of that language vanish with no
+                # signal (issue #7). Record it and warn once below.
+                grammar_failed[lang] = 1
                 continue
         try:
             src = path.read_bytes()
             tree = parsers[lang].parse(src)
-        except (OSError, Exception):  # noqa: BLE001
+        except (OSError, Exception):  # noqa: BLE001 — a malformed/unreadable single file
             continue
         rel = path.relative_to(root).as_posix()
         src_by[rel] = src
@@ -199,6 +208,18 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name in _import_names(tree.root_node, src, spec):
             imports.append((mod_id, name, lang))
         reexports |= _reexport_names(tree.root_node, src)
+
+    # Surface grammar-load failures instead of returning a silent empty graph (issue
+    # #7): without this, a non-Python repo looks like "ran fine, found almost nothing".
+    if grammar_failed:
+        skipped = sum(grammar_failed.values())
+        langs = ", ".join(sorted(grammar_failed))
+        warnings.warn(
+            f"tree-sitter grammar(s) unavailable for: {langs}; {skipped} file(s) "
+            f"skipped and NOT analysed. The graph is incomplete for those languages. "
+            f"Check the tree-sitter-language-pack install (offline/proxied environments "
+            f"may fail to fetch grammars).",
+            RuntimeWarning, stacklevel=2)
 
     # A named re-export (`export { Widget }`) marks its symbol as public API just like
     # `export class Widget` — without this the re-exported class/fn (and its methods)
@@ -360,8 +381,17 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
 # -- pass 1: definitions ----------------------------------------------------
 def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test,
              contains, enclosing_func):
+    pending_attrs: list[str] = []
     for child in node.children:
         t = child.type
+        # Rust attributes (`#[test]`, `#[tokio::test]`, `#[cfg(test)]`, ...) parse as
+        # sibling items preceding the def/mod they annotate; accumulate them so the
+        # next real item can see them (issue #8).
+        if t in ("attribute_item", "inner_attribute_item"):
+            pending_attrs.append(_text(child, src))
+            continue
+        attrs, pending_attrs = pending_attrs, []
+        attr_test = any("test" in a for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported=True, is_test=is_test, contains=contains,
@@ -379,7 +409,14 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 continue
             qual = _join(parent, name)
             roles = set(_roles(child, src, name, lang, exported))
-            if _is_test_name(name):  # a test entry; other test-file helpers stay normal
+            # A test entry-point root by name convention (test*/Benchmark*/Example*)
+            # or by a Rust `#[test]`/`#[tokio::test]` attribute. The attribute case
+            # fixes idiomatic Rust inline unit tests, whose names are free-form
+            # (`#[cfg(test)] mod tests { fn closeness_works() {...} }`) so the name
+            # convention never fires — they (and the helpers they *reach*) were flagged
+            # dead, flooding find_stale (issue #8). A test helper reached by no test
+            # stays flagged, consistent with a dead helper in any test file.
+            if _is_test_name(name) or attr_test:
                 roles.add("test")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"

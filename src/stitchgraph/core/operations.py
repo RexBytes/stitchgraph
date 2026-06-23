@@ -255,9 +255,18 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
 def impact_of(store: Store, name: str) -> Result:
     """Reverse reachability: everything that transitively depends on a symbol,
     plus which tests it reaches (design §6.B/G)."""
-    target = _resolve_one(store, name)
+    target, candidates = _resolve_target(store, name)
     if target is None:
-        return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
+        if len(candidates) > 1:
+            # Don't silently union homonyms and don't refuse blankly: show the
+            # candidates and how to scope to one (issue #9).
+            res = refuse(
+                f"'{name}' matches {len(candidates)} symbols — pass a qualified id to "
+                f"scope to one (e.g. {candidates[0].id!r}); not unioning their blast radii",
+                confidence=0.0)
+            res.alternatives = [n.to_dict() for n in candidates]
+            return res
+        return refuse(f"'{name}' is not in the index", confidence=0.0)
     dependents = reverse_reachable_from(store, {target.id})
     tests = sorted(d for d in dependents
                    if (n := store.get_node(d)) and "test" in n.roles)
@@ -677,9 +686,25 @@ def _dedup_edges(edges: list) -> list:
     return holes + [best[k] for k in order if not _drop(best[k])]
 
 
+def _resolve_target(store: Store, name: str):
+    """Resolve `name` to a single node, accepting (a) a bare name, (b) a qualified
+    `Type.method` / dotted suffix, or (c) a full `path::qual` id — so a homonym can be
+    scoped from the CLI/MCP instead of just refused (issue #9). Returns
+    `(node | None, candidates)`; on an ambiguous bare name `node` is None and
+    `candidates` lists every match."""
+    if "::" in name:  # a full node id pins exactly one
+        n = store.get_node(name)
+        return n, ([n] if n else [])
+    nodes = store.nodes_by_name(name)  # try the name exactly as given first
+    if not nodes and "." in name:      # fall back to a qualified `Type.method` suffix
+        leaf = name.rsplit(".", 1)[-1]
+        nodes = [n for n in store.nodes_by_name(leaf)
+                 if n.id.split("::", 1)[-1] == name or n.id.endswith("." + name)]
+    return (nodes[0], nodes) if len(nodes) == 1 else (None, nodes)
+
+
 def _resolve_one(store: Store, name: str):
-    nodes = store.nodes_by_name(name)
-    return nodes[0] if len(nodes) == 1 else None
+    return _resolve_target(store, name)[0]
 
 
 def _default_detector(store: Store) -> PythonLibraryDetector:

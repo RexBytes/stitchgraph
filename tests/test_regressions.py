@@ -1351,3 +1351,76 @@ def test_tree_sitter_def_inside_arrow_function_is_live(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "privHelper" not in stale                    # handler->worker->privHelper
         assert "app.ts::handler.worker" in set(store.all_node_ids())  # nested def modeled
+
+
+# -- Issue #8 (field, v1.0.0): Rust #[test] / #[cfg(test)] items are test roots ----
+def test_rust_cfg_test_inline_tests_are_not_flagged_dead(tmp_path):
+    """Idiomatic Rust inline unit tests live in `#[cfg(test)] mod tests` with
+    free-form names, so the test*/Benchmark*/Example* name convention never fires.
+    The `#[test]`/`#[tokio::test]` attribute must seed the `test` role (root) so the
+    tests — and the helpers they reach — aren't flagged dead (which flooded find_stale
+    on a real Rust crate). A test helper reached by no test, and unused production
+    code, must still be flagged (consistent with a dead helper in any test file)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/lib.rs": (
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }\n"
+        "fn truly_unused() -> i32 { 0 }\n"
+        "#[cfg(test)]\nmod tests {\n    use super::*;\n"
+        "    fn fixture() -> i32 { 7 }\n"
+        "    fn unreached() -> i32 { 9 }\n"
+        "    #[test]\n    fn add_works() { assert_eq!(add(2, 3), 5); let _ = fixture(); }\n"
+        "    #[tokio::test]\n    async fn async_case() { assert_eq!(add(1, 1), 2); }\n}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "add_works" not in stale and "async_case" not in stale  # #[test] roots
+        assert "fixture" not in stale                                  # reached by a test
+        assert "truly_unused" in stale and "unreached" in stale        # genuinely dead
+
+
+# -- Issue #7 (field, v1.0.0): grammar-load failure must not be a silent empty graph -
+def test_tree_sitter_grammar_load_failure_warns_not_silent(tmp_path, monkeypatch):
+    """A tree-sitter grammar that can't load (offline/proxied/version drift) must NOT
+    collapse into a silent empty graph with exit ok — it warns and names the skipped
+    language, while Python extraction is unaffected (issue #7)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract import extract_project, treesitter
+    _mk(tmp_path, {"app.js": "export function jsFn(){ return 1; }\n",
+                   "m.py": "def py_fn():\n    return 1\n"})
+
+    def _boom(_lang):  # simulate grammar unavailable
+        raise RuntimeError("grammar download failed")
+    monkeypatch.setattr(treesitter, "get_language", _boom)
+
+    with pytest.warns(RuntimeWarning, match="grammar"):
+        nodes, _edges = extract_project(str(tmp_path))
+    names = {n.name for n in nodes}
+    assert "py_fn" in names      # Python results unaffected by the tree-sitter failure
+    assert "jsFn" not in names   # JS skipped — but loudly, not silently
+
+
+# -- Issue #9 (field, v1.0.0): impact_of homonyms — list candidates + allow scoping --
+def test_impact_of_ambiguous_name_lists_candidates_and_scopes(tmp_path):
+    """`impact_of` on a bare common name must not blank-refuse (nor silently union):
+    it surfaces the candidates (alternatives) and accepts a qualified `Type.method`
+    or a full `path::qual` id to scope to exactly one (issue #9)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/a.rs": (
+        "pub struct LmdbStorage;\nimpl LmdbStorage { pub fn get(&self) -> i32 { 1 } }\n"
+        "pub struct Cache;\nimpl Cache { pub fn get(&self) -> i32 { 2 } }\n"
+        "pub fn use_lmdb(s: &LmdbStorage) -> i32 { s.get() }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        amb = sg.impact_of(store, "get")
+        assert amb.ok is False                       # not unioned, not blank-refused
+        assert len(amb.alternatives) == 2            # both homonyms surfaced
+        assert all("::" in a["id"] for a in amb.alternatives)  # scopable ids shown
+        scoped = sg.impact_of(store, "LmdbStorage.get")        # qualified scopes
+        assert scoped.ok and scoped.result["symbol"].endswith("::LmdbStorage.get")
+        full = sg.impact_of(store, "src/a.rs::Cache.get")      # full id scopes
+        assert full.ok and full.result["symbol"] == "src/a.rs::Cache.get"
