@@ -180,10 +180,20 @@ def _index(proj: _Project) -> None:
 def _apply_entrypoint_roles(proj: _Project) -> None:
     """Mark roots once the whole symbol table is known: exported names (public
     API, incl. re-exports) and functions invoked from `__main__` blocks."""
+    # Public methods of an exported class are themselves public API: external code
+    # holding an instance can call them, so they are never dead for lack of an
+    # internal caller (precision over recall). Underscore-prefixed methods stay
+    # private — reached only if something internal calls them.
+    exported_class_ids = {n.id for n in proj.nodes
+                          if n.kind is NodeKind.CLASS and n.name in proj.exported_names}
     for node in proj.nodes:
         extra: set[str] = set()
         if node.name in proj.exported_names and node.kind in (
                 NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS):
+            extra.add("exported")
+        if node.kind is NodeKind.METHOD and "." in node.id \
+                and not node.name.startswith("_") \
+                and node.id.rsplit(".", 1)[0] in exported_class_ids:
             extra.add("exported")
         if node.name in proj.main_calls and node.kind == NodeKind.FUNCTION:
             extra.add("main")

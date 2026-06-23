@@ -335,7 +335,17 @@ def _trailing_id(node, src):
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:
         return _trailing_id(prop, src)
+    # A generic type (`Container<T>`, `Container::<T>`) names the *base* type — its
+    # explicit `type` field — not the trailing type argument. Without this, an
+    # `impl<T> Container<T>` block resolved to `T`, mis-attributing every method.
+    base = node.child_by_field_name("type")
+    if base is not None:
+        return _trailing_id(base, src)
     for c in reversed(node.children):  # rightmost identifier-ish leaf
+        # Skip type-argument/parameter subtrees so generics resolve to the base
+        # name, not a parameter (e.g. the `T` inside `Container<T>`).
+        if c.type in ("type_arguments", "type_parameters"):
+            continue
         got = _trailing_id(c, src)
         if got:
             return got

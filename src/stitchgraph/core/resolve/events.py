@@ -56,11 +56,23 @@ class EventResolver:
             events.setdefault(eid, Node(id=eid, kind=NodeKind.EVENT, name=name,
                                         location="event"))
             cands = ctx.by_name.get(handler, []) if handler else []
+            # Link to *all* same-named handlers, not just an unambiguous one:
+            # dropping the edge when a name is shared would flag a live handler
+            # dead (precision over recall). Ambiguity is recorded on each edge.
+            if not cands:
+                return
             if len(cands) == 1:
                 edges.append(Edge(src=eid, relation=Relation.HANDLES, dst_symbol=handler,
                                   dst_id=cands[0], weight=0.7,
                                   provenance=Provenance.INFERRED, location=loc,
                                   source="heuristic"))
+            else:
+                w = round(0.7 / len(cands), 3)
+                for cid in cands:
+                    edges.append(Edge(src=eid, relation=Relation.HANDLES, dst_symbol=handler,
+                                      dst_id=cid, weight=w,
+                                      provenance=Provenance.AMBIGUOUS, location=loc,
+                                      source="heuristic"))
 
 
 def _calls(func):

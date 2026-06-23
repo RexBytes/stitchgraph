@@ -16,8 +16,16 @@ from typing import Any, Generic, TypeVar
 
 T = TypeVar("T")
 
-# Confidence below this is flagged for review (design §4). Overridable via config.
+# Confidence below this is flagged for review (design §4). `config.load_config`
+# overrides it from `stitchgraph.toml [review] threshold` via set_review_threshold;
+# envelope stays stdlib-only (config depends on envelope, never the reverse).
 REVIEW_THRESHOLD = 0.80
+
+
+def set_review_threshold(value: float) -> None:
+    """Set the review-confidence threshold (called by config when a toml is loaded)."""
+    global REVIEW_THRESHOLD
+    REVIEW_THRESHOLD = value
 
 
 class Provenance(str, Enum):

@@ -296,16 +296,26 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
     # data loops, god objects) don't — so report what we can even without roots.
     reachable = reachable_from(store, seeds) if seeds else set()
+    # A stub only shouts RED when its liveness rests on EXTRACTED edges; if it is
+    # reachable only through an INFERRED/AMBIGUOUS hop (a heuristic route, an
+    # ambiguous name) the liveness itself is uncertain, so the provenance ceiling
+    # caps it at ORANGE (envelope §7: nothing low-confidence shouts red).
+    certain = (reachable_from(store, seeds,
+                              edge_filter=lambda e: e.provenance is Provenance.EXTRACTED)
+               if seeds else set())
     issues: list[dict] = []
 
     # Live stubs on a reachable path: a NotImplementedError that actually runs.
     for node in store.stub_nodes():
         live = node.id in reachable
+        certain_live = node.id in certain
         issues.append({
             "kind": "live_stub" if live else "stub",
             "node": node.id, "location": node.location,
-            "urgency": Urgency.RED.value if live else Urgency.GREEN.value,
-            "reason": "unimplemented body on a reachable path" if live
+            "urgency": (Urgency.RED.value if certain_live
+                        else Urgency.ORANGE.value if live else Urgency.GREEN.value),
+            "reason": "unimplemented body on a reachable path" if certain_live
+            else "unimplemented body on an inferred (heuristic) path" if live
             else "unimplemented body, not reachable",
         })
 

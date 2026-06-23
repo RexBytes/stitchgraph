@@ -12,5 +12,12 @@
     "security": {"file": "tests/test_safety.py", "needles": ["read_only", "malformed", "traversal"]},
     "docs": ["LIMITATIONS.md", "CONTRIBUTING.md", "README.md"]
   },
-  "panels": []
+  "panels": [
+    {
+      "id": "A",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 3, "MEDIUM": 3, "LOW": 1},
+      "theme": "symmetry gaps: a liveness rule / ambiguity guard / type preserved in one extractor or resolver but missing in a sibling"
+    }
+  ]
 }

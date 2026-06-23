@@ -86,14 +86,18 @@ def _make_command(typer, op: Operation):
         raise typer.Exit(_exit_code(result))
 
     # Give the wrapper a signature Typer can introspect: the op's params + --db/--json.
+    # Preserve each param's real type so Typer parses/validates it — rebuilding every
+    # param as `str` made `--limit 5` arrive as "5" (crashing int comparisons) and
+    # inverted bool flags.
     params = []
     for p in op_params:
+        anno = _anno_type(p.annotation)
         if p.default is inspect.Parameter.empty:
-            params.append(inspect.Parameter(p.name, p.kind, annotation=str))
+            params.append(inspect.Parameter(p.name, p.kind, annotation=anno))
         else:
             params.append(inspect.Parameter(
                 p.name, inspect.Parameter.KEYWORD_ONLY,
-                default=typer.Option(p.default, help=f"{p.name}"), annotation=str))
+                default=typer.Option(p.default, help=f"{p.name}"), annotation=anno))
     params.append(inspect.Parameter(
         "db", inspect.Parameter.KEYWORD_ONLY,
         default=typer.Option("stitchgraph.db", help="index database path"), annotation=str))
@@ -104,6 +108,23 @@ def _make_command(typer, op: Operation):
     command.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
     command.__name__ = op.name
     return command
+
+
+_ANNO_TYPES = {"str": str, "int": int, "float": float, "bool": bool}
+
+
+def _anno_type(annotation: Any) -> type:
+    """Resolve an operation param's annotation to a concrete type for Typer.
+
+    Annotations are JSON-simple (operations.exposed_params filters to those) but
+    arrive as strings under `from __future__ import annotations`; default to `str`
+    for anything unrecognised (e.g. `int | None`)."""
+    if isinstance(annotation, type):
+        return annotation if annotation in _ANNO_TYPES.values() else str
+    if isinstance(annotation, str):
+        base = annotation.replace("Optional[", "").replace("]", "").split("|")[0].strip()
+        return _ANNO_TYPES.get(base, str)
+    return str
 
 
 def _exit_code(result) -> int:

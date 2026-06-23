@@ -67,12 +67,22 @@ def _scan(root, src, rel, ctx, nodes, edges):
                                   roles=frozenset({"route"})))
                 if handler:
                     cands = ctx.by_name.get(handler, [])
+                    # Link to *all* same-named handlers (precision over recall):
+                    # dropping the edge on an ambiguous name would risk flagging a
+                    # live handler dead. Ambiguity is recorded on each edge.
+                    loc = f"{rel}:{n.start_point[0] + 1}:0"
                     if len(cands) == 1:
                         edges.append(Edge(src=rid, relation=Relation.ROUTES_TO,
                                           dst_symbol=handler, dst_id=cands[0], weight=0.8,
-                                          provenance=Provenance.INFERRED,
-                                          location=f"{rel}:{n.start_point[0] + 1}:0",
+                                          provenance=Provenance.INFERRED, location=loc,
                                           source="heuristic"))
+                    elif len(cands) > 1:
+                        w = round(0.8 / len(cands), 3)
+                        for cid in cands:
+                            edges.append(Edge(src=rid, relation=Relation.ROUTES_TO,
+                                              dst_symbol=handler, dst_id=cid, weight=w,
+                                              provenance=Provenance.AMBIGUOUS, location=loc,
+                                              source="heuristic"))
         for c in n.children:
             rec(c)
     rec(root)
