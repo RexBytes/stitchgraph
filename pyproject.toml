@@ -43,7 +43,11 @@ all = [
   "sqlglot>=20",
   "python-graphblas>=2023.0",
 ]
-dev = ["pytest>=8.0"]
+dev = [
+  "pytest>=8.0", "pytest-cov", "hypothesis", "ruff", "mypy",
+  "typer>=0.12", "tree-sitter>=0.22", "tree-sitter-language-pack>=0.1",
+  "jedi>=0.19", "sqlglot>=20", "python-graphblas>=2023.0",
+]
 
 [project.scripts]
 stitchgraph = "stitchgraph.adapters.cli:main"
@@ -59,3 +63,21 @@ packages = ["src/stitchgraph"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["review-kit"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# E501 line-length case-by-case; B904 lazy reraise; B008 typer defaults;
+# UP042 str+Enum is intentional (explicit .value everywhere).
+ignore = ["E501", "B904", "B008", "UP042"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.11"
+ignore_missing_imports = true
+exclude = ["review-kit"]

@@ -1,8 +1,6 @@
 """File-change watching: snapshot + change detection."""
 from __future__ import annotations
 
-from pathlib import Path
-
 from stitchgraph.core.watch import changed, snapshot
 
 
@@ -16,7 +14,8 @@ def test_snapshot_and_change_detection(tmp_path):
     assert not any(k.endswith("notes.txt") for k in s1)  # non-source ignored
 
     assert not changed(s1, snapshot(tmp_path))            # nothing changed
-    import os, time
+    import os
+    import time
     t = time.time() + 10
     os.utime(tmp_path / "a.py", (t, t))                    # touch -> modified
     assert changed(s1, snapshot(tmp_path))

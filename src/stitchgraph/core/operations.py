@@ -14,12 +14,17 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from .entrypoints import EntryPointDetector, PythonLibraryDetector
 from .envelope import Provenance, Result, Urgency, ok, refuse
 from .model import NodeKind, Relation
 from .reach import (
-    best_path, fan_in, fan_out, reachable_from, reverse_reachable_from,
+    best_path,
+    fan_in,
+    fan_out,
+    reachable_from,
+    reverse_reachable_from,
     strongly_connected_components,
 )
 from .store import Store
@@ -426,7 +431,7 @@ def risk(store: Store, path: str = ".") -> Result:
         f = to_git(nid.split("::", 1)[0])
         file_centrality[f] = file_centrality.get(f, 0.0) + ranking.get(nid, 0.0)
 
-    hotspots = []
+    hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():
         cen = file_centrality.get(f, 0.0)
         if cen <= 0:
@@ -472,6 +477,7 @@ def _connected_file_pairs(store: Store, to_git) -> set[frozenset[str]]:
 def _git_path_mapper(store: Store, path: str):
     """Map an indexed-root-relative file to a repo-root-relative (git) path."""
     import os
+
     from . import gitrisk
 
     root = store.get_meta("root")
@@ -508,7 +514,7 @@ def summarize_subsystem(store: Store, path: str) -> Result:
 
     fi = fan_in(store)
     hubs = sorted((n.id for n in members), key=lambda i: fi.get(i, 0), reverse=True)
-    public = sorted(inbound, key=inbound.get, reverse=True)
+    public = sorted(inbound, key=lambda k: inbound[k], reverse=True)
     payload = {
         "node_counts": counts,
         "read_first": [h.split("::", 1)[-1] for h in hubs[:8]],
@@ -559,8 +565,8 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     if len(members) <= 12:
         grid = [[0] * len(members) for _ in members]
         for c in cells:
-            grid[c["src"]][c["dst"]] = 1
-        payload["grid"] = grid
+            grid[int(c["src"])][int(c["dst"])] = 1
+        payload["grid"] = grid  # type: ignore[assignment]
     return ok(payload, density=f"{len(cells)}/{len(members)**2}")
 
 

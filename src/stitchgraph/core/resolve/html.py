@@ -41,7 +41,7 @@ class HtmlRouteResolver:
             tid = f"{rel}::template"
             nodes.append(Node(id=tid, kind=NodeKind.TEMPLATE, name=rel,
                               location=f"{rel}:1:0"))
-            for action, method in forms:
+            for action, _method in forms:
                 rid = route_by_path.get(action) or route_by_path.get(action.rstrip("/"))
                 if rid:
                     edges.append(Edge(

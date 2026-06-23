@@ -17,11 +17,11 @@ parse error -> those files are skipped; Python extraction is unaffected.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from ..model import Edge, Node, NodeKind, Relation
 from ..envelope import Provenance
+from ..model import Edge, Node, NodeKind, Relation
 
 try:
     from tree_sitter import Parser
@@ -179,9 +179,9 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
     for n in nodes:
-        lang = file_lang.get(n.id.split("::", 1)[0])
-        if lang:
-            by_lang.setdefault(lang, {}).setdefault(n.name, []).append(n.id)
+        flang = file_lang.get(n.id.split("::", 1)[0])
+        if flang:
+            by_lang.setdefault(flang, {}).setdefault(n.name, []).append(n.id)
 
     edges: list[Edge] = []
     for rel, def_id, body, lang in defs:

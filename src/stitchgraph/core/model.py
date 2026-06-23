@@ -74,8 +74,8 @@ class Node:
         return base if disambiguator == 0 else f"{base}#{disambiguator}"
 
     def to_dict(self) -> dict[str, Any]:
-        out = {"id": self.id, "kind": self.kind.value, "name": self.name,
-               "location": self.location}
+        out: dict[str, Any] = {"id": self.id, "kind": self.kind.value,
+               "name": self.name, "location": self.location}
         if self.is_stub:
             out["is_stub"] = True
         if self.roles:

@@ -85,7 +85,7 @@ def default_resolvers() -> list[Resolver]:
 
 
 # -- shared helper: iterate function defs with their stable node ids ---------
-def iter_function_defs(tree: ast.Module, rel: str) -> Iterator[tuple[ast.AST, str, str]]:
+def iter_function_defs(tree: ast.Module, rel: str) -> Iterator[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]]:
     """Yield (func_ast, node_id, enclosing_module_or_func_id) for every def,
     matching the extractor's id scheme so resolver edges line up with extractor
     nodes."""
@@ -94,7 +94,7 @@ def iter_function_defs(tree: ast.Module, rel: str) -> Iterator[tuple[ast.AST, st
     module_qual = _module_qualname(rel)
     mod_id = f"{rel}::{module_qual}"
 
-    def walk(node: ast.AST, parent: str) -> Iterator[tuple[ast.AST, str, str]]:
+    def walk(node: ast.AST, parent: str) -> Iterator[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]]:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 qual = f"{parent}.{child.name}" if parent else child.name

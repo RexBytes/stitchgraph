@@ -323,7 +323,7 @@ def _decorator_edges(proj: _Project, node_id: str, node: ast.AST, rel: str) -> N
         name = _name_of(d.func) if isinstance(d, ast.Call) else _name_of(d)
         if name:
             _ref_edges(proj, node_id, name, Relation.REFERENCES, rel,
-                       getattr(d, "lineno", node.lineno))
+                       getattr(d, "lineno", getattr(node, "lineno", 0)))
 
 
 def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
@@ -593,7 +593,7 @@ def _is_docstring(stmt: ast.stmt) -> bool:
 
 def _docstring(node: ast.AST) -> str | None:
     try:
-        doc = ast.get_docstring(node)
+        doc = ast.get_docstring(node)  # type: ignore[arg-type]
     except TypeError:
         return None
     if not doc:

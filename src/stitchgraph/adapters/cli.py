@@ -101,7 +101,7 @@ def _make_command(typer, op: Operation):
         "json", inspect.Parameter.KEYWORD_ONLY,
         default=typer.Option(False, "--json", help="emit the raw envelope as JSON"),
         annotation=bool))
-    command.__signature__ = inspect.Signature(params)
+    command.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
     command.__name__ = op.name
     return command
 
