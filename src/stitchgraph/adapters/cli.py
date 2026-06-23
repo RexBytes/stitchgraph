@@ -72,7 +72,7 @@ def build_app():
 
 def _make_command(typer, op: Operation):
     """Wrap an operation as a Typer command with the same caller-facing params."""
-    op_params = op.params()
+    op_params = op.exposed_params()
 
     def command(**kwargs: Any) -> None:
         db = kwargs.pop("db")

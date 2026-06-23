@@ -29,6 +29,31 @@ from .store import Store
 # --------------------------------------------------------------------------
 
 
+_JSON_TYPES = (str, int, float, bool)
+_JSON_NAMES = {"str", "int", "float", "bool", "None"}
+
+
+def _json_simple(annotation) -> bool:
+    """True if a param annotation maps to a JSON-friendly type the CLI/MCP can
+    accept. Excludes internal object params (e.g. an EntryPointDetector) that a
+    client could never pass anyway — keeping them out of the generated schemas.
+
+    Annotations are *strings* here (`from __future__ import annotations`), so we
+    parse them; real type objects are also handled for safety."""
+    if annotation is inspect.Parameter.empty:
+        return True
+    if isinstance(annotation, str):
+        parts = annotation.replace("Optional[", "").replace("]", "").split("|")
+        return all(p.strip() in _JSON_NAMES for p in parts)
+    if annotation in _JSON_TYPES:
+        return True
+    import typing
+    args = typing.get_args(annotation)  # Optional[X] / X | None
+    if args:
+        return all(a is type(None) or a in _JSON_TYPES for a in args)
+    return False
+
+
 @dataclass(frozen=True)
 class Operation:
     name: str  # snake_case; CLI kebab-cases it, MCP uses it verbatim
@@ -38,6 +63,11 @@ class Operation:
     def params(self) -> list[inspect.Parameter]:
         """Caller-facing params (everything after `store`)."""
         return list(inspect.signature(self.func).parameters.values())[1:]
+
+    def exposed_params(self) -> list[inspect.Parameter]:
+        """Params the CLI/MCP surfaces — JSON-simple only (drops internal objects
+        like `detector`, which fall back to their default)."""
+        return [p for p in self.params() if _json_simple(p.annotation)]
 
 
 _REGISTRY: dict[str, Operation] = {}
