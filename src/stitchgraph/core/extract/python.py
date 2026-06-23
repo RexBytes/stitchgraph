@@ -266,8 +266,20 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             cid = Node.make_id(rel, qual)
             _decorator_edges(proj, cid, child, rel)
             local_types = _local_types(proj, child)
+            call_funcs = set()
             for call in _direct_calls(child):
+                call_funcs.add(id(call.func))
                 _call_edge(proj, rel, cid, class_qual, local_types, call)
+            # Attribute *reads* (e.g. a property `x.resolved`) -> REFERENCES, so a
+            # used property/method isn't wrongly flagged dead.
+            for attr in _direct_attr_reads(child, call_funcs):
+                tid = _resolve_member(proj, rel, class_qual, local_types,
+                                      attr.attr, attr.value)
+                if tid:
+                    _add_ref(proj, cid, attr.attr, tid, rel, attr.lineno)
+            # `with EXPR as ...` exercises the context manager's __enter__/__exit__.
+            for cm in _direct_withs(child):
+                _with_edges(proj, rel, cid, class_qual, local_types, cm)
             # Nested defs keep the enclosing class context (for closed-over self).
             _walk_scope(proj, rel, child, parent=qual, class_qual=class_qual)
 
@@ -292,24 +304,11 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
     line = call.lineno
 
     if isinstance(func, ast.Attribute):
-        m = func.attr
-        recv = func.value
-        if isinstance(recv, ast.Name):
-            # self / cls -> enclosing class.
-            if recv.id in ("self", "cls") and class_qual:
-                tid = Node.make_id(rel, f"{class_qual}.{m}")
-                if tid in proj.ids:
-                    return _add_call(proj, src_id, m, tid, rel, line, weight=1.0,
-                                     prov=Provenance.EXTRACTED)
-            # locally-typed receiver -> that class's method.
-            cls = local_types.get(recv.id)
-            if cls:
-                for class_id in proj.class_by_name.get(cls, []):
-                    mid = f"{class_id}.{m}"
-                    if mid in proj.ids:
-                        return _add_call(proj, src_id, m, mid, rel, line, weight=0.95,
-                                         prov=Provenance.EXTRACTED)
-        _ref_edges(proj, src_id, m, Relation.CALLS, rel, line)
+        tid = _resolve_member(proj, rel, class_qual, local_types, func.attr, func.value)
+        if tid:
+            return _add_call(proj, src_id, func.attr, tid, rel, line, weight=1.0,
+                             prov=Provenance.EXTRACTED)
+        _ref_edges(proj, src_id, func.attr, Relation.CALLS, rel, line)
         return
 
     name = _name_of(func)
@@ -317,11 +316,90 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
         _ref_edges(proj, src_id, name, Relation.CALLS, rel, line)
 
 
+def _resolve_member(proj: _Project, rel: str, class_qual: str | None,
+                    local_types: dict[str, str], attr: str, recv: ast.AST) -> str | None:
+    """Resolve `recv.attr` to a member node id, scope-aware (self / local type)."""
+    if not isinstance(recv, ast.Name):
+        return None
+    if recv.id in ("self", "cls") and class_qual:
+        tid = Node.make_id(rel, f"{class_qual}.{attr}")
+        if tid in proj.ids:
+            return tid
+    cls = local_types.get(recv.id)
+    if cls:
+        for class_id in proj.class_by_name.get(cls, []):
+            mid = f"{class_id}.{attr}"
+            if mid in proj.ids:
+                return mid
+    return None
+
+
 def _add_call(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,
               line: int, weight: float, prov: Provenance) -> None:
     proj.edges.append(Edge(src=src_id, relation=Relation.CALLS, dst_symbol=symbol,
                            dst_id=dst_id, weight=weight, provenance=prov,
                            location=f"{rel}:{line}:0", source="ast"))
+
+
+def _add_ref(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,
+             line: int) -> None:
+    proj.edges.append(Edge(src=src_id, relation=Relation.REFERENCES, dst_symbol=symbol,
+                           dst_id=dst_id, weight=0.95, provenance=Provenance.EXTRACTED,
+                           location=f"{rel}:{line}:0", source="ast"))
+
+
+def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
+                local_types: dict[str, str], item: ast.withitem) -> None:
+    """A `with` context manager uses __enter__/__exit__ — reference them so they
+    aren't flagged dead, and the cleanup they call (e.g. close) stays live."""
+    expr = item.context_expr
+    cls_ids: list[str] = []
+    if isinstance(expr, ast.Call):
+        ctor = _name_of(expr.func)
+        if ctor:
+            cls_ids = proj.class_by_name.get(ctor, [])
+    elif isinstance(expr, ast.Name) and expr.id in local_types:
+        cls_ids = proj.class_by_name.get(local_types[expr.id], [])
+    for cid in cls_ids:
+        for dunder in ("__enter__", "__exit__"):
+            mid = f"{cid}.{dunder}"
+            if mid in proj.ids:
+                _add_ref(proj, src_id, dunder, mid, rel,
+                         getattr(expr, "lineno", 0))
+
+
+def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribute]:
+    """Attribute accesses in Load context that aren't the callee of a call."""
+    out: list[ast.Attribute] = []
+
+    def rec(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load) \
+                    and id(child) not in call_funcs:
+                out.append(child)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        rec(stmt)
+    return out
+
+
+def _direct_withs(func: ast.AST) -> list[ast.withitem]:
+    out: list[ast.withitem] = []
+
+    def rec(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, (ast.With, ast.AsyncWith)):
+                out.extend(child.items)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        rec(stmt)
+    return out
 
 
 def _local_types(proj: _Project, func: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:

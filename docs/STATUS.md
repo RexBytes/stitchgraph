@@ -48,7 +48,7 @@ spec and section references.
 
 ## Test coverage
 
-51 tests (`tests/`): envelope, store + incremental, extractor, operations,
+53 tests (`tests/`): envelope, store + incremental, extractor, operations,
 config, `get_matrix`, cross-language resolvers (routes/HTML/SQL/ORM) + full-stack
 trace, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
 reference), git-risk fusion, runtime-trace fusion, and a precision/recall eval
@@ -56,9 +56,11 @@ harness.
 
 ## Known seams (honest)
 
-- `find_stale` is `needs_review` at 0.6 — resolution is name/scope-based, not
-  type-grade. `--precise` (jedi) and a future LSP raise this.
-- Context-manager (`with`) and attribute-read (property) usages aren't modelled
-  yet, so a few real-but-implicit usages surface as stale candidates.
-- PageRank hub ranking rewards transitively-depended-on nodes; tuning (e.g.
-  transitive fan-in) is a possible refinement.
+- `find_stale` is `needs_review` at 0.6 (0.78 with a runtime trace) — resolution
+  is name/scope-based, not type-grade. `--precise` (jedi) and a future LSP raise
+  this further.
+- Framework callbacks that override an *external* base (e.g. an `HTMLParser`
+  `handle_starttag`) look uncalled, since the base isn't in the project graph —
+  the remaining class of stale false-positive (an LSP resolving the base fixes it).
+- Context managers (`with`) and property/attribute reads are now modelled, so
+  those usages no longer false-flag as stale.
