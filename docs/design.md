@@ -224,13 +224,32 @@ Dead-code and hole *liveness* are entirely bounded by the entry-point set, so th
 is the linchpin — and no static detector catches every dynamic root. Two parts:
 
 - **Detector plugin:** `detect(repo) -> set[node_id]`, one implementation per
-  stack (Flask routes, Click commands, `__main__`, pytest collection, cron/entry
-  registries…). Pluggable; M0 ships a stub detector + the interface.
+  stack. Pluggable; M0 ships the interface + the first real detector (below).
 - **User override (the escape hatch):** a `stitchgraph.toml` `[entry_points]`
   allowlist (and `[entry_points.ignore]`) lets a human pin "these are roots even
   if they look dead" and "this really is dead." Without this, the first
   false-positive stale flag on live code burns trust permanently — so the override
   ships in M0 alongside the detector, not later.
+
+#### First detector: Python **library + CLI** package
+The initial target shape (and stitchgraph's own shape). Roots:
+
+- **Public API** — names exported from each package's `__init__.py` / listed in
+  `__all__`. **Critical for libraries:** the export surface *is* an entry set,
+  because external code imports it. A public, exported symbol with no *internal*
+  caller is **not dead** — it's the product. Never flag the public API as stale
+  for lack of internal callers; that's the canonical trust-burning false positive.
+- **`[project.scripts]`** console entry points and `[project.entry-points]`
+  plugin registrations from `pyproject.toml`.
+- **`if __name__ == "__main__"`** blocks.
+- **Tests** (pytest collection) — secondary roots.
+
+"Dead" then means *private/internal* code reachable from none of the above — the
+genuinely useful answer for a package.
+
+**Dogfood target:** stitchgraph is itself a Python library + CLI package, so M0's
+first real fixture is stitchgraph pointed at its own `core/` + `adapters/` — a
+codebase whose structure we know cold and can eyeball for correctness.
 
 ---
 
@@ -564,8 +583,9 @@ it as a backend.
 The one piece that can't be stack-agnostic is **entry-point detection**, and
 dead-code/hole quality is entirely bounded by it (miss an entry point → flag live
 code as stale, the dangerous failure). So the agnostic core + reachability engine
-get built first against a pluggable detector; the first real detector needs the
-target stack.
+get built first against a pluggable detector; the first real detector targets the
+**Python library + CLI** shape (§4, *First detector*) and is validated by
+dogfooding stitchgraph on its own source.
 
 ---
 
