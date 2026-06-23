@@ -158,9 +158,6 @@ class Store:
     def all_node_ids(self) -> list[str]:
         return [r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
 
-    def all_nodes(self) -> list[Node]:
-        return [_row_to_node(r) for r in self.conn.execute("SELECT * FROM nodes").fetchall()]
-
     def nodes_with_role(self, role: str) -> list[Node]:
         rows = self.conn.execute(
             "SELECT * FROM nodes WHERE (',' || roles || ',') LIKE ?",

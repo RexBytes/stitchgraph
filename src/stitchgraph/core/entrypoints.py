@@ -61,10 +61,13 @@ class PythonLibraryDetector:
 
     def detect(self, store: Store) -> set[str]:
         roots: set[str] = set()
-        for role in ("exported", "main", "script"):
+        for role in ("exported", "main", "script", "route"):
             roots.update(n.id for n in store.nodes_with_role(role))
         if self.include_tests:
             roots.update(n.id for n in store.nodes_with_role("test"))
+        # HTTP routes / endpoints are entry points (external callers).
+        for kind in (NodeKind.ROUTE, NodeKind.ENDPOINT):
+            roots.update(n.id for n in store.nodes_by_kind(kind))
         roots.update(nid for nid in self.overrides if store.get_node(nid) is not None)
         return roots
 

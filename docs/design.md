@@ -585,12 +585,16 @@ it as a backend.
   contracts, so they swap in without touching the store or operations.
 - **M1 — House style.** Weight + provenance on every edge; the refuse-when-unsure
   envelope on every operation. Cheap, high payoff.
-- **M2 — Reachability engine (the core value).** Derive CSR matrices, wire
-  python-graphblas / LAGraph; ship `find_stale`, `find_holes`, `orient`,
-  `impact_of`, and `scan` (structural issue flagging + urgency). Dead code,
-  holes, orientation, ranked issues — the headline features.
-- **M3 — Cross-language resolver + report.** Link one web framework + one ORM
-  end-to-end (`trace_path`); ship `stitchgraph report`.
+- **M2 — Reachability engine (the core value).** *Implemented* (pure-Python
+  frontier BFS; python-graphblas / LAGraph is the documented swap for scale).
+  `find_stale`, `find_holes`, `orient`, `impact_of`, `scan` (issue flagging +
+  urgency). Resolution is scope-aware (self / locally-typed receivers) with an
+  optional jedi precision pass.
+- **M3 — Cross-language resolver + report.** *Implemented (initial).* A
+  post-extraction resolver pipeline (`core/resolve/`): web-route resolver
+  (decorator → Route → handler) and sqlglot SQL resolver (query → table,
+  READS/WRITES), powering full-stack `trace_path`; `stitchgraph report` shipped.
+  Next resolver: ORM model → column.
 - **M4 — Optional / later.** Data-loop detection (🟡), git-history risk fusion,
   runtime-trace fusion, vector `find_similar`.
 

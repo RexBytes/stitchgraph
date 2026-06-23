@@ -296,13 +296,25 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
 
 
 @operation("Incrementally (re)index a path into the graph (admin).")
-def reindex(store: Store, path: str) -> Result:
+def reindex(store: Store, path: str, precise: bool = False) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
-    index — never to source (read-only invariant)."""
+    index — never to source (read-only invariant).
+
+    precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
+    slower, needs jedi installed, but sharpens method/attribute resolution.
+    """
     from .extract import extract_project
+    from .resolve import default_resolvers, run_resolvers
 
     nodes, edges = extract_project(path)
-    files = {n.id.split("::", 1)[0] for n in nodes}
+    # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
+    # optional jedi precision pass.
+    resolvers = default_resolvers()
+    if precise:
+        from .resolve.jedi_resolver import JediResolver
+        resolvers.append(JediResolver())
+    nodes, edges = run_resolvers(path, nodes, edges, resolvers)
+    files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     # Full rebuild: the extractor already resolved every edge against the complete
     # symbol table, so bulk-insert (nodes first) and keep those resolutions rather
     # than re-running per-file invalidation. (replace_file remains for single-file
@@ -326,17 +338,20 @@ def _resolve_one(store: Store, name: str):
     return nodes[0] if len(nodes) == 1 else None
 
 
+_CODE_KINDS = {NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS}
+
+
 def _stale_candidates(store: Store, unreached: set[str]) -> list[str]:
     """Filter the unreachable set down to real dead-code candidates.
 
-    Excludes modules/packages (liveness is per-symbol) and dunder methods
-    (`__init__`, `__enter__`, ... are framework-invoked, not statically called).
+    Dead *code* means an unreached function/method/class. Modules/packages
+    (liveness is per-symbol), data/route nodes (DBTable, Route, ...), and dunder
+    methods (`__init__`, `__enter__`, ... are framework-invoked) are not candidates.
     """
-    skip = {NodeKind.MODULE, NodeKind.PACKAGE}
     out: list[str] = []
     for nid in unreached:
         node = store.get_node(nid)
-        if node is None or node.kind in skip:
+        if node is None or node.kind not in _CODE_KINDS:
             continue
         if node.name.startswith("__") and node.name.endswith("__"):
             continue

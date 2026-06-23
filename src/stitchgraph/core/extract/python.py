@@ -40,6 +40,8 @@ class _Project:
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     by_name: dict[str, list[str]] = field(default_factory=dict)
+    class_by_name: dict[str, list[str]] = field(default_factory=dict)
+    ids: set[str] = field(default_factory=set)
     packages: set[str] = field(default_factory=set)
     exported_names: set[str] = field(default_factory=set)
     main_calls: set[str] = field(default_factory=set)
@@ -128,6 +130,9 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
 def _index(proj: _Project) -> None:
     for n in proj.nodes:
         proj.by_name.setdefault(n.name, []).append(n.id)
+        proj.ids.add(n.id)
+        if n.kind == NodeKind.CLASS:
+            proj.class_by_name.setdefault(n.name, []).append(n.id)
         # Alias modules by their short name so `from pkg import submodule` resolves.
         if n.kind == NodeKind.MODULE and "." in n.name:
             proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
@@ -162,31 +167,138 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
                 _import_edge(proj, mod_id, rel, f"{node.module}.{alias.name}",
                              node.lineno, leaf=alias.name, internal=internal)
 
-    _walk_scope(proj, rel, tree, scope=module_qual)
+    _walk_scope(proj, rel, tree, parent="", class_qual=None)
 
 
-def _walk_scope(proj: _Project, rel: str, node: ast.AST, scope: str) -> None:
+def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
+                class_qual: str | None) -> None:
+    # `parent` is the relative dotted qual, threaded exactly as _def_node builds
+    # node ids, so edge-source ids line up with node ids (incl. for methods).
     for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            qual = _child_qual(scope, rel, child.name)
+        if isinstance(child, ast.ClassDef):
+            qual = f"{parent}.{child.name}" if parent else child.name
             cid = Node.make_id(rel, qual)
-            if isinstance(child, ast.ClassDef):
-                for base in child.bases:
-                    name = _name_of(base)
-                    if name:
-                        _ref_edges(proj, cid, name, Relation.INHERITS, rel, child.lineno)
-            else:
-                for call in _calls_in(child):
-                    name = _name_of(call.func)
-                    if name:
-                        _ref_edges(proj, cid, name, Relation.CALLS, rel, call.lineno)
-            _walk_scope(proj, rel, child, scope=qual)
+            for base in child.bases:
+                name = _name_of(base)
+                if name:
+                    _ref_edges(proj, cid, name, Relation.INHERITS, rel, child.lineno)
+            _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
+            _decorator_edges(proj, cid, child, rel)
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            qual = f"{parent}.{child.name}" if parent else child.name
+            cid = Node.make_id(rel, qual)
+            _decorator_edges(proj, cid, child, rel)
+            local_types = _local_types(proj, child)
+            for call in _direct_calls(child):
+                _call_edge(proj, rel, cid, class_qual, local_types, call)
+            # Nested defs keep the enclosing class context (for closed-over self).
+            _walk_scope(proj, rel, child, parent=qual, class_qual=class_qual)
 
 
-def _child_qual(scope: str, rel: str, name: str) -> str:
-    module_qual = _module_qualname(rel)
-    inner = scope[len(module_qual):].lstrip(".") if scope.startswith(module_qual) else ""
-    return f"{inner}.{name}" if inner else name
+def _decorator_edges(proj: _Project, node_id: str, node: ast.AST, rel: str) -> None:
+    """A decorated def references its decorator — so a used decorator stays live."""
+    for d in getattr(node, "decorator_list", []):
+        name = _name_of(d.func) if isinstance(d, ast.Call) else _name_of(d)
+        if name:
+            _ref_edges(proj, node_id, name, Relation.REFERENCES, rel,
+                       getattr(d, "lineno", node.lineno))
+
+
+def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
+               local_types: dict[str, str], call: ast.Call) -> None:
+    """Resolve one call site, scope-aware (design §5 — sharper than name-only).
+
+    self.m()/cls.m() -> the enclosing class's method; var.m() where var has a
+    known local type -> that class's method; bare m() / unknown -> name-based.
+    """
+    func = call.func
+    line = call.lineno
+
+    if isinstance(func, ast.Attribute):
+        m = func.attr
+        recv = func.value
+        if isinstance(recv, ast.Name):
+            # self / cls -> enclosing class.
+            if recv.id in ("self", "cls") and class_qual:
+                tid = Node.make_id(rel, f"{class_qual}.{m}")
+                if tid in proj.ids:
+                    return _add_call(proj, src_id, m, tid, rel, line, weight=1.0,
+                                     prov=Provenance.EXTRACTED)
+            # locally-typed receiver -> that class's method.
+            cls = local_types.get(recv.id)
+            if cls:
+                for class_id in proj.class_by_name.get(cls, []):
+                    mid = f"{class_id}.{m}"
+                    if mid in proj.ids:
+                        return _add_call(proj, src_id, m, mid, rel, line, weight=0.95,
+                                         prov=Provenance.EXTRACTED)
+        _ref_edges(proj, src_id, m, Relation.CALLS, rel, line)
+        return
+
+    name = _name_of(func)
+    if name:
+        _ref_edges(proj, src_id, name, Relation.CALLS, rel, line)
+
+
+def _add_call(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,
+              line: int, weight: float, prov: Provenance) -> None:
+    proj.edges.append(Edge(src=src_id, relation=Relation.CALLS, dst_symbol=symbol,
+                           dst_id=dst_id, weight=weight, provenance=prov,
+                           location=f"{rel}:{line}:0", source="ast"))
+
+
+def _local_types(proj: _Project, func: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
+    """Map local variable names to class names via param annotations, annotated
+    assignments, and `x = ClassName(...)` constructions (a light, dependency-free
+    approximation of what an LSP/jedi resolves precisely)."""
+    types: dict[str, str] = {}
+    for arg in (*func.args.args, *func.args.posonlyargs, *func.args.kwonlyargs):
+        ann = _annotation_name(arg.annotation)
+        if ann and ann in proj.class_by_name:
+            types[arg.arg] = ann
+    for stmt in ast.walk(func):
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            ann = _annotation_name(stmt.annotation)
+            if ann and ann in proj.class_by_name:
+                types[stmt.target.id] = ann
+        elif isinstance(stmt, ast.Assign) and isinstance(stmt.value, ast.Call):
+            ctor = _name_of(stmt.value.func)
+            if ctor and ctor in proj.class_by_name:
+                for t in stmt.targets:
+                    if isinstance(t, ast.Name):
+                        types[t.id] = ctor
+    return types
+
+
+def _annotation_name(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Subscript):  # e.g. Optional[Foo], list[Foo]
+        return _annotation_name(node.slice)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value  # string annotation
+    return None
+
+
+def _direct_calls(func: ast.AST) -> list[ast.Call]:
+    """Calls in this function's own body, not descending into nested defs."""
+    out: list[ast.Call] = []
+
+    def rec(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            if isinstance(child, ast.Call):
+                out.append(child)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        rec(stmt)
+    return out
 
 
 # -- edge builders (precision-biased multi-candidate resolution) ------------
@@ -237,10 +349,6 @@ def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
 
 
 # -- ast helpers ------------------------------------------------------------
-def _calls_in(func: ast.AST) -> list[ast.Call]:
-    return [n for n in ast.walk(func) if isinstance(n, ast.Call)]
-
-
 def _name_of(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id

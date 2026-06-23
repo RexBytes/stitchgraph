@@ -37,9 +37,16 @@ M0 working end-to-end on Python projects (dogfoods on its own source):
 - **All three surfaces** generated from one operation registry (CLI + MCP +
   library), plus a Markdown `report` in urgency tiers.
 
-Next: the cross-language resolver (M3), GraphBLAS for whole-graph sweeps at
-scale (M2 algebra), and an LSP for live types (raising `find_stale` confidence
-above today's name-based resolution).
+- **Scope-aware resolution** — `self.method` and locally-typed `var.method`
+  resolve precisely (not just by name), with an optional **jedi** precision pass
+  (`reindex --precise`) for LSP-grade go-to-definition.
+- **Cross-language resolver pipeline** — plugins that enrich the graph after
+  extraction: a **web-route resolver** (`@app.get("/x")` → Route → handler) and a
+  **SQL resolver** (sqlglot: query → table, READS/WRITES). This powers full-stack
+  `trace_path` (route → handler → … → DB table).
+
+Next: GraphBLAS for whole-graph sweeps at scale (M2 algebra), more framework
+resolvers, and runtime-trace fusion.
 
 ## Quick look
 
