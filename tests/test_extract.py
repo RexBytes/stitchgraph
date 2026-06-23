@@ -125,3 +125,39 @@ def test_get_matrix_bounded_and_refuses(tmp_path):
         # too-broad scope refuses rather than dumping a huge matrix
         big = sg.get_matrix(store, "mypkg", "CALLS", limit=1)
         assert big.needs_review and not big.ok
+
+
+def test_summarize_subsystem(tmp_path):
+    with _index(tmp_path) as store:
+        res = sg.summarize_subsystem(store, "mypkg")
+        assert res.ok and res.meta["total"] > 0
+        assert "node_counts" in res.result and "read_first" in res.result
+
+
+def test_get_matrix_grid_for_small_scope(tmp_path):
+    with _index(tmp_path) as store:
+        m = sg.get_matrix(store, "mypkg/util.py", "CALLS")
+        assert m.ok
+        if m.result["n"] <= 12:
+            assert "grid" in m.result
+            assert len(m.result["grid"]) == m.result["n"]
+
+
+def test_store_migration_adds_columns(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.db"
+    # simulate an old index missing the roles/end_line columns
+    con = sqlite3.connect(db)
+    con.executescript(
+        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes(id TEXT PRIMARY KEY, kind TEXT, name TEXT, "
+        "location TEXT DEFAULT '', file TEXT DEFAULT '', is_stub INTEGER DEFAULT 0, "
+        "arity INTEGER, summary TEXT);"
+        "CREATE TABLE edges(id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT, "
+        "relation TEXT, dst_symbol TEXT, dst_id TEXT, weight REAL, provenance TEXT, "
+        "location TEXT, source TEXT, file TEXT);")
+    con.commit(); con.close()
+    store = sg.Store(str(db))  # must not raise; migrates columns
+    cols = {r[1] for r in store.conn.execute("PRAGMA table_info(nodes)")}
+    assert {"roles", "end_line"} <= cols
+    store.close()

@@ -18,10 +18,11 @@ from .core import (
 )
 from .core.operations import (
     find_holes, find_similar, find_stale, find_symbol, get_callees, get_callers,
-    get_matrix, impact_of, ingest_trace, orient, reindex, risk, scan, trace_path,
+    get_matrix, impact_of, ingest_trace, orient, reindex, risk, scan,
+    summarize_subsystem, trace_path,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # types
@@ -30,5 +31,5 @@ __all__ = [
     # operations (the public API)
     "find_symbol", "get_callers", "get_callees", "find_holes", "find_stale",
     "orient", "impact_of", "trace_path", "scan", "reindex", "get_matrix", "risk",
-    "ingest_trace", "find_similar",
+    "ingest_trace", "find_similar", "summarize_subsystem",
 ]

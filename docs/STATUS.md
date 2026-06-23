@@ -17,10 +17,14 @@ spec and section references.
 | Surfaces | MCP server (FastMCP, generated from registry) | ✅ Done | optional dep |
 | Surfaces | Markdown report (orientation + issues + risk) | ✅ Done | `stitchgraph report` |
 | Surfaces | Agent rule file (adoption) | ✅ Done | AGENTS.md |
+| Surfaces | `watch` (re-index on change) | ✅ Done | stdlib polling |
+| Surfaces | CI + PyPI publish workflow | ✅ Done | GitHub Actions |
 | **Extraction** | Python extractor (stdlib `ast`) | ✅ Done | Module/Class/Function/Method/Test |
 | Extraction | Scope-aware resolution (`self.`, locally-typed `var.`) | ✅ Done | + decorator refs |
 | Extraction | jedi precise resolver (`--precise`) | ✅ Done | optional, in-process LSP-grade |
 | Extraction | **Polyglot tree-sitter extractor** | ✅ Done | JS/TS, Rust, C/C++, C#, Go, Java, Ruby, PHP, Bash (defs + call graph) |
+| Extraction | Polyglot imports / inheritance / test entry points | ✅ Done | per-language (see LANGUAGES.md matrix) |
+| Extraction | Framework-callback handling (external base) | ✅ Done | overrides of a framework base aren't dead |
 | Extraction | External multi-language LSP backend | ⬜ To do | type-grade resolution per language |
 | **Entry points** | Python library+CLI detector | ✅ Done | exported API, main, scripts, tests, routes |
 | Entry points | `stitchgraph.toml` override | ✅ Done | include roots, ignore globs, threshold, hub metric |
@@ -32,15 +36,21 @@ spec and section references.
 | Operations | `trace_path` (best-confidence path) | ✅ Done | full-stack, (max,×) semiring |
 | Operations | `scan` (ranked issues + urgency) | ✅ Done | stubs/holes/cycles/god-objects |
 | Operations | `reindex` | ✅ Done | full rebuild; `--precise`; ignore globs |
-| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope (no dense dump) |
+| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope; small dense grid |
+| Operations | `summarize_subsystem` | ✅ Done | counts, hubs, public surface, deps |
+| Operations | `ingest_trace` (runtime fusion) | ✅ Done | coverage.py JSON / LCOV / Go coverprofile |
+| Operations | `risk` (git × structure) | ✅ Done | hotspots + hidden coupling |
+| Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
 | Algebra | GraphBLAS PageRank centrality | ✅ Done | alt hub metric via config |
-| **Cross-language** | Web-route resolver (decorator → Route → handler) | ✅ Done | Flask/FastAPI patterns |
+| **Cross-language** | Web routes (Flask/FastAPI, **Django**, **Express**, **Spring**) | ✅ Done | decorator / URLconf / app.get / @*Mapping |
 | Cross-language | HTML template → route (`SUBMITS_TO`) | ✅ Done | `<form action>` → Route |
+| Cross-language | **JS `fetch` → backend route** | ✅ Done | client → server full-stack |
+| Cross-language | **Events (EMITS/HANDLES)** | ✅ Done | emit/on → Event → handler (decoupled trace) |
 | Cross-language | SQL resolver (sqlglot → table, READS/WRITES) | ✅ Done | query string literals |
 | Cross-language | ORM resolver (model → table/column, MAPS_TO) | ✅ Done | SQLAlchemy/Django; converges with SQL |
-| Cross-language | Full-stack trace (form → route → handler → table) | ✅ Done | the "gem", end to end |
+| Cross-language | Full-stack trace (form/JS → route → handler → table) | ✅ Done | the "gem", end to end |
 | **Data flow** | Data-loop detection (🟡) | ✅ Done | mutable-global feedback; surfaced in `scan` |
 | **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`ingest_trace`) | ✅ Done | coverage.json → live seeds, +confidence |
@@ -50,19 +60,32 @@ spec and section references.
 
 ## Test coverage
 
-58 tests (`tests/`): envelope, store + incremental, extractor, operations,
-config, `get_matrix`, cross-language resolvers (routes/HTML/SQL/ORM) + full-stack
-trace, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
-reference), git-risk fusion, runtime-trace fusion, and a precision/recall eval
-harness.
+72 tests (`tests/`): envelope, store + incremental + migration, polyglot
+extraction (Python + 11 tree-sitter languages), operations, config, `get_matrix`,
+cross-language resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/
+SQL/ORM) + full-stack traces, the GraphBLAS algebra (accelerated sweeps agree with
+the pure-Python reference), git-risk fusion, multi-format runtime traces, a
+pluggable-embedder check, file-watching, and a precision/recall eval harness.
+
+## Roadmap (what's left)
+
+| Item | Effort | Why deferred |
+|---|---|---|
+| **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. |
+| **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
+| gRPC/proto & OpenAPI contract resolvers | M | More service-boundary tracing. |
+| More ORMs (Prisma, TypeORM, …) and frameworks | M | Additive resolvers. |
+| Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
+| ~100k-node scale validation; bound the `transitive_fan_in` closure | M | Needs a large real repo to stress-test. |
+| True incremental reindex (wire `replace_file` to `watch`) | M | `watch` currently full-rebuilds (fast at personal scale). |
 
 ## Known seams (honest)
 
 - `find_stale` is `needs_review` at 0.6 (0.78 with a runtime trace) — resolution
   is name/scope-based, not type-grade. `--precise` (jedi) and a future LSP raise
-  this further.
-- Framework callbacks that override an *external* base (e.g. an `HTMLParser`
-  `handle_starttag`) look uncalled, since the base isn't in the project graph —
-  the remaining class of stale false-positive (an LSP resolving the base fixes it).
-- Context managers (`with`) and property/attribute reads are now modelled, so
-  those usages no longer false-flag as stale.
+  this further. This is the single biggest accuracy lever left.
+- Module-level uses (a decorator/constructor applied at import, not inside a
+  function) aren't attributed, so a few module-level-only symbols can surface as
+  `needs_review` stale candidates.
+- Context managers (`with`), property/attribute reads, and framework-callback
+  overrides are now modelled, so those no longer false-flag as stale.

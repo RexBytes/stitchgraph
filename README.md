@@ -23,46 +23,42 @@ for the agent rules that teach an LLM when to call which tool.
 - **Deepest:** Python 3.11+ (stdlib `ast`; optional `jedi` for `--precise`).
 - **Extracted via tree-sitter** (definitions + call graph → dead-code, orient,
   impact, trace): **JavaScript, TypeScript/TSX, Rust, C, C++, C#, Go, Java, Ruby, PHP, Bash**.
-- **Detected at the cross-language boundary:** web routes (Flask/FastAPI), HTML
-  templates (`<form action>`), SQL (sqlglot), ORM (SQLAlchemy/Django) — powering
-  the full-stack `trace_path`.
+- **Detected at the cross-language boundary:** web routes (Flask/FastAPI,
+  Django, Express, Spring), HTML `<form action>`, JS `fetch`, events (emit/on),
+  SQL (sqlglot), ORM (SQLAlchemy/Django) — powering the full-stack `trace_path`.
 
 Full support matrix in [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
 
-## Status
+## Status (v0.3.0)
 
-M0 working end-to-end on Python projects (dogfoods on its own source):
+Working end-to-end and dogfooding on its own source. See
+[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
 
-- **Python extractor** (stdlib `ast`) → nodes (Module/Class/Function/Method/Test)
-  and edges (CALLS/IMPORTS/INHERITS), with precision-biased resolution and
-  entry-point role tagging. tree-sitter + an LSP are the documented upgrade for
-  incremental/polyglot/live-types.
-- **SQLite adjacency store** (source of truth) with the `dst_id`/`dst_symbol`
-  edge schema and incremental, cross-file-correct updates.
-- **Entry-point detector** for the Python library+CLI shape (public API, `main`,
-  scripts, tests) with a config override.
-- **Universal `Result` envelope** (confidence / provenance / `needs_review` /
-  urgency), provenance gating the urgency ceiling.
-- **Operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
-  `orient`, `find_holes`, `find_stale` (reachability), `impact_of` (reverse
-  reachability + tests), `trace_path` (max-× best path), `scan` (ranked issues +
-  urgency), `reindex`.
-- **All three surfaces** generated from one operation registry (CLI + MCP +
-  library), plus a Markdown `report` in urgency tiers.
+- **Polyglot extraction** — Python (deep, stdlib `ast` + optional `jedi`) and 11
+  more languages via tree-sitter, in one graph: definitions, call graph, imports,
+  inheritance, and per-language test entry points. Precision-biased, per-language
+  resolution (a JS call never binds to a Rust function).
+- **SQLite adjacency store** (source of truth) with cross-file-correct
+  incremental updates and forward-compatible schema migration.
+- **Universal `Result` envelope** — `confidence / provenance / needs_review /
+  urgency`; provenance gates the urgency ceiling.
+- **14 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
+  `orient`, `find_stale`, `find_holes`, `impact_of`, `trace_path`, `scan`,
+  `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
+  plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
+  `report` and a `watch` command.
+- **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
+  Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
+  the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →
+  … → table → column.
+- **GraphBLAS algebra** — whole-graph reachability, transitive fan-in, and
+  PageRank (pure-Python fallback; the two agree by test).
+- **Risk** (git churn × centrality + hidden coupling), **runtime fusion**
+  (coverage.py JSON / LCOV / Go coverprofile), **semantic** `find_similar`
+  (token default; pluggable dense embedder), **data-loop** detection.
 
-- **Scope-aware resolution** — `self.method` and locally-typed `var.method`
-  resolve precisely (not just by name), with an optional **jedi** precision pass
-  (`reindex --precise`) for LSP-grade go-to-definition.
-- **Cross-language resolver pipeline** — plugins that enrich the graph after
-  extraction: a **web-route resolver** (`@app.get("/x")` → Route → handler), a
-  **SQL resolver** (sqlglot: query → table, READS/WRITES), and an **ORM resolver**
-  (model → table/column, MAPS_TO). ORM and SQL converge on the same `db::<table>`
-  node, so full-stack `trace_path` crosses route → handler → … → table → column.
-- **GraphBLAS algebra layer** — whole-graph reachability sweeps and PageRank hub
-  ranking via python-graphblas (pure-Python fallback; the two agree by test).
-
-See [`docs/STATUS.md`](docs/STATUS.md) for the full done/to-do table. Next:
-HTML-template → route edges, data-loop detection, and runtime-trace fusion.
+**Biggest deferred items:** an LSP backend (type-grade resolution) and
+variable-granularity data flow — see the [roadmap](docs/STATUS.md#roadmap-whats-left).
 
 ## Quick look
 
@@ -77,6 +73,9 @@ with sg.Store("stitchgraph.db") as store:
 ## Develop
 
 ```bash
-pip install -e '.[dev,cli]'
+pip install -e '.[all,dev]'   # all extras so the full suite runs
 PYTHONPATH=src python -m pytest -q
 ```
+
+CI runs the suite on Python 3.11 and 3.12 (see `.github/workflows/ci.yml`).
+Tests that need an optional dependency skip gracefully when it's absent.

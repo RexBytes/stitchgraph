@@ -18,16 +18,16 @@ Legend: ✅ full · 🟡 partial · ⬜ not yet · — n/a
 | Language | Backend | Defs (fn/class/method) | Call graph | Imports | Inheritance | Entry points | Dead code / orient / trace |
 |---|---|---|---|---|---|---|---|
 | **Python** | stdlib `ast` (+ `jedi`) | ✅ | ✅ scope-aware | ✅ | ✅ | ✅ (API/main/scripts/tests/routes/runtime) | ✅ |
-| **JavaScript** | tree-sitter | ✅ (+ arrow consts) | ✅ | 🟡 | 🟡 extends | 🟡 `export`, `main` | ✅ |
-| **TypeScript / TSX** | tree-sitter | ✅ | ✅ | 🟡 | 🟡 | 🟡 `export`, `main` | ✅ |
-| **Rust** | tree-sitter | ✅ (fn/struct/enum/trait/impl) | ✅ | ⬜ | ⬜ | 🟡 `pub`, `main` | ✅ |
+| **JavaScript** | tree-sitter | ✅ (+ arrow consts) | ✅ | ✅ | ✅ extends | 🟡 `export`, `main`, tests | ✅ |
+| **TypeScript / TSX** | tree-sitter | ✅ | ✅ | ✅ | ✅ | 🟡 `export`, `main`, tests | ✅ |
+| **Rust** | tree-sitter | ✅ (fn/struct/enum/trait/impl) | ✅ | ✅ `use` | ⬜ | 🟡 `pub`, `main` | ✅ |
 | **C** | tree-sitter | ✅ (fn/struct) | ✅ | ⬜ | — | 🟡 `main` | ✅ |
-| **C++** | tree-sitter | ✅ (fn/class/struct/methods) | ✅ | ⬜ | ⬜ | 🟡 `main` | ✅ |
-| **C#** | tree-sitter | ✅ (class/struct/iface/methods) | ✅ | ⬜ | ⬜ | 🟡 `public`/`Main` | ✅ |
-| **Go** | tree-sitter | ✅ (func/method/type) | ✅ | ⬜ | — | 🟡 capitalised/`main` | ✅ |
-| **Java** | tree-sitter | ✅ (class/iface/enum/methods) | ✅ | ⬜ | ⬜ | 🟡 `public`/`main` | ✅ |
-| **Ruby** | tree-sitter | ✅ (class/module/methods) | ✅ | ⬜ | ⬜ | ⬜ | ✅ (with config roots) |
-| **PHP** | tree-sitter | ✅ (class/trait/methods) | ✅ | ⬜ | ⬜ | 🟡 `public` | ✅ |
+| **C++** | tree-sitter | ✅ (fn/class/struct/methods) | ✅ | ⬜ | ✅ base clause | 🟡 `main` | ✅ |
+| **C#** | tree-sitter | ✅ (class/struct/iface/methods) | ✅ | ✅ `using` | ✅ base list | 🟡 `public`/`Main` | ✅ |
+| **Go** | tree-sitter | ✅ (func/method/type) | ✅ | ✅ | — | 🟡 capitalised/`main`/`Test*` | ✅ |
+| **Java** | tree-sitter | ✅ (class/iface/enum/methods) | ✅ | ✅ | ✅ extends/implements | 🟡 `public`/`main`/tests | ✅ |
+| **Ruby** | tree-sitter | ✅ (class/module/methods) | ✅ | ⬜ | ✅ superclass | ⬜ | ✅ (with config roots) |
+| **PHP** | tree-sitter | ✅ (class/trait/methods) | ✅ | ✅ `use` | ✅ extends/implements | 🟡 `public` | ✅ |
 | **Bash / Shell** | tree-sitter | ✅ (functions) | ✅ | ⬜ | — | ⬜ | ✅ (with config roots) |
 | **HTML** | resolver | — | — | — | — | — | detected: `<form action>` → route |
 | **SQL** | resolver (sqlglot) | — | — | — | — | — | detected: query → table, READS/WRITES |

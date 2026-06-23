@@ -33,6 +33,32 @@ def build_app():
     for op in registry():
         app.command(name=op.name.replace("_", "-"), help=op.summary)(_make_command(typer, op))
 
+    @app.command(name="watch", help="Re-index on file changes (Ctrl-C to stop).")
+    def _watch(
+        path: str = typer.Argument(".", help="repo root to watch"),
+        db: str = typer.Option("stitchgraph.db", help="index database path"),
+        interval: float = typer.Option(2.0, help="poll interval (seconds)"),
+    ) -> None:
+        import time
+
+        from ..core import operations as ops
+        from ..core.store import Store
+        from ..core.watch import changed, snapshot
+
+        with Store(db) as store:
+            typer.echo(ops.reindex(store, path).meta)
+            state = snapshot(path)
+            typer.echo(f"watching {path} (every {interval}s)…")
+            try:
+                while True:
+                    time.sleep(interval)
+                    new = snapshot(path)
+                    if changed(state, new):
+                        state = new
+                        typer.echo(f"change detected — reindexing… {ops.reindex(store, path).meta}")
+            except KeyboardInterrupt:
+                typer.echo("stopped")
+
     @app.command(name="report", help="Full Markdown report (orientation + issues + risk).")
     def _report(
         db: str = typer.Option("stitchgraph.db", help="index database path"),
@@ -46,7 +72,7 @@ def build_app():
 
 def _make_command(typer, op: Operation):
     """Wrap an operation as a Typer command with the same caller-facing params."""
-    op_params = op.params()
+    op_params = op.exposed_params()
 
     def command(**kwargs: Any) -> None:
         db = kwargs.pop("db")

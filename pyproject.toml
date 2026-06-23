@@ -4,13 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitchgraph"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "RexBytes" }]
 keywords = ["code-intelligence", "mcp", "graph", "static-analysis", "dead-code"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Software Development :: Quality Assurance",
+]
 
 # Core is intentionally stdlib-only so `import stitchgraph` is light and always
 # runs. Interface and extraction deps are optional extras (see below).
@@ -41,6 +50,9 @@ stitchgraph = "stitchgraph.adapters.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/RexBytes/stitchgraph"
+Repository = "https://github.com/RexBytes/stitchgraph"
+Changelog = "https://github.com/RexBytes/stitchgraph/blob/main/CHANGELOG.md"
+Issues = "https://github.com/RexBytes/stitchgraph/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/stitchgraph"]

@@ -41,14 +41,15 @@ def _make_tool(op: Operation, db: str):
             result = op.func(store, **kwargs)
         return result.to_dict()
 
-    # Expose the op's caller-facing params (drop `store`) for schema generation.
+    # Expose only JSON-simple params (drop `store` and internal objects like
+    # `detector`, which pydantic can't schema-ify) — they fall back to defaults.
     params = [
         inspect.Parameter(p.name, inspect.Parameter.KEYWORD_ONLY,
                           default=(p.default if p.default is not inspect.Parameter.empty
                                    else inspect.Parameter.empty),
                           annotation=(p.annotation if p.annotation is not inspect.Parameter.empty
                                       else str))
-        for p in op.params()
+        for p in op.exposed_params()
     ]
     tool.__signature__ = inspect.Signature(params)
     tool.__name__ = op.name

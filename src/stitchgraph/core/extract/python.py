@@ -46,6 +46,17 @@ class _Project:
     exported_names: set[str] = field(default_factory=set)
     main_calls: set[str] = field(default_factory=set)
     module_consts: set[str] = field(default_factory=set)  # module-level assigned names
+    external_base_classes: set[str] = field(default_factory=set)  # subclass framework bases
+
+# Ordinary bases whose subclasses are NOT framework callbacks — their methods
+# should still be eligible for dead-code. Anything else external (HTMLParser,
+# threading.Thread, a web View, …) is treated as a framework base.
+_PLAIN_BASES = {
+    "object", "Exception", "BaseException", "ValueError", "RuntimeError",
+    "TypeError", "KeyError", "Protocol", "ABC", "ABCMeta", "Enum", "IntEnum",
+    "Flag", "str", "int", "dict", "list", "tuple", "set", "frozenset",
+    "NamedTuple", "TypedDict", "Generic", "Iterator", "Iterable",
+}
 
 
 def extract_project(root: str | Path,
@@ -73,7 +84,21 @@ def extract_project(root: str | Path,
     _apply_entrypoint_roles(proj)
     for rel, tree in parsed.items():
         _collect_edges(proj, rel, tree)
+    _apply_callback_roles(proj)
     return proj.nodes, proj.edges
+
+
+def _apply_callback_roles(proj: _Project) -> None:
+    """Methods of a class with a framework base are likely framework-invoked
+    overrides (e.g. HTMLParser.handle_starttag) — mark them 'callback' so they're
+    roots, not dead-code false positives (design §7 caveat)."""
+    if not proj.external_base_classes:
+        return
+    for node in proj.nodes:
+        if node.kind is NodeKind.METHOD and "." in node.id:
+            class_id = node.id.rsplit(".", 1)[0]
+            if class_id in proj.external_base_classes:
+                node.roles = node.roles | {"callback"}
 
 
 # -- pass 1: definitions ----------------------------------------------------
@@ -265,6 +290,8 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                 name = _name_of(base)
                 if name:
                     _ref_edges(proj, cid, name, Relation.INHERITS, rel, child.lineno)
+                    if name not in proj.class_by_name and name not in _PLAIN_BASES:
+                        proj.external_base_classes.add(cid)  # framework base
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):

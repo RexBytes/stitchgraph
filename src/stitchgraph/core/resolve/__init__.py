@@ -70,12 +70,18 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
 
 
 def default_resolvers() -> list[Resolver]:
+    from .events import EventResolver
+    from .express import ExpressRouteResolver
     from .html import HtmlRouteResolver
+    from .jsfetch import JsFetchResolver
     from .orm import OrmResolver
     from .routes import WebRouteResolver
+    from .spring import SpringRouteResolver
     from .sql import SqlResolver
-    # Routes first (HTML links to the Route nodes it creates).
-    return [WebRouteResolver(), HtmlRouteResolver(), OrmResolver(), SqlResolver()]
+    # Route producers first (HTML/JS-fetch link to the Route nodes they create).
+    return [WebRouteResolver(), ExpressRouteResolver(), SpringRouteResolver(),
+            HtmlRouteResolver(), JsFetchResolver(), EventResolver(),
+            OrmResolver(), SqlResolver()]
 
 
 # -- shared helper: iterate function defs with their stable node ids ---------

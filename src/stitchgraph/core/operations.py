@@ -29,6 +29,31 @@ from .store import Store
 # --------------------------------------------------------------------------
 
 
+_JSON_TYPES = (str, int, float, bool)
+_JSON_NAMES = {"str", "int", "float", "bool", "None"}
+
+
+def _json_simple(annotation) -> bool:
+    """True if a param annotation maps to a JSON-friendly type the CLI/MCP can
+    accept. Excludes internal object params (e.g. an EntryPointDetector) that a
+    client could never pass anyway — keeping them out of the generated schemas.
+
+    Annotations are *strings* here (`from __future__ import annotations`), so we
+    parse them; real type objects are also handled for safety."""
+    if annotation is inspect.Parameter.empty:
+        return True
+    if isinstance(annotation, str):
+        parts = annotation.replace("Optional[", "").replace("]", "").split("|")
+        return all(p.strip() in _JSON_NAMES for p in parts)
+    if annotation in _JSON_TYPES:
+        return True
+    import typing
+    args = typing.get_args(annotation)  # Optional[X] / X | None
+    if args:
+        return all(a is type(None) or a in _JSON_TYPES for a in args)
+    return False
+
+
 @dataclass(frozen=True)
 class Operation:
     name: str  # snake_case; CLI kebab-cases it, MCP uses it verbatim
@@ -38,6 +63,11 @@ class Operation:
     def params(self) -> list[inspect.Parameter]:
         """Caller-facing params (everything after `store`)."""
         return list(inspect.signature(self.func).parameters.values())[1:]
+
+    def exposed_params(self) -> list[inspect.Parameter]:
+        """Params the CLI/MCP surfaces — JSON-simple only (drops internal objects
+        like `detector`, which fall back to their default)."""
+        return [p for p in self.params() if _json_simple(p.annotation)]
 
 
 _REGISTRY: dict[str, Operation] = {}
@@ -356,9 +386,8 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
 
     covmap, _ = runtime.load_coverage(trace)
     if not covmap:
-        return refuse(f"no usable coverage data in '{trace}' "
-                      "(generate with: coverage run -m pytest && coverage json)",
-                      confidence=0.0)
+        return refuse(f"no usable coverage data in '{trace}' (supported: coverage.py "
+                      "JSON, LCOV .info, Go coverprofile)", confidence=0.0)
     root = store.get_meta("root") or "."
     hits = runtime.hit_node_ids(store, covmap, root)
     for nid in hits:
@@ -455,6 +484,40 @@ def _git_path_mapper(store: Store, path: str):
     return lambda f: f"{prefix}/{f}".replace(os.sep, "/")
 
 
+@operation("Compact structural summary of a subsystem (path prefix), for an LLM.")
+def summarize_subsystem(store: Store, path: str) -> Result:
+    """A terse map of one subsystem (design §8): node counts, the hubs to read
+    first, its public surface (who calls in), and what it depends on (calls out)."""
+    members = [n for n in store.all_nodes_full() if n.id.startswith(path)]
+    if not members:
+        return refuse(f"no nodes under '{path}'", confidence=0.0)
+    mids = {n.id for n in members}
+    counts: dict[str, int] = {}
+    for n in members:
+        counts[n.kind.value] = counts.get(n.kind.value, 0) + 1
+
+    inbound: dict[str, int] = {}   # external -> member (public surface)
+    outbound: set[str] = set()     # member -> external (dependencies)
+    for e in store.resolved_edges():
+        if e.dst_id is None:
+            continue
+        if e.dst_id in mids and e.src not in mids:
+            inbound[e.dst_id] = inbound.get(e.dst_id, 0) + 1
+        elif e.src in mids and e.dst_id not in mids:
+            outbound.add(e.dst_id.split("::", 1)[0])
+
+    fi = fan_in(store)
+    hubs = sorted((n.id for n in members), key=lambda i: fi.get(i, 0), reverse=True)
+    public = sorted(inbound, key=inbound.get, reverse=True)
+    payload = {
+        "node_counts": counts,
+        "read_first": [h.split("::", 1)[-1] for h in hubs[:8]],
+        "public_surface": [p.split("::", 1)[-1] for p in public[:8]],
+        "depends_on_files": sorted(outbound)[:12],
+    }
+    return ok(payload, total=len(members))
+
+
 @operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
 def get_matrix(store: Store, scope: str, relation: str = "CALLS",
                limit: int = 25) -> Result:
@@ -485,12 +548,19 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         for e in store.resolved_edges(rel)
         if e.src in idx and e.dst_id in idx
     ]
+    labels = [m.split("::", 1)[-1] for m in members]
     payload = {
         "relation": rel.value,
-        "labels": [m.split("::", 1)[-1] for m in members],
+        "labels": labels,
         "cells": cells,        # sparse (src_index, dst_index, weight)
         "n": len(members),
     }
+    # A small dense 0/1 grid is easy for an LLM to read directly.
+    if len(members) <= 12:
+        grid = [[0] * len(members) for _ in members]
+        for c in cells:
+            grid[c["src"]][c["dst"]] = 1
+        payload["grid"] = grid
     return ok(payload, density=f"{len(cells)}/{len(members)**2}")
 
 

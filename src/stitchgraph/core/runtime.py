@@ -1,13 +1,17 @@
 """Runtime-trace fusion (design §2c). What actually executed vs. what's possible.
 
-Ingests a coverage.py JSON report (`coverage run -m pytest && coverage json`) and
-marks the nodes whose bodies actually ran. This lets the graph distinguish
-"statically reachable" from "observed in practice": a runtime-hit node is
-*definitely* live (so it's a reachability seed, and never dead), and dead-code
-findings become more confident when grounded in a real execution.
+Ingests a coverage report and marks the nodes whose bodies actually ran, so the
+graph can tell "statically reachable" from "observed". A runtime-hit node is
+*definitely* live (a reachability seed, never dead), and dead-code findings get
+more confident when grounded in a real run.
 
-JSON is the interchange format (stdlib `json`, zero extra deps). A node is "hit"
-if any executed line falls inside its body (def-line, end-line].
+Formats (auto-detected) — multi-language:
+- **coverage.py JSON** (`coverage json`) — Python.
+- **LCOV** (`.info`) — JS/nyc, C/C++ gcov, and many others.
+- **Go coverprofile** (`go test -coverprofile`) — `mode:` header.
+
+A node is "hit" if any executed line falls inside its body (def-line, end-line].
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -20,33 +24,100 @@ from .store import Store
 
 
 def load_coverage(trace_path: str | Path) -> tuple[dict[str, set[int]], str]:
-    """Return ({abs_file: executed_lines}, base_dir). Empty on any problem."""
+    """Return ({file: executed_lines}, base_dir). Files may be absolute or
+    relative; resolution is by suffix in `hit_node_ids`. Empty on any problem."""
     p = Path(trace_path)
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
         return {}, ""
-    base = str(p.resolve().parent)  # coverage paths are relative to where it ran
+    base = str(p.resolve().parent)
+    stripped = text.lstrip()
+    if stripped.startswith("{"):
+        return _parse_json(text, base), base
+    if stripped.startswith("mode:"):
+        return _parse_go(text), base
+    if "SF:" in text or "TN:" in text:
+        return _parse_lcov(text), base
+    return {}, base
+
+
+def _parse_json(text: str, base: str) -> dict[str, set[int]]:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
     out: dict[str, set[int]] = {}
     for rel, info in (data.get("files") or {}).items():
         lines = info.get("executed_lines") or []
-        absf = os.path.normpath(os.path.join(base, rel))
-        out[absf] = set(lines)
-    return out, base
+        out[os.path.normpath(os.path.join(base, rel))] = set(lines)
+    return out
+
+
+def _parse_lcov(text: str) -> dict[str, set[int]]:
+    out: dict[str, set[int]] = {}
+    current = None
+    for line in text.splitlines():
+        if line.startswith("SF:"):
+            current = line[3:].strip()
+            out.setdefault(current, set())
+        elif line.startswith("DA:") and current is not None:
+            try:
+                ln, count = line[3:].split(",")[:2]
+                if int(count) > 0:
+                    out[current].add(int(ln))
+            except ValueError:
+                continue
+        elif line.startswith("end_of_record"):
+            current = None
+    return out
+
+
+def _parse_go(text: str) -> dict[str, set[int]]:
+    out: dict[str, set[int]] = {}
+    for line in text.splitlines():
+        if line.startswith("mode:") or not line.strip():
+            continue
+        try:
+            loc, _stmts, count = line.rsplit(" ", 2)
+            if int(count) <= 0:
+                continue
+            path, span = loc.split(":", 1)
+            start, end = span.split(",")
+            s_line = int(start.split(".")[0])
+            e_line = int(end.split(".")[0])
+            out.setdefault(path, set()).update(range(s_line, e_line + 1))
+        except (ValueError, IndexError):
+            continue
+    return out
 
 
 def hit_node_ids(store: Store, covmap: dict[str, set[int]], root: str) -> set[str]:
-    """Node ids whose bodies executed, per the coverage map."""
+    """Node ids whose bodies executed. Matches a node's file to a coverage path
+    by absolute path, then by suffix (robust to module-prefixed / absolute paths)."""
+    norm = {os.path.normpath(k): v for k, v in covmap.items()}
     hits: set[str] = set()
     for node in store.all_nodes_full():
         start = _start_line(node.location)
         if start is None or node.end_line is None:
             continue
-        absf = os.path.normpath(os.path.join(root, node.location.split(":", 1)[0]))
-        lines = covmap.get(absf)
-        if lines and any(start < ln <= node.end_line for ln in lines):
+        rel = node.location.split(":", 1)[0]
+        lines = norm.get(os.path.normpath(os.path.join(root, rel))) or _by_suffix(norm, rel)
+        if not lines:
+            continue
+        # Body lines: exclude the def line for multi-line defs (Python marks it at
+        # import time), but for a one-line def the body IS the def line.
+        lo = start if start == node.end_line else start + 1
+        if any(lo <= ln <= node.end_line for ln in lines):
             hits.add(node.id)
     return hits
+
+
+def _by_suffix(norm: dict[str, set[int]], rel: str) -> set[int] | None:
+    for k, v in norm.items():
+        if k.endswith(os.sep + rel) or k.endswith("/" + rel) or k.endswith(rel):
+            return v
+    return None
 
 
 def _start_line(location: str) -> int | None:

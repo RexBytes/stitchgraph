@@ -40,6 +40,8 @@ class LangSpec:
     containers: frozenset[str] = frozenset()        # types whose children nest (qual)
     container_only: frozenset[str] = frozenset()    # nest qual but create no node
     arrow_decls: bool = False           # JS `const f = () => …`
+    heritage: frozenset[str] = frozenset()          # child types holding base classes
+    imports: frozenset[str] = frozenset()           # import statement node types
 
 
 _JS = LangSpec(
@@ -48,6 +50,8 @@ _JS = LangSpec(
     call_types={"call_expression": "function"},
     containers=frozenset({"class_declaration", "class_body"}),
     arrow_decls=True,
+    heritage=frozenset({"class_heritage"}),
+    imports=frozenset({"import_statement"}),
 )
 SPECS: dict[str, LangSpec] = {
     "javascript": _JS, "typescript": _JS, "tsx": _JS,
@@ -56,6 +60,7 @@ SPECS: dict[str, LangSpec] = {
         call_types={"call_expression": "function", "macro_invocation": "macro"},
         containers=frozenset({"trait_item", "declaration_list"}),
         container_only=frozenset({"impl_item"}),
+        imports=frozenset({"use_declaration"}),
     ),
     "c": LangSpec(
         defs={"function_definition": F, "struct_specifier": C},
@@ -67,6 +72,7 @@ SPECS: dict[str, LangSpec] = {
         call_types={"call_expression": "function"},
         containers=frozenset({"class_specifier", "struct_specifier",
                               "field_declaration_list"}),
+        heritage=frozenset({"base_class_clause"}),
     ),
     "csharp": LangSpec(
         defs={"method_declaration": M, "constructor_declaration": M,
@@ -75,6 +81,8 @@ SPECS: dict[str, LangSpec] = {
         call_types={"invocation_expression": "function"},
         containers=frozenset({"class_declaration", "struct_declaration",
                               "interface_declaration", "declaration_list"}),
+        heritage=frozenset({"base_list"}),
+        imports=frozenset({"using_directive"}),
     ),
     "bash": LangSpec(
         defs={"function_definition": F},
@@ -84,6 +92,7 @@ SPECS: dict[str, LangSpec] = {
         defs={"function_declaration": F, "method_declaration": M, "type_spec": C},
         call_types={"call_expression": "function"},
         containers=frozenset({"type_spec"}),
+        imports=frozenset({"import_declaration"}),
     ),
     "java": LangSpec(
         defs={"method_declaration": M, "constructor_declaration": M,
@@ -92,11 +101,14 @@ SPECS: dict[str, LangSpec] = {
         call_types={"method_invocation": "name", "object_creation_expression": "type"},
         containers=frozenset({"class_declaration", "class_body", "interface_declaration",
                               "interface_body", "enum_declaration", "enum_body"}),
+        heritage=frozenset({"superclass", "super_interfaces"}),
+        imports=frozenset({"import_declaration"}),
     ),
     "ruby": LangSpec(
         defs={"method": M, "singleton_method": M, "class": C, "module": C},
         call_types={"call": "method"},
         containers=frozenset({"class", "module"}),
+        heritage=frozenset({"superclass"}),
     ),
     "php": LangSpec(
         defs={"function_definition": F, "method_declaration": M, "class_declaration": C,
@@ -105,6 +117,8 @@ SPECS: dict[str, LangSpec] = {
                     "member_call_expression": "name", "scoped_call_expression": "name"},
         containers=frozenset({"class_declaration", "declaration_list",
                               "interface_declaration", "trait_declaration"}),
+        heritage=frozenset({"base_clause", "class_interface_clause"}),
+        imports=frozenset({"namespace_use_declaration"}),
     ),
 }
 EXT_LANG = {
@@ -128,7 +142,10 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     parsers: dict[str, Parser] = {}
     nodes: list[Node] = []
     defs: list[tuple[str, str, object, str]] = []  # (rel, def_id, body_node, lang)
+    inherits: list[tuple[str, str, str]] = []      # (class_id, base_name, lang)
+    imports: list[tuple[str, str, str]] = []       # (mod_id, name, lang)
     src_by: dict[str, bytes] = {}
+    file_lang: dict[str, str] = {}
 
     files = [p for p in sorted(root.rglob("*"))
              if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
@@ -148,14 +165,21 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             continue
         rel = path.relative_to(root).as_posix()
         src_by[rel] = src
-        _collect(tree.root_node, src, rel, SPECS[lang], lang,
-                 parent="", nodes=nodes, defs=defs, exported=False)
+        file_lang[rel] = lang
+        spec = SPECS[lang]
+        mod_id = f"{rel}::{path.stem}"
+        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
+                          location=f"{rel}:1:0"))
+        is_test = _is_test_file(rel)
+        _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
+                 defs=defs, inherits=inherits, exported=False, is_test=is_test)
+        for name in _import_names(tree.root_node, src, spec):
+            imports.append((mod_id, name, lang))
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
-    lang_of: dict[str, str] = {rel: lang for rel, _id, _b, lang in defs}
     by_lang: dict[str, dict[str, list[str]]] = {}
     for n in nodes:
-        lang = lang_of.get(n.id.split("::", 1)[0])
+        lang = file_lang.get(n.id.split("::", 1)[0])
         if lang:
             by_lang.setdefault(lang, {}).setdefault(n.name, []).append(n.id)
 
@@ -164,42 +188,114 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         by_name = by_lang.get(lang, {})
         for name, line in _direct_calls(body, src_by[rel], SPECS[lang]):
             _ref(edges, def_id, name, by_name, rel, line)
+    for class_id, base, lang in inherits:
+        _ref(edges, class_id, base, by_lang.get(lang, {}),
+             class_id.split("::", 1)[0], 0, relation=Relation.INHERITS)
+    for mod_id, name, lang in imports:
+        _ref(edges, mod_id, name, by_lang.get(lang, {}),
+             mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
     return nodes, edges
 
 
 # -- pass 1: definitions ----------------------------------------------------
-def _collect(node, src, rel, spec, lang, parent, nodes, defs, exported):
+def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test):
     for child in node.children:
         t = child.type
         if t == "export_statement":
-            _collect(child, src, rel, spec, lang, parent, nodes, defs, exported=True)
+            _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                     exported=True, is_test=is_test)
         elif t in spec.container_only:
             qual = _join(parent, _name_of(child, src))
-            _collect(child, src, rel, spec, lang, qual, nodes, defs, exported=False)
+            _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
+                     exported=False, is_test=is_test)
         elif t in spec.defs:
             name = _name_of(child, src)
             if not name:
-                _collect(child, src, rel, spec, lang, parent, nodes, defs, False)
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         False, is_test)
                 continue
             qual = _join(parent, name)
-            roles = _roles(child, src, name, lang, exported)
-            nodes.append(Node(id=f"{rel}::{qual}", kind=spec.defs[t], name=name,
-                              location=_loc(rel, child), end_line=child.end_point[0] + 1,
-                              roles=roles))
-            defs.append((rel, f"{rel}::{qual}", child, lang))
-            inner = qual if (t in spec.containers or spec.defs[t] is C) else parent
-            _collect(child, src, rel, spec, lang, inner, nodes, defs, False)
+            roles = set(_roles(child, src, name, lang, exported))
+            if _is_test_name(name):  # a test entry; other test-file helpers stay normal
+                roles.add("test")
+            kind = spec.defs[t]
+            cid = f"{rel}::{qual}"
+            nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, child),
+                              end_line=child.end_point[0] + 1, roles=frozenset(roles)))
+            defs.append((rel, cid, child, lang))
+            if kind is C:
+                for base in _bases(child, src, spec):
+                    inherits.append((cid, base, lang))
+            inner = qual if (t in spec.containers or kind is C) else parent
+            _collect(child, src, rel, spec, lang, inner, nodes, defs, inherits,
+                     False, is_test)
         elif spec.arrow_decls and t == "variable_declarator":
             val = child.child_by_field_name("value")
             name = _field_text(child, "name", src)
             if name and val and val.type in ("arrow_function", "function", "function_expression"):
                 qual = _join(parent, name)
+                roles = {"exported"} if exported else set()
+                if _is_test_name(name):
+                    roles.add("test")
                 nodes.append(Node(id=f"{rel}::{qual}", kind=F, name=name,
                                   location=_loc(rel, val), end_line=val.end_point[0] + 1,
-                                  roles=frozenset({"exported"}) if exported else frozenset()))
+                                  roles=frozenset(roles)))
                 defs.append((rel, f"{rel}::{qual}", val, lang))
         else:
-            _collect(child, src, rel, spec, lang, parent, nodes, defs, exported)
+            _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                     exported, is_test)
+
+
+def _bases(node, src, spec):
+    """Base class / interface names from a class def's heritage children."""
+    names: list[str] = []
+    for c in node.children:
+        if c.type in spec.heritage:
+            for leaf in _identifiers(c, src):
+                names.append(leaf)
+    return names
+
+
+def _identifiers(node, src):
+    out = []
+    if node.type in ("identifier", "type_identifier", "name", "constant",
+                     "scoped_type_identifier"):
+        t = _trailing_id(node, src)
+        if t:
+            out.append(t)
+        return out
+    for c in node.children:
+        out += _identifiers(c, src)
+    return out
+
+
+def _import_names(root, src, spec):
+    if not spec.imports:
+        return []
+    names: list[str] = []
+    def rec(n):
+        if n.type in spec.imports:
+            names.extend(_identifiers(n, src))
+        for c in n.children:
+            rec(c)
+    rec(root)
+    return names
+
+
+def _is_test_file(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1].lower()
+    parts = rel.lower().split("/")
+    if "test" in parts or "tests" in parts or "spec" in parts:
+        return True
+    return ("_test." in name or ".test." in name or ".spec." in name
+            or name.startswith("test_"))
+
+
+def _is_test_name(name: str) -> bool:
+    """A test *entry* by conventional naming (Go Test*/Benchmark*/Example*,
+    pytest/JS test*). Other helpers in a test file are live only if a test
+    reaches them — so they aren't blanket-marked."""
+    return name[:4].lower() == "test" or name.startswith(("Benchmark", "Example"))
 
 
 # -- pass 2: calls ----------------------------------------------------------
@@ -246,19 +342,19 @@ def _trailing_id(node, src):
     return None
 
 
-def _ref(edges, src_id, name, by_name, rel, line):
-    cands = by_name.get(name, [])
+def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS):
+    cands = [c for c in by_name.get(name, []) if c != src_id]
     loc = f"{rel}:{line}:0"
     if not cands:
         return
     if len(cands) == 1:
-        edges.append(Edge(src=src_id, relation=Relation.CALLS, dst_symbol=name,
+        edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                           dst_id=cands[0], weight=1.0, provenance=Provenance.EXTRACTED,
                           location=loc, source="tree-sitter"))
     else:
         w = round(1.0 / len(cands), 3)
         for cid in cands:
-            edges.append(Edge(src=src_id, relation=Relation.CALLS, dst_symbol=name,
+            edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                               dst_id=cid, weight=w, provenance=Provenance.AMBIGUOUS,
                               location=loc, source="tree-sitter"))
 

@@ -26,6 +26,8 @@ class Config:
     threshold: float = 0.80
     # [orient]
     hub_metric: str = "transitive_fan_in"            # | fan_in | pagerank
+    # [similar]
+    embed_model: str | None = None                   # model2vec model for find_similar
     source: Path | None = None                       # the file we loaded, if any
 
 
@@ -56,5 +58,6 @@ def load_config(start: str | Path | None = None) -> Config:
         ignore=list(idx.get("ignore", []) or []),
         threshold=float(rev.get("threshold", 0.80)),
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
+        embed_model=(data.get("similar", {}) or {}).get("embed_model"),
         source=path,
     )

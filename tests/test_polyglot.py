@@ -93,3 +93,51 @@ def test_no_cross_language_false_links(tmp_path):
     callers = {e.src for e in store.callers_of(js_shared)}
     assert all(".js" in c for c in callers)  # only the JS caller, not the Rust one
     store.close()
+
+
+def test_js_fetch_to_backend_route(tmp_path):
+    """Frontend JS fetch links to a backend route → full-stack trace."""
+    (tmp_path / "api").mkdir()
+    (tmp_path / "api" / "__init__.py").write_text("")
+    (tmp_path / "api" / "views.py").write_text(
+        "app = object()\n@app.get('/api/users')\n"
+        "def list_users():\n    return db.execute('SELECT email FROM users')\n")
+    (tmp_path / "client.js").write_text(
+        "export async function loadUsers(){ const r = await fetch('/api/users'); return r.json(); }\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    res = sg.trace_path(store, "loadUsers", "users")
+    assert res.ok, res.review_reasons
+    assert res.result[0].endswith("client.js::loadUsers")
+    assert res.result[-1] == "db::users"
+    store.close()
+
+
+def test_inheritance_imports_and_tests(tmp_path):
+    (tmp_path / "Shapes.java").write_text(
+        "class Animal { int sound(){ return 0; } }\n"
+        "class Dog extends Animal { int bark(){ return 1; } }\n")
+    (tmp_path / "util.js").write_text(
+        "export function helper(){ return 1; }\nfunction jsDead(){ return 2; }\n")
+    (tmp_path / "app.js").write_text(
+        'import { helper } from "./util";\nexport function go(){ return helper(); }\n')
+    (tmp_path / "svc_test.go").write_text(
+        "package m\nfunc TestSvc(t *T){ used() }\nfunc used() int { return 1 }\n"
+        "func goDead() int { return 2 }\n")
+    from stitchgraph.core.model import Relation
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    # inheritance
+    inh = {(e.src.split("::")[-1], e.dst_id.split("::")[-1])
+           for e in store.resolved_edges(Relation.INHERITS)}
+    assert ("Dog", "Animal") in inh
+    assert any(d.endswith("::Dog") for d in sg.impact_of(store, "Animal").result["blast_radius"])
+    # imports
+    imp = {(e.src.split("::")[-1], e.dst_id.split("::")[-1])
+           for e in store.resolved_edges(Relation.IMPORTS)}
+    assert ("app", "helper") in imp
+    # go test entry: TestSvc is a root, used is reached, goDead is dead
+    stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "goDead" in stale and "used" not in stale and "TestSvc" not in stale
+    assert "jsDead" in stale  # unused JS, not exported
+    store.close()

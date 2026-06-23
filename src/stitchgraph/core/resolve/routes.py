@@ -46,7 +46,42 @@ class WebRouteResolver:
                         dst_id=handler_id, weight=0.9, provenance=Provenance.INFERRED,
                         location=f"{rel}:{func.lineno}:0", source="heuristic",
                     ))
+            _django_routes(tree, rel, ctx, nodes, edges)
         return nodes, edges
+
+
+_DJANGO = {"path", "re_path", "url"}
+
+
+def _django_routes(tree, rel, ctx, nodes, edges):
+    """Django URLconf: `path('users/', views.user_list)` -> Route -> handler."""
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id in _DJANGO and len(node.args) >= 2):
+            continue
+        path_arg = node.args[0]
+        if not (isinstance(path_arg, ast.Constant) and isinstance(path_arg.value, str)):
+            continue
+        path = "/" + path_arg.value.lstrip("/")
+        handler = _name_of(node.args[1])
+        if not handler:
+            continue
+        cands = ctx.by_name.get(handler, [])
+        rid = f"{rel}::route:ANY {path}"
+        nodes.append(Node(id=rid, kind=NodeKind.ROUTE, name=f"ANY {path}",
+                          location=f"{rel}:{node.lineno}:0", roles=frozenset({"route"})))
+        if len(cands) == 1:
+            edges.append(Edge(src=rid, relation=Relation.ROUTES_TO, dst_symbol=handler,
+                              dst_id=cands[0], weight=0.85, provenance=Provenance.INFERRED,
+                              location=f"{rel}:{node.lineno}:0", source="heuristic"))
+
+
+def _name_of(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
 
 
 def _route_of(dec: ast.AST) -> tuple[str, str] | None:
