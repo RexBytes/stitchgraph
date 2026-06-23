@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 10 (Panels A–J) |
+| Multi-model review panels | 11 (Panels A–K) |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
 | Tests | 115 passing, 1 skipped |
 | Coverage | ~84% |
-| Release-Readiness Score | 73.7 / 100 |
-| Convergence | Panel I (11) + Panel J (30) exposed the "use-form not modeled" class (5 HIGHs over I+J); a general by-name-reference pass now closes it. Clean streak 0 of 2 |
-| Verdict | NOT RELEASABLE — the use-form class is now fixed *generally* (all by-name references modelled); needs ≥2 clean panels to confirm closure |
+| Release-Readiness Score | 78.4 / 100 |
+| Convergence | I (11) → J (30) → K (14): the use-form class is closing (K found only its tail: signature annotations + a self-inflicted metric regression). Clean streak 0 of 2 |
+| Verdict | NOT RELEASABLE — yield falling again post-J; needs ≥2 clean panels |
 
 ## Trajectory
 
@@ -32,6 +32,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | H | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN** — all three returned FINDINGS: none; regression-checked every recent fix, precision invariant on adversarial input, envelope contract, GraphBLAS agreement |
 | I | opus · sonnet · haiku | 1 HIGH · 1 LOW | 11.0 | **confirmation gate caught a real HIGH** — `new Foo()` not edged in JS/TS/C#/C++ (live class flagged dead); read-only `global` false data_loop. Streak resets. |
 | J | opus · sonnet · haiku | 3 HIGH | 30.0 | **use-form class fully exposed** — bare-name refs (opus); PHP `new` + Ruby `.new` missed by I's fix (sonnet). One general by-name-reference pass closes the class. |
+| K | opus · sonnet · haiku | 1 HIGH · 1 MEDIUM | 14.0 | tail of the class — Python signature type annotations (opus); + a self-inflicted regression: J's `_direct_refs` `id()`-skip failed → spurious REFERENCES self-loops (opus+sonnet). haiku clean. |
 
 ## What each panel found and how it was fixed
 
@@ -247,6 +248,27 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   module-level cases), no longer false-flagging common patterns. Module-level uses
   (the `SPECS` table) remain the documented limitation. RRS 79.2 → 73.7; the next
   panels test whether the class is truly closed.
+
+- **Panel K (opus · sonnet · haiku)** — the panel that confirmed Panel J's fix and
+  caught its tail + a regression it introduced. haiku came back clean; the other two
+  found:
+  - **HIGH (opus)** — the *one* by-name use-form Panel J's body-only pass missed:
+    **parameter/return type annotations** live in `func.args`/`func.returns`, not the
+    body, so a class used only as `def f(x: Config) -> Fwd` (or `list[Gen]`, or a
+    string forward-ref) was still flagged dead. Added `_annotation_names` to edge them
+    (the tree-sitter extractor already covered this by walking the whole def node — a
+    Python↔tree-sitter asymmetry).
+  - **MEDIUM (opus + sonnet, converged)** — a regression Panel J introduced:
+    `_direct_refs` skipped the def's own name via `id(name_node)`, but tree-sitter
+    hands back a fresh wrapper per access so `id()` never matched — every def emitted a
+    spurious REFERENCES self-loop, and callees got a CALLS+REFERENCES double-edge,
+    re-inflating `fan_in`/`get_matrix`/god-object detection (the class Panel G closed).
+    Fixed by skipping the name by byte-span, dropping REFERENCES self-edges in `_ref`,
+    and not emitting a REFERENCES edge for a name already linked as CALLS.
+
+  The confirmation pair did its job again: the aggressive Panel J change had both a
+  missed corner and a self-inflicted side-effect, and the side-effect audit caught
+  both. RRS 73.7 → 78.4.
 
 ## Standing themes
 

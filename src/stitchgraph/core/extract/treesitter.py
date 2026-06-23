@@ -219,8 +219,10 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     edges: list[Edge] = []
     for rel, def_id, body, lang in defs:
         by_name = by_lang.get(lang, {})
+        called: set[str] = set()
         for name, line in _direct_calls(body, src_by[rel], SPECS[lang]):
             _ref(edges, def_id, name, by_name, rel, line)
+            called.add(name)
         # Bare-name *references*: a symbol named by value/type (`const cb = handler`,
         # a class as the receiver of `Service.new` / `Color.RED`, a `new X()` class
         # name) is a real use the extractor sees. Edge it -> REFERENCES (only project
@@ -228,7 +230,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # dead — closing the same gap the Python extractor's `_direct_names` does, and
         # covering constructor idioms whose grammar lacks a clean callee field.
         for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
-            _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
+            if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
+                _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
 
     # Build a set of class IDs that inherit from external bases (framework classes).
     # This will be used to mark their methods as callbacks.
@@ -464,14 +467,16 @@ def _direct_refs(body, src, spec):
     approximated through `_ref` (only project symbols resolve)."""
     out: list[tuple[str, int]] = []
     name_node = body.child_by_field_name("name")
-    skip = id(name_node) if name_node is not None else None
+    # Compare by byte span, not id(): the tree-sitter bindings hand back a fresh
+    # wrapper object on every access, so `id()` of the same node never matches.
+    name_span = (name_node.start_byte, name_node.end_byte) if name_node is not None else None
 
     def rec(n, top):
         for c in n.children:
             if not top and (c.type in spec.defs or c.type in spec.container_only):
                 continue
             if c.type in ("identifier", "type_identifier", "constant", "name") \
-                    and id(c) != skip:
+                    and (c.start_byte, c.end_byte) != name_span:
                 out.append((_text(c, src), c.start_point[0] + 1))
             rec(c, False)
 
@@ -519,9 +524,11 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS):
     cands = by_name.get(name, [])
     # A function may legitimately CALL itself (recursion) — keep the self-edge, as
     # the Python extractor does, so both model the same graph. Self-reference is
-    # only pathological for INHERITS/IMPORTS (a class/module can't inherit/import
-    # itself), so drop it there.
-    if relation in (Relation.INHERITS, Relation.IMPORTS):
+    # meaningless for INHERITS/IMPORTS (a class/module can't inherit/import itself)
+    # and for REFERENCES (a def naming itself carries no liveness/impact), so drop it
+    # there — otherwise every def gets a spurious self-loop that inflates degree
+    # metrics / get_matrix / pagerank.
+    if relation in (Relation.INHERITS, Relation.IMPORTS, Relation.REFERENCES):
         cands = [c for c in cands if c != src_id]
     loc = f"{rel}:{line}:0"
     if not cands:

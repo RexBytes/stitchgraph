@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -330,6 +331,13 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # `_ref_edges` (only project symbols resolve), like the attr-read pass.
             for nm in _direct_names(child, call_funcs):
                 _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
+            # Parameter / return *type annotations* live in `child.args` / `child.returns`,
+            # not the body, so the passes above never see them. A class used only as a
+            # type annotation from a live function is still a real use -> REFERENCES, or
+            # it is wrongly flagged dead (the tree-sitter extractor already covers this
+            # by walking the whole def node).
+            for ann_name in _annotation_names(child):
+                _ref_edges(proj, cid, ann_name, Relation.REFERENCES, rel, child.lineno)
             # `with EXPR as ...` exercises the context manager's __enter__/__exit__.
             for cm in _direct_withs(child):
                 _with_edges(proj, rel, cid, class_qual, local_types, cm)
@@ -436,6 +444,30 @@ def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribut
 
     for stmt in getattr(func, "body", []):
         rec(stmt)
+    return out
+
+
+def _annotation_names(func: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Type names referenced in a function's parameter and return annotations,
+    including generic args (`list[T]`) and string forward refs (`"T"`). Used to keep
+    a class used only as an annotation from being flagged dead."""
+    a = func.args
+    anns = [arg.annotation
+            for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs)]
+    anns += [a.vararg.annotation if a.vararg else None,
+             a.kwarg.annotation if a.kwarg else None, func.returns]
+    out: list[str] = []
+    for ann in anns:
+        if ann is None:
+            continue
+        for n in ast.walk(ann):
+            if isinstance(n, ast.Name):
+                out.append(n.id)
+            elif isinstance(n, ast.Attribute):
+                out.append(n.attr)
+            elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+                # forward ref like "Config" or "list[Config]" -> the bare identifiers
+                out += re.findall(r"[A-Za-z_]\w*", n.value)
     return out
 
 

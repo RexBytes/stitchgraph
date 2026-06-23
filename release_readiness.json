@@ -72,6 +72,12 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 3},
       "theme": "the use-form class, fully exposed: bare-name references not modeled (opus, Python+JS), PHP new and Ruby .new constructors missed by the Panel I fix (sonnet). One general _direct_refs/_direct_names pass now models ALL by-name references, closing the whole class. haiku read these as the documented advisory limitation."
+    },
+    {
+      "id": "K",
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 1},
+      "theme": "tail of the use-form class + a self-inflicted regression: Python signature type annotations not modeled (opus HIGH); the Panel J _direct_refs id()-skip was ineffective on tree-sitter wrappers, spurious REFERENCES self-loops + callee double-edges inflating fan_in (opus+sonnet converged, MEDIUM). haiku clean."
     }
   ]
 }

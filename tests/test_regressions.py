@@ -715,3 +715,46 @@ def test_tree_sitter_by_name_and_constructor_uses_keep_symbol_live(tmp_path):
             assert "Service" not in stale if fname.endswith(".rb") else True
             dead = {"js": "jsDead", "php": "phpDead", "rb": "rbDead"}[fname.split(".")[-1]]
             assert dead in stale, f"{dead} should still be flagged in {fname}"
+
+
+# -- Panel K / opus (HIGH): a class used only as a type annotation is live ------
+def test_type_annotation_only_class_is_not_stale(tmp_path):
+    """A class referenced only in a parameter/return annotation (`def f(x: Config)`,
+    `-> Fwd`, `list[Gen]`) is a real use that lives in the signature, not the body —
+    it must not be flagged dead."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": '__all__ = ["main"]\nfrom .m import main\n',
+        "pkg/m.py": (
+            "class Config: pass\n"
+            "class Fwd: pass\n"
+            "class Gen: pass\n"
+            "class DeadCls: pass\n"
+            "def annotated(cfg: Config) -> Fwd:\n    return cfg\n"
+            "def generic(items: list[Gen]):\n    return items\n"
+            "def main():\n    annotated(None)\n    return generic([])\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert {"Config", "Fwd", "Gen"} & stale == set()  # used as annotations
+        assert "DeadCls" in stale                           # truly unreferenced
+
+
+# -- Panel K / opus + sonnet (MEDIUM): no spurious REFERENCES self-loops -------
+def test_tree_sitter_refs_no_self_loops_or_callee_double_edges(tmp_path):
+    """`_direct_refs` must not emit a REFERENCES self-loop per def (the id()-skip was
+    ineffective on tree-sitter's fresh wrappers) nor a REFERENCES duplicate of a CALLS
+    edge — both inflated fan_in / get_matrix / god-object detection."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.model import Relation
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {"app.ts": "export function main(){ return helper(); }\n"
+                             "function helper(){ return 1; }\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        refs = store.resolved_edges(Relation.REFERENCES)
+        assert not any(e.src == e.dst_id for e in refs)       # no self-loops
+        assert fan_in(store).get("app.ts::main") in (None, 0)  # main has no real callers
+        assert fan_in(store).get("app.ts::helper") == 1        # one CALLS edge, not doubled
