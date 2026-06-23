@@ -315,6 +315,93 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     return res
 
 
+@operation("Risk hotspots (churn × centrality) and hidden coupling from git history.")
+def risk(store: Store, path: str = ".") -> Result:
+    """Fuse git history with the structural graph (design §6.H).
+
+    `path` is the repo root (same as the indexed root). Returns risk hotspots
+    (files that change often *and* are depended on heavily) and hidden coupling
+    (files that co-change in git but have no structural edge — implicit deps the
+    call/import graph misses).
+    """
+    from . import gitrisk
+
+    if not gitrisk.is_git_repo(path):
+        return refuse(f"'{path}' is not a git repository", confidence=0.0)
+
+    churn = gitrisk.churn(path)
+    if not churn:
+        return refuse("no git history found for .py files", confidence=0.0, result={})
+
+    # Node files are relative to the indexed root; git paths to the repo root.
+    # Translate node files into git-relative paths so the two spaces line up.
+    to_git = _git_path_mapper(store, path)
+
+    # File-level centrality = total importance of the nodes it defines.
+    ranking, _ = _hub_ranking(store)
+    file_centrality: dict[str, float] = {}
+    for nid in store.all_node_ids():
+        f = to_git(nid.split("::", 1)[0])
+        file_centrality[f] = file_centrality.get(f, 0.0) + ranking.get(nid, 0.0)
+
+    hotspots = []
+    for f, c in churn.items():
+        cen = file_centrality.get(f, 0.0)
+        if cen <= 0:
+            continue
+        hotspots.append({"file": f, "churn": c, "centrality": round(cen, 2),
+                         "risk": round(c * cen, 2)})
+    hotspots.sort(key=lambda h: h["risk"], reverse=True)
+    if hotspots:
+        top = hotspots[0]["risk"]
+        for h in hotspots:
+            h["urgency"] = (Urgency.ORANGE.value if h["risk"] >= top / 2
+                            else Urgency.GREEN.value)
+
+    # Hidden coupling: co-change pairs with no structural edge between the files.
+    connected = _connected_file_pairs(store, to_git)
+    hidden = []
+    for pair, n in sorted(gitrisk.cochange(path).items(), key=lambda kv: -kv[1]):
+        a, b = sorted(pair)
+        if frozenset((a, b)) not in connected:
+            hidden.append({"files": [a, b], "co_changes": n})
+
+    payload = {"hotspots": hotspots[:15], "hidden_coupling": hidden[:15]}
+    res = ok(payload, provenance=Provenance.INFERRED, confidence=0.7,
+             hotspots=len(hotspots), hidden=len(hidden))
+    if hidden:
+        res.urgency = Urgency.ORANGE
+        res.add_reason("hidden coupling: files co-change but share no structural edge")
+    return res
+
+
+def _connected_file_pairs(store: Store, to_git) -> set[frozenset[str]]:
+    pairs: set[frozenset[str]] = set()
+    for edge in store.resolved_edges():
+        if edge.dst_id is None:
+            continue
+        a = to_git(edge.src.split("::", 1)[0])
+        b = to_git(edge.dst_id.split("::", 1)[0])
+        if a != b:
+            pairs.add(frozenset((a, b)))
+    return pairs
+
+
+def _git_path_mapper(store: Store, path: str):
+    """Map an indexed-root-relative file to a repo-root-relative (git) path."""
+    import os
+    from . import gitrisk
+
+    root = store.get_meta("root")
+    top = gitrisk.toplevel(path)
+    if not root or not top:
+        return lambda f: f
+    prefix = os.path.relpath(root, top)
+    if prefix in (".", ""):
+        return lambda f: f
+    return lambda f: f"{prefix}/{f}".replace(os.sep, "/")
+
+
 @operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
 def get_matrix(store: Store, scope: str, relation: str = "CALLS",
                limit: int = 25) -> Result:
@@ -387,6 +474,8 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         for e in edges:
             store.add_edge(e)
 
+    import os
+    store.set_meta("root", os.path.abspath(path))
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
               files=len(files), nodes=store.node_count())

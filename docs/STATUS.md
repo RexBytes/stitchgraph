@@ -40,17 +40,18 @@ spec and section references.
 | Cross-language | ORM resolver (model → table/column, MAPS_TO) | ✅ Done | SQLAlchemy/Django; converges with SQL |
 | Cross-language | Full-stack trace (form → route → handler → table) | ✅ Done | the "gem", end to end |
 | **Data flow** | Data-loop detection (🟡) | ⬜ To do | needs READS/WRITES at var granularity |
-| **Risk** | git-history churn × centrality | ⬜ To do | hidden coupling, hotspots |
+| **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`RUNTIME_HITS`) | ⬜ To do | observed vs static |
 | **Semantic** | vector `find_similar` | ⬜ To do | embeddings + sqlite-vec |
-| **Quality** | golden-fixture eval harness | 🟡 Partial | per-feature tests exist; no precision/recall harness yet |
-| Quality | dogfood on own source | ✅ Done | 7 genuine dead-code candidates found |
+| **Quality** | precision/recall eval harness | ✅ Done | precision-over-recall stance asserted |
+| Quality | dogfood on own source | ✅ Done | genuine dead code found; risk hotspots ranked |
 
 ## Test coverage
 
-31 tests (`tests/`): envelope, store + incremental, extractor, operations,
-cross-language resolvers (routes/SQL/ORM), and the GraphBLAS algebra (asserts the
-accelerated sweeps agree with the pure-Python reference).
+41 tests (`tests/`): envelope, store + incremental, extractor, operations,
+config, `get_matrix`, cross-language resolvers (routes/HTML/SQL/ORM) + full-stack
+trace, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
+reference), git-risk fusion, and a precision/recall eval harness.
 
 ## Known seams (honest)
 

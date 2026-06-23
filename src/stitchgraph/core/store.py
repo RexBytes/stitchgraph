@@ -105,6 +105,15 @@ class Store:
     def commit(self) -> None:
         self.conn.commit()
 
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                          (key, value))
+        self.conn.commit()
+
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
     def replace_file(self, file: str, nodes: Iterable[Node], edges: Iterable[Edge]) -> None:
         """Incremental update for one file (design §4, Store & incremental updates).
 
