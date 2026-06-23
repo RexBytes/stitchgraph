@@ -637,7 +637,12 @@ def _dedup_edges(edges: list) -> list:
     metrics (fan_in/fan_out, the `fan_in`-fallback hubs) and `get_matrix` cells. The
     boolean reachability/GraphBLAS layer already dedups, so this aligns the adjacency
     store with it. Unresolved holes (dst_id is None) are distinct reference sites and
-    are kept as-is."""
+    are kept as-is.
+
+    A CALLS edge also subsumes a REFERENCES edge to the *same* (src, dst): a called
+    symbol is already a dependency, so the by-name REFERENCES is redundant and would
+    double-count fan_in / pagerank (a function that both calls and names/annotates a
+    class). The strong relation wins."""
     best: dict[tuple, Any] = {}
     order: list[tuple] = []
     holes: list = []
@@ -651,7 +656,10 @@ def _dedup_edges(edges: list) -> list:
             order.append(key)
         elif e.weight > best[key].weight:
             best[key] = e
-    return holes + [best[k] for k in order]
+    called = {(e.src, e.dst_id) for e in best.values() if e.relation is Relation.CALLS}
+    kept = [best[k] for k in order
+            if not (best[k].relation is Relation.REFERENCES and (best[k].src, best[k].dst_id) in called)]
+    return holes + kept
 
 
 def _resolve_one(store: Store, name: str):

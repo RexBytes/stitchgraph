@@ -758,3 +758,22 @@ def test_tree_sitter_refs_no_self_loops_or_callee_double_edges(tmp_path):
         assert not any(e.src == e.dst_id for e in refs)       # no self-loops
         assert fan_in(store).get("app.ts::main") in (None, 0)  # main has no real callers
         assert fan_in(store).get("app.ts::helper") == 1        # one CALLS edge, not doubled
+
+
+# -- Panel L / opus (MEDIUM): CALLS subsumes a redundant REFERENCES edge --------
+def test_python_call_and_reference_to_same_target_not_doubled(tmp_path):
+    """A function that both *calls* and *names/annotates* the same symbol
+    (`def build() -> Node: return Node()`) must not get both a CALLS and a REFERENCES
+    edge to it — that double-counted fan_in/pagerank (the Python twin of the
+    tree-sitter callee-double-edge fixed in Panel K)."""
+    from stitchgraph.core.model import Relation
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {"pkg/__init__.py": "",
+                   "pkg/m.py": "class Node:\n    pass\n"
+                               "def build() -> Node:\n    return Node()\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        rels = {e.relation for e in store.resolved_edges()
+                if e.src.endswith("build") and e.dst_id and e.dst_id.endswith("::Node")}
+        assert Relation.CALLS in rels and Relation.REFERENCES not in rels  # CALLS wins
+        assert fan_in(store).get("pkg/m.py::Node") == 1                     # counted once
