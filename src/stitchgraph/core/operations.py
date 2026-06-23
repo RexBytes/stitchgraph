@@ -356,9 +356,8 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
 
     covmap, _ = runtime.load_coverage(trace)
     if not covmap:
-        return refuse(f"no usable coverage data in '{trace}' "
-                      "(generate with: coverage run -m pytest && coverage json)",
-                      confidence=0.0)
+        return refuse(f"no usable coverage data in '{trace}' (supported: coverage.py "
+                      "JSON, LCOV .info, Go coverprofile)", confidence=0.0)
     root = store.get_meta("root") or "."
     hits = runtime.hit_node_ids(store, covmap, root)
     for nid in hits:

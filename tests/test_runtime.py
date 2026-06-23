@@ -63,3 +63,26 @@ def test_ingest_refuses_missing_trace(tmp_path):
     with _index(tmp_path) as store:
         res = sg.ingest_trace(store, str(tmp_path / "nope.json"))
         assert not res.ok and res.needs_review
+
+
+def test_lcov_format(tmp_path):
+    (tmp_path / "u.js").write_text(
+        "export function ran(){ return 1; }\nexport function notRun(){ return 2; }\n")
+    (tmp_path / "lcov.info").write_text("SF:u.js\nDA:1,5\nDA:2,0\nend_of_record\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert sg.ingest_trace(store, str(tmp_path / "lcov.info")).ok
+        hit = {n.name for n in store.nodes_with_role("runtime")}
+        assert "ran" in hit and "notRun" not in hit
+
+
+def test_go_coverprofile_format(tmp_path):
+    (tmp_path / "m.go").write_text(
+        "package m\nfunc GoRan() int {\n return 1\n}\nfunc GoNot() int {\n return 2\n}\n")
+    (tmp_path / "cover.out").write_text(
+        "mode: set\nm.go:2.20,4.2 1 3\nm.go:5.20,7.2 1 0\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert sg.ingest_trace(store, str(tmp_path / "cover.out")).ok
+        hit = {n.name for n in store.nodes_with_role("runtime")}
+        assert "GoRan" in hit and "GoNot" not in hit
