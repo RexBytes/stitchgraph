@@ -480,6 +480,16 @@
       ],
       "findings": {},
       "theme": "CLEAN (all three FINDINGS: none) \u2014 first clean panel of the 1.0.4 batch; fresh full-3-model confirmation on the final tree (a68f827) after the KK fixes. opus: end-to-end cardinal proof that liveness is provenance-agnostic \u2014 a symbol reached ONLY via a #10 INFERRED receiver edge is NOT flagged dead while a genuinely unused sibling is; verified the constructor call-fields (\"constructor\"/\"type\") bind EXCLUSIVELY to constructor node types across the LangSpec map (so no real method call is wrongly kept EXTRACTED), and that --precise is genuinely additive (_dedup_edges only collapses same (src,relation,dst_id); AMBIGUOUS siblings preserved). haiku: full suite 177 + dogfood 3 advisory/0 holes + scan on cycle/empty no crash. sonnet: re-ran the per-language constructor matrix (C#/Java/JS/TS/C++/Rust/Ruby/PHP \u2014 qualified & simple ctors EXTRACTED, method calls INFERRED, Rust ::new / Ruby .new documented INFERRED) and adversarial _resolve_member defeat attempts (chained calls, self.x.m(), annotated params, reassigned locals) \u2014 all correct. Streak 1 of 2."
+    },
+    {
+      "id": "MM",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) \u2014 SECOND consecutive clean full-3-model panel; the 1.0.4 release gate is met (streak 2). Fresh independent confirmation, not a rerun. opus: proved end-to-end that the only provenance consumers are reporting/ranking (scan RED/ORANGE ceiling, #11 capping, trace_path confidence) \u2014 none feed reachable_from/find_stale, so #10's INFERRED relabel cannot drop liveness; _CONSTRUCTOR_FIELDS maps exclusively to constructor callee fields. sonnet: 12 #11 boundary scenarios (mixed EXTRACTED/AMBIGUOUS cycles straddling frac<0.5, god_object c_in/c_out boundaries, self-loop, god-object-in-cycle, REFERENCES-only no-cycle) \u2014 no genuine EXTRACTED finding ever wrongly capped GREEN; 7 downstream-op checks (trace_path/impact_of/find_stale/orient/stub-ceiling all provenance-agnostic for liveness); 9 cross-extractor parity checks (KK asymmetry stays closed). haiku: full suite 177, dogfood 3 advisory/0 holes, the four spec repros, empty/single-file no crash. No false-dead, no metric inflation, no envelope-contract violation, no crash. 1.0.4 is RELEASABLE; awaits the maintainer's manual v1.0.4 tag."
     }
   ]
 }
