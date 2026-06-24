@@ -171,7 +171,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     src_by: dict[str, bytes] = {}
     file_lang: dict[str, str] = {}
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
-    module_tests: list[tuple[str, str, str, list]] = []  # (mod_id, rel, lang, calls)
+    module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     files = [p for p in sorted(root.rglob("*"))
              if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
@@ -211,7 +211,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
                           location=f"{rel}:1:0",
                           roles=frozenset({"test"}) if is_test else frozenset()))
         if is_test:
-            module_tests.append((mod_id, rel, lang, _module_calls(tree.root_node, src, spec)))
+            calls, refs = _module_uses(tree.root_node, src, spec)
+            module_tests.append((mod_id, rel, lang, calls, refs))
         _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                  defs=defs, inherits=inherits, exported=False, is_test=is_test,
                  contains=contains, enclosing_func=None)
@@ -268,13 +269,20 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
                 _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
 
-    # Root module-level calls of each test file from its module node (Bug B): the
-    # `test()`->helper chain in call-based suites (Jest/Mocha/RSpec) has no named test
-    # function to seed, so without this the helpers are flagged dead.
-    for mod_id, rel, lang, calls in module_tests:
+    # Root module-level calls AND name-references of each test file from its module
+    # node (Bug B): the `test()`->helper chain in call-based suites (Jest/Mocha/RSpec)
+    # has no named test function to seed. The references half also roots a class used by
+    # name as a call receiver (`Service.run` in an RSpec block) so the class isn't
+    # flagged dead while its method is live (Panel FF). Mirrors the per-def loop above.
+    for mod_id, rel, lang, calls, refs in module_tests:
         by_name = by_lang.get(lang, {})
+        called = set()
         for name, line in calls:
             _ref(edges, mod_id, name, by_name, rel, line)
+            called.add(name)
+        for name, line in refs:
+            if name not in called:
+                _ref(edges, mod_id, name, by_name, rel, line, relation=Relation.REFERENCES)
 
     # `function -> nested def` containment edges (see _collect): the nested def's id is
     # known exactly, so emit a direct REFERENCES edge rather than resolving by name. The
@@ -653,9 +661,25 @@ def _identifiers(node, src):
 
 
 def _reexport_names(root, src):
-    """Local symbol names in JS/TS `export { A, B as C }` clauses (the `name` field
-    of each export_specifier — the local symbol, not the alias)."""
+    """Local symbol names an `export`/`module.exports` form marks as public API: the
+    `name` field of each `export { A, B as C }` specifier; the identifier of
+    `export default Foo;` (the React/Angular/Vue/Node idiom — define a class/fn, then
+    default-export it); and the whole-module CJS/TS-interop forms `module.exports = Foo`
+    / `module.exports = { A, B }` / `exports.x = Foo` / `export = Foo`. Without these the
+    public-exported symbol is false-flagged dead (Panel FF + GG)."""
     names: set[str] = set()
+
+    def add_value(n):  # collect the named symbol(s) on the RHS of a default/CJS export
+        if n.type in ("identifier", "type_identifier"):
+            names.add(_text(n, src))
+        elif n.type == "object":  # `module.exports = { A, B: localB }`
+            for c in n.children:
+                if c.type == "shorthand_property_identifier":
+                    names.add(_text(c, src))
+                elif c.type == "pair":
+                    v = c.child_by_field_name("value")
+                    if v is not None and v.type in ("identifier", "type_identifier"):
+                        names.add(_text(v, src))
 
     def rec(n):
         if n.type == "export_specifier":
@@ -663,6 +687,22 @@ def _reexport_names(root, src):
             t = _trailing_id(nm, src) if nm is not None else None
             if t:
                 names.add(t)
+        elif n.type == "export_statement" and any(c.type in ("default", "=") for c in n.children):
+            # `export default Foo;` / TS `export = Foo;` — a bare identifier child names a
+            # predefined symbol. Inline `export default class/function …` has a declaration
+            # child (the export_statement -> exported recursion marks it) and anonymous
+            # `export default () => {}` / `{…}` has no identifier child, so both are skipped.
+            for c in n.children:
+                add_value(c)
+        elif n.type == "assignment_expression":
+            left = n.child_by_field_name("left")
+            if left is not None and left.type in ("member_expression", "subscript_expression"):
+                lt = _text(left, src)
+                if (lt == "module.exports" or lt.startswith("module.exports.")
+                        or lt.startswith("exports.")):  # CommonJS export targets
+                    right = n.child_by_field_name("right")
+                    if right is not None:
+                        add_value(right)
         for c in n.children:
             rec(c)
 
@@ -713,30 +753,42 @@ def _direct_calls(body, src, spec):
     return out
 
 
-def _module_calls(root, src, spec):
-    """Calls made at *module scope* — descending into anonymous callbacks (the
-    arrow/function/block bodies of `test()`/`it()`/`describe()`) but NOT into named
-    defs (scanned per-def) or import statements. Used only for test files, to root the
-    `test()`->helper chain in call-based suites (Jest/Mocha/Vitest, RSpec) which define
-    no named test functions — so their helpers aren't flagged dead (Bug B). A helper
-    called by nothing still gets no edge and stays flagged, so genuinely-dead test
-    helpers are still found (the same contract as a dead helper in any test file)."""
-    out: list[tuple[str, int]] = []
+def _module_uses(root, src, spec):
+    """Calls AND name-references made at *module scope* — descending into anonymous
+    callbacks (the arrow/function/block bodies of `test()`/`it()`/`describe()`) but NOT
+    into named defs (scanned per-def) or import statements. Used only for test files, to
+    root the `test()`->helper chain in call-based suites (Jest/Mocha/Vitest, RSpec) which
+    define no named test functions (Bug B). The refs half mirrors `_direct_refs`, so a
+    class used by name as a call receiver (`Service.run` in an RSpec block) is rooted too
+    and isn't flagged dead while its method is live (Panel FF). A symbol used by nothing
+    still gets no edge and stays flagged. Returns (calls, refs)."""
+    calls: list[tuple[str, int]] = []
+    refs: list[tuple[str, int]] = []
 
     def rec(n):
         for c in n.children:
             if c.type in spec.defs or c.type in spec.container_only or c.type in spec.imports:
                 continue  # a named def/class/import — handled elsewhere or not a use
+            # A `const helper = () => {…}` / `= function(){…}` is itself a def (arrow_decls,
+            # scanned per-def); don't descend, else its body's uses are double-counted and
+            # over-rooted from the module even when the helper is uncalled (Panel GG).
+            if spec.arrow_decls and c.type == "variable_declarator":
+                val = c.child_by_field_name("value")
+                if val is not None and val.type in (
+                        "arrow_function", "function", "function_expression"):
+                    continue
             if c.type in spec.call_types:
                 nm = _callee(c, src, spec.call_types[c.type])
                 if nm:
-                    out.append((nm, c.start_point[0] + 1))
+                    calls.append((nm, c.start_point[0] + 1))
             elif spec.bare_calls and c.type == "identifier" and _is_bare_call(n, c):
-                out.append((_text(c, src), c.start_point[0] + 1))
+                calls.append((_text(c, src), c.start_point[0] + 1))
+            if c.type in ("identifier", "type_identifier", "constant", "name"):
+                refs.append((_text(c, src), c.start_point[0] + 1))
             rec(c)
 
     rec(root)
-    return out
+    return calls, refs
 
 
 def _is_bare_call(parent, ident):

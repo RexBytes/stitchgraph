@@ -1,6 +1,6 @@
 {
   "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md. || 1.0.1: field fixes #7/#8/#9 (panels W err-safe MEDIUM -> X clean) PLUS a polyglot generalization of test detection the maintainer asked for, driven to closure by panels Y-DD. The Y-DD line found and closed four successive CARDINAL test-class-liveness gaps (direct -> inherited/nested -> combined fixed point -> Python/tree-sitter is_test_file asymmetry); DD is clean on both models with an explicit convergence verdict that the class is closed. 1.0.1 ships on the maintainer's decision; the strict 2-consecutive-clean streak applies to the headline release line.",
-  "_available_models_note": "sonnet's API was unavailable for agent slots this cycle (it had already degraded to a third-party core-only review in Panels M-Q). Per the maintainer's decision (2026-06-23), the convergence panel is run on the two reliably-available models, opus + haiku, and 'full diversity' is defined as both of them. This weakens the diversity signal vs. the original three models; restore sonnet (or add a third model such as fable) here when available.",
+  "_available_models_note": "sonnet (claude-sonnet-4-6) was restored to the panel process on 2026-06-24 after the maintainer released 1.0.1 and confirmed sonnet's API is available again (it had degraded to a core-only third-party review in panels M-Q and was fully unavailable for W-EE; those panels ran on opus+haiku per the 2026-06-23 decision). Full diversity is again the three models opus+sonnet+haiku; a clean panel needs all three. Panel FF is the first full-3-model panel since the restoration \u2014 a post-1.0.1-release confidence check.",
   "package": "stitchgraph",
   "severity_weights": {
     "CRITICAL": 40,
@@ -11,6 +11,7 @@
   },
   "available_models": [
     "opus",
+    "sonnet",
     "haiku"
   ],
   "tau": 2,
@@ -401,6 +402,51 @@
       ],
       "findings": {},
       "theme": "CLEAN. Second consecutive full-diversity clean panel -> streak 2, release gate met for 1.0.1. Both FINDINGS: none, fresh independent confirmation (not a rerun of DD). opus ran 11 cross-language scenarios (Python pytest/unittest/inherited/nested/deep-chain, Java JUnit pkg-private abstract base + cross-file inherited base, C#/PHP/JS/Ruby call-based, Rust #[tokio::test], Go cross-file, mixed) -> only genuinely-dead helpers flagged; over-marking bounded (bare metaclass, dead prod, production testing/ & specs/ all flag); #7 silent on grammar-present run (under -W error); #9 candidates + qualified scoping for impact_of/get_callers/get_callees/trace_path; envelope contract intact (find_stale needs_review, conf<=0.6, INFERRED). haiku full sweep clean. Dogfood src/ = 3 advisory, 0 holes; 165 tests."
+    },
+    {
+      "id": "FF",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2
+      },
+      "theme": "First full-3-model panel after sonnet's restoration (post-1.0.1 confidence check). opus + haiku both clean, but FRESH sonnet found TWO CARDINAL false-deads the opus/haiku pair missed across all of W-EE: (1) JS/TS 'export default Foo;' where Foo is defined earlier in the file (canonical React/Angular/Vue/Node idiom) never set the exported role -> Foo flagged dead (PRE-EXISTING, in 1.0.0/1.0.1; _reexport_names only handled export { X }); (2) Ruby a class used as a call receiver in an RSpec describe/it block (Service.run) got a CALLS edge to the method but no REFERENCES edge to the class -> live class flagged dead (INTRODUCED by 1.0.1 Bug-B _module_calls, which collected calls + bare idents but not constant receivers, unlike _direct_refs). Both confirmed by real-input repro. Validates re-adding sonnet for diversity. Fixed for 1.0.2: _reexport_names handles export default <ident>; _module_calls -> _module_uses also collects name-references (constant/type_identifier/identifier/name) like _direct_refs."
+    },
+    {
+      "id": "GG",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1,
+        "MEDIUM": 1
+      },
+      "theme": "Confirming the FF fixes (1.0.2). Both FF fixes (export default <ident>; _module_uses name-refs) verified correct both directions by all three models; F2 over-marking bounded + dedup intact. opus AND sonnet converged on a CARDINAL sibling of F1 (pre-existing): the whole-module CJS/TS-interop export forms module.exports = X / export = X / module.exports = {A,B} / exports.x = Y are not rooted -> live public export flagged dead. Fixed by extending _reexport_names to those forms. sonnet also found a MEDIUM err-safe over-rooting: _module_uses descended into a `const helper = function(){}` (a named def itself), over-rooting refs in its body even when uncalled; fixed by skipping variable_declarator-with-function-value in _module_uses (consistent with skipping spec.defs). Both fixed + regression-pinned."
+    },
+    {
+      "id": "HH",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) confirming the GG export-rooting fixes for 1.0.2. opus: GG fixes correct both directions, member-expression matcher tight (obj.exports/local exports not over-rooted), no metric inflation, export= doesn't false-fire on export const, dogfood 3 advisory/0 holes. haiku: 7 export-form tests + precision + cardinal pass, 85 regression tests green. sonnet: enumerated ALL 19 JS/TS/CJS export forms and verified each -> explicit verdict the export-rooting class is CLOSED; one err-safe non-cardinal note (CJS module.exports= inside a function body over-roots, rare, consistent with documented tradeoffs). First clean panel of the 1.0.2 export-rooting batch (FF/GG found 3 cardinals + 1 medium); streak 1 of 2."
+    },
+    {
+      "id": "II",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) \u2014 second consecutive clean panel -> 1.0.2 release gate met (streak 2). Fresh independent confirmation of the whole 1.0.2 candidate, not a rerun: sonnet ran ~30 new export/test-receiver/nesting/cross-language shapes; opus swept 25 export shapes + spawned a non-export sub-agent (SQL/ORM/events/envelope/metrics/persistence/CLI all clean); haiku full matrix. Export-rooting class confirmed CLOSED; over-marking bounded; #7/#9 + four nesting hosts + 1.0.1 polyglot all hold; dedup/metric integrity intact; dogfood src/ 3 advisory / 0 holes; 169 tests. One borderline err-safe observation (module.exports = ns.Wrapped via a locally-built namespace member not rooted) noted for visibility, covered by documented module-level-uses limitation, advisory-only, not a finding."
     }
   ]
 }

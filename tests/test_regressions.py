@@ -1682,3 +1682,82 @@ def test_rust_cfg_not_test_is_production_not_a_test_root(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
         assert "production_only" in stale   # production-only, unused -> flagged (not a test)
+
+
+# -- Panel FF (post-1.0.1, sonnet): two cardinal false-deads sonnet's fresh eyes caught -
+def test_js_export_default_predefined_identifier_is_exported(tmp_path):
+    """Panel FF (CARDINAL, pre-existing): `export default Foo;` where `Foo` is defined
+    earlier in the file (the canonical React/Angular/Vue/Node idiom) never set the
+    `exported` role, so the default-exported class/fn was flagged dead. `_reexport_names`
+    now feeds the default-exported identifier into the reexport->exported path."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "utils.ts": "export function seedMe() { return 1; }\n",  # an exported root
+        "service.ts": "class UserService { getUser() { return 1; } }\nexport default UserService;\n",
+        "handler.ts": "function handler() { return 1; }\nexport default handler;\n",
+        "dead.ts": "function deadOne() { return 1; }\nexport default () => {};\n",  # anon default
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "UserService" not in stale and "handler" not in stale  # default-exported -> live
+        assert "deadOne" in stale  # genuinely dead (anon default doesn't export it)
+
+
+def test_ruby_constant_receiver_in_rspec_block_keeps_class_live(tmp_path):
+    """Panel FF (CARDINAL, introduced by the 1.0.1 Bug-B call-based rooting): a class used
+    as a call receiver inside an RSpec `it` block (`Service.run`) got a CALLS edge to the
+    method but no REFERENCES edge to the class, so the live class was flagged dead.
+    `_module_uses` now collects name-references (incl. `constant` receivers) like
+    `_direct_refs`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "src/service.rb": "class Service\n  def self.run; 1; end\nend\n",
+        "src/spec/service_spec.rb": 'describe "Service" do\n  it "runs" do\n    Service.run\n  end\nend\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "Service" not in stale  # live via RSpec; class receiver now referenced
+
+
+def test_js_commonjs_and_ts_export_assignment_are_exported(tmp_path):
+    """Panel GG (CARDINAL sibling of F1, pre-existing): the whole-module export forms
+    `module.exports = Foo` (CommonJS), `export = Foo` (TS interop), `module.exports =
+    {A, B}`, and `exports.x = Foo` never set the `exported` role, so the live public
+    export was flagged dead. `_reexport_names` now handles them. A symbol not exported
+    this way still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "seed.ts": "export function seed() { return 1; }\n",  # an exported root
+        "cjs.js": "class CjsCls { m() { return 1; } }\nmodule.exports = CjsCls;\n",
+        "eq.ts": "class EqExp { m() { return 1; } }\nexport = EqExp;\n",
+        "obj.js": ("function A() { return 1; }\nfunction B() { return 2; }\n"
+                   "function deadC() { return 3; }\nmodule.exports = { A, B };\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "CjsCls" not in stale and "EqExp" not in stale  # CJS / export= -> live
+        assert "A" not in stale and "B" not in stale            # object export -> live
+        assert "deadC" in stale                                  # not exported -> dead
+
+
+def test_module_uses_does_not_descend_into_uncalled_function_expression(tmp_path):
+    """Panel GG (precision): `_module_uses` must skip a `const helper = function(){…}`
+    in a test file (it is itself a def, scanned per-def). Otherwise its body's refs are
+    over-rooted from the module, hiding a dead class referenced only inside an *uncalled*
+    helper. The dead class must still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"x.test.js": (
+        "class DeadCls { m() { return 1; } }\n"
+        "const helper = function() { DeadCls.m(); };\n"  # helper never called by a test
+        "test('a', () => { expect(1).toBe(1); });\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "DeadCls" in stale   # referenced only inside an uncalled helper -> still dead
