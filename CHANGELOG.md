@@ -34,7 +34,10 @@ full three-model panels.
   `path.is_file()`: the Python and tree-sitter extractors, the resolver `parse()` helper,
   and the four route/template resolvers that do their own `rglob` walk
   (`express`, `jsfetch`, `spring`, `html`) — the last of which run on every `reindex`, so a
-  FIFO named `*.js`/`*.java`/`*.html` would otherwise hang the primary entry point.
+  FIFO named `*.js`/`*.java`/`*.html` would otherwise hang the primary entry point. The
+  fixed-path `pyproject.toml` read in `_console_script_targets` (the #21 path, run on every
+  reindex) was also guarded with `exists()` — which is `True` for a FIFO — and is now
+  guarded with `is_file()`, so a FIFO named `pyproject.toml` no longer hangs reindex.
 
 ### Documentation
 

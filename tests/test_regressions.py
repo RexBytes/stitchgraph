@@ -2439,3 +2439,43 @@ def test_reindex_skips_named_pipe_in_resolver_pipeline(tmp_path):
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))             # must return, not hang
         assert "good.py::good" in set(store.all_node_ids())
+
+
+def test_reindex_skips_fifo_pyproject_toml_without_hanging(tmp_path):
+    """`_console_script_targets` reads `<root>/pyproject.toml` on every reindex (the #21
+    console-script path). It must guard with `is_file()`, not `exists()`: `exists()` is True
+    for a FIFO, and the subsequent `read_text()` opens it and blocks forever — the OSError
+    guard never fires on a blocking open (panel JJJ — a second instance of the FIFO hang
+    class, in a fixed-path read rather than an rglob walk)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    os.mkfifo(str(tmp_path / "pyproject.toml"))  # _console_script_targets read site
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "good.py::good" in set(store.all_node_ids())
+
+
+def test_reindex_skips_named_pipe_in_route_gated_resolvers(tmp_path):
+    """The jsfetch/html resolvers only walk when ROUTE nodes already exist, so the
+    unconditional-resolver test above doesn't exercise their guard. Seed a real Python
+    route, then plant FIFO `*.js`/`*.html` siblings: reindex must not hang and the route
+    must still be linked (panel III — route-gated coverage)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "app.py").write_text(
+        "import flask\n"
+        "app = flask.Flask(__name__)\n"
+        "@app.route('/api/x')\n"
+        "def handler():\n"
+        "    return 'ok'\n"
+    )
+    os.mkfifo(str(tmp_path / "blocker.js"))      # jsfetch resolver (route-gated)
+    os.mkfifo(str(tmp_path / "blocker.html"))    # html resolver (route-gated)
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "app.py::handler" in set(store.all_node_ids())

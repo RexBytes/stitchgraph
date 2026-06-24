@@ -369,8 +369,10 @@ def _console_script_targets(root: Path) -> list[tuple[str, str]]:
     `"pkg.mod:func"` (optionally `"pkg.mod:func [extra]"`); the module becomes a path
     suffix (`pkg/mod.py`) and the object's leaf name is what we tag."""
     pp = root / "pyproject.toml"
-    if not pp.exists():
-        return []
+    if not pp.is_file():
+        return []  # is_file() (not exists()) so a FIFO/dir named pyproject.toml is
+                   # skipped: read_text() would open a FIFO and block forever, and the
+                   # OSError guard below never fires on a blocking open (panel JJJ)
     import tomllib
     try:
         data = tomllib.loads(pp.read_text(encoding="utf-8"))
