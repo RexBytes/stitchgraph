@@ -13,3 +13,4 @@ stitchgraph.db
 .coverage
 .readiness_cov.json
 .claude/worktrees/
+research/_corpus/

@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
+from ._testfile import is_test_file as _is_test_file
 
 _BUILTINS = set(dir(builtins))
 
@@ -86,26 +87,90 @@ def extract_project(root: str | Path,
     for rel, tree in parsed.items():
         _collect_edges(proj, rel, tree)
     _apply_callback_roles(proj)
+    _seed_test_classes(proj)
     return proj.nodes, proj.edges
+
+
+def _seed_test_classes(proj: _Project) -> None:
+    """A class with a test member (a `test_*` method, recorded as `NodeKind.TEST`, or
+    any member carrying the `test` role) is a test fixture — mark the class `test` so it
+    isn't flagged dead while its methods are live (the 'method live, class dead' shape).
+    Mirrors the tree-sitter `_seed_test_classes`. This is the dominant Python test layout
+    (`class TestWidget:` / a `unittest.TestCase` with only `test_*` methods); the
+    callback path above only rescued classes with a *non-test* override (e.g. `setUp`)."""
+    class_ids = {n.id for n in proj.nodes if n.kind is NodeKind.CLASS}
+    test_classes = {n.id.rsplit(".", 1)[0] for n in proj.nodes
+                    if (n.kind is NodeKind.TEST or "test" in n.roles)
+                    and n.id.rsplit(".", 1)[0] in class_ids}
+    if not test_classes:
+        return
+    # Grow the seed set to a single combined fixed point over two axes: (a) enclosing
+    # containers of a nested test class, and (b) transitive subclasses of a test base
+    # (abstract-base + thin-subclass idiom; INHERITS edges are resolved child->base, as
+    # _collect_edges ran first). They must co-iterate — a class found by inheritance may
+    # itself need its enclosing chain walked, and vice versa (Panel BB finding 1).
+    inh = [(e.src, e.dst_id) for e in proj.edges
+           if e.relation is Relation.INHERITS and e.dst_id]
+
+    def add_enclosing(cid: str) -> bool:
+        rel, _, qual = cid.partition("::")
+        segs = qual.split(".")
+        added = False
+        for i in range(1, len(segs)):
+            anc = f"{rel}::{'.'.join(segs[:i])}"
+            if anc in class_ids and anc not in test_classes:
+                test_classes.add(anc)
+                added = True
+        return added
+
+    changed = True
+    while changed:
+        changed = False
+        for cid in list(test_classes):
+            if add_enclosing(cid):
+                changed = True
+        for child_id, base_id in inh:
+            if child_id not in test_classes and base_id in test_classes:
+                test_classes.add(child_id)
+                changed = True
+    for n in proj.nodes:
+        if n.id in test_classes:
+            n.roles = n.roles | {"test"}
 
 
 def _apply_callback_roles(proj: _Project) -> None:
     """Methods of a class with a framework base are likely framework-invoked
     overrides (e.g. HTMLParser.handle_starttag) — mark them 'callback' so they're
-    roots, not dead-code false positives (design §7 caveat)."""
+    roots, not dead-code false positives (design §7 caveat). The class itself is
+    framework-instantiated too (e.g. a `unittest.TestCase` subclass, registered by a
+    test runner), so mark it a root as well — otherwise the methods are live but the
+    class is flagged dead (the 'method live, class dead' shape)."""
     if not proj.external_base_classes:
         return
+    classes_with_callbacks: set[str] = set()
     for node in proj.nodes:
         if node.kind is NodeKind.METHOD and "." in node.id:
             class_id = node.id.rsplit(".", 1)[0]
             if class_id in proj.external_base_classes:
                 node.roles = node.roles | {"callback"}
+                classes_with_callbacks.add(class_id)
+    # A framework subclass that actually overrides hook methods is framework-
+    # instantiated (a `unittest.TestCase`, an `HTMLParser`); mark the class a root so
+    # it isn't flagged dead while its methods are live. Tie this to *having* callback
+    # methods, not merely to the base — a bare `class Meta(type): pass` metaclass that
+    # is never used must still be flagged (it has no hook methods to override).
+    for node in proj.nodes:
+        if node.kind is NodeKind.CLASS and node.id in classes_with_callbacks:
+            node.roles = node.roles | {"callback"}
 
 
 # -- pass 1: definitions ----------------------------------------------------
 def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> None:
     is_init = path.name == "__init__.py"
-    is_test_file = path.name.startswith("test_") or path.name.endswith("_test.py")
+    # Directory-aware (shared with the tree-sitter extractor) so a `test_*` method in a
+    # shared base under `tests/`/`conftest.py` is recognised — otherwise a thin subclass
+    # inheriting those tests is flagged dead (Panel CC).
+    is_test_file = _is_test_file(rel)
     module_qual = _module_qualname(rel)
     mod_id = Node.make_id(rel, module_qual)
 

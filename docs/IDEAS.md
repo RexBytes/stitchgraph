@@ -30,6 +30,15 @@ Open questions: which issue/defect classes stitchgraph can realistically detect
 vs. which are out of scope; how to label automatically (issue text, CI failures,
 test diffs); how to avoid overfitting to one project's style.
 
+> **Spike result (2026-06-23, `research/risk_centrality_check.py`):** the strongest
+> achievable framing is *risk-prediction*, and a first non-circular check is positive
+> — **structural centrality alone** (no git) correlates with historical change
+> frequency at **Spearman ρ ≈ 0.65** on stitchgraph's own repo (top-5 central files
+> overlap 4/5 with top-5 most-changed). Suggestive only (one self-skewed repo).
+> stitchgraph is **not** a logic-bug finder, so scope this to structural defects +
+> risk prediction. **Blocked on** external repos *with git history* (registry
+> downloads have no `.git`; clones are egress-blocked) — maintainer to provide.
+
 ## 2. Is there a connection between graph structure and *function* (what the code does)?
 
 Hypothesis: the dependency / call graph for the **same kind of application** is
@@ -49,6 +58,19 @@ Open questions: what's the right structural fingerprint (graph kernels, motif
 counts, role/centrality distributions)? How language-invariant is it really?
 How big a corpus is needed before patterns are stable?
 
+> **Spike result (2026-06-23, `research/archetype_fingerprint.py`, 5 archetypes ×
+> 2 languages):** the naive hypothesis is **false for graph topology** — topology
+> tracks **language/extractor**, not application function (0/10 nearest-neighbour
+> archetype accuracy; same-*language* similarity +0.42 vs same-archetype −0.47).
+> **But a semantic-name fingerprint works and is language-invariant:** identifier
+> tokens with language-generic vocabulary down-weighted (TF-IDF) reach **~6/10**
+> cross-language nearest-neighbour archetype accuracy (chance ~1/9). So "identify
+> what the package does" is reachable via the **semantic/name** axis — ideally
+> stitchgraph's pluggable `find_similar` dense embedder — augmented by the
+> cross-language boundary signals (routes/SQL/events) it already extracts, **not**
+> via pure topology. The pattern DB should store these semantic+boundary
+> fingerprints, not graph shapes.
+
 ## 3. If we can infer the *purpose* of code, what else can we do with that?
 
 If §2 works and we can recover intent/purpose from structure:
@@ -62,6 +84,18 @@ If §2 works and we can recover intent/purpose from structure:
 
 This is the "so what" of §2 — enumerate the capabilities that become possible
 once the graph is tied to function.
+
+> **Spike result (2026-06-23, `research/find_component.py`):** a first §3
+> capability already works. `find_similar` (free-text → symbols by name + docstring
+> + callee tokens) already exists; making it **purpose-aware** — exclude test code
+> (by `test` role *and* test-file path) and **boost exported/public API** — turns it
+> into a working *component locator*: "parse command line options" → `Command`/
+> `Option`; "send an http request" → `Response`/`Session.request`; "render a
+> template" → `Environment.get_template`; "match a url route" → `Blueprint.add_url_rule`.
+> 3/4 nail the right public component as #1. Natural productisation: a first-class
+> `find_component(query)` op (advisory, confidence-carrying) and a dense embedder in
+> place of token similarity. This is the on-brand path: graph = verifiable
+> role-aware structure, LLM/embedder = the fuzzy purpose layer on top.
 
 ## 4. Do all of the above together, across a wide, varied corpus
 

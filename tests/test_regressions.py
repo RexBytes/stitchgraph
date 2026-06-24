@@ -1351,3 +1351,334 @@ def test_tree_sitter_def_inside_arrow_function_is_live(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "privHelper" not in stale                    # handler->worker->privHelper
         assert "app.ts::handler.worker" in set(store.all_node_ids())  # nested def modeled
+
+
+# -- Issue #8 (field, v1.0.0): Rust #[test] / #[cfg(test)] items are test roots ----
+def test_rust_cfg_test_inline_tests_are_not_flagged_dead(tmp_path):
+    """Idiomatic Rust inline unit tests live in `#[cfg(test)] mod tests` with
+    free-form names, so the test*/Benchmark*/Example* name convention never fires.
+    The `#[test]`/`#[tokio::test]` attribute must seed the `test` role (root) so the
+    tests — and the helpers they reach — aren't flagged dead (which flooded find_stale
+    on a real Rust crate). A test helper reached by no test, and unused production
+    code, must still be flagged (consistent with a dead helper in any test file)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/lib.rs": (
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }\n"
+        "fn truly_unused() -> i32 { 0 }\n"
+        "#[cfg(test)]\nmod tests {\n    use super::*;\n"
+        "    fn fixture() -> i32 { 7 }\n"
+        "    fn unreached() -> i32 { 9 }\n"
+        "    #[test]\n    fn add_works() { assert_eq!(add(2, 3), 5); let _ = fixture(); }\n"
+        "    #[tokio::test]\n    async fn async_case() { assert_eq!(add(1, 1), 2); }\n}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "add_works" not in stale and "async_case" not in stale  # #[test] roots
+        assert "fixture" not in stale                                  # reached by a test
+        assert "truly_unused" in stale and "unreached" in stale        # genuinely dead
+
+
+# -- Issue #7 (field, v1.0.0): grammar-load failure must not be a silent empty graph -
+def test_tree_sitter_grammar_load_failure_warns_not_silent(tmp_path, monkeypatch):
+    """A tree-sitter grammar that can't load (offline/proxied/version drift) must NOT
+    collapse into a silent empty graph with exit ok — it warns and names the skipped
+    language, while Python extraction is unaffected (issue #7)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract import extract_project, treesitter
+    _mk(tmp_path, {"app.js": "export function jsFn(){ return 1; }\n",
+                   "m.py": "def py_fn():\n    return 1\n"})
+
+    def _boom(_lang):  # simulate grammar unavailable
+        raise RuntimeError("grammar download failed")
+    monkeypatch.setattr(treesitter, "get_language", _boom)
+
+    with pytest.warns(RuntimeWarning, match="grammar"):
+        nodes, _edges = extract_project(str(tmp_path))
+    names = {n.name for n in nodes}
+    assert "py_fn" in names      # Python results unaffected by the tree-sitter failure
+    assert "jsFn" not in names   # JS skipped — but loudly, not silently
+
+
+# -- Issue #9 (field, v1.0.0): impact_of homonyms — list candidates + allow scoping --
+def test_impact_of_ambiguous_name_lists_candidates_and_scopes(tmp_path):
+    """`impact_of` on a bare common name must not blank-refuse (nor silently union):
+    it surfaces the candidates (alternatives) and accepts a qualified `Type.method`
+    or a full `path::qual` id to scope to exactly one (issue #9)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/a.rs": (
+        "pub struct LmdbStorage;\nimpl LmdbStorage { pub fn get(&self) -> i32 { 1 } }\n"
+        "pub struct Cache;\nimpl Cache { pub fn get(&self) -> i32 { 2 } }\n"
+        "pub fn use_lmdb(s: &LmdbStorage) -> i32 { s.get() }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        amb = sg.impact_of(store, "get")
+        assert amb.ok is False                       # not unioned, not blank-refused
+        assert len(amb.alternatives) == 2            # both homonyms surfaced
+        assert all("::" in a["id"] for a in amb.alternatives)  # scopable ids shown
+        scoped = sg.impact_of(store, "LmdbStorage.get")        # qualified scopes
+        assert scoped.ok and scoped.result["symbol"].endswith("::LmdbStorage.get")
+        full = sg.impact_of(store, "src/a.rs::Cache.get")      # full id scopes
+        assert full.ok and full.result["symbol"] == "src/a.rs::Cache.get"
+
+
+# -- Panel W (1.0.1 confirmation): #8 attr match must be path-based, not substring ----
+def test_rust_non_test_attribute_is_not_a_test_root(tmp_path):
+    """The #8 fix must match the attribute PATH, not a raw "test" substring: a
+    production fn carrying `#[cfg(feature="testing")]` or `#[doc="...test..."]` must
+    NOT be seeded a test root (which would hide it from dead-code detection). Genuine
+    `#[test]`/`#[cfg(test)]` still count (opus+haiku converged, Panel W)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/lib.rs": (
+        '#[cfg(feature = "testing")]\n'
+        "fn feature_gated_unused() -> i32 { 1 }\n"        # private + not a test → flag dead
+        '#[doc = "a test of the docs"]\n'
+        "fn documented_unused() -> i32 { 2 }\n"           # private + not a test → flag dead
+        "#[cfg(test)]\nmod tests {\n"
+        "    #[test]\n    fn real_test() { assert_eq!(1, 1); }\n}\n"  # genuine test → root
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "feature_gated_unused" in stale    # #[cfg(feature="testing")] is NOT a test
+        assert "documented_unused" in stale        # #[doc="...test..."] is NOT a test
+        assert "real_test" not in stale             # genuine #[test] is a root
+
+
+# -- Polyglot test detection (1.0.1, generalising issue #8 across languages) ---------
+# The Rust #[test] fix exposed the same class everywhere: file-level test context never
+# seeds the `test` role, so only the test*/Test* NAME convention did — flagging idiomatic
+# tests (and their helpers) dead in every language whose tests aren't name-convention.
+
+def test_java_junit5_package_private_tests_not_flagged_dead(tmp_path):
+    """JUnit5's idiomatic test is a *package-private* `@Test void` (no `public`, so no
+    `exported` mask) with a free-form name — the whole test class, its `@Test`/
+    `@BeforeEach` methods, and private helpers were all flagged dead. The `@Test`/
+    `@BeforeEach` annotations (Rust `#[test]` analog) must seed the `test` role; a
+    genuinely-uncalled method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"CalcTest.java": (
+        "import org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.BeforeEach;\n"
+        "class CalcTest {\n  private int helper() { return 7; }\n"
+        "  @BeforeEach void setUp() {}\n"
+        "  @Test void addWorks() { int h = helper(); }\n"
+        "  void deadHelper() {}\n}\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        def hit(s):
+            return any(x == s or x.endswith("." + s) for x in stale)
+        assert not hit("addWorks") and not hit("setUp") and not hit("helper")  # all live
+        assert not any(x == "CalcTest" for x in stale)                          # class live
+        assert hit("deadHelper")                                                # still dead
+
+
+def test_csharp_xunit_internal_class_tests_not_flagged_dead(tmp_path):
+    """C# `[Fact]`/`[Theory]`/NUnit `[Test]` attributes on an internal class seed the
+    `test` role (the public-method `exported` mask doesn't cover internal classes)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"CalcTests.cs": (
+        "using Xunit;\nclass CalcTests {\n  int Helper() { return 7; }\n"
+        "  [Fact] public void AddWorks() { int h = Helper(); }\n}\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert not any(s.endswith("AddWorks") or s.endswith("Helper") or s == "CalcTests"
+                       for s in stale)
+
+
+def test_js_call_based_test_helpers_not_flagged_dead(tmp_path):
+    """JS/TS suites (Jest/Mocha/Vitest) define no named test function — `test()`/`it()`
+    take anonymous callbacks at module scope. A helper called only inside such a
+    callback was flagged dead. Module-level calls of a test file are now rooted from
+    the module node; a helper called by nothing still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"calc.test.js": (
+        "function makeFixture() { return 7; }\nfunction deadHelper() { return 0; }\n"
+        "describe('calc', () => { it('adds', () => { expect(makeFixture()).toBe(7); }); });\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "makeFixture" not in stale   # reached from a test() callback
+        assert "deadHelper" in stale         # called by nothing — still dead
+
+
+def test_ruby_rspec_spec_file_helpers_not_flagged_dead(tmp_path):
+    """RSpec `*_spec.rb` with `describe/it` blocks: `_is_test_file` now recognises the
+    `_spec.` convention, and helpers called inside `it` blocks are rooted (Bug B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"calc_spec.rb": (
+        'RSpec.describe "Calc" do\n  def make_fixture; 7; end\n  def dead_helper; 1; end\n'
+        '  it("adds") { expect(make_fixture).to eq(7) }\nend\n')})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert not any(s.endswith("make_fixture") for s in stale)   # reached from it block
+        assert any(s.endswith("dead_helper") for s in stale)         # still dead
+
+
+def test_python_unittest_testcase_subclass_not_flagged_dead(tmp_path):
+    """A `unittest.TestCase` subclass is framework-instantiated; its methods were kept
+    live (callback role) but the class itself was flagged. A framework subclass that
+    overrides hook methods is now rooted too — but a bare `class Meta(type): pass`
+    metaclass (no hooks) must still flag."""
+    _mk(tmp_path, {"test_u.py": (
+        "import unittest\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n"
+        "    def test_a(self):\n        assert self.x == 1\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "T" not in stale
+
+
+def test_production_testing_dir_not_misclassified_as_tests(tmp_path):
+    """Panel Y: `_is_test_file` must NOT treat `testing/` or `specs/` directories as
+    tests — they are plausible *production* dirs (Go `testing` helpers, shipped test
+    utilities, OpenAPI/webpack `specs`). Misclassifying one would root its module-level
+    calls and hide genuinely-dead code there (the Panel W over-marking class)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/testing/fixtures.js": (
+        "function registerFixture() { return 1; }\nregisterFixture();\n"
+        "function neverUsed() { return 2; }\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        # module-referenced-but-otherwise-dead code in a production testing/ dir must
+        # still surface — it is NOT a test file, so module calls are not rooted.
+        assert "registerFixture" in stale and "neverUsed" in stale
+
+
+def test_python_test_class_with_only_test_methods_not_flagged_dead(tmp_path):
+    """Panel Z (CARDINAL): pytest's dominant idiom groups tests in `class TestWidget:`
+    whose methods are all `test_*` (recorded as NodeKind.TEST, not METHOD). The class
+    itself must be seeded `test` so it isn't flagged dead while its methods are live —
+    the 'method live, class dead' shape. The earlier unittest fix (callback path) only
+    rescued classes with a non-test override like `setUp`; this covers the all-tests
+    case. A genuinely-unused non-test class is still flagged."""
+    _mk(tmp_path, {
+        "test_widget.py": ("class TestWidget:\n    def test_create(self):\n        assert True\n"
+                           "    def test_destroy(self):\n        assert True\n"),
+        "test_case.py": ("import unittest\nclass OnlyTests(unittest.TestCase):\n"
+                         "    def test_b(self):\n        assert True\n"),
+        "app.py": "class Unused:\n    def m(self):\n        return 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "TestWidget" not in stale   # pytest test class — live
+        assert "OnlyTests" not in stale     # unittest all-test-methods class — live
+        assert "Unused" in stale            # non-test class — still flagged
+
+
+def test_test_class_inherited_and_nested_not_flagged_dead(tmp_path):
+    """Panel AA (CARDINAL siblings of Panel Z): a test class that inherits all its
+    tests from a custom base (idiomatic JUnit abstract-base + thin-subclass; pytest
+    inherited tests), or is the *outer* of a nested test class, was flagged dead — the
+    same 'container live, but flagged' shape, one level removed. `_seed_test_classes`
+    now propagates the `test` role transitively across inheritance and up the enclosing
+    chain. A non-test subclass is still flagged."""
+    _mk(tmp_path, {
+        "test_inh.py": ("class BaseTest:\n    def test_shared(self):\n        assert True\n"
+                        "class TestB(BaseTest):\n    pass\n"),          # inherits all tests
+        "test_nested.py": ("class TestOuter:\n    class TestInner:\n"
+                           "        def test_a(self):\n            assert True\n"),
+        "app.py": "class Base:\n    def run(self):\n        return 1\nclass Child(Base):\n    pass\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "TestB" not in stale and "BaseTest" not in stale   # inherited-tests class live
+        assert not any(s == "TestOuter" or s.endswith(".TestOuter") for s in stale)  # nested outer live
+        assert "Child" in stale                                    # non-test subclass still flagged
+
+
+def test_tree_sitter_inherited_test_class_not_flagged_dead(tmp_path):
+    """Tree-sitter twin of the inheritance sibling: a Java test class that inherits its
+    `@Test` methods from an abstract base (standard JUnit) must not be flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "AbstractFooTest.java": ("import org.junit.jupiter.api.Test;\n"
+                                 "abstract class AbstractFooTest { @Test void shared() {} }\n"),
+        "FooTest.java": "class FooTest extends AbstractFooTest {}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "FooTest" not in stale and "AbstractFooTest" not in stale
+
+
+def test_test_class_combined_nested_and_inherited_fixed_point(tmp_path):
+    """Panel BB (CARDINAL): the two seed axes (enclosing-chain + inheritance) must
+    iterate to a *combined* fixed point. A class discovered as a test class via
+    inheritance can itself be nested, so its enclosing container needs re-walking —
+    running the axes once each (in order) left the outer flagged. Idiomatic pytest:
+    a grouping class whose inner classes inherit shared cases."""
+    _mk(tmp_path, {"test_api.py": (
+        "class _SharedCases:\n    def test_get(self):\n        assert True\n"
+        "    def test_post(self):\n        assert True\n"
+        "class TestApi:\n    class TestV1(_SharedCases):\n        pass\n"
+        "    class TestV2(_SharedCases):\n        pass\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert not stale   # TestApi (outer), TestV1/V2 (inherited), _SharedCases all live
+
+
+def test_tree_sitter_test_class_seeding_is_language_scoped(tmp_path):
+    """Panel BB (over-marking): tree-sitter base resolution must be per-language — a
+    same-named test class in another language must NOT seed a production class as a
+    test (which would hide it from dead-code detection). Here a dead JS `Prod extends
+    Base` must still flag even though an unrelated Java test class is also named `Base`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Base.java": "import org.junit.jupiter.api.Test;\nclass Base { @Test void t() {} }\n",
+        "prod.js": "class Base { real() { return 1; } }\nclass Prod extends Base { go() { return 2; } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert any(s == "Prod" for s in stale)   # dead JS production class still flagged
+
+
+def test_python_inherited_test_base_in_conftest_not_flagged_dead(tmp_path):
+    """Panel CC (CARDINAL): Python recognised test files by FILENAME only, while
+    tree-sitter also checked directories. A shared abstract test-case base in
+    `tests/conftest.py` (canonical pytest location) thus got no `test` role, so a thin
+    subclass inheriting its tests was flagged dead. The `is_test_file` heuristic is now
+    shared + directory-aware across both extractors."""
+    _mk(tmp_path, {
+        "tests/conftest.py": ("class SharedAPICases:\n    def test_get(self):\n        assert True\n"
+                              "    def test_post(self):\n        assert True\n"),
+        "tests/test_v1.py": "from conftest import SharedAPICases\nclass TestV1(SharedAPICases):\n    pass\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "SharedAPICases" not in stale and "TestV1" not in stale
+
+
+def test_rust_cfg_not_test_is_production_not_a_test_root(tmp_path):
+    """Panel CC: `#[cfg(not(test))]` gates *production*-only code — it must NOT be marked
+    a test root (which would hide it from dead-code detection). `_is_rust_test_attr`
+    now drops `not(...)` predicates before scanning the cfg for a bare `test` token."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/lib.rs": (
+        "#[cfg(not(test))]\nfn production_only() -> i32 { 1 }\n"
+        "#[cfg(test)]\nmod t { #[test] fn real() { assert!(true); } }\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "production_only" in stale   # production-only, unused -> flagged (not a test)
