@@ -2918,3 +2918,113 @@ def test_load_coverage_returns_empty_on_fifo_without_hanging(tmp_path):
     fifo = tmp_path / "coverage.fifo"
     os.mkfifo(str(fifo))
     assert load_coverage(str(fifo)) == ({}, "")      # must return empty, not hang
+
+
+# -- Panel R11A / opus (release-blocking CRASH): non-UTF-8 ids must not abort --
+def test_store_add_node_edge_skip_non_utf8_id_without_crashing(tmp_path):
+    """A source file/dir with a non-UTF-8 name (Latin-1/Shift-JIS bytes on POSIX) is
+    decoded via surrogateescape into a lone-surrogate node id; sqlite can't bind it, so
+    `add_node`/`add_edge`'s INSERT raised UnicodeEncodeError and aborted reindex's bulk
+    insert. The write must skip the unstorable row (read side already refuses it), not
+    crash (panel R11A)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.store import Store
+    bad = "bad\udcffname.py::fn"
+    with Store(":memory:") as store, store.conn:
+        store.add_node(Node(id=bad, kind=NodeKind.FUNCTION, name="fn", location="x:1:0"))
+        store.add_node(Node(id="good.py::g", kind=NodeKind.FUNCTION, name="g", location="g.py:1:0"))
+        store.add_edge(Edge(src=bad, relation=Relation.CALLS, dst_symbol="g", dst_id=None,
+                            weight=1.0, provenance=Provenance.INFERRED, location="x:1:0", source="t"))
+        ids = set(store.all_node_ids())
+        assert "good.py::g" in ids        # the storable node survives
+        assert bad not in ids             # the surrogate node is skipped, not crashed on
+
+
+def test_reindex_survives_non_utf8_source_filename(tmp_path):
+    """End-to-end of the R11A class: a real `*.py` whose filename contains a raw non-UTF-8
+    byte must not abort reindex — the surrogate-id nodes are dropped and the rest of the
+    project still indexes."""
+    import os
+    try:
+        raw = os.fsencode(str(tmp_path)) + b"/bad\xffname.py"
+        with open(raw, "wb") as fh:
+            fh.write(b"def orphan():\n    return 1\n")
+    except OSError:
+        import pytest as _pytest
+        _pytest.skip("filesystem rejects non-UTF-8 names")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        assert "good.py::good" in set(store.all_node_ids())
+
+
+# -- Panel R11B / sonnet (LOW): replace_file phantom hole ----------------------
+def test_replace_file_drops_phantom_hole_when_ambiguous_target_deleted(tmp_path):
+    """When one arm of an ambiguous fan-out (caller -> [h1, h2] as two AMBIGUOUS edges)
+    is removed by deleting its file, `_invalidate_dangling` turned that edge into a hole
+    even though the reference is still satisfied by the surviving sibling — over-counting
+    find_holes by one. replace_file now drops the redundant hole (panel R11B)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.store import Store
+    h1 = Node(id="h1.py::helper", kind=NodeKind.FUNCTION, name="helper", location="h1.py:1:0")
+    h2 = Node(id="h2.py::helper", kind=NodeKind.FUNCTION, name="helper", location="h2.py:1:0")
+    caller = Node(id="caller.py::call_me", kind=NodeKind.FUNCTION, name="call_me", location="caller.py:1:0")
+
+    def mk(dst):
+        return Edge(src="caller.py::call_me", relation=Relation.CALLS, dst_symbol="helper",
+                    dst_id=dst, weight=0.5, provenance=Provenance.AMBIGUOUS,
+                    location="caller.py:2:0", source="test")
+    with Store(":memory:") as store:
+        with store.conn:
+            store.add_node(h1, file="h1.py")
+            store.add_node(h2, file="h2.py")
+            store.add_node(caller, file="caller.py")
+            store.add_edge(mk("h1.py::helper"), file="caller.py")
+            store.add_edge(mk("h2.py::helper"), file="caller.py")
+        store.replace_file("h1.py", [], [])
+        assert len(store.unresolved_edges()) == 0     # no phantom hole
+        # exactly the surviving sibling remains — no duplicate edge inflating fan_in
+        assert [e.dst_id for e in store.resolved_edges()] == ["h2.py::helper"]
+
+
+# -- Panel R11B / sonnet (LOW): phantom db::TABLE from non-standard SQL --------
+def test_sql_delete_update_table_do_not_create_phantom_table_node():
+    """`DELETE TABLE x` / `UPDATE TABLE x` are non-standard (MySQL-isms); sqlglot misparses
+    the `TABLE` keyword itself as the table, creating a phantom `db::TABLE` node while missing
+    the real one. The resolver now skips a bare `table` identifier (panel R11B)."""
+    pytest.importorskip("sqlglot")
+    from stitchgraph.core.resolve.sql import _link
+    for sql in ("DELETE TABLE users", "UPDATE TABLE users SET x = 1"):
+        nodes: dict = {}
+        edges: list = []
+        _link(nodes, edges, "some.py::fn", "some.py", 1, sql)
+        assert "db::TABLE" not in nodes               # no phantom keyword node
+
+
+# -- Panel R11B / opus (LOW): non-UTF-8 template must not disable resolver ------
+def test_html_resolver_survives_non_utf8_template(tmp_path):
+    """A non-UTF-8 HTML template raised UnicodeDecodeError in `read_text(encoding="utf-8")`,
+    swallowed by run_resolvers' broad except — silently disabling the HTML resolver for the
+    whole project. read_text now decodes lossily so other templates' forms still link, and
+    the bad one is scanned for what decodes (panel R11B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    (tmp_path / "app.py").write_text(
+        "import flask\n"
+        "app = flask.Flask(__name__)\n"
+        "@app.route('/submit')\n"
+        "def handler():\n"
+        "    return 'ok'\n"
+    )
+    (tmp_path / "bad.html").write_bytes(
+        b'<form action="/submit" method="post">\xff caf\xe9</form>')   # Latin-1 bytes
+    (tmp_path / "good.html").write_text('<form action="/submit" method="post"></form>')
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must not disable the resolver
+        submits = [e for e in store.resolved_edges(Relation.SUBMITS_TO)]
+        srcs = {e.src for e in submits}
+        # the well-formed template still links despite the bad sibling
+        assert "good.html::template" in srcs

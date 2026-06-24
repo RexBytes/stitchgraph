@@ -33,7 +33,11 @@ class HtmlRouteResolver:
         for path in _template_files(ctx):
             rel = path.relative_to(ctx.root).as_posix()
             try:
-                forms = _find_forms(path.read_text(encoding="utf-8"))
+                # errors="replace": a non-UTF-8 template (Latin-1, etc.) must still be
+                # scanned for forms, not silently skipped — an uncaught UnicodeDecodeError
+                # here is swallowed by run_resolvers' broad except, disabling the HTML
+                # resolver for the whole project (panel R11B). Decode lossily instead.
+                forms = _find_forms(path.read_text(encoding="utf-8", errors="replace"))
             except OSError:
                 continue
             if not forms:

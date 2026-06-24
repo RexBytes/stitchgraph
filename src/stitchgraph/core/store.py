@@ -109,13 +109,23 @@ class Store:
 
     # -- writes ------------------------------------------------------------
     def add_node(self, node: Node, file: str = "") -> None:
-        self.conn.execute(
-            """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles, end_line)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (node.id, node.kind.value, node.name, node.location,
-             file or _file_of(node.id), int(node.is_stub), node.arity, node.summary,
-             ",".join(sorted(node.roles)), node.end_line),
-        )
+        try:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles, end_line)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (node.id, node.kind.value, node.name, node.location,
+                 file or _file_of(node.id), int(node.is_stub), node.arity, node.summary,
+                 ",".join(sorted(node.roles)), node.end_line),
+            )
+        except (UnicodeEncodeError, ValueError):
+            # A source file/dir with a non-UTF-8 name (Latin-1/Shift-JIS bytes on a
+            # POSIX fs) is decoded via surrogateescape into a lone-surrogate node id;
+            # an embedded-NUL name yields ValueError. sqlite can't bind either, so the
+            # bulk-insert in reindex would abort the whole index. Skip the unstorable
+            # node instead — the read side already refuses such ids symmetrically
+            # (nodes_by_name/get_node), so dropping it keeps the graph consistent and
+            # reindex completes (panel R11A). Edges into it are dropped the same way.
+            return
 
     def add_role(self, node_id: str, role: str) -> None:
         node = self.get_node(node_id)
@@ -125,13 +135,19 @@ class Store:
         self.conn.execute("UPDATE nodes SET roles = ? WHERE id = ?", (roles, node_id))
 
     def add_edge(self, edge: Edge, file: str = "") -> None:
-        self.conn.execute(
-            """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight, provenance, location, source, file)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (edge.src, edge.relation.value, edge.dst_symbol, edge.dst_id,
-             edge.weight, edge.provenance.value, edge.location, edge.source,
-             file or _file_of(edge.src)),
-        )
+        try:
+            self.conn.execute(
+                """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight, provenance, location, source, file)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (edge.src, edge.relation.value, edge.dst_symbol, edge.dst_id,
+                 edge.weight, edge.provenance.value, edge.location, edge.source,
+                 file or _file_of(edge.src)),
+            )
+        except (UnicodeEncodeError, ValueError):
+            # An edge touching a non-UTF-8 / NUL id (src, dst_symbol or dst_id) can't be
+            # bound by sqlite; skip it rather than abort reindex. Its endpoint node is
+            # dropped for the same reason, so no dangling edge survives (panel R11A).
+            return
 
     def commit(self) -> None:
         self.conn.commit()
@@ -164,6 +180,32 @@ class Store:
                 self.add_edge(e, file=file)
             self._resolve_worklist()
             self._invalidate_dangling()
+            # Deleting a file can sever one target of an ambiguous fan-out (caller ->
+            # [a, b] as two AMBIGUOUS edges); _invalidate_dangling just turned that
+            # edge into a hole even though the reference is still satisfied by the
+            # surviving sibling. Drop those phantom holes (else find_holes over-counts),
+            # then re-resolve any genuine hole the deletion may have disambiguated.
+            self._drop_redundant_holes()
+            self._resolve_worklist()
+
+    def _drop_redundant_holes(self) -> None:
+        """Delete unresolved edges that already have a resolved sibling.
+
+        A sibling shares (src, relation, dst_symbol): the reference is still linked,
+        so the hole is a phantom left by invalidating one arm of an ambiguous
+        fan-out. Dropping it (rather than re-resolving to the surviving target)
+        avoids both the spurious hole and a duplicate edge that would inflate
+        fan_in (panel R11B). Genuine holes — no resolved sibling — are kept.
+        """
+        self.conn.execute(
+            """DELETE FROM edges
+                WHERE dst_id IS NULL
+                  AND EXISTS (SELECT 1 FROM edges r
+                               WHERE r.dst_id IS NOT NULL
+                                 AND r.src = edges.src
+                                 AND r.relation = edges.relation
+                                 AND r.dst_symbol = edges.dst_symbol)"""
+        )
 
     def _resolve_worklist(self) -> None:
         """Relink unresolved edges whose dst_symbol now matches known node(s).

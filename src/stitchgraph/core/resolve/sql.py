@@ -75,7 +75,11 @@ def _link_one(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
     cte_names = {cte.alias for cte in tree.find_all(exp.CTE) if cte.alias}
     for table in tree.find_all(exp.Table):
         name = table.name
-        if not name or name in cte_names:
+        # `DELETE TABLE x` / `UPDATE TABLE x` are non-standard (MySQL-isms for DELETE
+        # FROM / UPDATE x); sqlglot misparses the `TABLE` keyword itself as the table,
+        # yielding a phantom `db::TABLE` node while missing the real one (panel R11B).
+        # An unquoted bare `table` is never a real identifier — skip it.
+        if not name or name in cte_names or name.lower() == "table":
             continue
         rel_kind = Relation.WRITES if id(table) in write_tables else Relation.READS
         tid = f"db::{name}"
