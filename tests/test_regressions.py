@@ -1616,3 +1616,37 @@ def test_tree_sitter_inherited_test_class_not_flagged_dead(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
         assert "FooTest" not in stale and "AbstractFooTest" not in stale
+
+
+def test_test_class_combined_nested_and_inherited_fixed_point(tmp_path):
+    """Panel BB (CARDINAL): the two seed axes (enclosing-chain + inheritance) must
+    iterate to a *combined* fixed point. A class discovered as a test class via
+    inheritance can itself be nested, so its enclosing container needs re-walking —
+    running the axes once each (in order) left the outer flagged. Idiomatic pytest:
+    a grouping class whose inner classes inherit shared cases."""
+    _mk(tmp_path, {"test_api.py": (
+        "class _SharedCases:\n    def test_get(self):\n        assert True\n"
+        "    def test_post(self):\n        assert True\n"
+        "class TestApi:\n    class TestV1(_SharedCases):\n        pass\n"
+        "    class TestV2(_SharedCases):\n        pass\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert not stale   # TestApi (outer), TestV1/V2 (inherited), _SharedCases all live
+
+
+def test_tree_sitter_test_class_seeding_is_language_scoped(tmp_path):
+    """Panel BB (over-marking): tree-sitter base resolution must be per-language — a
+    same-named test class in another language must NOT seed a production class as a
+    test (which would hide it from dead-code detection). Here a dead JS `Prod extends
+    Base` must still flag even though an unrelated Java test class is also named `Base`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Base.java": "import org.junit.jupiter.api.Test;\nclass Base { @Test void t() {} }\n",
+        "prod.js": "class Base { real() { return 1; } }\nclass Prod extends Base { go() { return 2; } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert any(s == "Prod" for s in stale)   # dead JS production class still flagged

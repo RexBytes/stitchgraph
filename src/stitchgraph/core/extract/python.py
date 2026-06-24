@@ -103,22 +103,31 @@ def _seed_test_classes(proj: _Project) -> None:
                     and n.id.rsplit(".", 1)[0] in class_ids}
     if not test_classes:
         return
-    # (a) enclosing containers of a nested test class are on the collection path.
-    for cid in list(test_classes):
-        rel, _, qual = cid.partition("::")
-        segs = qual.split(".")
-        for i in range(1, len(segs)):
-            anc = f"{rel}::{'.'.join(segs[:i])}"
-            if anc in class_ids:
-                test_classes.add(anc)
-    # (b) a subclass inherits its tests from a (custom) test base, transitively (the
-    # abstract-base + thin-subclass test idiom). INHERITS edges are already resolved
-    # child->base here (_collect_edges ran before this pass).
+    # Grow the seed set to a single combined fixed point over two axes: (a) enclosing
+    # containers of a nested test class, and (b) transitive subclasses of a test base
+    # (abstract-base + thin-subclass idiom; INHERITS edges are resolved child->base, as
+    # _collect_edges ran first). They must co-iterate — a class found by inheritance may
+    # itself need its enclosing chain walked, and vice versa (Panel BB finding 1).
     inh = [(e.src, e.dst_id) for e in proj.edges
            if e.relation is Relation.INHERITS and e.dst_id]
+
+    def add_enclosing(cid: str) -> bool:
+        rel, _, qual = cid.partition("::")
+        segs = qual.split(".")
+        added = False
+        for i in range(1, len(segs)):
+            anc = f"{rel}::{'.'.join(segs[:i])}"
+            if anc in class_ids and anc not in test_classes:
+                test_classes.add(anc)
+                added = True
+        return added
+
     changed = True
     while changed:
         changed = False
+        for cid in list(test_classes):
+            if add_enclosing(cid):
+                changed = True
         for child_id, base_id in inh:
             if child_id not in test_classes and base_id in test_classes:
                 test_classes.add(child_id)

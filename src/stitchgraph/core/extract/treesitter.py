@@ -241,7 +241,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
 
     _seed_exported_class_methods(nodes, file_lang)
     _seed_classes_from_exported_methods(nodes)
-    _seed_test_classes(nodes, inherits)
+    _seed_test_classes(nodes, inherits, file_lang)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
@@ -382,7 +382,7 @@ def _seed_classes_from_exported_methods(nodes) -> None:
             n.roles = n.roles | {"exported"}
 
 
-def _seed_test_classes(nodes, inherits) -> None:
+def _seed_test_classes(nodes, inherits, file_lang) -> None:
     """A class is a test fixture if it has a test-role method, *contains* a nested test
     class, or *inherits* its tests from a (custom) test base — mark all such classes
     `test` so the fixture isn't flagged dead while its tests are live (the
@@ -394,36 +394,48 @@ def _seed_test_classes(nodes, inherits) -> None:
                     and n.id.rsplit(".", 1)[0] in class_ids}
     if not test_classes:
         return
-    name_to_ids: dict[str, list[str]] = {}
+    # Resolve a base by (lang, name) — a same-named test class in another language must
+    # NOT seed a production class here (tree-sitter resolves names within a language;
+    # Panel BB finding 2). file_lang maps rel -> lang.
+    name_to_ids: dict[tuple, list[str]] = {}
     for n in nodes:
         if n.kind is C:
-            name_to_ids.setdefault(n.name, []).append(n.id)
-    _grow_test_classes(test_classes, class_ids,
-                       [(c, b) for c, b, _lang in inherits], name_to_ids)
+            name_to_ids.setdefault((file_lang.get(n.id.split("::", 1)[0]), n.name), []) \
+                .append(n.id)
+    _grow_test_classes(test_classes, class_ids, inherits, name_to_ids)
     for n in nodes:
         if n.id in test_classes:
             n.roles = n.roles | {"test"}
 
 
-def _grow_test_classes(test_classes: set, class_ids: set,
-                       inherits_by_name: list, name_to_ids: dict) -> None:
+def _grow_test_classes(test_classes: set, class_ids: set, inherits: list,
+                       name_to_ids: dict) -> None:
     """Grow a seed set of test-class ids by (a) enclosing classes — a class that
     contains a nested test class is on the collection path — and (b) transitive
-    inheritance — a subclass of a test base inherits its tests (e.g. the JUnit
-    abstract-base + thin-subclass idiom). In-place; precision-safe (only adds)."""
-    for cid in list(test_classes):  # (a) enclosing containers of a nested test class
+    inheritance — a subclass of a test base inherits its tests (the JUnit abstract-base
+    + thin-subclass idiom). BOTH axes iterate to a single combined fixed point: a class
+    discovered by inheritance may itself need its enclosing chain walked, and vice
+    versa (Panel BB finding 1). In-place; monotonic (only adds) so it terminates."""
+    def add_enclosing(cid: str) -> bool:
         rel, _, qual = cid.partition("::")
         segs = qual.split(".")
+        added = False
         for i in range(1, len(segs)):
             anc = f"{rel}::{'.'.join(segs[:i])}"
-            if anc in class_ids:
+            if anc in class_ids and anc not in test_classes:
                 test_classes.add(anc)
-    changed = True  # (b) subclasses of a test base, to a fixed point
+                added = True
+        return added
+
+    changed = True
     while changed:
         changed = False
-        for child_id, base_name in inherits_by_name:
+        for cid in list(test_classes):
+            if add_enclosing(cid):
+                changed = True
+        for child_id, base_name, lang in inherits:
             if child_id not in test_classes and any(
-                    bid in test_classes for bid in name_to_ids.get(base_name, ())):
+                    bid in test_classes for bid in name_to_ids.get((lang, base_name), ())):
                 test_classes.add(child_id)
                 changed = True
 
