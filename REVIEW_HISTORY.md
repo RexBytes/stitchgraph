@@ -55,6 +55,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | BB | opus · haiku | 1 CRITICAL · 1 MEDIUM | **44.0** | **opus broke the AA fix: the two growth axes ran sequentially, not to a *combined* fixed point.** A class seeded via inheritance that is *also* nested never had its enclosing chain re-walked → outer flagged (idiomatic pytest grouping `class TestApi: class TestV1(_SharedCases): pass`; Java nested-extends-abstract-base). Fixed by co-iterating both axes in one `while changed` loop (monotonic → terminates) in both extractors. MEDIUM (err-safe): tree-sitter resolved bases by name across *all* languages → a same-named test base in another language seeded production classes; fixed by keying resolution `(lang, name)`. **Streak resets.** |
 | CC | opus · haiku | 1 CRITICAL · 1 MEDIUM | **44.0** | **opus: the Python/tree-sitter `is_test_file` had drifted** — Python checked only the filename, tree-sitter also directories — so a shared test base in `tests/conftest.py` got no `test` role and its inheriting subclass was flagged dead (CARDINAL). Fixed by extracting one **shared directory-aware `is_test_file`** (`_testfile.py`) used by both extractors, so they can't drift again. haiku (MEDIUM, err-safe): `#[cfg(not(test))]` *production* code was marked a test root (the bare `test` token sat inside `not(...)`); fixed by dropping `not(...)` predicates before the scan. **Streak resets.** |
 | DD | opus · haiku | _none_ | **0.0** | **CLEAN — convergence verdict: the test-liveness class is CLOSED for 1.0.1.** Both `FINDINGS: none`. opus confirmed all CC fixes (conftest base + subclass live; full Rust `cfg` matrix incl. `not(test)`/`all(not(test),…)`) and ran a final convergence attack (deep nesting × inheritance, mixins, metaclasses, JUnit `@Nested`) — no remaining live→dead case. The one residual (a test base in a *non-test* directory subclassed by an own-method-less test) is realistic-but-rare, precision-safe, `needs_review`-only, has escape hatches, and closing it generically would regress the Panel Y/W over-match guard → kept as a **documented limitation**. haiku full-matrix sweep clean. Dogfood 3 advisory / 0 holes; 165 tests. |
+| EE | opus · haiku | _none_ | **0.0** | **CLEAN — second consecutive clean panel; the 1.0.1 gate is met (streak 2, RRS confidence 0.86 → RELEASABLE).** Both `FINDINGS: none`, fresh independent confirmation. opus ran 11 cross-language scenarios it had not used before (Python pytest/unittest/inherited/nested/deep-chain; Java JUnit package-private abstract base + cross-file inherited base; C#/PHP/JS/Ruby call-based; Rust `#[tokio::test]`; Go cross-file; mixed suites) — only genuinely-dead helpers flagged. Over-marking bounded (bare metaclass, dead production, production `testing/` & `specs/` all flag); `#7` silent on a grammar-present run under `-W error`; `#9` candidates + qualified scoping across impact_of/get_callers/get_callees/trace_path; envelope contract intact (`find_stale` `needs_review`, conf ≤ 0.6, INFERRED). haiku full sweep clean. Dogfood 3 advisory / 0 holes; 165 tests. |
 
 ## What each panel found and how it was fixed
 
@@ -643,6 +644,10 @@ one batch (full reasoning in `CHANGELOG.md` / `docs/RELEASE_NOTES_v1.0.1.md`):
     class is **closed** for 1.0.1. The one residual (a test base in a *non-test* directory
     subclassed by an own-method-less test) is realistic-but-rare, precision-safe, and
     documented — closing it generically would regress the Y/W over-match guard.
+  - **EE** — **CLEAN** (the second consecutive clean panel → **streak 2, gate met**). A fresh
+    independent confirmation: opus ran 11 cross-language scenarios it hadn't used, haiku swept
+    the full matrix; both `FINDINGS: none`. The polyglot generalization is certified to the
+    same 2-consecutive-clean bar as the 1.0.0 release.
 
   Lesson reinforced: the dominant late-stage defect is a **symmetry/drift gap** — a guard or
   heuristic present in one extractor but not its sibling (here, `is_test_file`). The fix was
@@ -661,15 +666,17 @@ across all four nesting hosts (function / class / control-flow / arrow).
 W (one err-safe over-match, corrected) → **X clean**. The maintainer then asked whether the
 #8 test-detection gap existed in other languages; it did (Java/C#/PHP annotations, JS/TS/Ruby
 call-based, Python test classes), so a **polyglot generalization** was folded into 1.0.1.
-Panels Y–DD drove it to closure: Y (err-safe dir over-reach) → Z/AA/BB/CC (four successive
+Panels Y–EE drove it to closure: Y (err-safe dir over-reach) → Z/AA/BB/CC (four successive
 CARDINAL test-class-liveness gaps: direct → inherited/nested → combined fixed point →
-Python/tree-sitter `is_test_file` asymmetry, each fixed + regression-pinned) → **DD clean on
-both models with an explicit verdict that the test-liveness class is CLOSED.** A unified
-directory-aware `is_test_file` (`_testfile.py`) now backs both extractors so they can't drift.
-**Next step is the maintainer's manual `v1.0.1` tag.** Deferred non-blockers: a test base in
-a *non-test* directory subclassed by an own-method-less test (documented, precision-safe);
-third-party Rust runner macros (`#[rstest]`/`#[test_case]`); SQL MERGE WRITES label;
-`find_holes` empty-list urgency; the LSP backend and variable-granularity data flow.
+Python/tree-sitter `is_test_file` asymmetry, each fixed + regression-pinned) → **DD clean
+with an explicit verdict that the class is CLOSED → EE clean (second consecutive) → streak 2,
+RRS confidence 0.86 → RELEASABLE.** A unified directory-aware `is_test_file` (`_testfile.py`)
+now backs both extractors so they can't drift. The polyglot work is certified to the same
+2-consecutive-clean bar as 1.0.0. **Next step is the maintainer's manual `v1.0.1` tag.**
+Deferred non-blockers: a test base in a *non-test* directory subclassed by an own-method-less
+test (documented, precision-safe); third-party Rust runner macros (`#[rstest]`/`#[test_case]`);
+SQL MERGE WRITES label; `find_holes` empty-list urgency; the LSP backend and
+variable-granularity data flow.
 
 ## Standing themes
 

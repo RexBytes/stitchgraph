@@ -95,7 +95,7 @@ names that legitimately contain dots (`index.html`) still resolve directly.
 ## Verification
 
 `pytest` 165 passed (regression tests added per issue and per panel finding, each
-pinning both directions) · ruff clean · mypy clean. Eight confirmation panels
+pinning both directions) · ruff clean · mypy clean. Nine confirmation panels
 (opus + haiku), each adversarially probing both directions:
 
 - **W** found an attribute over-match in the #8 fix (substring vs path); **X** clean.
@@ -109,5 +109,8 @@ pinning both directions) · ruff clean · mypy clean. Eight confirmation panels
 - **DD** clean on both models, with an explicit verdict: the test-liveness class is
   **closed** for 1.0.1; the one residual (a test base in a *non-test* directory
   subclassed by an own-method-less test) is a documented, precision-safe limitation.
+- **EE** clean on both models — the second consecutive full-diversity clean panel, so
+  the polyglot work meets the same **2-consecutive-clean release gate** as 1.0.0
+  (readiness verdict **RELEASABLE**, streak 2).
 
 Full trajectory in `REVIEW_HISTORY.md`.

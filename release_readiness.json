@@ -392,6 +392,15 @@
       ],
       "findings": {},
       "theme": "CLEAN. Convergence verdict: the test-liveness class is CLOSED for 1.0.1. Both FINDINGS: none. opus confirmed all CC fixes (conftest base + subclass live; full Rust cfg matrix incl. not(test)/all(not(test),...)) and ran a final convergence attack (deep nesting x inheritance, mixins, metaclasses, JUnit @Nested) with no remaining live->dead case. The one residual (a test base in a non-test directory subclassed by an own-method-less test) is realistic-but-rare, precision-safe, needs_review-only, has escape hatches, and closing it generically would regress the Y/W over-match guard, so it is a documented limitation. haiku full-matrix sweep clean. Dogfood 3 advisory / 0 holes; 165 tests."
+    },
+    {
+      "id": "EE",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN. Second consecutive full-diversity clean panel -> streak 2, release gate met for 1.0.1. Both FINDINGS: none, fresh independent confirmation (not a rerun of DD). opus ran 11 cross-language scenarios (Python pytest/unittest/inherited/nested/deep-chain, Java JUnit pkg-private abstract base + cross-file inherited base, C#/PHP/JS/Ruby call-based, Rust #[tokio::test], Go cross-file, mixed) -> only genuinely-dead helpers flagged; over-marking bounded (bare metaclass, dead prod, production testing/ & specs/ all flag); #7 silent on grammar-present run (under -W error); #9 candidates + qualified scoping for impact_of/get_callers/get_callees/trace_path; envelope contract intact (find_stale needs_review, conf<=0.6, INFERRED). haiku full sweep clean. Dogfood src/ = 3 advisory, 0 holes; 165 tests."
     }
   ]
 }

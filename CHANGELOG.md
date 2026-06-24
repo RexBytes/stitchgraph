@@ -9,11 +9,12 @@ All notable changes to stitchgraph. Format follows
 **Field-fix patch.** Three issues raised against 1.0.0 in real use on a Rust
 crate (#7/#8/#9), plus — once #8 revealed the same test-detection gap in every
 other language — a **polyglot generalization of test detection**. Fixed as a
-batch and confirmed by eight review panels (W–DD). The cardinal invariant — live
+batch and confirmed by nine review panels (W–EE). The cardinal invariant — live
 code is never flagged dead — is preserved throughout; the panels found and closed
 four successive cardinal gaps in cross-language test-class liveness (direct →
 inherited/nested → combined fixed point → Python/tree-sitter `is_test_file`
-asymmetry), with Panel DD declaring the class **closed**. See the
+asymmetry), with Panel DD declaring the class **closed** and **DD + EE giving two
+consecutive clean panels at full diversity (the release gate)**. See the
 [release notes](docs/RELEASE_NOTES_v1.0.1.md).
 
 ### Fixed
