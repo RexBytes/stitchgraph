@@ -49,6 +49,8 @@ class _Project:
     main_calls: set[str] = field(default_factory=set)
     module_consts: set[str] = field(default_factory=set)  # module-level assigned names
     external_base_classes: set[str] = field(default_factory=set)  # subclass framework bases
+    module_by_qual: dict[str, str] = field(default_factory=dict)  # module qualname -> node id
+    module_ids: set[str] = field(default_factory=set)  # all MODULE node ids
 
 # Ordinary bases whose subclasses are NOT framework callbacks — their methods
 # should still be eligible for dead-code. Anything else external (HTMLParser,
@@ -304,8 +306,11 @@ def _index(proj: _Project) -> None:
         if n.kind == NodeKind.CLASS:
             proj.class_by_name.setdefault(n.name, []).append(n.id)
         # Alias modules by their short name so `from pkg import submodule` resolves.
-        if n.kind == NodeKind.MODULE and "." in n.name:
-            proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
+        if n.kind == NodeKind.MODULE:
+            proj.module_by_qual[n.name] = n.id  # exact qualname -> module node (panel R13)
+            proj.module_ids.add(n.id)
+            if "." in n.name:
+                proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
 
 
 def _apply_entrypoint_roles(proj: _Project) -> None:
@@ -457,11 +462,23 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _import_edge(proj, mod_id, rel, alias.name, node.lineno)
+                _module_load_edge(proj, mod_id, rel, alias.name, node.lineno)
         elif isinstance(node, ast.ImportFrom) and node.module:
             internal = (node.level > 0) or node.module.split(".")[0] in proj.packages
+            base = _resolve_import_base(rel, node) if internal else None
+            if base:
+                # `from X import y` loads module X (runs its top-level). Resolve X by its
+                # EXACT qualname so a same-basename module in another package is never
+                # falsely linked (panel R13). `y` may itself be a submodule X.y — try that
+                # too. This is what keeps a class used only at X's module scope live.
+                _module_load_edge_qual(proj, mod_id, rel, base, node.lineno)
             for alias in node.names:
                 _import_edge(proj, mod_id, rel, f"{node.module}.{alias.name}",
-                             node.lineno, leaf=alias.name, internal=internal)
+                             node.lineno, leaf=alias.name, internal=internal,
+                             pkg_base=base)
+                if base:
+                    _module_load_edge_qual(proj, mod_id, rel, f"{base}.{alias.name}",
+                                           node.lineno)
 
     _walk_scope(proj, rel, tree, parent="", class_qual=None)
     _module_scope_edges(proj, rel, tree, mod_id)
@@ -950,6 +967,14 @@ def _direct_calls(func: ast.AST) -> list[ast.Call]:
 def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
                rel: str, line: int, is_method: bool = False) -> None:
     cands = proj.by_name.get(name, [])
+    # A call/by-name reference must not bind to a MODULE node: `_index` aliases module
+    # nodes by their short name (for `from pkg import submodule` import resolution), but a
+    # `helper()` call or a value reference to `helper` is never a module — binding it to a
+    # same-basename module in another package falsely linked that module live, masking its
+    # dead code and inflating impact_of (panel R13B). Imports keep module resolution
+    # (`_import_edge` / module-load edges), which don't go through here.
+    if cands:
+        cands = [c for c in cands if c not in proj.module_ids]
     loc = f"{rel}:{line}:0"
     if not cands:
         return  # external / builtin / unknown -> drop (call holes are unreliable)
@@ -971,14 +996,66 @@ def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
                                location=loc, source="ast"))
 
 
+def _resolve_import_base(rel: str, node: ast.ImportFrom) -> str | None:
+    """Absolute module qualname of a `from <module> import ...` target, resolving the
+    relative level against the importer's package. `from .conf import x` in `pkg/api.py`
+    -> `pkg.conf`; `from pkg2 import y` -> `pkg2`. Returns None if it can't be resolved."""
+    if node.level == 0:
+        return node.module
+    pkg = _module_qualname(rel).split(".")
+    # The importer's containing package: a package __init__ IS its package; a module file
+    # drops its own trailing name. Each level beyond the first drops one more component.
+    container = pkg if rel.endswith("__init__.py") else pkg[:-1]
+    keep = len(container) - (node.level - 1)
+    if keep < 0:
+        return None
+    base = container[:keep]
+    if node.module:
+        return ".".join([*base, node.module])
+    return ".".join(base) if base else None
+
+
+def _module_load_edge_qual(proj: _Project, src_id: str, rel: str, qualname: str,
+                           line: int) -> None:
+    """Link the importer to the EXACT module node named `qualname` (its top-level runs on
+    import). Resolved by exact qualname, so a same-basename module elsewhere is not linked
+    (panel R13). Module nodes are never dead-code candidates, so this only confers
+    liveness — a class used only at the imported module's top level stays live (panel R12)."""
+    m_id = proj.module_by_qual.get(qualname)
+    if m_id and m_id != src_id:
+        proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS, dst_symbol=qualname,
+                               dst_id=m_id, weight=1.0, provenance=Provenance.EXTRACTED,
+                               location=f"{rel}:{line}:0", source="ast"))
+
+
+def _module_load_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int) -> None:
+    """`import a.b.c` loads a.b.c (and its parent packages). Link to each that resolves to
+    a known module node, by exact qualname (panel R13)."""
+    parts = dotted.split(".")
+    for i in range(1, len(parts) + 1):
+        _module_load_edge_qual(proj, src_id, rel, ".".join(parts[:i]), line)
+
+
 def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
-                 leaf: str | None = None, internal: bool | None = None) -> None:
+                 leaf: str | None = None, internal: bool | None = None,
+                 pkg_base: str | None = None) -> None:
     root = dotted.split(".")[0]
     is_internal = internal if internal is not None else (root in proj.packages)
     if not is_internal:
         return  # external dependency, not a hole
     symbol = leaf or dotted.split(".")[-1]
     cands = proj.by_name.get(symbol, [])
+    if pkg_base and len(cands) > 1:
+        # Disambiguate by the import's package: `from pkg1 import helper` must not bind to a
+        # `helper` (function OR same-basename module, which `_index` aliases globally) in an
+        # unrelated pkg2 — keep only candidates whose owning module is the imported package
+        # or under it. Avoids a false cross-package link that masks dead code and inflates
+        # impact_of (panel R13B). Fall back to all candidates if none match (cardinal-safe).
+        scoped = [c for c in cands
+                  if (mq := _module_qualname(c.split("::", 1)[0])) == pkg_base
+                  or mq.startswith(pkg_base + ".")]
+        if scoped:
+            cands = scoped
     loc = f"{rel}:{line}:0"
     if not cands:
         if symbol in proj.module_consts:
@@ -988,19 +1065,6 @@ def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
                                dst_id=None, weight=0.6, provenance=Provenance.INFERRED,
                                location=loc, source="ast"))
         return
-    # Importing any symbol from an internal module *loads* that module, executing its
-    # top-level code — so link the importer to each target's module node, not only the
-    # symbol. A class used solely at module scope of an imported module (a registry built
-    # in `conf.py`, imported via a helper that isn't itself role-exported) is then live
-    # whenever the importer is, instead of flagged dead (panel R12, cardinal). Module
-    # nodes are never dead-code candidates, so this only confers liveness.
-    for cand_rel in {c.split("::", 1)[0] for c in cands}:
-        m_id = Node.make_id(cand_rel, _module_qualname(cand_rel))
-        if m_id in proj.ids and m_id != src_id:
-            proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS,
-                                   dst_symbol=_module_qualname(cand_rel), dst_id=m_id,
-                                   weight=1.0, provenance=Provenance.EXTRACTED,
-                                   location=loc, source="ast"))
     if len(cands) == 1:
         proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS, dst_symbol=symbol,
                                dst_id=cands[0], weight=1.0, provenance=Provenance.EXTRACTED,

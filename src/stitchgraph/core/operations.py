@@ -221,7 +221,14 @@ def orient(store: Store) -> Result:
     # Transitive importance (PageRank over the whole graph) when GraphBLAS is
     # available; direct fan-in otherwise (design §6.A).
     ranking, metric = _hub_ranking(store)
-    hubs = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    # "Read these first" hubs are code entities (functions/classes/methods). Module and
+    # other container/pseudo nodes carry high import-coupling — amplified by the module->module
+    # IMPORTS edges that make module-level liveness work — so they would crowd out the actual
+    # functions a reader should open first; exclude them from the hub list (module COUNT is
+    # still reported in node_counts). Liveness is unaffected (panel R13A metric).
+    ranked = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)
+    hubs = [(nid, score) for nid, score in ranked
+            if (hub := store.get_node(nid)) is not None and hub.kind in _CODE_KINDS][:10]
     payload = {
         "node_counts": counts,
         "top_hubs": [{"id": nid, metric: round(score, 4)} for nid, score in hubs],

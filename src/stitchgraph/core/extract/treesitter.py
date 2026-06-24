@@ -355,6 +355,17 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             if n.kind is F and "." in n.id and n.id.rsplit(".", 1)[0] in _class_ids:
                 n.kind = M
 
+    # C++ operator overloads (`operator+`, `operator[]`, conversion `operator bool`) and
+    # destructors (`~Class`) are invoked IMPLICITLY — via operator syntax (`a + b`), scope
+    # exit, or a conversion the call graph can't see without type inference. Root them (and
+    # thus whatever their bodies call) rather than flag live code dead (panel R13A, cardinal);
+    # the analogue of skipping Python dunders. Out-of-line operator defs are bare functions
+    # (no class parent in the id), so cover both F and M.
+    for n in nodes:
+        if n.kind in (F, M) and _is_cpp_special_member(n.name) \
+                and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+            n.roles = n.roles | {"callback"}
+
     _seed_exported_class_methods(nodes, file_lang)
     # Public members of an exported interface/trait are public API but, unlike class
     # members, are implicitly public (no visibility token) so `_roles` never marks them
@@ -1194,6 +1205,11 @@ def _trailing_id(node, src):
     if node.type in ("identifier", "type_identifier", "field_identifier",
                      "property_identifier", "word", "name", "constant"):
         return _text(node, src)
+    # C++ operator/destructor names (`operator+`, `~Class`) are leaf-ish multi-token nodes
+    # with no identifier child; take their literal text so an out-of-line operator def
+    # gets a real node name instead of None (panel R13A).
+    if node.type in ("operator_name", "destructor_name"):
+        return _text(node, src)
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:
         return _trailing_id(prop, src)
@@ -1261,11 +1277,21 @@ def _name_of(node, src):
     while decl is not None:
         if decl.type in ("identifier", "field_identifier"):
             return _text(decl, src)
+        # An out-of-line member def names the function with a `qualified_identifier`
+        # (`Class::m`, `Outer::Inner::m`) or an `operator_name`/`destructor_name`
+        # (`Class::operator+`, `Class::~Class`); the trailing name is nested, so use
+        # _trailing_id. Without this _name_of returned None and the WHOLE
+        # function_definition was silently dropped, so a helper called only from a
+        # nested-class or operator body was flagged dead (panel R13A, cardinal).
+        if decl.type in ("qualified_identifier", "operator_name", "destructor_name"):
+            return _trailing_id(decl, src)
         nxt = decl.child_by_field_name("declarator")
         if nxt is None:
             ident = next((c for c in decl.children
-                          if c.type in ("identifier", "field_identifier")), None)
-            return _text(ident, src) if ident else None
+                          if c.type in ("identifier", "field_identifier",
+                                        "qualified_identifier", "operator_name",
+                                        "destructor_name")), None)
+            return _trailing_id(ident, src) if ident else None
         decl = nxt
     # Rust `impl Container { ... }` names its target via the `type` field.
     ty = node.child_by_field_name("type")
@@ -1277,6 +1303,17 @@ def _name_of(node, src):
         if c.type in ("identifier", "type_identifier", "property_identifier"):
             return _text(c, src)
     return None
+
+
+def _is_cpp_special_member(name: str) -> bool:
+    """A C++ operator overload (`operator+`, `operator[]`, `operator bool`) or destructor
+    (`~Class`) — invoked implicitly, so the name-based call graph can't see the use. Used to
+    root them so live code reached only through one isn't flagged dead (panel R13A). `operator`
+    is a reserved word, so the prefix can't be an ordinary identifier."""
+    if name.startswith("~"):
+        return True
+    return (name.startswith("operator") and len(name) > 8
+            and not (name[8].isalnum() or name[8] == "_"))
 
 
 def _cpp_method_scope(node, src):

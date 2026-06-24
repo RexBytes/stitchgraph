@@ -3187,3 +3187,71 @@ def test_replace_file_no_duplicate_when_hole_resolves_alongside_sibling(tmp_path
                     source="ast")
         store.replace_file("main.py", [a], [resolved, hole])
         assert fan_in(store).get("lib.py::Foo") == 1      # one logical caller, not two
+
+
+# -- Panel R13A / opus (CARDINAL): C++ nested-class / operator out-of-line defs --
+def test_cpp_nested_class_out_of_line_method_keeps_helper_live(tmp_path):
+    """An out-of-line method whose declarator is a NESTED qualified_identifier
+    (`Outer::Inner::tick`) or an `operator_name` (`Vec::operator+`) returned None from
+    `_name_of`, so the WHOLE function_definition was silently dropped — a helper called only
+    from such a body was then flagged dead (panel R13A, cardinal). Operators are implicitly
+    invoked, so they (and their callees) are rooted."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.h": "class Outer { public: class Inner { public: int tick(); }; };\n"
+                 "struct Vec { int x; Vec operator+(const Vec& o); };\n"
+                 "int helper();\nint combine();\n",
+        "lib.cpp": '#include "lib.h"\n'
+                   "int helper(){ return 7; }\nint combine(){ return 9; }\n"
+                   "int Outer::Inner::tick(){ return helper(); }\n"
+                   "Vec Vec::operator+(const Vec& o){ combine(); return *this; }\n",
+        "main.cpp": '#include "lib.h"\n'
+                    "int main(){ Outer::Inner i; Vec a; Vec b; (void)(a+b); return i.tick(); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "lib.cpp::helper" not in stale     # live via Outer::Inner::tick
+        assert "lib.cpp::combine" not in stale     # live via Vec::operator+ (rooted)
+
+
+# -- Panel R13A+B / opus (over-suppression): same-basename import disambiguation -
+def test_import_does_not_falsely_link_same_basename_module_in_other_package(tmp_path):
+    """`from pkg1 import helper` must not bind `helper` (function OR the same-basename
+    `pkg2.helper` module, which the index aliases globally) to pkg2 — that falsely made
+    pkg2's module reachable, masking its genuinely-dead class and coupling `main` to pkg2 in
+    impact_of (panel R13B)."""
+    _mk(tmp_path, {
+        "pkg1/__init__.py": "",
+        "pkg2/__init__.py": "",
+        "pkg1/helper.py": "def helper():\n    return 1\n",
+        "pkg2/helper.py": "class DeadHelper:\n    def m(self): return 2\n"
+                          "INST = DeadHelper()\ndef helper():\n    return 3\n",
+        "main.py": 'from pkg1 import helper\n__all__ = ["main"]\ndef main():\n    return helper()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "pkg2/helper.py::DeadHelper" in stale       # never imported -> genuinely dead
+        impact = sg.impact_of(store, "pkg2.helper")
+        assert "main.py::main" not in (impact.result or {}).get("blast_radius", [])
+
+
+# -- Panel R13A / sonnet (metric): orient hubs exclude module pseudo-nodes -------
+def test_orient_hubs_exclude_module_nodes(tmp_path):
+    """Module nodes carry high import-coupling (amplified by the module->module IMPORTS
+    edges that make module-level liveness work), which crowded real functions out of
+    orient()'s "read these first" hub list. Hubs are now code entities only (panel R13A)."""
+    from stitchgraph.core.model import NodeKind
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/hub.py": "def hub_func():\n    return 1\n",
+        **{f"pkg/c{i}.py": "from .hub import hub_func\n"
+           f"def use{i}():\n    return hub_func()\n" for i in range(6)},
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        hubs = sg.orient(store).result["top_hubs"]
+        kinds = {store.get_node(h["id"]).kind for h in hubs}
+        assert NodeKind.MODULE not in kinds               # no module pseudo-nodes in hubs

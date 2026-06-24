@@ -138,8 +138,8 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** pin the real target in `stitchgraph.toml [entry_points]`; the
   over-marked copy surfaces only as *not flagged*, never as a confident verdict.
 - **Related (same precision-safe class):** a class instantiated in an `if __name__ ==
-  "__main__"` block is rooted by **bare name** (a `__main__` call isn't a graph edge —
-  see "Module-level uses aren't attributed"), so a same-named class in another module is
+  "__main__"` block is rooted by **bare name** (it is rooted as a `main` entry, then
+  resolved by name), so a same-named class in another module is
   also kept live. Name-based is required here (a `__main__` block legitimately instantiates
   classes imported from other modules), so this is deliberate over-marking, not tightened.
   The rescue is bounded — it roots the class and the methods it *invokes* (names in the
@@ -184,13 +184,20 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   roots in `stitchgraph.toml [entry_points]`; `find_holes` after edits surfaces references
   a delete/rename orphaned.
 
-### Module-level uses aren't attributed
-- **Concern:** a decorator or constructor applied at import (e.g. `@operation(...)`,
-  a `SPECS = {... LangSpec(...) ...}` table) isn't a call inside any function, so a
-  symbol used only that way can surface as a stale candidate.
-- **Decision:** attribute call/reference edges only within function/method bodies.
-- **Rationale:** modelling module-level execution order fully is disproportionate
-  to the value; these cases surface as `needs_review`, not confident verdicts.
+### Dynamic registration via a decorator body isn't traced
+- **Concern:** a function bound into a registry *inside a decorator's body* at import
+  (`@register("a") def handle_a: ...`, where `register` stashes the function in a dict)
+  has no statically-visible use of `handle_a`, so it can surface as a stale candidate.
+- **Now attributed (no longer a limitation):** statically-visible module-level uses —
+  a dispatch/registry literal (`HANDLERS = {"a": handle_a}`), a table of constructed
+  objects (`SPECS = {... LangSpec(...) ...}`), a top-level instantiation
+  (`REGISTRY = Builder()`), and any top-level call — *are* edged to the module node and
+  propagate liveness when the module is loaded.
+- **Decision:** edge module-level calls/references that are visible in the syntax; do
+  not model what a decorator does to its argument inside its own body.
+- **Rationale:** the in-decorator case is the same class as dynamic dispatch /
+  monkeypatching — the binding is invisible without running `register`; these surface as
+  `needs_review`, not confident verdicts.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
 
 ### Incremental `replace_file` resolves holes against the nodes present *now*
