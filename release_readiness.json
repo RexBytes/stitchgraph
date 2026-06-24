@@ -427,6 +427,16 @@
         "MEDIUM": 1
       },
       "theme": "Confirming the FF fixes (1.0.2). Both FF fixes (export default <ident>; _module_uses name-refs) verified correct both directions by all three models; F2 over-marking bounded + dedup intact. opus AND sonnet converged on a CARDINAL sibling of F1 (pre-existing): the whole-module CJS/TS-interop export forms module.exports = X / export = X / module.exports = {A,B} / exports.x = Y are not rooted -> live public export flagged dead. Fixed by extending _reexport_names to those forms. sonnet also found a MEDIUM err-safe over-rooting: _module_uses descended into a `const helper = function(){}` (a named def itself), over-rooting refs in its body even when uncalled; fixed by skipping variable_declarator-with-function-value in _module_uses (consistent with skipping spec.defs). Both fixed + regression-pinned."
+    },
+    {
+      "id": "HH",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) confirming the GG export-rooting fixes for 1.0.2. opus: GG fixes correct both directions, member-expression matcher tight (obj.exports/local exports not over-rooted), no metric inflation, export= doesn't false-fire on export const, dogfood 3 advisory/0 holes. haiku: 7 export-form tests + precision + cardinal pass, 85 regression tests green. sonnet: enumerated ALL 19 JS/TS/CJS export forms and verified each -> explicit verdict the export-rooting class is CLOSED; one err-safe non-cardinal note (CJS module.exports= inside a function body over-roots, rare, consistent with documented tradeoffs). First clean panel of the 1.0.2 export-rooting batch (FF/GG found 3 cardinals + 1 medium); streak 1 of 2."
     }
   ]
 }
