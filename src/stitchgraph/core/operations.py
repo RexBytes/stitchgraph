@@ -386,6 +386,14 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     for comp in strongly_connected_components(store):
         if len(comp) < 2:
             continue
+        # A symbol cycle is a code-entity smell (mutual recursion / tangled calls). The
+        # module->module IMPORTS edges (which carry module-level liveness) let MODULE nodes
+        # form import cycles too; a circular *import* is a different analysis, so don't
+        # surface it here as a "circular dependency among symbols" — skip components that
+        # include any pseudo node (panel R14A, consistent with god_object/orient).
+        if any((cn := store.get_node(m)) is None or cn.kind not in _CODE_KINDS
+               for m in comp):
+            continue
         members = set(comp)
         internal = [e for e in all_edges
                     if e.src in members and e.dst_id in members
@@ -420,6 +428,13 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     fi, fo = fan_in(store), fan_out(store)
     for nid in set(fi) & set(fo):
         if fi[nid] >= 5 and fo[nid] >= 5:
+            # "God object" is a code-entity smell; a MODULE node with many importers
+            # (fan-in) plus many module-level calls (fan-out, from _module_scope_edges) is
+            # not an OOP god object — skip pseudo nodes so the label isn't mis-applied
+            # (panel R14A). Liveness/holes are unaffected.
+            gnode = store.get_node(nid)
+            if gnode is None or gnode.kind not in _CODE_KINDS:
+                continue
             # Confident-only degree: fan-in over liveness relations, fan-out over CALLS
             # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
             # coupling is mostly ambiguous/heuristic edges (homonym `new`/`build` calls

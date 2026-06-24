@@ -3255,3 +3255,86 @@ def test_orient_hubs_exclude_module_nodes(tmp_path):
         hubs = sg.orient(store).result["top_hubs"]
         kinds = {store.get_node(h["id"]).kind for h in hubs}
         assert NodeKind.MODULE not in kinds               # no module pseudo-nodes in hubs
+
+
+# -- Panel R14A / opus (CARDINAL): C++ conversion operators must not be dropped --
+def test_cpp_conversion_operator_keeps_callee_live(tmp_path):
+    """A C++ conversion operator (`operator bool`, `operator int`) parses as an
+    `operator_cast` node whose `type` field the name-walk followed to the target type,
+    yielding None — so the WHOLE function_definition was dropped and a helper called only
+    from its body was flagged dead (panel R14A, cardinal). operator_cast is now named and
+    rooted like other operators."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "n.h": "struct Wrap { int x; Wrap(int v): x(v) {} operator bool() const; };\n"
+               "int only_from_conv();\n",
+        "n.cpp": '#include "n.h"\n'
+                 "int only_from_conv(){ return 42; }\n"
+                 "Wrap::operator bool() const { return only_from_conv() > 0; }\n",
+        "main.cpp": '#include "n.h"\nint main(){ Wrap w(3); if((bool)w) return 1; return 0; }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "n.cpp::only_from_conv" not in stale     # live via Wrap::operator bool()
+
+
+# -- Panel R14A / opus (CARDINAL): relative `from . import sib` module-load --------
+def test_relative_bare_from_import_keeps_module_scope_code_live(tmp_path):
+    """`from . import sib` / `from .. import x` have node.module=None, so the ImportFrom
+    branch (and the module-load edge that carries module-level liveness) was skipped — a
+    class used only at the imported sibling module's scope was flagged dead (panel R14A,
+    cardinal)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/svc.py": "class Service:\n    def handle(self): return helper_fn()\n"
+                      "def helper_fn(): return 1\nSVC = Service()\nSVC.handle()\n",
+        "pkg/boot.py": "from . import svc\ndef boot(): return svc.SVC\n",
+        "main.py": 'from pkg.boot import boot\n__all__ = ["main"]\ndef main(): return boot()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "pkg/svc.py::Service" not in stale
+        assert "pkg/svc.py::Service.handle" not in stale
+        assert "pkg/svc.py::helper_fn" not in stale
+
+
+# -- Panel R14A / sonnet (CARDINAL regression): function named like its module ----
+def test_root_function_named_like_its_module_is_not_dropped(tmp_path):
+    """A root-level `utils.py` defining `def utils()` gives the MODULE and FUNCTION nodes
+    the SAME id (`utils.py::utils`); the round-13 module-filter in _ref_edges then dropped
+    the call edge, flagging the function dead — the near-universal `main.py`+`def main()`
+    pattern (panel R14A, cardinal). A shared id is kept out of the module filter."""
+    _mk(tmp_path, {
+        "utils.py": "def utils():\n    return 42\n",
+        "app.py": "def run():\n    utils()\n",
+        "pyproject.toml": '[project.scripts]\nrun = "app:run"\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "utils.py::utils" not in stale          # called by run() (a console script)
+
+
+# -- Panel R14A / sonnet (metric): MODULE nodes excluded from scan cycle/god_object
+def test_scan_excludes_module_pseudo_nodes_from_structural_findings(tmp_path):
+    """A module->module import cycle (circular import) and a heavily-imported module that
+    makes many module-level calls are not OOP cycles/god_objects — scan must not surface
+    MODULE pseudo nodes under those code-entity findings (panel R14A)."""
+    from stitchgraph.core.model import NodeKind
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        # circular import: a <-> b at module scope
+        "pkg/a.py": "from pkg import b\nVALUE_A = 1\ndef fa(): return b.VALUE_B\n",
+        "pkg/b.py": "from pkg import a\nVALUE_B = 2\ndef fb(): return a.VALUE_A\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        issues = sg.scan(store).result
+        module_findings = [i for i in issues
+                           if i.get("kind") in ("cycle", "god_object")
+                           and (n := store.get_node(i["node"])) is not None
+                           and n.kind is NodeKind.MODULE]
+        assert module_findings == []

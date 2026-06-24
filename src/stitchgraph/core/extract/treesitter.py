@@ -1205,10 +1205,12 @@ def _trailing_id(node, src):
     if node.type in ("identifier", "type_identifier", "field_identifier",
                      "property_identifier", "word", "name", "constant"):
         return _text(node, src)
-    # C++ operator/destructor names (`operator+`, `~Class`) are leaf-ish multi-token nodes
-    # with no identifier child; take their literal text so an out-of-line operator def
-    # gets a real node name instead of None (panel R13A).
-    if node.type in ("operator_name", "destructor_name"):
+    # C++ operator/destructor/conversion names (`operator+`, `~Class`, `operator bool`) are
+    # leaf-ish multi-token nodes; take their literal text so an out-of-line def gets a real
+    # node name instead of None. `operator_cast` (conversion ops) has a `type` field that the
+    # generic walk below would follow to the target type (`bool`) and lose the name, so it
+    # must be handled here too (panels R13A/R14A).
+    if node.type in ("operator_name", "destructor_name", "operator_cast"):
         return _text(node, src)
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:
@@ -1283,14 +1285,15 @@ def _name_of(node, src):
         # _trailing_id. Without this _name_of returned None and the WHOLE
         # function_definition was silently dropped, so a helper called only from a
         # nested-class or operator body was flagged dead (panel R13A, cardinal).
-        if decl.type in ("qualified_identifier", "operator_name", "destructor_name"):
+        if decl.type in ("qualified_identifier", "operator_name", "destructor_name",
+                         "operator_cast"):
             return _trailing_id(decl, src)
         nxt = decl.child_by_field_name("declarator")
         if nxt is None:
             ident = next((c for c in decl.children
                           if c.type in ("identifier", "field_identifier",
                                         "qualified_identifier", "operator_name",
-                                        "destructor_name")), None)
+                                        "destructor_name", "operator_cast")), None)
             return _trailing_id(ident, src) if ident else None
         decl = nxt
     # Rust `impl Container { ... }` names its target via the `type` field.

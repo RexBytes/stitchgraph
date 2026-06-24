@@ -300,6 +300,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
 
 
 def _index(proj: _Project) -> None:
+    nonmodule_ids: set[str] = set()
     for n in proj.nodes:
         proj.by_name.setdefault(n.name, []).append(n.id)
         proj.ids.add(n.id)
@@ -311,6 +312,13 @@ def _index(proj: _Project) -> None:
             proj.module_ids.add(n.id)
             if "." in n.name:
                 proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
+        else:
+            nonmodule_ids.add(n.id)
+    # A root-level `utils.py` defining `def utils()` gives the MODULE node and the FUNCTION
+    # node the SAME id (`utils.py::utils`). Keep such a shared id OUT of module_ids so the
+    # call-resolution filter in _ref_edges doesn't drop a real function call (the near-
+    # universal `main.py` + `def main()` pattern) — panel R14A, cardinal.
+    proj.module_ids -= nonmodule_ids
 
 
 def _apply_entrypoint_roles(proj: _Project) -> None:
@@ -463,20 +471,30 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
             for alias in node.names:
                 _import_edge(proj, mod_id, rel, alias.name, node.lineno)
                 _module_load_edge(proj, mod_id, rel, alias.name, node.lineno)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            internal = (node.level > 0) or node.module.split(".")[0] in proj.packages
-            base = _resolve_import_base(rel, node) if internal else None
-            if base:
+        elif isinstance(node, ast.ImportFrom):
+            # `node.module` is None for a bare relative import (`from . import sib`,
+            # `from .. import x`) — a ubiquitous sibling/subpackage idiom. It is internal
+            # whenever it is relative; resolve the package base from the level so its
+            # module-load edge still fires (panel R14A, cardinal — else a class used only
+            # at the imported sibling's module scope is flagged dead).
+            internal = (node.level > 0) or bool(
+                node.module and node.module.split(".")[0] in proj.packages)
+            if not internal:
+                continue
+            base = _resolve_import_base(rel, node)
+            if base and node.module:
                 # `from X import y` loads module X (runs its top-level). Resolve X by its
                 # EXACT qualname so a same-basename module in another package is never
                 # falsely linked (panel R13). `y` may itself be a submodule X.y — try that
                 # too. This is what keeps a class used only at X's module scope live.
                 _module_load_edge_qual(proj, mod_id, rel, base, node.lineno)
             for alias in node.names:
-                _import_edge(proj, mod_id, rel, f"{node.module}.{alias.name}",
-                             node.lineno, leaf=alias.name, internal=internal,
-                             pkg_base=base)
+                if node.module:
+                    _import_edge(proj, mod_id, rel, f"{node.module}.{alias.name}",
+                                 node.lineno, leaf=alias.name, internal=internal,
+                                 pkg_base=base)
                 if base:
+                    # `from . import sib` imports the submodule `<base>.sib` — load it.
                     _module_load_edge_qual(proj, mod_id, rel, f"{base}.{alias.name}",
                                            node.lineno)
 
