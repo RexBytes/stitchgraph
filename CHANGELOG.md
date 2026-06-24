@@ -52,6 +52,12 @@ full three-model panels.
   `AttributeError`/`ValueError` — and config is read on every command. Each section/value is
   now shape-guarded and falls back to its default (the same robustness sweep that covered the
   coverage-JSON and FIFO cases).
+- **`risk` no longer silently drops unicode-named source files.** `gitrisk._commits` parsed
+  `git log --name-only`, but git octal-escapes and double-quotes non-ASCII paths under the
+  default `core.quotepath=true` (`"caf\303\251.py"`), so the trailing quote defeated the
+  source-extension filter and unicode-named files vanished from churn / co-change / `risk`
+  hotspots. It now runs git with `-c core.quotepath=false` (and strips any residual quoting),
+  so those files are counted.
 
 ### Documentation
 

@@ -290,6 +290,33 @@ def test_risk_uses_non_python_git_history(tmp_path):
     assert gitrisk.churn(str(tmp_path)).get("app.js") == 1  # .js counted, not skipped
 
 
+def test_risk_counts_unicode_filenames(tmp_path):
+    """git octal-escapes AND double-quotes non-ASCII paths under the default
+    core.quotepath=true (`"caf\\303\\251.py"`), so the trailing quote defeated the
+    `.endswith(_SRC_EXTS)` filter and unicode-named source files silently vanished from
+    churn/cochange/risk (panel NNN). `-c core.quotepath=false` prints them literally."""
+    import os
+    import subprocess
+
+    from stitchgraph.core import gitrisk
+
+    (tmp_path / "café.py").write_text("def a():\n    return 1\n")
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "c1")
+    (tmp_path / "café.py").write_text("def a():\n    return 2\n")
+    git("commit", "-am", "c2")
+    assert gitrisk.churn(str(tmp_path)).get("café.py") == 2  # unicode name counted, not dropped
+
+
 # -- Panel C (HIGH): tree-sitter callback role symmetry gap ---------------------
 def test_tree_sitter_methods_of_external_base_classes_get_callback_role(tmp_path):
     """Methods of a class that inherits from an external (framework) base class

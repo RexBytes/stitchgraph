@@ -49,8 +49,12 @@ def _commits(path: str | Path, max_commits: int = 2000) -> list[list[str]]:
     """Return, per commit, the list of files it touched (most recent first)."""
     try:
         r = subprocess.run(
-            ["git", "-C", str(path), "log", f"-{max_commits}", "--no-merges",
-             "--format=%x00", "--name-only"],
+            # `-c core.quotepath=false`: by default git octal-escapes AND double-quotes
+            # non-ASCII paths (`"caf\303\251.py"`), so the trailing quote defeats the
+            # `.endswith(_SRC_EXTS)` filter and unicode-named source files silently vanish
+            # from churn/cochange/risk (panel NNN). quotepath=false prints them literally.
+            ["git", "-C", str(path), "-c", "core.quotepath=false", "log",
+             f"-{max_commits}", "--no-merges", "--format=%x00", "--name-only"],
             capture_output=True, text=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return []
@@ -58,8 +62,16 @@ def _commits(path: str | Path, max_commits: int = 2000) -> list[list[str]]:
         return []
     commits: list[list[str]] = []
     for block in r.stdout.split("\x00"):
-        files = [ln.strip() for ln in block.splitlines() if ln.strip()
-                 and ln.strip().endswith(_SRC_EXTS)]
+        files = []
+        for ln in block.splitlines():
+            name = ln.strip()
+            # git still wraps a path containing genuinely special chars in double-quotes
+            # even with quotepath=false; strip the surrounding pair so the suffix test
+            # (and node-id matching) sees the real path.
+            if len(name) >= 2 and name[0] == '"' and name[-1] == '"':
+                name = name[1:-1]
+            if name and name.endswith(_SRC_EXTS):
+                files.append(name)
         if files:
             commits.append(files)
     return commits

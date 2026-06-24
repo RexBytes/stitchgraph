@@ -87,13 +87,22 @@ read on each one). Each section/value is now shape-guarded with a default fallba
 audit confirms the remaining parsers — `pyproject.toml` (`_console_script_targets`) and the
 LCOV/Go coverage paths — were already isinstance-gated.
 
+### `risk` counts unicode-named source files
+
+`gitrisk._commits` scraped `git log --name-only`, but git octal-escapes and double-quotes
+non-ASCII paths under the default `core.quotepath=true` (`"caf\303\251.py"`), so the trailing
+quote defeated the source-extension filter — unicode-named files silently vanished from
+churn, co-change, and `risk` hotspots (a quiet metric deflation, not a crash or a false-dead).
+It now runs git with `-c core.quotepath=false` and strips any residual quoting, so those files
+are counted.
+
 ## Verification
 
-`pytest` 202 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 203 passed (new regression tests: console-script root + module-precision guard;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
 extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
 and the coverage-trace read; malformed-coverage-JSON-shape no-crash; malformed-`stitchgraph.toml`
-no-crash) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
+no-crash; unicode-filename churn counted) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
 bundled 0.13.0. Confirmed by full three-model panels (opus + sonnet + haiku); both FIFO
 hangs (resolver-pipeline, then the `pyproject.toml` fixed-path read) were caught by opus
 reviewers across two panel rounds and fixed before release. Dogfood `src/`: unchanged. Full
