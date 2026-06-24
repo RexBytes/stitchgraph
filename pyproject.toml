@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitchgraph"
-version = "1.0.2"
+version = "1.0.3"
 description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
 readme = "README.md"
 license = "MIT"
@@ -29,23 +29,30 @@ dependencies = []
 cli = ["typer>=0.12"]
 mcp = ["mcp>=1.0"]
 # Polyglot extraction (JS/TS, Rust, C/C++, C#, Bash) via tree-sitter.
-treesitter = ["tree-sitter>=0.22,<1", "tree-sitter-language-pack>=0.1,<2"]
+# DEFAULT is the bundled-grammar line (<1.0): its wheels ship the parsers, so a
+# `pip install` is fully offline / self-contained (issue #12). The 1.x line dropped
+# bundling for a runtime download-from-GitHub model that breaks offline/CI/air-gapped.
+treesitter = ["tree-sitter>=0.25.2,<1", "tree-sitter-language-pack>=0.7,<1.0"]
+# Opt-in: the download-model line (1.x) — smaller wheel + newest grammars, but fetches
+# parsers over the network on first use. For users who want the latest grammars and
+# have network at runtime. stitchgraph's loader uses whatever is installed.
+treesitter-download = ["tree-sitter>=0.25.2,<1", "tree-sitter-language-pack>=1.0,<2"]
 precise = ["jedi>=0.19"]            # jedi-accurate Python resolution (reindex --precise)
 resolve = ["sqlglot>=20"]           # SQL resolver
 algebra = ["python-graphblas>=2023.0"]
-# Everything.
+# Everything (offline-by-default grammar line).
 all = [
   "typer>=0.12",
   "mcp>=1.0",
-  "tree-sitter>=0.22,<1",
-  "tree-sitter-language-pack>=0.1,<2",
+  "tree-sitter>=0.25.2,<1",
+  "tree-sitter-language-pack>=0.7,<1.0",
   "jedi>=0.19",
   "sqlglot>=20",
   "python-graphblas>=2023.0",
 ]
 dev = [
   "pytest>=8.0", "pytest-cov", "hypothesis", "ruff", "mypy",
-  "typer>=0.12", "tree-sitter>=0.22,<1", "tree-sitter-language-pack>=0.1,<2",
+  "typer>=0.12", "tree-sitter>=0.25.2,<1", "tree-sitter-language-pack>=0.7,<1.0",
   "jedi>=0.19", "sqlglot>=20", "python-graphblas>=2023.0",
 ]
 

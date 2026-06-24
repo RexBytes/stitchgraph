@@ -21,6 +21,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
@@ -32,6 +33,28 @@ try:
     HAS_TREE_SITTER = True
 except ModuleNotFoundError:  # pragma: no cover
     HAS_TREE_SITTER = False
+
+
+def _load_grammar(lang: str):
+    """Get a tree-sitter Language for `lang` using whatever pack is installed. The
+    offline-default bundled line (<1.0) loads it directly; the download line (>=1.0)
+    fetches on first use. If it's missing and the pack exposes an explicit `download()`
+    (the 1.x API), fetch it once and retry — so "get it the easiest way available,
+    including a runtime download when possible" holds even if auto-download is off
+    (issue #12, Option 1). On the bundled line there's nothing to download, so a real
+    failure propagates to the caller (surfaced as the issue-#7 warning)."""
+    # The bundled line types `get_language(name: Literal[<all langs>])`; our `lang` is a
+    # plain str (validated against SPECS), so cast to satisfy mypy across pack versions.
+    name = cast(Any, lang)
+    try:
+        return get_language(name)
+    except Exception:  # noqa: BLE001
+        import tree_sitter_language_pack as _pack
+        download = getattr(_pack, "download", None)
+        if download is None:
+            raise
+        download([lang])  # may raise offline/proxied — propagate to the caller
+        return get_language(name)
 
 F, M, C = NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS
 
@@ -185,7 +208,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             continue
         if lang not in parsers:
             try:
-                parsers[lang] = Parser(get_language(lang))
+                parsers[lang] = Parser(_load_grammar(lang))
             except Exception:  # noqa: BLE001 — grammar unavailable (download/build/version)
                 # Do NOT swallow into a silent empty graph: a grammar that won't load
                 # would otherwise make every file of that language vanish with no
@@ -976,3 +999,42 @@ def _wanted(path, root, ignore):
     if any(p in _SKIP for p in rel.parts):
         return False
     return not (ignore and any(rel.match(pat) for pat in ignore))
+
+
+def grammar_status() -> tuple[bool, list[tuple[str, bool, str]]]:
+    """Probe every supported language's grammar: can it load right now? Powers the
+    `doctor` self-check (issue #12 / #7's optional doctor idea). Returns
+    `(all_ok, rows)` with `rows = [(language, loadable, detail)]`."""
+    if not HAS_TREE_SITTER:
+        return False, [("tree-sitter", False,
+                        "not installed — pip install 'stitchgraph[treesitter]'")]
+    langs = sorted(set(EXT_LANG.values()) & set(SPECS))
+    rows: list[tuple[str, bool, str]] = []
+    for lang in langs:
+        try:
+            Parser(_load_grammar(lang))
+            rows.append((lang, True, "loaded"))
+        except Exception as exc:  # noqa: BLE001
+            rows.append((lang, False, f"{type(exc).__name__}: {str(exc)[:60]}"))
+    return all(ok for _, ok, _ in rows), rows
+
+
+def grammar_backend() -> dict:
+    """Describe the installed tree-sitter-language-pack for the `doctor` self-check:
+    version, whether it bundles grammars (offline) or downloads them, and the cache
+    dir if it downloads."""
+    if not HAS_TREE_SITTER:
+        return {"installed": False}
+    import importlib.metadata as _md
+
+    import tree_sitter_language_pack as _pack
+    can_download = hasattr(_pack, "download")
+    info: dict = {"installed": True,
+                  "version": _md.version("tree-sitter-language-pack"),
+                  "model": "download-on-demand" if can_download else "bundled (offline)"}
+    if can_download and hasattr(_pack, "cache_dir"):
+        try:
+            info["cache_dir"] = _pack.cache_dir()
+        except Exception:  # noqa: BLE001
+            pass
+    return info

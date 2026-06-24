@@ -447,6 +447,16 @@
       ],
       "findings": {},
       "theme": "CLEAN (all three FINDINGS: none) \u2014 second consecutive clean panel -> 1.0.2 release gate met (streak 2). Fresh independent confirmation of the whole 1.0.2 candidate, not a rerun: sonnet ran ~30 new export/test-receiver/nesting/cross-language shapes; opus swept 25 export shapes + spawned a non-export sub-agent (SQL/ORM/events/envelope/metrics/persistence/CLI all clean); haiku full matrix. Export-rooting class confirmed CLOSED; over-marking bounded; #7/#9 + four nesting hosts + 1.0.1 polyglot all hold; dedup/metric integrity intact; dogfood src/ 3 advisory / 0 holes; 169 tests. One borderline err-safe observation (module.exports = ns.Wrapped via a locally-built namespace member not rooted) noted for visibility, covered by documented module-level-uses limitation, advisory-only, not a finding."
+    },
+    {
+      "id": "JJ",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) confirming the issue-#12 fix (1.0.3): offline-by-default grammar pin (tree-sitter-language-pack>=0.7,<1.0 bundled line) + adaptive _load_grammar (download-and-retry when the pack supports it) + stitchgraph doctor/--strict self-check + [treesitter-download] opt-in. Verified the get_language->_load_grammar swap is behaviour-preserving (byte-identical node/edge/role/provenance graph across all 12 languages; success path makes zero download() calls); all 4 adaptive-load paths (success / fail+download->retry / fail+bundled->#7 warn+skip / download-itself-fails->propagate, never a silent empty graph or false-dead); doctor + --strict exit codes incl. not-installed path; pin bounds correct ([all] stays offline-by-default); no regression (172 tests, FF/nesting cardinal fixes hold); dogfood src/ 3 advisory / 0 holes. Offline operation independently verified earlier in a throwaway venv on bundled 0.13.0 with network OFF. First clean panel of the 1.0.3 batch; streak 1 of 2."
     }
   ]
 }

@@ -61,6 +61,8 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | GG | opus · sonnet · haiku | 1 CRITICAL · 1 MEDIUM | **44.0** | **Confirming the FF fixes — both correct (all three models), and opus + sonnet converged on a CARDINAL sibling of F1 (pre-existing):** the whole-module CJS/TS-interop forms `module.exports = X` / `export = X` / `module.exports = { A, B }` / `exports.x = Y` aren't rooted → live public export flagged dead (CommonJS is pervasive). Fixed by extending `_reexport_names` to those forms. sonnet also found a MEDIUM err-safe over-rooting: `_module_uses` descended into a `const helper = function(){}` (itself a def), over-rooting its body's refs when uncalled; fixed by skipping `variable_declarator`-with-function-value. Both fixed + regression-pinned. **Streak resets.** |
 | HH | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — export-rooting class declared CLOSED (streak 1 of the 1.0.2 gate).** All three `FINDINGS: none`. sonnet enumerated **all 19 JS/TS/CJS export forms** and verified each is rooted or intentionally-err-safe-unhandled (anon default, `export *`, `Object.assign`). opus: matcher tight (`obj.exports`/local `exports` not over-rooted), no metric inflation, `export =` doesn't false-fire on `export const`. F2 `_module_uses` over-rooting fix holds. Dogfood 3 advisory / 0 holes; 169 tests. |
 | II | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — second consecutive clean panel; the 1.0.2 gate is met (streak 2, RRS confidence 0.86 → RELEASABLE).** All three `FINDINGS: none`, fresh independent confirmation (~30 new export/test-receiver/nesting/cross-language shapes from sonnet; 25 export shapes + a non-export sub-agent sweep — SQL/ORM/events/envelope/metrics/persistence/CLI — from opus; full matrix from haiku). Export-rooting class confirmed closed; over-marking bounded; `#7`/`#9`, the four nesting hosts, and the 1.0.1 polyglot detection all hold; dedup/metric integrity intact. One borderline err-safe note (`module.exports = ns.Member` via a locally-built namespace not rooted) → documented limitation, advisory-only. Dogfood 3 advisory / 0 holes; 169 tests. |
+| — | _1.0.2 released (maintainer tag). Then maintainer raised the packaging side of #12 (offline install)._ | | | _Investigated `tree-sitter-language-pack`'s 1.0.0 switch from bundled to download-on-first-use; chose Option 1 (offline-default pin + adaptive load + doctor). 1.0.3 below._ |
+| JJ | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — confirms the issue-#12 fix (1.0.3): offline-by-default grammars.** All three `FINDINGS: none`. Root cause: `tree-sitter-language-pack` switched at v1.0.0 from bundling grammars in the wheel to downloading them on first use (breaks offline/CI/air-gapped); the 1.0.1 `<2` bound didn't fix it. Fix (Option 1): pin `[treesitter]` to the bundled line `>=0.7,<1.0` (+ `tree-sitter>=0.25.2,<1`); opt-in `[treesitter-download]` = 1.x; adaptive `_load_grammar` (download-and-retry when the pack supports it, else #7 warn+skip); `stitchgraph doctor`/`--strict` self-check. Verified the `get_language→_load_grammar` swap is **byte-identical** (all 12 langs; success path makes zero `download()` calls), all 4 adaptive-load paths, doctor incl. not-installed, pin bounds (`[all]` stays offline-by-default). Offline operation independently verified in a throwaway venv on bundled 0.13.0 with the network OFF. All 12 grammars MIT-licensed. Dogfood 3 advisory / 0 holes; 172 tests. |
 
 ## What each panel found and how it was fixed
 
@@ -691,9 +693,25 @@ export-rooting class is now comprehensive (`export {}`, `export default <ident>`
 `export default class/fn`, `export =`, `module.exports`/`exports.*`, object exports).
 **Next step is the maintainer's manual `v1.0.2` tag.** This is the diversity-is-the-signal
 lesson made concrete: a returning reviewer with no memory of the recent cycle saw what the
-incumbent pair had gone blind to.
+incumbent pair had gone blind to. **1.0.2 is released** (maintainer tag).
 
-Deferred non-blockers: obscure JS/CJS export indirections (`module.exports` inside a function
+**1.0.3 (offline-by-default grammars, issue #12)** is prepared: gates green (**172 tests** ·
+ruff · mypy), in-repo version `1.0.3`, `CHANGELOG.md` + `docs/RELEASE_NOTES_v1.0.3.md` written.
+`tree-sitter-language-pack` switched at v1.0.0 from bundling grammars in the wheel to a
+download-on-first-use model (breaks offline/CI/air-gapped); the 1.0.1 `<2` bound didn't fix
+it. Chose Option 1: pin `[treesitter]` to the bundled line (`>=0.7,<1.0`) for an offline,
+self-contained default; add an opt-in `[treesitter-download]` extra (1.x); an adaptive
+`_load_grammar` that gets the grammar the easiest available way (bundled, else download-and-
+retry when the pack supports it, else #7 warn+skip); and a `stitchgraph doctor`/`--strict`
+self-check. **Panel JJ** (full 3-model) clean: the loader swap is byte-identical, all adaptive
+paths correct, offline operation verified in a throwaway venv with the network off; all 12
+grammars are MIT (so depending on the bundled wheels carries no redistribution burden).
+Readiness reads RELEASABLE, though note the streak counts II (1.0.2 code) + JJ (1.0.3 code) —
+JJ is the one panel that reviewed the #12 change, and it's a behaviour-preserving packaging
+fix. **Next step is the maintainer's manual `v1.0.3` tag** (and #12 can then be closed).
+
+Deferred non-blockers: the `[treesitter-download]` (1.x) line still needs network on first use
+(by design — that's the opt-in); obscure JS/CJS export indirections (`module.exports` inside a function
 body, `export *`, `Object.assign(module.exports,…)`, namespace-member export — all err-safe,
 documented); a test base in a *non-test* directory subclassed by an own-method-less test;
 third-party Rust runner macros (`#[rstest]`/`#[test_case]`); SQL MERGE WRITES label;
