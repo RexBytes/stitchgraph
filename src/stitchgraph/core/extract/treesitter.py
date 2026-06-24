@@ -181,6 +181,19 @@ def supported_languages() -> list[str]:
     return sorted(set(EXT_LANG.values()))
 
 
+def _header_lang(path: Path) -> str:
+    """Resolve an ambiguous `.h` header to C or C++ by content. The C grammar has no
+    class/namespace/template node types, so a C++ header parsed as C mis-structures its
+    classes and flags them dead (panel TTT, cardinal). Sniff for C++ markers and default to
+    C, so pure-C headers are unaffected; over-accepting toward C++ is the precision-safe
+    direction for the cardinal invariant."""
+    try:
+        head = path.read_bytes()[:16384]
+    except OSError:
+        return "c"
+    return "cpp" if re.search(rb"\b(class|namespace|template)\b|::", head) else "c"
+
+
 def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
     if not HAS_TREE_SITTER:
         return [], []
@@ -201,6 +214,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     grammar_failed: dict[str, int] = {}  # lang -> files skipped (grammar unavailable)
     for path in files:
         lang = EXT_LANG[path.suffix]
+        if path.suffix == ".h":
+            lang = _header_lang(path)  # .h is C or C++; the C grammar mis-parses C++ classes
         if lang not in SPECS:
             continue
         if lang in grammar_failed:  # already known-unavailable; don't retry, just count
@@ -288,7 +303,11 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     # paths). Over-marking by name is the safe direction.
     if reexports:
         for n in nodes:
-            if n.kind in (C, F, M) and n.name in reexports:
+            # Guard by language: `export { X }` is JS/TS-only, so a same-named symbol in
+            # an unrelated language (a dead Ruby `class Widget`) must not be marked exported
+            # by a JS file's re-export (panel TTT LOW — cross-language false-negative).
+            if n.kind in (C, F, M) and n.name in reexports \
+                    and file_lang.get(n.id.split("::", 1)[0]) in _CLASS_VISIBILITY_LANGS:
                 n.roles = n.roles | {"exported"}
 
     # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
@@ -307,6 +326,15 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
                 n.kind = M
 
     _seed_exported_class_methods(nodes, file_lang)
+    # Public members of an exported interface/trait are public API but, unlike class
+    # members, are implicitly public (no visibility token) so `_roles` never marks them
+    # `exported` and the JS/TS-gated class pass above skips them — leaving a `pub trait` /
+    # `public interface` default/abstract method flagged dead (panel SSS, cardinal). The
+    # `defs` list keeps each def's AST node, so identify interface/trait containers by node
+    # type and down-propagate `exported` to their non-private members.
+    _iface_ids = {cid for _r, cid, body, _l in defs
+                  if cast(Any, body).type in _INTERFACE_TYPES}
+    _seed_exported_interface_methods(nodes, _iface_ids)
     _seed_classes_from_exported_methods(nodes)
     _seed_test_classes(nodes, inherits, file_lang)
     _seed_main_classes(nodes)
@@ -384,6 +412,22 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         _ref(edges, mod_id, name, by_lang.get(lang, {}),
              mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
     _seed_constructors(nodes, edges, file_lang)
+    # A module node shares the id-space with same-named symbols: `run.sh::run` for a bash
+    # script defining `run()`, `tests/Service.js::Service` for a test file defining class
+    # Service. The store's INSERT OR REPLACE then drops the MODULE node — and with it the
+    # module-only roles (`script`/`test`) that have no redundant assignment on the symbol
+    # node — flagging the whole file's code dead (panels SSS/TTT, cardinal). Merge a
+    # shadowed module node's roles into the surviving symbol node and drop the duplicate.
+    _mod_by_id = {n.id: n for n in nodes if n.kind is NodeKind.MODULE}
+    if _mod_by_id:
+        _shadowed: set[str] = set()
+        for n in nodes:
+            if n.kind is not NodeKind.MODULE and n.id in _mod_by_id:
+                n.roles = n.roles | _mod_by_id[n.id].roles
+                _shadowed.add(n.id)
+        if _shadowed:
+            nodes = [n for n in nodes
+                     if not (n.kind is NodeKind.MODULE and n.id in _shadowed)]
     return nodes, edges
 
 
@@ -513,6 +557,31 @@ def _grow_test_classes(test_classes: set, class_ids: set, inherits: list,
                     bid in test_classes for bid in name_to_ids.get((lang, base_name), ())):
                 test_classes.add(child_id)
                 changed = True
+
+
+# Interface/trait container node types whose members are implicitly public API.
+_INTERFACE_TYPES = frozenset({
+    "trait_item",            # rust
+    "interface_declaration",  # java / c# / php
+    "trait_declaration",      # php
+})
+
+
+def _seed_exported_interface_methods(nodes, interface_ids: set[str]) -> None:
+    """Down-propagate `exported` from an exported interface/trait container to its
+    non-private member methods. Interface/trait members are implicitly public (no visibility
+    token), so `_roles`/`_has_public` never mark them exported, and `_seed_exported_class_methods`
+    is gated to JS/TS — leaving Java/C#/Rust public interface members (incl. body-bearing
+    default methods) flagged dead (panel SSS, cardinal). Over-rooting a rare explicitly-private
+    interface member is the precision-safe direction."""
+    exported_ifaces = {n.id for n in nodes
+                       if n.kind is C and n.id in interface_ids and "exported" in n.roles}
+    if not exported_ifaces:
+        return
+    for n in nodes:
+        if n.kind is M and not n.name.startswith(("_", "#")) \
+                and n.id.rsplit(".", 1)[0] in exported_ifaces:
+            n.roles = n.roles | {"exported"}
 
 
 def _seed_main_classes(nodes) -> None:

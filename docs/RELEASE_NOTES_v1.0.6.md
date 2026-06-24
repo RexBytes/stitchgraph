@@ -1,8 +1,12 @@
 # stitchgraph v1.0.6 — entry-point coverage (issues #20, #21, #22)
 
-A field-fix patch closing two cardinal-class false-dead gaps in entry-point detection
-(both in the same family as #8), plus a documentation correction. The two code fixes only
-ever *add* roots — they are precision-safe and can never newly flag live code dead.
+A field-fix patch that began as entry-point coverage (#20/#21/#22) and grew, under a
+sustained multi-model adversarial-panel review, into a broad **robustness + cross-language
+cardinal-hardening** release. It fixes a family of cardinal-class false-deads (live code
+flagged dead) across the tree-sitter languages — rooted in Python↔tree-sitter rooting
+asymmetries and grammar/extension edge cases — plus a set of crash/hang hardening fixes
+(FIFO/special files, malformed coverage JSON and `stitchgraph.toml`, deep-AST RecursionError)
+and a documentation correction. The cardinal fixes only ever *add* roots (precision-safe).
 
 ## What changed
 
@@ -18,8 +22,8 @@ that wasn't otherwise exported or constructed had its **class** flagged dead whi
 methods stayed live. The class-rooting pass is now mirrored on the tree-sitter side, tied to
 *having* callback methods (a bare unused subclass with no overrides still flags).
 
-A follow-up confirmation panel found this was one instance of a **systematic** Python↔tree-sitter
-rooting gap, and uncovered two more cardinal false-deads in the same family:
+Successive confirmation panels found this was one instance of a **systematic** Python↔tree-sitter
+rooting gap and surfaced a family of cardinal false-deads, all now fixed:
 
 - **C/C++** map every `function_definition` to FUNCTION (no separate method node), so *all
   five* method-based class-rooting passes (exported/test/callback/main/constructor) — which
@@ -30,6 +34,20 @@ rooting gap, and uncovered two more cardinal false-deads in the same family:
   gets the `exported` role, and the tree-sitter extractor (unlike Python) had no pass to root
   the enclosing class of a `main`-role method. A new `_seed_main_classes` pass mirrors the
   Python rescue.
+- **Interface/trait members** (Rust `pub trait`, Java/C# `public interface`, PHP): implicitly
+  public (no visibility token) so they never got a per-method `exported` role, and the
+  down-propagation was JS/TS-gated — so public interface members, including body-bearing
+  `default` methods, were flagged dead. A new `_seed_exported_interface_methods` pass fixes it.
+- **C++ classes in `.h` headers**: `.h` was parsed with the C grammar (no class/namespace/
+  template), so C++ classes in headers mis-parsed and flagged dead. `.h` is now resolved to
+  C or C++ by content.
+- **Module/symbol id collisions** (bash `run.sh` + `run()`; JS test `tests/Service.js` +
+  `class Service`): the store's `INSERT OR REPLACE` dropped the module node and its module-only
+  role (`script`/`test`), flagging the file's code dead. A shadowed module's roles now merge
+  into the surviving symbol node.
+
+(Precision fix, not cardinal: a JS/TS `export { X }` no longer roots a same-named symbol in
+another language.)
 
 ### `reindex` survives a pathologically deep source file
 
@@ -136,7 +154,7 @@ are counted.
 
 ## Verification
 
-`pytest` 208 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 213 passed (new regression tests: console-script root + module-precision guard;
 C++ framework-subclass class+methods live; C# internal `Main`-class live; deep-expression
 no-abort in the tree-sitter resolver pipeline;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the

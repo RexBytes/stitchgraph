@@ -418,6 +418,94 @@ def test_csharp_internal_main_class_is_live(tmp_path):
         assert "Program" not in stale            # entry-point class live (was false-dead)
 
 
+def test_exported_interface_trait_members_are_live(tmp_path):
+    """CARDINAL (panel SSS): members of an exported interface/trait are public API but are
+    implicitly public (no visibility token), so `_roles` never marks them exported and the
+    JS/TS-gated class pass skips them — leaving a `pub trait`/`public interface` member
+    (incl. body-bearing default methods) flagged dead. `_seed_exported_interface_methods`
+    down-propagates `exported` from the exported container."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": "pub trait Summary {\n    fn summarize(&self) -> String { String::from(\"d\") }\n}\n",
+        "Greeter.java": ("public interface Greeter {\n"
+                         "    String greet();\n"
+                         "    default String greetLoud() { return greet() + \"!\"; }\n}\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Summary.summarize" not in stale       # Rust trait default method live
+        assert "Greeter.greet" not in stale            # Java abstract interface method live
+        assert "Greeter.greetLoud" not in stale        # Java default interface method live
+
+
+def test_cpp_class_in_h_header_is_live(tmp_path):
+    """CARDINAL (panel TTT): `.h` was mapped to the C grammar, which has no class/namespace/
+    template, so a C++ class in a `.h` header mis-parsed and was flagged dead (`.h` is the
+    dominant C++ header extension). `.h` is now resolved to C or C++ by content."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "engine.h": "class Engine {\n    void start() { ignite(); }\n    void ignite() { return; }\n};\n",
+        "main.cpp": "int main(){ Engine e; e.start(); return 0; }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Engine" not in stale                   # C++ class in .h header live
+        assert "Engine.ignite" not in stale
+
+
+def test_bash_script_function_named_like_file_stem_stays_live(tmp_path):
+    """CARDINAL (panel SSS): a bash `run.sh` defining `function run()` collides ids
+    (`run.sh::run` for both the MODULE node and the function), and the store's
+    INSERT OR REPLACE dropped the MODULE node — and with it the `script` role (which lives
+    ONLY on the module for bash), flagging every function dead. A shadowed module's roles
+    are now merged into the surviving symbol node."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "run.sh": "#!/usr/bin/env bash\nfunction run() { helper; }\nfunction helper() { echo done; }\nrun\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "run" not in stale and "helper" not in stale  # script role survives collision
+
+
+def test_js_test_file_class_named_like_stem_stays_live(tmp_path):
+    """CARDINAL (panel TTT): a JS test file `tests/Service.js` defining `class Service`
+    collides ids with the MODULE node, dropping the `test` role (the test variant of the
+    bash collision). The module's roles are now merged into the surviving class node."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "tests/Service.js": ("class Service { run() { this.doWork(); } doWork() { return 1; } }\n"
+                             "const svc = new Service();\nsvc.run();\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "tests/Service.js::Service" not in stale_ids   # test role survives collision
+
+
+def test_js_reexport_does_not_root_same_named_symbol_in_other_language(tmp_path):
+    """Precision (panel TTT LOW): `export { Widget }` is JS/TS-only, so a same-named dead
+    class in another language must NOT be marked exported by it (cross-language false
+    negative). The reexport pass is now language-guarded."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "widget.ts": "class Widget { render() { return 1; } }\nexport { Widget };\n",
+        "rb_widget.rb": "class Widget\n  def render\n    1\n  end\nend\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "rb_widget.rb::Widget" in stale_ids     # genuinely-dead Ruby class flags
+
+
 def test_reindex_survives_deep_expression_in_tree_sitter_resolver(tmp_path):
     """The route resolvers (express/jsfetch/spring) run their OWN recursive descent over a
     tree-sitter tree, bypassing ResolveContext.parse()'s RecursionError guard — and

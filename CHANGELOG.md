@@ -6,10 +6,14 @@ All notable changes to stitchgraph. Format follows
 
 ## [1.0.6] — 2026-06-24
 
-**Field-fix patch — entry-point coverage (issues #20, #21, #22).** Two cardinal-class
-false-dead fixes plus a documentation correction, from the field audit. Both code fixes
-only *add* roots (precision-safe — they can never newly flag live code dead). Confirmed by
-full three-model panels.
+**Field-fix patch — entry-point coverage (#20/#21/#22) that grew into a robustness +
+cross-language cardinal-hardening release.** Under sustained multi-model adversarial-panel
+review, the entry-point work surfaced a family of cardinal-class false-deads (live code
+flagged dead) across the tree-sitter languages — Python↔tree-sitter rooting asymmetries and
+grammar/extension edge cases — plus crash/hang hardening (FIFO/special files, malformed
+coverage JSON and `stitchgraph.toml`, deep-AST `RecursionError`) and a documentation
+correction. The cardinal fixes only ever *add* roots (precision-safe). Confirmed by full
+three-model panels.
 
 ### Fixed
 
@@ -34,6 +38,26 @@ full three-model panels.
   gets the `exported` role, and the tree-sitter extractor had no pass to root the enclosing
   class of a `main`-role method (the Python extractor does). A new `_seed_main_classes` pass
   mirrors the Python rescue.
+- **CARDINAL: public interface/trait members are no longer flagged dead.** Members of an
+  exported interface/trait are public API but, being implicitly public (no visibility token),
+  never got a per-method `exported` role, and the down-propagation pass was gated to JS/TS —
+  so a `pub trait` (Rust), `public interface` (Java/C#), or interface/trait (PHP) member,
+  including body-bearing `default` methods, was flagged dead. A new
+  `_seed_exported_interface_methods` pass down-propagates `exported` from the container.
+- **CARDINAL: a C++ class in a `.h` header is no longer flagged dead.** `.h` was mapped to
+  the C grammar, which has no class/namespace/template — so a C++ class in a `.h` header
+  (the dominant C++ header extension; header-only and split header/source layouts are
+  ubiquitous) mis-parsed and surfaced as dead code. `.h` is now resolved to C or C++ by
+  content.
+- **CARDINAL: a module node colliding with a same-named symbol no longer loses its role.**
+  A bash `run.sh` defining `run()`, or a JS test file `tests/Service.js` defining
+  `class Service`, produced two nodes with the same id; the store's `INSERT OR REPLACE`
+  dropped the MODULE node and with it its module-only role (`script`/`test`, which has no
+  redundant assignment), flagging the whole file's code dead. A shadowed module node's roles
+  are now merged into the surviving symbol node.
+- **A JS/TS `export { X }` no longer roots a same-named symbol in another language**
+  (a dead Ruby/Go/… `X` was hidden by an unrelated JS re-export). The reexport pass is now
+  language-guarded — a precision (false-negative) fix, not cardinal.
 - **`reindex` no longer aborts on a pathologically deep source file.** A huge flat
   expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder code)
   overflows the recursive AST walk with `RecursionError`, which was not in the per-file
