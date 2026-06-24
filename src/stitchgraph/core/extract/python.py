@@ -371,9 +371,16 @@ def _apply_script_roles(proj: _Project) -> None:
     for mod_suffix, obj in targets:
         leaf = obj.split(".")[-1]  # "Class.method"/"func" -> the node's own name
         for n in by_name.get(leaf, []):
-            filepart = n.id.split("::", 1)[0]
-            if filepart == mod_suffix or filepart.endswith("/" + mod_suffix):
-                n.roles = n.roles | {"script"}
+            filepart, _, qual = n.id.partition("::")
+            if not (filepart == mod_suffix or filepart.endswith("/" + mod_suffix)):
+                continue
+            # A `Class.method` target names a specific method — require the node's full
+            # qualified name to match, so a same-named method on a *different* class in
+            # the same file isn't also rooted (panel WW). Bare `func` targets match by
+            # leaf as before.
+            if "." in obj and qual != obj:
+                continue
+            n.roles = n.roles | {"script"}
 
 
 # -- pass 2: edges ----------------------------------------------------------

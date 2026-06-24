@@ -2250,3 +2250,41 @@ def test_bash_top_level_script_roots_its_functions(tmp_path):
         for live in ("get_versions", "check_config", "monitor", "get_indices", "cleanup"):
             assert live not in stale, f"{live} wrongly flagged stale"
         assert "orphan" in stale            # genuinely unused -> still flagged
+
+
+def test_pyproject_class_method_target_matches_exact_qualified_name(tmp_path):
+    """A `Class.method` console-script target roots only that method, not a same-named
+    method on a different class in the same file (panel WW — leaf-only over-rooting)."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "m"\nversion = "0.1"\n'
+                          '[project.scripts]\nt = "m.cli:App.run"\n',
+        "m/__init__.py": "",
+        "m/cli.py": "class App:\n    def run(self):\n        return 1\n"
+                    "class Dead:\n    def run(self):\n        return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        roles = {n.id: n.roles for n in store.nodes_by_name("run")}
+        app = next(i for i in roles if i.endswith("App.run"))
+        dead = next(i for i in roles if i.endswith("Dead.run"))
+        assert "script" in roles[app]
+        assert "script" not in roles[dead]   # different class, not the target
+
+
+def test_bash_trap_does_not_root_signal_name_functions(tmp_path):
+    """`trap cleanup EXIT` roots only the handler `cleanup`; the signal word `EXIT` is
+    not rooted, so a function that happens to be named after a signal isn't spuriously
+    kept live (panel XX)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "s.sh": "#!/usr/bin/env bash\n"
+                "EXIT() { echo signal-named; }\n"   # shares a signal name, unused
+                "cleanup() { echo real; }\n"
+                "trap cleanup EXIT\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "cleanup" not in stale       # the handler is rooted
+        assert "EXIT" in stale              # signal name, not a rooted handler

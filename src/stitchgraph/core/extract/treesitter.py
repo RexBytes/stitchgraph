@@ -834,10 +834,13 @@ def _module_uses(root, src, spec):
 def _bash_trap_handlers(root, src):
     """`trap cleanup EXIT` registers `cleanup` to run on a signal — a real use the
     generic command scan misses (it sees the `trap` command, not its function argument).
-    Yield each top-level trap's argument words as (name, line) so `_ref` roots any that
-    name a project function (non-function words like `EXIT` resolve to nothing and are
-    dropped). Issue #22. Top-level scope only (skips function bodies), matching
-    `_module_uses`."""
+    Yield the **handler** of each top-level trap as (name, line) so `_ref` roots it if it
+    names a project function. Issue #22. The trap form is `trap [FLAGS] HANDLER SIGNAL…`:
+    only the first non-flag word is the handler — subsequent words are signal names
+    (`EXIT`/`INT`/…), which must NOT be rooted or a function happening to share a signal's
+    name would be spuriously kept live (panel XX). A quoted/inline handler (`trap 'cmd'
+    EXIT`) is a string node, not a word, and is correctly skipped. Top-level scope only
+    (skips function bodies), matching `_module_uses`."""
     out: list[tuple[str, int]] = []
 
     def rec(n):
@@ -849,8 +852,13 @@ def _bash_trap_handlers(root, src):
                 head = _text(cn.children[0] if cn and cn.children else cn, src) if cn else ""
                 if head == "trap":
                     for arg in c.children:
-                        if arg is not cn and arg.type == "word":
-                            out.append((_text(arg, src), arg.start_point[0] + 1))
+                        if arg is cn or arg.type != "word":
+                            continue
+                        w = _text(arg, src)
+                        if w.startswith("-"):
+                            continue  # a flag (-- / -p / -l), not the handler
+                        out.append((w, arg.start_point[0] + 1))
+                        break  # first non-flag word is the handler; rest are signals
             rec(c)
 
     rec(root)

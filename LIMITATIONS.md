@@ -120,6 +120,24 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 
 ## Cost-of-fix exceeds value
 
+### A console-script target maps to its module by path suffix (a shadow copy is over-rooted)
+- **Concern:** a `[project.scripts]` target `pkg.mod:main` (issue #21) is matched to the
+  node by module-path **suffix** (`…/pkg/mod.py`), so a *second* copy of that module —
+  `vendor/pkg/mod.py`, a `tests/pkg/mod.py` fixture — also gets the `script` root, hiding a
+  genuinely-dead `main` in the copy.
+- **Decision:** match by suffix and tag **all** files that match (over-mark), rather than
+  resolving the true import path.
+- **Rationale:** distinguishing the real module from a vendored/test copy needs full
+  import-path resolution (which dir is on `sys.path`), which is disproportionate. Crucially,
+  tightening toward picking *one* file risks **failing to root the real entry point** when
+  the layout is unusual (`src/`, namespace packages) — which re-introduces the exact #21
+  false-dead (a live CLI `main` flagged dead). Over-rooting a shadow copy is the
+  precision-safe direction; under-rooting the real one is not. A `Class.method` target *is*
+  matched exactly (by qualified name), and a same-named function in an unrelated module is
+  not matched — only same-suffix path copies are.
+- **Escape hatch:** pin the real target in `stitchgraph.toml [entry_points]`; the
+  over-marked copy surfaces only as *not flagged*, never as a confident verdict.
+
 ### `find_holes` reports edit-orphaned references, not first-index dangling calls
 - **Concern:** `find_holes` returns empty on a freshly-indexed project even when there's
   a textbook call to an undefined function — so "0 holes" can read as "no broken wiring"
