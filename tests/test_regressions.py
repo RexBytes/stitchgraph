@@ -2028,7 +2028,13 @@ def test_cli_version_flag():
     from typer.testing import CliRunner
 
     from stitchgraph.adapters.cli import build_app
-    result = CliRunner().invoke(build_app(), ["--version"])
+    app = build_app()
+    result = CliRunner().invoke(app, ["--version"])
     assert result.exit_code == 0
     assert re.search(r"stitchgraph \d+\.\d+\.\d+", result.stdout)
     assert "tree-sitter-language-pack" in result.stdout
+    # The --version callback must not swallow bare invocation: `stitchgraph` with no
+    # command still shows help, not a silent exit 0.
+    bare = CliRunner().invoke(app, [])
+    assert bare.exit_code != 0
+    assert "Usage" in bare.stdout or "Commands" in bare.stdout

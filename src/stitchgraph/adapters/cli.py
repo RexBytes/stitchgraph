@@ -28,7 +28,10 @@ def _require_typer():
 
 def build_app():
     typer = _require_typer()
-    app = typer.Typer(add_completion=False, help="stitchgraph — code intelligence")
+    # no_args_is_help: bare `stitchgraph` shows help (not a silent exit) — the
+    # invoke_without_command callback below would otherwise swallow it (issue #19).
+    app = typer.Typer(add_completion=False, no_args_is_help=True,
+                      help="stitchgraph — code intelligence")
 
     def _version_callback(value: bool) -> None:
         if not value:
