@@ -39,8 +39,8 @@ class ResolveContext:
             try:
                 yield path.relative_to(self.root).as_posix(), ast.parse(
                     path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
-                continue
+            except (SyntaxError, UnicodeDecodeError, OSError):
+                continue  # broken symlink / unreadable file — skip it, don't abort (panel DDD)
 
 
 class Resolver(Protocol):

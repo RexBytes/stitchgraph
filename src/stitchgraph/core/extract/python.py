@@ -76,8 +76,9 @@ def extract_project(root: str | Path,
     for path in files:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue  # OSError: a broken symlink / unreadable file (submodules, races)
+                      # — skip the one file, never abort the whole reindex (panel DDD).
         rel = path.relative_to(proj.root).as_posix()
         parsed[rel] = tree
         _collect_defs(proj, rel, path, tree)
@@ -85,6 +86,7 @@ def extract_project(root: str | Path,
     _index(proj)
     _apply_entrypoint_roles(proj)
     _apply_script_roles(proj)
+    _seed_entrypoint_classes(proj)
     for rel, tree in parsed.items():
         _collect_edges(proj, rel, tree)
     _apply_callback_roles(proj)
@@ -311,10 +313,49 @@ def _apply_entrypoint_roles(proj: _Project) -> None:
                 and not node.name.startswith("_") \
                 and node.id.rsplit(".", 1)[0] in exported_class_ids:
             extra.add("exported")
-        if node.name in proj.main_calls and node.kind == NodeKind.FUNCTION:
+        # A class instantiated in a `__main__` block (`Worker().run()`) is a live entry
+        # root just like a called function — include CLASS, else the class (and its
+        # methods, rescued below) is false-flagged dead (panel DDD, cardinal).
+        if node.name in proj.main_calls and node.kind in (NodeKind.FUNCTION, NodeKind.CLASS):
             extra.add("main")
         if extra:
             node.roles = node.roles | extra
+
+
+_ROOT_ROLES = frozenset({"exported", "main", "script"})
+
+
+def _seed_entrypoint_classes(proj: _Project) -> None:
+    """Keep a class live when it's reached through a root that targets one of its
+    methods, and keep a rooted class's public methods live — the 'method live, class
+    dead' / 'class live, methods dead' shapes (panel DDD, cardinal). Runs after all
+    role assignment so it sees `exported`/`main`/`script` roots:
+      (1) a root-bearing method roots its enclosing class chain (`App.run` script ->
+          `App` live; `Widget.Inner.go` -> `Widget.Inner` and `Widget`); and
+      (2) a root-bearing class roots its public (non-underscore) methods — external
+          callers can invoke them (generalises the exported-class-method rescue to the
+          `main`/`script` entry roots, e.g. `Worker()` in __main__ -> `Worker.run`).
+    Only ever adds roots (precision-safe — never flags live code dead)."""
+    by_id = {n.id: n for n in proj.nodes}
+    # (1) class(es) enclosing a root-bearing method/function.
+    for n in proj.nodes:
+        if n.kind not in (NodeKind.METHOD, NodeKind.FUNCTION) or not (n.roles & _ROOT_ROLES):
+            continue
+        cid = n.id
+        while "::" in cid and "." in cid.split("::", 1)[1]:
+            cid = cid.rsplit(".", 1)[0]
+            owner = by_id.get(cid)
+            if owner is not None and owner.kind is NodeKind.CLASS:
+                owner.roles = owner.roles | {"exported"}
+    # (2) public methods of a root-bearing class.
+    root_class_ids = {n.id for n in proj.nodes
+                      if n.kind is NodeKind.CLASS and (n.roles & _ROOT_ROLES)}
+    if root_class_ids:
+        for n in proj.nodes:
+            if n.kind is NodeKind.METHOD and "." in n.id.split("::", 1)[-1] \
+                    and not n.name.startswith("_") \
+                    and n.id.rsplit(".", 1)[0] in root_class_ids:
+                n.roles = n.roles | {"exported"}
 
 
 def _console_script_targets(root: Path) -> list[tuple[str, str]]:

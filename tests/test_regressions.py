@@ -2338,3 +2338,49 @@ def test_bash_trap_handler_parsing_matrix(tmp_path):
         tree = parser.parse(src)
         got = [n for n, _ in ts._bash_trap_handlers(tree.root_node, src)]
         assert got == expected, f"{code!r} -> {got}, expected {expected}"
+
+
+def test_class_method_console_script_keeps_class_live(tmp_path):
+    """A `Class.method` console-script target roots the method AND its enclosing class —
+    the class is genuinely live (the entry point can't reach the method without it).
+    The "method live, class dead" cardinal shape (panel DDD)."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "m"\nversion = "0.1"\n'
+                          '[project.scripts]\nt = "m.cli:App.run"\n',
+        "m/__init__.py": "",
+        "m/cli.py": "class App:\n    def run(self):\n        return 1\n"
+                    "class Dead:\n    def run(self):\n        return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "App" not in stale           # enclosing class of the entry method = live
+        assert "App.run" not in stale
+        assert "Dead" in stale              # genuinely unused class still flags
+
+
+def test_class_instantiated_in_main_block_is_live(tmp_path):
+    """A class instantiated in `if __name__ == "__main__":` (`Worker().run()`) is a live
+    entry root, like a called function — the class and the methods it invokes must not be
+    flagged dead (panel DDD, cardinal; a very common Python script idiom)."""
+    _mk(tmp_path, {
+        "app.py": "class Worker:\n    def run(self):\n        return 1\n\n"
+                  'if __name__ == "__main__":\n    Worker().run()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Worker" not in stale
+        assert "Worker.run" not in stale
+
+
+def test_reindex_survives_broken_symlink(tmp_path):
+    """A broken symlink (common with submodules / CI) must not abort the whole reindex —
+    the Python ast extractor and resolve context now skip an unreadable file like the
+    tree-sitter extractor already does (panel DDD)."""
+    (tmp_path / "good.py").write_text("def main():\n    return 1\n")
+    import os
+    os.symlink(str(tmp_path / "nonexistent.py"), str(tmp_path / "broken.py"))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))         # must not raise
+        assert "good.py::main" in set(store.all_node_ids())
