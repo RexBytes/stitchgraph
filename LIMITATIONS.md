@@ -67,6 +67,21 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** pin the test in `stitchgraph.toml [entry_points]`, or
   `ingest_trace` a real test run to seed liveness from what actually executed.
 
+### A few obscure JS/TS/CJS export indirections aren't rooted
+- **Concern:** `find_stale` roots a module's public exports (v1.0.2 closed the common
+  forms — `export {}` / inline `export class/fn` / `export default <ident>` / CommonJS
+  `module.exports`/`exports.*` / TS `export =`). A handful of indirect forms are still
+  not rooted, so a symbol exported *only* that way can surface as a stale candidate:
+  a `module.exports = X` assignment buried *inside a function body*; `export * from
+  './m'`; `Object.assign(module.exports, {…})`; and `module.exports = ns.Member` via a
+  locally-constructed namespace object.
+- **Decision / rationale:** match the idiomatic top-level forms by exact shape; these
+  indirections are rare, and rooting them generically (e.g. any member-expression RHS)
+  would over-mark and *hide* genuinely-dead code — the precision-unsafe direction. They
+  surface only as `needs_review` advisories at 0.6 confidence, never a confident verdict.
+- **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`, or re-export it
+  with an idiomatic form (`module.exports = { Member }`).
+
 ### Ambiguous calls link to *all* same-named candidates
 - **Concern:** one call produces several `AMBIGUOUS` edges, inflating reachability
   and `impact_of` blast radius.

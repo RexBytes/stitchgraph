@@ -56,6 +56,11 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | CC | opus · haiku | 1 CRITICAL · 1 MEDIUM | **44.0** | **opus: the Python/tree-sitter `is_test_file` had drifted** — Python checked only the filename, tree-sitter also directories — so a shared test base in `tests/conftest.py` got no `test` role and its inheriting subclass was flagged dead (CARDINAL). Fixed by extracting one **shared directory-aware `is_test_file`** (`_testfile.py`) used by both extractors, so they can't drift again. haiku (MEDIUM, err-safe): `#[cfg(not(test))]` *production* code was marked a test root (the bare `test` token sat inside `not(...)`); fixed by dropping `not(...)` predicates before the scan. **Streak resets.** |
 | DD | opus · haiku | _none_ | **0.0** | **CLEAN — convergence verdict: the test-liveness class is CLOSED for 1.0.1.** Both `FINDINGS: none`. opus confirmed all CC fixes (conftest base + subclass live; full Rust `cfg` matrix incl. `not(test)`/`all(not(test),…)`) and ran a final convergence attack (deep nesting × inheritance, mixins, metaclasses, JUnit `@Nested`) — no remaining live→dead case. The one residual (a test base in a *non-test* directory subclassed by an own-method-less test) is realistic-but-rare, precision-safe, `needs_review`-only, has escape hatches, and closing it generically would regress the Panel Y/W over-match guard → kept as a **documented limitation**. haiku full-matrix sweep clean. Dogfood 3 advisory / 0 holes; 165 tests. |
 | EE | opus · haiku | _none_ | **0.0** | **CLEAN — second consecutive clean panel; the 1.0.1 gate is met (streak 2, RRS confidence 0.86 → RELEASABLE).** Both `FINDINGS: none`, fresh independent confirmation. opus ran 11 cross-language scenarios it had not used before (Python pytest/unittest/inherited/nested/deep-chain; Java JUnit package-private abstract base + cross-file inherited base; C#/PHP/JS/Ruby call-based; Rust `#[tokio::test]`; Go cross-file; mixed suites) — only genuinely-dead helpers flagged. Over-marking bounded (bare metaclass, dead production, production `testing/` & `specs/` all flag); `#7` silent on a grammar-present run under `-W error`; `#9` candidates + qualified scoping across impact_of/get_callers/get_callees/trace_path; envelope contract intact (`find_stale` `needs_review`, conf ≤ 0.6, INFERRED). haiku full sweep clean. Dogfood 3 advisory / 0 holes; 165 tests. |
+| — | _1.0.1 released (maintainer tag); sonnet's API confirmed available again → restored to the panel (full diversity = opus + sonnet + haiku once more)_ | | | _The 1.0.2 line below is the post-release confidence panel (FF) + the fixes it triggered._ |
+| FF | opus · sonnet · haiku | 2 CRITICAL | **80.0** | **First full-3-model panel after restoring sonnet — diversity paid off immediately.** opus + haiku both clean, but FRESH sonnet (no memory of W–EE) caught **two CARDINAL false-deads the pair missed across the entire 1.0.1 cycle**: (1) JS/TS `export default Foo;` where `Foo` is defined earlier (canonical React/Angular/Vue/Node idiom) never set the `exported` role → flagged dead (PRE-EXISTING since 1.0.0; `_reexport_names` only handled `export { X }`); (2) Ruby a class used as a call receiver in an RSpec `describe/it` block (`Service.run`) got a CALLS edge to the method but no REFERENCES edge to the class → live class flagged dead (INTRODUCED by the 1.0.1 Bug-B `_module_calls`, which collected calls + bare idents but not `constant` receivers). Both confirmed by real-input repro. Fix: `_reexport_names` handles `export default <ident>`; `_module_calls`→`_module_uses` also collects name-references like `_direct_refs`. **Streak resets.** |
+| GG | opus · sonnet · haiku | 1 CRITICAL · 1 MEDIUM | **44.0** | **Confirming the FF fixes — both correct (all three models), and opus + sonnet converged on a CARDINAL sibling of F1 (pre-existing):** the whole-module CJS/TS-interop forms `module.exports = X` / `export = X` / `module.exports = { A, B }` / `exports.x = Y` aren't rooted → live public export flagged dead (CommonJS is pervasive). Fixed by extending `_reexport_names` to those forms. sonnet also found a MEDIUM err-safe over-rooting: `_module_uses` descended into a `const helper = function(){}` (itself a def), over-rooting its body's refs when uncalled; fixed by skipping `variable_declarator`-with-function-value. Both fixed + regression-pinned. **Streak resets.** |
+| HH | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — export-rooting class declared CLOSED (streak 1 of the 1.0.2 gate).** All three `FINDINGS: none`. sonnet enumerated **all 19 JS/TS/CJS export forms** and verified each is rooted or intentionally-err-safe-unhandled (anon default, `export *`, `Object.assign`). opus: matcher tight (`obj.exports`/local `exports` not over-rooted), no metric inflation, `export =` doesn't false-fire on `export const`. F2 `_module_uses` over-rooting fix holds. Dogfood 3 advisory / 0 holes; 169 tests. |
+| II | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — second consecutive clean panel; the 1.0.2 gate is met (streak 2, RRS confidence 0.86 → RELEASABLE).** All three `FINDINGS: none`, fresh independent confirmation (~30 new export/test-receiver/nesting/cross-language shapes from sonnet; 25 export shapes + a non-export sub-agent sweep — SQL/ORM/events/envelope/metrics/persistence/CLI — from opus; full matrix from haiku). Export-rooting class confirmed closed; over-marking bounded; `#7`/`#9`, the four nesting hosts, and the 1.0.1 polyglot detection all hold; dedup/metric integrity intact. One borderline err-safe note (`module.exports = ns.Member` via a locally-built namespace not rooted) → documented limitation, advisory-only. Dogfood 3 advisory / 0 holes; 169 tests. |
 
 ## What each panel found and how it was fixed
 
@@ -671,12 +676,28 @@ CARDINAL test-class-liveness gaps: direct → inherited/nested → combined fixe
 Python/tree-sitter `is_test_file` asymmetry, each fixed + regression-pinned) → **DD clean
 with an explicit verdict that the class is CLOSED → EE clean (second consecutive) → streak 2,
 RRS confidence 0.86 → RELEASABLE.** A unified directory-aware `is_test_file` (`_testfile.py`)
-now backs both extractors so they can't drift. The polyglot work is certified to the same
-2-consecutive-clean bar as 1.0.0. **Next step is the maintainer's manual `v1.0.1` tag.**
-Deferred non-blockers: a test base in a *non-test* directory subclassed by an own-method-less
-test (documented, precision-safe); third-party Rust runner macros (`#[rstest]`/`#[test_case]`);
-SQL MERGE WRITES label; `find_holes` empty-list urgency; the LSP backend and
-variable-granularity data flow.
+now backs both extractors so they can't drift. **1.0.1 is released** (maintainer tag).
+
+**1.0.2 (export-rooting + test call-receivers)** is prepared: gates green (**169 tests** ·
+ruff · mypy), in-repo version `1.0.2`, `CHANGELOG.md` + `docs/RELEASE_NOTES_v1.0.2.md`
+written. After 1.0.1 shipped, sonnet's API came back and was restored to the panel (full
+diversity = opus + sonnet + haiku again). The first full-3-model panel (FF) had opus + haiku
+clean but **fresh sonnet caught two CARDINAL false-deads the pair had missed across the whole
+1.0.1 cycle** (JS/TS `export default <ident>` — pre-existing; a test's class-as-call-receiver
+in an RSpec/Jest block — a 1.0.1 regression). GG surfaced a third (CJS `module.exports` / TS
+`export =`). Fixed as a batch, then **HH clean (export-rooting class enumerated CLOSED, 19
+forms) → II clean (second consecutive) → streak 2, RRS confidence 0.86 → RELEASABLE.** The
+export-rooting class is now comprehensive (`export {}`, `export default <ident>`, inline
+`export default class/fn`, `export =`, `module.exports`/`exports.*`, object exports).
+**Next step is the maintainer's manual `v1.0.2` tag.** This is the diversity-is-the-signal
+lesson made concrete: a returning reviewer with no memory of the recent cycle saw what the
+incumbent pair had gone blind to.
+
+Deferred non-blockers: obscure JS/CJS export indirections (`module.exports` inside a function
+body, `export *`, `Object.assign(module.exports,…)`, namespace-member export — all err-safe,
+documented); a test base in a *non-test* directory subclassed by an own-method-less test;
+third-party Rust runner macros (`#[rstest]`/`#[test_case]`); SQL MERGE WRITES label;
+`find_holes` empty-list urgency; the LSP backend and variable-granularity data flow.
 
 ## Standing themes
 
@@ -685,6 +706,12 @@ variable-granularity data flow.
   or resolver but not its siblings. Audit by a path×behaviour matrix.
 - Blind spots: tree-sitter / graphblas / sqlglot / jedi / mcp surfaces are gated
   by optional deps; a panel is blind to them unless the extras are installed.
+- Model diversity is itself a defect-finding signal, not just a confidence multiplier.
+  Two panels (W–EE) ran opus+haiku because sonnet was down and went 1.0.1-clean; the
+  moment sonnet returned (FF) it found two cardinals — one a regression those panels had
+  just shipped — that the incumbent pair had gone collectively blind to. A reviewer with
+  no memory of the recent cycle is the cheapest way to break a shared blind spot; keep the
+  model set diverse and rotate a fresh perspective in after any long single-pairing run.
 
 _Maintenance: append a trajectory row + a bullet per panel; keep the TL;DR in
 sync with `release_readiness.json`._

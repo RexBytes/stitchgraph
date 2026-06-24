@@ -4,6 +4,34 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.2] — 2026-06-24
+
+**Field-fix patch — export-rooting + test call-receivers.** After 1.0.1 shipped, the
+review panel was restored to full three-model diversity (opus + sonnet + haiku). The
+freshly-returned **sonnet** immediately caught two cardinal false-deads that the
+opus/haiku pair had missed across the entire 1.0.1 cycle, and the follow-up panels
+surfaced a third. Fixed as a batch and confirmed by two consecutive full-diversity
+clean panels (HH + II → readiness RELEASABLE). All three are the cardinal class — live
+code flagged dead by `find_stale`. See the [release notes](docs/RELEASE_NOTES_v1.0.2.md).
+
+### Fixed
+
+- **JS/TS/CJS public exports are no longer flagged dead** (precision; panels FF/GG/HH).
+  Only `export { X }` and inline `export class/function` were recognized, so a symbol
+  defined and then exported separately was reported stale. Now the whole export-rooting
+  class is closed: `export default Foo;` (the canonical React/Angular/Vue/Node idiom —
+  pre-existing since 1.0.0), CommonJS `module.exports = Foo` / `module.exports = { A, B }`
+  / `exports.x = Foo`, and TypeScript `export = Foo`. Matched precisely — anonymous
+  defaults (`export default () => {}`) and locals named `exports` are not over-rooted, so
+  genuinely-dead code still flags.
+- **A class used only as a call receiver in a test block stays live** (precision; panel
+  FF — a regression the 1.0.1 polyglot work introduced). In a call-based suite a class
+  referenced as `Service.run` inside an RSpec/Jest `describe`/`it` block got a `CALLS`
+  edge to the method but no reference to the class, so the live class was flagged dead.
+  The test-file module scan (`_module_uses`) now collects name-references like the per-
+  function scan does, and no longer descends into uncalled function-expression bodies
+  (so a dead class referenced only inside an uncalled helper still flags).
+
 ## [1.0.1] — 2026-06-24
 
 **Field-fix patch.** Three issues raised against 1.0.0 in real use on a Rust
