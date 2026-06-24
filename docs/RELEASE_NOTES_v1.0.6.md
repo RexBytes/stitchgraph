@@ -53,6 +53,19 @@ rooting gap and surfaced a family of cardinal false-deads, all now fixed:
 - **Rust trait-impl methods**: a method in `impl Trait for X` can't be `pub` and is invoked via
   sugar (`Display::fmt` via `{}`, operators, `for`), so it got no role and no call edge —
   flagged dead. A new `_seed_trait_impl_methods` pass roots them.
+- **C# partial classes & the general class invariant**: a non-public part of a `partial class`
+  split across files was flagged dead while its members were live. Rather than another per-role
+  patch, `find_stale` now enforces the **general invariant that a class with any reachable
+  member is live** (a live method implies a live class) — the structural backstop for the whole
+  "class dead while a member is live" family. (This also keeps stitchgraph's own
+  `ConfigOnlyDetector` live, so dogfood is now 2 advisory rather than 3.)
+- **C# top-level statements**: the default .NET 6+ top-level-program form is the entry point
+  (like bash/`__main__`); its local functions were flagged dead. Such `.cs` files are now
+  rooted as a script.
+
+(Crash hardening, not cardinal: `find_symbol`/`impact_of`/`trace_path`/`get_callers`/
+`get_callees` no longer crash on a non-UTF-8 / NUL symbol name — the store lookups refuse
+instead of raising.)
 
 (Precision fix, not cardinal: a JS/TS `export { X }` no longer roots a same-named symbol in
 another language.)
@@ -162,15 +175,15 @@ are counted.
 
 ## Verification
 
-`pytest` 216 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 219 passed (new regression tests: console-script root + module-precision guard;
 C++ framework-subclass class+methods live; C# internal `Main`-class live; deep-expression
 no-abort in the tree-sitter resolver pipeline;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
 extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
 and the coverage-trace read; malformed-coverage-JSON-shape no-crash; malformed-`stitchgraph.toml`
 no-crash; unicode-filename churn counted; tree-sitter callback *class* stays live;
-deep-AST reindex no-abort) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
+deep-AST reindex no-abort; C/C++ unified resolution; Rust trait-impl methods live; C# top-level statements + partial classes live; class-with-live-member invariant; non-UTF-8 name refuses) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
 bundled 0.13.0. Confirmed by full three-model panels (opus + sonnet + haiku); both FIFO
 hangs (resolver-pipeline, then the `pyproject.toml` fixed-path read) were caught by opus
-reviewers across two panel rounds and fixed before release. Dogfood `src/`: unchanged. Full
+reviewers across two panel rounds and fixed before release. Dogfood `src/`: now **2 advisory / 0 holes** (was 3 — `ConfigOnlyDetector` is now correctly kept live by the class-with-live-member invariant, since its `detect` is reachable via the `EntryPointDetector` protocol call). Full
 trajectory in `REVIEW_HISTORY.md`.

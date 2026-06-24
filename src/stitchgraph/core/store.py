@@ -209,11 +209,20 @@ class Store:
 
     # -- reads -------------------------------------------------------------
     def nodes_by_name(self, name: str) -> list[Node]:
-        rows = self.conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchall()
+        try:
+            rows = self.conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchall()
+        except (UnicodeEncodeError, ValueError):
+            # A user-supplied name with a lone surrogate (invalid-UTF-8 argv via
+            # surrogateescape) or an embedded NUL can't be a stored symbol; sqlite raises
+            # on bind. Refuse with no match rather than crash the op (panel XXX).
+            return []
         return [_row_to_node(r) for r in rows]
 
     def get_node(self, node_id: str) -> Node | None:
-        row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        try:
+            row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
+        except (UnicodeEncodeError, ValueError):
+            return None  # non-UTF-8 / NUL id can't exist; refuse, don't crash (panel XXX)
         return _row_to_node(row) if row else None
 
     def nodes_by_kind(self, kind: NodeKind) -> list[Node]:

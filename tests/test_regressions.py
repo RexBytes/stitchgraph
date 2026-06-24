@@ -558,6 +558,60 @@ def test_rust_trait_impl_method_invoked_via_sugar_is_live(tmp_path):
         assert "Point.fmt" not in stale               # trait-impl method live
 
 
+def test_csharp_top_level_statements_root_local_functions(tmp_path):
+    """CARDINAL (panel WWW): C# top-level statements (the default .NET 6+ `Program.cs`) ARE
+    the program's Main entry point (like bash's top-level body / Python `__main__`), but local
+    functions in a top-level program had no root and were flagged dead. A `.cs` with
+    `global_statement` children is now rooted as a script."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Program.cs": ("int x = Compute(5);\nSystem.Console.WriteLine(x);\n"
+                       "int Compute(int n) { return Square(n) + 1; }\n"
+                       "int Square(int n) { return n * n; }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Compute" not in stale and "Square" not in stale
+
+
+def test_class_with_any_reachable_member_is_not_flagged_dead(tmp_path):
+    """CARDINAL (panel XXX): a live method implies a live class — a class must never be
+    flagged dead while any of its members is reachable. This is the general backstop for the
+    class-vs-member family (covers C# partial classes split across files: a non-public part
+    whose member is reached via the public part). A class with ALL members dead still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Service.cs": "public partial class Service { public string Process(string i){ return Normalize(i); } }\n",
+        "Service.Helpers.cs": "partial class Service { string Normalize(string s){ return s.Trim(); } }\n",
+        "Dead.cs": "class Dead { void unused() { } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        # the partial part whose member is reachable from the public part must stay live
+        assert "Service.Helpers.cs::Service" not in stale_ids
+        # but a class with no reachable member is still correctly flagged
+        assert "Dead.cs::Dead" in stale_ids
+
+
+def test_lookup_by_non_utf8_name_refuses_without_crashing():
+    """CRASH/envelope (panel XXX): a symbol name with a lone surrogate (invalid-UTF-8 argv
+    via surrogateescape) or an embedded NUL is bound into SQLite, which raises on encode. The
+    store lookups must refuse (empty/None) so the op returns a Result, not a traceback."""
+    from stitchgraph.core import operations as ops
+    from stitchgraph.core.model import Node, NodeKind
+    with sg.Store(":memory:") as store:
+        store.add_node(Node(id="m.py::f", kind=NodeKind.FUNCTION, name="f"), file="m.py")
+        assert store.nodes_by_name("\udcff\udcfe") == []      # lone surrogate -> no match
+        assert store.nodes_by_name("a\x00b") == []            # embedded NUL -> no match
+        assert store.get_node("\udcff") is None
+        r = ops.impact_of(store, "\udcff\udcfe")              # public op must not raise
+        assert r.ok is False
+
+
 def test_reindex_survives_deep_expression_in_tree_sitter_resolver(tmp_path):
     """The route resolvers (express/jsfetch/spring) run their OWN recursive descent over a
     tree-sitter tree, bypassing ResolveContext.parse()'s RecursionError guard — and

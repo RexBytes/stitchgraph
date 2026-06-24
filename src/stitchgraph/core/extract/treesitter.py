@@ -264,10 +264,17 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # with no main() doesn't leave every function flagged dead (issue #22). A
         # function reached by nothing (incl. its own top level) still flags — intended.
         is_bash_script = lang == "bash"
+        # C# top-level statements (the default `Program.cs` template since .NET 6) ARE the
+        # program's Main entry point — like bash's top-level body and Python's __main__. A
+        # `compilation_unit` with `global_statement` children is a top-level program; root it
+        # as a script so its top-level calls / local functions aren't flagged dead (panel WWW).
+        is_cs_toplevel = lang == "csharp" and any(
+            c.type == "global_statement" for c in tree.root_node.children)
+        is_script = is_bash_script or is_cs_toplevel
         mod_roles: set[str] = set()
         if is_test:
             mod_roles.add("test")
-        if is_bash_script:
+        if is_script:
             mod_roles.add("script")
         # Snapshot the mutable accumulators so a RecursionError mid-walk rolls the file
         # back cleanly — no orphan MODULE node / partial defs left behind (panel QQQ LOW;
@@ -278,7 +285,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
                           location=f"{rel}:1:0", roles=frozenset(mod_roles)))
         try:
-            if is_test or is_bash_script:
+            if is_test or is_script:
                 calls, refs = _module_uses(tree.root_node, src, spec)
                 if is_bash_script:
                     # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command

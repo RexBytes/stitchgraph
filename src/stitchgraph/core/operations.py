@@ -171,7 +171,8 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     seeds = detector.detect(store)
     all_ids = set(store.all_node_ids())
     reachable = reachable_from(store, seeds)
-    candidates = [{"id": nid} for nid in _stale_candidates(store, all_ids - reachable)]
+    candidates = [{"id": nid}
+                  for nid in _stale_candidates(store, all_ids - reachable, reachable)]
 
     auto_detection = not getattr(detector, "not_implemented", False)
     if not seeds:
@@ -790,13 +791,30 @@ def _default_detector(store: Store) -> PythonLibraryDetector:
 _CODE_KINDS = {NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS}
 
 
-def _stale_candidates(store: Store, unreached: set[str]) -> list[str]:
+def _stale_candidates(store: Store, unreached: set[str],
+                      reachable: set[str]) -> list[str]:
     """Filter the unreachable set down to real dead-code candidates.
 
     Dead *code* means an unreached function/method/class. Modules/packages
     (liveness is per-symbol), data/route nodes (DBTable, Route, ...), and dunder
     methods (`__init__`, `__enter__`, ... are framework-invoked) are not candidates.
+
+    A CLASS with any *reachable* member is itself live — a live method implies a live
+    class (the class must exist for the method to run). This general invariant is the
+    backstop for the whole "class dead while a member is live" family across every
+    language/idiom (callback/main/exported/interface/trait/partial), so a class is flagged
+    only when it AND all its members are unreached (panel XXX — C# partial classes).
     """
+    # qual-prefix of every reachable member -> its owning class/function id(s). Split only
+    # the qual (after `::`); the rel path may itself contain dots (`f.py`).
+    live_owners: set[str] = set()
+    for rid in reachable:
+        pre, sep, qual = rid.partition("::")
+        if not sep or "." not in qual:
+            continue
+        parts = qual.split(".")
+        for i in range(1, len(parts)):
+            live_owners.add(f"{pre}::{'.'.join(parts[:i])}")
     out: list[str] = []
     for nid in unreached:
         node = store.get_node(nid)
@@ -804,5 +822,7 @@ def _stale_candidates(store: Store, unreached: set[str]) -> list[str]:
             continue
         if node.name.startswith("__") and node.name.endswith("__"):
             continue
+        if node.kind is NodeKind.CLASS and nid in live_owners:
+            continue  # a reachable member keeps its class live
         out.append(nid)
     return sorted(out)

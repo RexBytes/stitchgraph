@@ -70,6 +70,22 @@ three-model panels.
 - **A JS/TS `export { X }` no longer roots a same-named symbol in another language**
   (a dead Ruby/Go/… `X` was hidden by an unrelated JS re-export). The reexport pass is now
   language-guarded — a precision (false-negative) fix, not cardinal.
+- **CARDINAL: a class with any reachable member is never flagged dead.** General invariant
+  (a live method implies a live class — the class must exist for the method to run) added to
+  `find_stale`'s candidate filter, as the backstop for the whole "class dead while a member
+  is live" family across every language/idiom (callback/main/exported/interface/trait, and
+  C# `partial class` parts split across files). A class is flagged only when it AND all its
+  members are unreached. (Side effect: stitchgraph's own `ConfigOnlyDetector` is now kept live
+  — its `detect` is reachable via the `EntryPointDetector` protocol call — so dogfood is now
+  2 advisory, was 3.)
+- **CARDINAL: C# top-level statements root their local functions.** A `.cs` file using the
+  default .NET 6+ top-level-program form (`Program.cs` with no explicit `Main`) is the
+  program's entry point, like bash's top-level body and Python's `__main__`; its local
+  functions were flagged dead. Such files are now rooted as a `script`.
+- **`find_symbol`/`impact_of`/`trace_path`/`get_callers`/`get_callees` no longer crash on a
+  non-UTF-8 symbol name.** A lone surrogate (invalid-UTF-8 argv decoded via `surrogateescape`)
+  or embedded NUL bound into SQLite raised `UnicodeEncodeError`/`ValueError`; the store lookups
+  now refuse (no match) so the op returns a `Result` instead of a traceback.
 - **`reindex` no longer aborts on a pathologically deep source file.** A huge flat
   expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder code)
   overflows the recursive AST walk with `RecursionError`, which was not in the per-file
