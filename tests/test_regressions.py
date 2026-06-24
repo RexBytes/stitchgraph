@@ -421,6 +421,36 @@ def test_malformed_executed_lines_do_not_crash_ingest(tmp_path):
         assert res.ok                            # the valid line still grounds f
 
 
+def test_malformed_coverage_json_shape_does_not_crash_ingest(tmp_path):
+    """Valid JSON of the WRONG SHAPE (not just bad values) must not crash `_parse_json`.
+    Earlier it guarded `executed_lines` values but assumed `files` was a dict and each
+    entry was a dict, so `files` as a list / an entry as a string|null raised an uncaught
+    AttributeError through the public `ingest_trace` (panel LLL — the content-shape twin of
+    the FIFO file-type fixes). Every shape must degrade to empty, honouring the docstring's
+    'empty on any problem' contract."""
+    from stitchgraph.core.runtime import load_coverage
+    for payload in (
+        '[1, 2, 3]',                                   # top-level not a dict
+        '{"files": [1, 2, 3]}',                        # files not a dict
+        '{"files": {"m.py": "nope"}}',                 # entry not a dict
+        '{"files": {"m.py": null}}',                   # entry null
+        '{"files": {"m.py": {"executed_lines": {}}}}',  # executed_lines not a list
+        '"just a string"',                             # scalar
+    ):
+        bad = tmp_path / "cov.json"
+        bad.write_text(payload)
+        cov = load_coverage(str(bad))[0]               # must return, never an exception
+        assert all(not lines for lines in cov.values())  # no real hits from garbage
+    # and end-to-end through the public op
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    bad.write_text('{"files": [1, 2, 3]}')
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.ingest_trace(store, str(bad))         # must not raise (was AttributeError)
+        assert hasattr(res, "ok")                      # a real Result, not a crash
+        # empty/garbage coverage grounds nothing -> honest refuse, never a traceback
+
+
 # -- Panel E / sonnet (HIGH): C/C++ functions must be extracted -----------------
 def test_c_and_cpp_functions_are_extracted(tmp_path):
     """`_name_of` read the C/C++ *return type* before the declarator, so every

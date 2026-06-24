@@ -53,11 +53,21 @@ def _parse_json(text: str, base: str) -> dict[str, set[int]]:
     except json.JSONDecodeError:
         return {}
     out: dict[str, set[int]] = {}
-    for rel, info in (data.get("files") or {}).items():
+    # Defend the SHAPE, not just the values: a valid-JSON-but-wrong-shape report
+    # (`files` a list, an entry a string/null, `executed_lines` a dict) must not crash
+    # — the docstring promises "empty on any problem", and the LCOV/Go parsers already
+    # tolerate garbage. `files`-not-a-dict -> empty; a bad per-file entry is skipped (panel LLL).
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, dict):
+        return {}
+    for rel, info in files.items():
+        if not isinstance(info, dict):
+            continue
         lines = info.get("executed_lines") or []
+        if not isinstance(lines, list):
+            continue
         # Coerce to ints and drop anything non-integer: a malformed/hand-crafted
-        # report must not crash the later `lo <= ln <= end` range test (the LCOV and
-        # Go parsers already cast defensively; JSON was the lone gap).
+        # report must not crash the later `lo <= ln <= end` range test.
         out[os.path.normpath(os.path.join(base, rel))] = {
             int(ln) for ln in lines if isinstance(ln, int)
             or (isinstance(ln, str) and ln.strip().lstrip("-").isdigit())

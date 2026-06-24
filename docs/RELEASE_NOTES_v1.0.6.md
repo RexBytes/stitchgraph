@@ -69,13 +69,23 @@ For completeness the user-named coverage-trace read in `load_coverage` (reached 
 read in `src/` is now behind an `is_file()` guard or a stat-only call (`watch.py`); there
 are no remaining `exists()`-then-read or unguarded discover-then-read sites.
 
+### `ingest_trace` no longer crashes on a malformed coverage report
+
+The content-shape twin of the FIFO fixes. `_parse_json` (the coverage.py JSON path, reached
+via the public `ingest_trace`) guarded `executed_lines` *values* but assumed the `files`
+object — and each per-file entry — was a dict. Valid JSON of the wrong *shape* (`files` a
+list, an entry a string/null, `executed_lines` a dict) raised an uncaught `AttributeError`
+straight through the op and CLI. It now isinstance-gates the shape and degrades to empty,
+honouring the function's "empty on any problem" contract and matching the already-tolerant
+LCOV and Go parsers.
+
 ## Verification
 
-`pytest` 200 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 201 passed (new regression tests: console-script root + module-precision guard;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
 extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
-and the coverage-trace read) · ruff clean · mypy clean against **both** the dev pack
-(1.10.6) and the pinned
+and the coverage-trace read; malformed-coverage-JSON-shape no-crash) · ruff clean · mypy
+clean against **both** the dev pack (1.10.6) and the pinned
 bundled 0.13.0. Confirmed by full three-model panels (opus + sonnet + haiku); both FIFO
 hangs (resolver-pipeline, then the `pyproject.toml` fixed-path read) were caught by opus
 reviewers across two panel rounds and fixed before release. Dogfood `src/`: unchanged. Full

@@ -40,6 +40,12 @@ full three-model panels.
   guarded with `is_file()`, so a FIFO named `pyproject.toml` no longer hangs reindex.
   `load_coverage` (reached via `ingest_trace`) was hardened the same way: a FIFO trace path
   now returns empty (its documented "empty on any problem" contract) instead of blocking.
+- **`ingest_trace` no longer crashes on a structurally-malformed coverage.py JSON report.**
+  `_parse_json` guarded `executed_lines` *values* but assumed the `files` object — and each
+  per-file entry — was a dict, so valid JSON of the wrong *shape* (`files` a list, an entry a
+  string/null, `executed_lines` a dict) raised an uncaught `AttributeError` through the public
+  `ingest_trace` op/CLI. It now isinstance-gates the shape and degrades to empty, matching the
+  "empty on any problem" contract and the already-tolerant LCOV/Go parsers.
 
 ### Documentation
 
