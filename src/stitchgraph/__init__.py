@@ -43,7 +43,7 @@ from .core.operations import (
     trace_path,
 )
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 __all__ = [
     # types

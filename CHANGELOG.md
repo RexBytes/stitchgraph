@@ -4,6 +4,37 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.3] — 2026-06-24
+
+**Field-fix patch — offline-by-default grammars (issue #12).** `tree-sitter-language-pack`
+changed its install model at v1.0.0: it stopped bundling grammars in the wheel and
+switched to downloading them from a GitHub release on first use — which breaks offline /
+CI / air-gapped installs and undercuts the "local-first" promise. The 1.0.1 `<2` bound did
+not fix this (the download line is `<2`). Verified the bundled cutoff on PyPI (0.1.2–0.13.0
+bundle; 1.0.0+ download) and that all 12 grammars stitchgraph uses are MIT-licensed.
+Confirmed by a full three-model panel (JJ).
+
+### Fixed
+
+- **`pip install 'stitchgraph[treesitter]'` is offline / self-contained again** (issue #12).
+  The `[treesitter]` extra now pins the **bundled** grammar line
+  (`tree-sitter-language-pack>=0.7,<1.0`, `tree-sitter>=0.25.2,<1`), whose wheels ship the
+  compiled parsers — no network at runtime. Verified end-to-end in a clean venv: all 12
+  grammars load and a full multi-language reindex runs with the network off.
+
+### Added
+
+- **Opt-in `[treesitter-download]` extra** — the `1.x` line (smaller wheel + newest grammars,
+  fetched over the network on first use) for users who want the latest grammars and have
+  runtime network.
+- **Adaptive grammar loader** (`_load_grammar`): loads a grammar the easiest available way —
+  bundled loads directly; if missing and the installed pack supports it, downloads once and
+  retries; a genuine failure still surfaces as the issue-#7 warning (file skipped, never a
+  silent empty graph). Behaviour-preserving: the extraction graph is byte-identical.
+- **`stitchgraph doctor`** (+ `--strict`) — a grammar self-check reporting the pack version,
+  bundled-vs-download model, cache dir, and which supported grammars load. `--strict` exits
+  non-zero if any can't load (a CI gate that the polyglot graph will be complete).
+
 ## [1.0.2] — 2026-06-24
 
 **Field-fix patch — export-rooting + test call-receivers.** After 1.0.1 shipped, the
