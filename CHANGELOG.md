@@ -4,6 +4,39 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.6] — 2026-06-24
+
+**Field-fix patch — entry-point coverage (issues #20, #21, #22).** Two cardinal-class
+false-dead fixes plus a documentation correction, from the field audit. Both code fixes
+only *add* roots (precision-safe — they can never newly flag live code dead). Confirmed by
+full three-model panels.
+
+### Fixed
+
+- **`[project.scripts]` / `[project.entry-points]` console entry points are detected as
+  roots** (issue #21). `design.md` §4 lists them as roots and `PythonLibraryDetector`
+  already collected a `script` role, but nothing parsed `pyproject.toml` to set it — so a
+  CLI's `main` with no internal caller was false-flagged dead (the common case, including
+  stitchgraph's own `stitchgraph = "...cli:main"`). The Python extractor now reads
+  `[project.scripts]`, `[project.gui-scripts]`, and `[project.entry-points.*]` and tags the
+  target with role `script`, matched by object name **and** module path so a same-named
+  function elsewhere isn't mis-rooted.
+- **A bash script's top-level body is a root** (issue #22 — the bash analogue of #8). A
+  script that runs its work as bare top-level statements (no `main()`) had zero entry-point
+  seed and zero inbound edges to its functions, so `find_stale` flagged all of them. Each
+  bash script's module node is now seeded as a root (bash's `__main__`) and its top-level
+  calls are rooted — direct, via `$(...)` command substitution, and via `trap NAME` — so
+  those functions are correctly live. A function reached by nothing (including its own top
+  level) still flags, exactly as intended.
+
+### Documentation
+
+- **`find_holes` scope documented** (issue #20). `find_holes` reports references orphaned
+  by edits (delete/rename), not first-index calls to undefined/stdlib names — the
+  extractors deliberately drop unresolved calls (precision over noise). `LIMITATIONS.md`
+  and `AGENTS.md` now say so and point to `scan`, which **does** deliver the
+  `is_stub ∧ reachable` "landmine" (design §6.D) as its `live_stub` finding.
+
 ## [1.0.5] — 2026-06-24
 
 **Field-fix patch — CLI/UX papercuts (issues #18, #19).** Three small fixes found while

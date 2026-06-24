@@ -230,11 +230,24 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # module-level calls (incl. those inside anonymous `test()`/`it()` callbacks)
         # are rooted from it (Bug B) — so call-based suites that define no named test
         # functions don't leave their helpers flagged dead.
-        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
-                          location=f"{rel}:1:0",
-                          roles=frozenset({"test"}) if is_test else frozenset()))
+        # A bash script's top-level body is its entry point (bash's __main__): seed the
+        # module node as a root and root its top-level calls so a run-directly script
+        # with no main() doesn't leave every function flagged dead (issue #22). A
+        # function reached by nothing (incl. its own top level) still flags — intended.
+        is_bash_script = lang == "bash"
+        mod_roles: set[str] = set()
         if is_test:
+            mod_roles.add("test")
+        if is_bash_script:
+            mod_roles.add("script")
+        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
+                          location=f"{rel}:1:0", roles=frozenset(mod_roles)))
+        if is_test or is_bash_script:
             calls, refs = _module_uses(tree.root_node, src, spec)
+            if is_bash_script:
+                # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
+                # scan would miss the function arg of; root those too.
+                calls = calls + _bash_trap_handlers(tree.root_node, src)
             module_tests.append((mod_id, rel, lang, calls, refs))
         _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                  defs=defs, inherits=inherits, exported=False, is_test=is_test,
@@ -816,6 +829,32 @@ def _module_uses(root, src, spec):
 
     rec(root)
     return calls, refs
+
+
+def _bash_trap_handlers(root, src):
+    """`trap cleanup EXIT` registers `cleanup` to run on a signal — a real use the
+    generic command scan misses (it sees the `trap` command, not its function argument).
+    Yield each top-level trap's argument words as (name, line) so `_ref` roots any that
+    name a project function (non-function words like `EXIT` resolve to nothing and are
+    dropped). Issue #22. Top-level scope only (skips function bodies), matching
+    `_module_uses`."""
+    out: list[tuple[str, int]] = []
+
+    def rec(n):
+        for c in n.children:
+            if c.type == "function_definition":
+                continue  # top-level body only
+            if c.type == "command":
+                cn = next((k for k in c.children if k.type == "command_name"), None)
+                head = _text(cn.children[0] if cn and cn.children else cn, src) if cn else ""
+                if head == "trap":
+                    for arg in c.children:
+                        if arg is not cn and arg.type == "word":
+                            out.append((_text(arg, src), arg.start_point[0] + 1))
+            rec(c)
+
+    rec(root)
+    return out
 
 
 def _is_bare_call(parent, ident):

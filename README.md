@@ -36,7 +36,7 @@ Prefer the newest grammars fetched on first use? Install `[treesitter-download]`
 instead. Run `stitchgraph doctor` (`--strict` for a CI gate) to see which grammars
 load.
 
-## Status (v1.0.5)
+## Status (v1.0.6)
 
 Working end-to-end and dogfooding on its own source. See
 [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.

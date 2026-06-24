@@ -2165,3 +2165,88 @@ def test_report_risk_section_never_blank_when_no_hotspots(tmp_path):
     risk_section = build_report(db, str(tmp_path)).split("## Risk", 1)[1]
     assert risk_section.strip()                      # not blank
     assert "no risk" in risk_section.lower()         # explicit empty marker
+
+
+# -- Issue #21: [project.scripts] console entry points are roots ---------------
+def test_pyproject_console_script_is_a_root(tmp_path):
+    """A `[project.scripts]` target (a CLI's `main`) is the product, not dead code —
+    design §4 lists it as a root, but the extractor never parsed pyproject.toml, so
+    `find_stale` falsely flagged it. It's now tagged role `script` (issue #21). A
+    genuinely-unused private fn still flags."""
+    _mk(tmp_path, {
+        "pyproject.toml": (
+            '[project]\nname = "mypkg"\nversion = "0.1.0"\n'
+            '[project.scripts]\nmytool = "mypkg.cli:main"\n'
+            '[project.gui-scripts]\nmygui = "mypkg.cli:gui"\n'
+        ),
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "from .core import public_api\n"
+                        "def main():\n    return public_api()\n"
+                        "def gui():\n    return public_api()\n",
+        "mypkg/core.py": "def public_api():\n    return 1\n"
+                         "def _dead_private():\n    return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        main = next(n for n in store.nodes_by_name("main"))
+        assert "script" in main.roles
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "main" not in stale          # console-script entry point = root
+        assert "gui" not in stale           # gui-scripts target too
+        assert "_dead_private" in stale     # genuinely unused, still flagged
+
+
+def test_pyproject_script_role_requires_matching_module(tmp_path):
+    """The script-root match requires BOTH the object name AND the module path, so a
+    same-named function in an UNrelated module isn't mis-rooted (precision)."""
+    _mk(tmp_path, {
+        "pyproject.toml": (
+            '[project]\nname = "mypkg"\nversion = "0.1.0"\n'
+            '[project.scripts]\nmytool = "mypkg.cli:main"\n'
+        ),
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "def main():\n    return 1\n",
+        # a homonym `main` in an unrelated module must NOT get the script role
+        "mypkg/other.py": "def main():\n    return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        roles = {n.id: n.roles for n in store.nodes_by_name("main")}
+        cli_main = next(i for i in roles if i.startswith("mypkg/cli.py::"))
+        other_main = next(i for i in roles if i.startswith("mypkg/other.py::"))
+        assert "script" in roles[cli_main]
+        assert "script" not in roles[other_main]
+
+
+# -- Issue #22: bash run-directly script top-level body is a root --------------
+def test_bash_top_level_script_roots_its_functions(tmp_path):
+    """A bash script that runs its work as bare top-level statements (no main()) is the
+    bash analogue of #8: its module body is the entry point. The script node is now
+    seeded as a root and its top-level calls — direct, via `$(...)`, and `trap NAME` —
+    are rooted, so those functions aren't false-flagged. A function called nowhere
+    still flags (issue #22)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "run.sh": (
+            "#!/usr/bin/env bash\n"
+            "get_versions() { echo v1; }\n"
+            "check_config() { echo ok; }\n"
+            "monitor() { echo go; }\n"
+            "get_indices() { echo 0; }\n"
+            "cleanup() { echo bye; }\n"
+            "orphan() { echo unused; }\n"   # called nowhere -> stays flagged
+            "\n"
+            "trap cleanup EXIT\n"
+            "versions=$(get_versions)\n"
+            "check_config\n"
+            "indices=$(get_indices)\n"
+            "monitor\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        for live in ("get_versions", "check_config", "monitor", "get_indices", "cleanup"):
+            assert live not in stale, f"{live} wrongly flagged stale"
+        assert "orphan" in stale            # genuinely unused -> still flagged

@@ -84,6 +84,7 @@ def extract_project(root: str | Path,
 
     _index(proj)
     _apply_entrypoint_roles(proj)
+    _apply_script_roles(proj)
     for rel, tree in parsed.items():
         _collect_edges(proj, rel, tree)
     _apply_callback_roles(proj)
@@ -314,6 +315,65 @@ def _apply_entrypoint_roles(proj: _Project) -> None:
             extra.add("main")
         if extra:
             node.roles = node.roles | extra
+
+
+def _console_script_targets(root: Path) -> list[tuple[str, str]]:
+    """Parse pyproject.toml for console/GUI/plugin entry points (design §4, issue #21).
+
+    Returns (module_path_suffix, object_name) pairs from `[project.scripts]`,
+    `[project.gui-scripts]`, and every `[project.entry-points.*]` group. A spec is
+    `"pkg.mod:func"` (optionally `"pkg.mod:func [extra]"`); the module becomes a path
+    suffix (`pkg/mod.py`) and the object's leaf name is what we tag."""
+    pp = root / "pyproject.toml"
+    if not pp.exists():
+        return []
+    import tomllib
+    try:
+        data = tomllib.loads(pp.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+        return []  # malformed pyproject -> no roots, never a crash
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return []
+    tables: list[dict] = []
+    for key in ("scripts", "gui-scripts"):
+        tbl = project.get(key)
+        if isinstance(tbl, dict):
+            tables.append(tbl)
+    eps = project.get("entry-points")
+    if isinstance(eps, dict):
+        tables.extend(g for g in eps.values() if isinstance(g, dict))
+    out: list[tuple[str, str]] = []
+    for tbl in tables:
+        for spec in tbl.values():
+            if not isinstance(spec, str) or ":" not in spec:
+                continue
+            module, _, obj = spec.partition(":")
+            module = module.strip()
+            obj = obj.split("[", 1)[0].strip()  # drop any "[extra]" suffix
+            if module and obj:
+                out.append((module.replace(".", "/") + ".py", obj))
+    return out
+
+
+def _apply_script_roles(proj: _Project) -> None:
+    """Tag console-script / entry-point targets with role `script` so a CLI's `main`
+    (the product, not dead code) isn't flagged stale for lack of an internal caller
+    (issue #21). Matched by object leaf-name AND module path suffix, so a same-named
+    function in an unrelated module isn't mis-rooted (precision over recall)."""
+    targets = _console_script_targets(proj.root)
+    if not targets:
+        return
+    by_name: dict[str, list[Node]] = {}
+    for n in proj.nodes:
+        if n.kind in (NodeKind.FUNCTION, NodeKind.METHOD):
+            by_name.setdefault(n.name, []).append(n)
+    for mod_suffix, obj in targets:
+        leaf = obj.split(".")[-1]  # "Class.method"/"func" -> the node's own name
+        for n in by_name.get(leaf, []):
+            filepart = n.id.split("::", 1)[0]
+            if filepart == mod_suffix or filepart.endswith("/" + mod_suffix):
+                n.roles = n.roles | {"script"}
 
 
 # -- pass 2: edges ----------------------------------------------------------

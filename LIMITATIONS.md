@@ -120,6 +120,26 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 
 ## Cost-of-fix exceeds value
 
+### `find_holes` reports edit-orphaned references, not first-index dangling calls
+- **Concern:** `find_holes` returns empty on a freshly-indexed project even when there's
+  a textbook call to an undefined function — so "0 holes" can read as "no broken wiring"
+  when the dangling-call detector simply didn't fire (issue #20).
+- **Decision:** both extractors **drop** a call whose name resolves to no project symbol
+  (no `dst_id=NULL` edge is recorded), so the hole substrate `find_holes` reads
+  (`unresolved_edges()`) is only populated by the incremental updater orphaning an edge on
+  a later delete/rename. `find_holes` is therefore an *edit-orphaned-reference* detector,
+  not a first-index "call to an undefined/stdlib name" detector.
+- **Rationale:** recording every unresolved call would emit a hole for every
+  `len()` / `os.path.join()` / third-party call — overwhelming noise in the
+  precision-unsafe direction. The dangling-call cost isn't worth that. Crucially, the
+  *reachable-stub* "landmine" from design §6.D **is** delivered — by `scan`, which flags a
+  reachable `NotImplementedError`/`pass` body as a `live_stub` (🔴 when its liveness rests
+  on confident edges, 🟠 via an inferred path). So the headline `is_stub ∧ reachable`
+  signal is available today; it just lives in `scan`, not `find_holes`.
+- **Escape hatch:** use `scan` for reachable stubs and structural issues; pin expected
+  roots in `stitchgraph.toml [entry_points]`; `find_holes` after edits surfaces references
+  a delete/rename orphaned.
+
 ### Module-level uses aren't attributed
 - **Concern:** a decorator or constructor applied at import (e.g. `@operation(...)`,
   a `SPECS = {... LangSpec(...) ...}` table) isn't a call inside any function, so a
