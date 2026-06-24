@@ -4,6 +4,49 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.1] — 2026-06-24
+
+**Field-fix patch.** Three issues raised against 1.0.0 in real use on a Rust
+crate, fixed as a batch and re-confirmed by two review panels (W found one
+err-safe over-match in the fix, immediately corrected; X came back clean on both
+opus and haiku). The cardinal invariant — live code is never flagged dead — is
+preserved; no behaviour changed for the cases 1.0.0 already handled. See the
+[release notes](docs/RELEASE_NOTES_v1.0.1.md).
+
+### Fixed
+
+- **Rust inline unit tests no longer flood `find_stale`** (issue #8, precision).
+  Idiomatic Rust tests live in `#[cfg(test)] mod tests { … }` with free-form
+  names, so the `test*`/`Benchmark*`/`Example*` name convention never fired — the
+  `#[test]` functions and every helper they reached were reported stale. The
+  `#[test]` / `#[tokio::test]` (any `*::test`) attribute and the `#[cfg(test)]`
+  module gate now seed the `test` role (a root). Matching is on the attribute
+  **path**, not a raw `"test"` substring, so `#[cfg(feature="testing")]` and
+  `#[doc="…test…"]` do **not** wrongly mark production code (which would *hide*
+  dead code). A test helper reached by no test, and unused production code, still
+  flag — consistent with a dead helper in any test file. Third-party runner macros
+  (`#[rstest]`, `#[test_case]`) are a documented limitation (`LIMITATIONS.md`).
+- **Grammar-load failures are surfaced, not swallowed** (issue #7). A tree-sitter
+  grammar that can't load (offline/proxied environments, version drift) collapsed
+  into a silent empty graph with a success exit. `treesitter.extract` now records
+  the failure and emits a `RuntimeWarning` naming the affected languages and the
+  number of skipped files; `extract_project` warns instead of a blanket swallow.
+  Python extraction is unaffected either way; a normal run with grammars present
+  emits no warning.
+- **`impact_of` on an ambiguous name surfaces candidates and can be scoped**
+  (issue #9). A bare common name (e.g. `get`) now lists the matching symbols in
+  `alternatives` instead of a blank refusal, and the resolver accepts a fully
+  qualified `Type.method` or a full `path::qual` id to scope to exactly one. The
+  upgraded resolver also gives `get_callers` / `get_callees` / `trace_path` the
+  same scoping; names that legitimately contain dots (`index.html`) still resolve
+  directly.
+
+### Changed
+
+- **Dependencies bounded** (CONTRIBUTING lesson, prompted by issue #7):
+  `tree-sitter>=0.22,<1` and `tree-sitter-language-pack>=0.1,<2`, so a future
+  breaking major can't silently break extraction on a fresh install.
+
 ## [1.0.0] — 2026-06-23
 
 **First stable release — precision, certified.** 1.0.0 is not a feature release;

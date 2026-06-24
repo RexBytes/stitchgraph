@@ -28,6 +28,24 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `stitchgraph.toml [entry_points]`; `ingest_trace` a coverage run to raise
   confidence to 0.78 and seed liveness from what actually executed.
 
+### Only built-in Rust test attributes are recognized as test roots
+- **Concern:** Rust inline unit tests are kept live by detecting the `#[test]` /
+  `#[tokio::test]` (any `*::test`) attribute and the `#[cfg(test)]` module gate
+  (v1.0.1, issue #8). Tests driven *only* by a third-party runner macro whose
+  attribute path does not end in `test` — e.g. `#[rstest]`, `#[test_case(...)]`,
+  `#[googletest::gtest]` — are not recognized as roots, so such a test (and helpers
+  reached only from it) can surface as a stale candidate.
+- **Decision:** match the attribute **path** (`test`, `*::test`, bare `cfg(test)`),
+  not a raw `"test"` substring.
+- **Rationale:** the substring form (v1.0.0→1.0.1 dev) over-matched
+  `#[cfg(feature="testing")]`, `#[doc="...test..."]`, and features like `latest`,
+  *hiding* genuinely-dead production code (Panel W). The set of third-party test
+  macros is open-ended and unenumerable; recognizing them all would re-introduce
+  that over-match. These cases surface as `needs_review` advisories, never confident
+  verdicts.
+- **Escape hatch:** pin the test in `stitchgraph.toml [entry_points]`, or
+  `ingest_trace` a `cargo test` run to seed liveness from what actually executed.
+
 ### Ambiguous calls link to *all* same-named candidates
 - **Concern:** one call produces several `AMBIGUOUS` edges, inflating reachability
   and `impact_of` blast radius.
