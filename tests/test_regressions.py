@@ -345,6 +345,47 @@ def test_tree_sitter_methods_of_external_base_classes_get_callback_role(tmp_path
         # internally (React/framework invokes them).
         assert "MyButton.handleClick" not in stale
         assert "MyButton.render" not in stale
+        # CARDINAL (panel PPP): the class itself must also stay live — a framework
+        # subclass is framework-instantiated. The tree-sitter callback-role pass marked
+        # the methods but not the enclosing class, so the class was a false-dead.
+        assert "MyButton" not in stale
+
+
+def test_tree_sitter_callback_class_itself_is_live_across_languages(tmp_path):
+    """The 'method live, class dead' cardinal false-dead (panel PPP): tree-sitter
+    `_seed_callback_roles` marked callback *methods* but not the enclosing *class*, so a
+    framework subclass not otherwise rooted (Rails controller, etc.) had its class flagged
+    dead while its methods were live. Mirror the Python extractor's class-rooting pass."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "handler.rb": (
+            "class MyController < ApplicationController\n"
+            "  def index\n    1\n  end\n"
+            "  def get_data\n    2\n  end\nend\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "MyController" not in stale          # class live (was false-dead)
+        assert "MyController.index" not in stale     # methods live
+        assert "MyController.get_data" not in stale
+
+
+def test_reindex_survives_pathologically_deep_python_file(tmp_path):
+    """A deep-but-valid AST (a huge flat `a + a + ... ` chain, realistic in generated
+    code) overflows the recursive extractor walk with RecursionError. That wasn't in the
+    per-file `except`, and the walk ran outside the try, so ONE bad file aborted the whole
+    reindex and left an empty DB — defeating the per-file-skip contract (panel OOO)."""
+    deep = "QUERY = (" + " + ".join(['"S "'] * 2000) + ")\n"
+    (tmp_path / "gen.py").write_text(deep)
+    (tmp_path / "other.py").write_text("def other():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        # the good file is still indexed — the pathological one is skipped, not fatal
+        assert "other.py::other" in set(store.all_node_ids())
 
 
 # -- Panel C / opus (MEDIUM): single-arg signal .connect(handler) ---------------

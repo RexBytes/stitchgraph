@@ -13,6 +13,23 @@ full three-model panels.
 
 ### Fixed
 
+- **CARDINAL: a tree-sitter framework-subclass is no longer flagged dead while its methods
+  are live.** `_seed_callback_roles` (tree-sitter) marked callback *methods* with the
+  `callback` role but never marked the enclosing *class* — the Python extractor's
+  `_apply_callback_roles` has a `classes_with_callbacks` second pass that the tree-sitter
+  side was missing (a Python↔tree-sitter symmetry gap). So a framework subclass in any
+  tree-sitter language (a Rails `ApplicationController`, a React `Component`, …) that wasn't
+  otherwise exported or constructed had its **class** surface as dead code while its hook
+  methods stayed live — the only release-blocking class of bug (live code flagged dead). The
+  class-rooting pass is now mirrored. Tie is to *having* callback methods, so a bare unused
+  subclass with no overrides still flags.
+- **`reindex` no longer aborts on a pathologically deep source file.** A huge flat
+  expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder code)
+  overflows the recursive AST walk with `RecursionError`, which was not in the per-file
+  `except (SyntaxError, UnicodeDecodeError, OSError)` and ran outside the `try` — so a single
+  bad file aborted the **entire** reindex and left an empty DB. `RecursionError` is now
+  caught per file in both extractors and the resolver `parse()` helper, honouring the
+  "skip the one file, never abort the whole reindex" contract.
 - **`[project.scripts]` / `[project.entry-points]` console entry points are detected as
   roots** (issue #21). `design.md` §4 lists them as roots and `PythonLibraryDetector`
   already collected a `script` role, but nothing parsed `pyproject.toml` to set it — so a

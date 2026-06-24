@@ -242,19 +242,25 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             mod_roles.add("script")
         nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
                           location=f"{rel}:1:0", roles=frozenset(mod_roles)))
-        if is_test or is_bash_script:
-            calls, refs = _module_uses(tree.root_node, src, spec)
-            if is_bash_script:
-                # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
-                # scan would miss the function arg of; root those too.
-                calls = calls + _bash_trap_handlers(tree.root_node, src)
-            module_tests.append((mod_id, rel, lang, calls, refs))
-        _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
-                 defs=defs, inherits=inherits, exported=False, is_test=is_test,
-                 contains=contains, enclosing_func=None)
-        for name in _import_names(tree.root_node, src, spec):
-            imports.append((mod_id, name, lang))
-        reexports |= _reexport_names(tree.root_node, src)
+        try:
+            if is_test or is_bash_script:
+                calls, refs = _module_uses(tree.root_node, src, spec)
+                if is_bash_script:
+                    # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
+                    # scan would miss the function arg of; root those too.
+                    calls = calls + _bash_trap_handlers(tree.root_node, src)
+                module_tests.append((mod_id, rel, lang, calls, refs))
+            _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
+                     defs=defs, inherits=inherits, exported=False, is_test=is_test,
+                     contains=contains, enclosing_func=None)
+            for name in _import_names(tree.root_node, src, spec):
+                imports.append((mod_id, name, lang))
+            reexports |= _reexport_names(tree.root_node, src)
+        except RecursionError:
+            # A pathologically deep tree (a huge flat expression in generated code)
+            # overflows the recursive walk; skip the one file, never abort the whole
+            # reindex (panel OOO, the tree-sitter analogue of the Python ast guard).
+            continue
 
     # Surface grammar-load failures instead of returning a silent empty graph (issue
     # #7): without this, a non-Python repo looks like "ran fine, found almost nothing".
@@ -492,11 +498,22 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
     over recall). Mirrors the Python extractor's `_apply_callback_roles`."""
     if not external_base_classes:
         return
+    classes_with_callbacks: set[str] = set()
     for n in nodes:
         if n.kind is M and "." in n.id:
             class_id = n.id.rsplit(".", 1)[0]
             if class_id in external_base_classes:
                 n.roles = n.roles | {"callback"}
+                classes_with_callbacks.add(class_id)
+    # A framework subclass that overrides hook methods is framework-instantiated, so
+    # mark the class a root too — otherwise the methods are live but the *class* is
+    # flagged dead (the 'method live, class dead' cardinal false-dead; panel PPP, the
+    # tree-sitter analogue of the Python `classes_with_callbacks` pass). Tie this to
+    # *having* callback methods, not merely the base, so a bare unused subclass with no
+    # overrides still flags.
+    for n in nodes:
+        if n.kind is C and n.id in classes_with_callbacks:
+            n.roles = n.roles | {"callback"}
 
 
 def _is_rust_test_attr(attr_text: str) -> bool:

@@ -154,6 +154,15 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   invariant holds. This pattern is rare (virtually all console-script targets are
   functions). **Escape hatch:** export the class, or pin it in
   `stitchgraph.toml [entry_points]`.
+- **Related (an `__all__` export name shared across modules):** `exported_names` is a
+  project-wide name set, so if `api.py` declares `__all__ = ["process"]`, a same-named
+  `process` in an unrelated module also receives the `exported` role and is treated as a
+  root. The effect is a **false negative** (a genuinely-dead `process` elsewhere isn't
+  flagged), never a false-dead — the same precision-safe over-rooting class as the `__main__`
+  and console-script cases above. Scoping `exported_names` per-file is deferred because the
+  package `__init__.py` re-export pattern (`from .sub import X` then `__all__ = ["X"]`)
+  legitimately needs the cross-module match. **Escape hatch:** rely on the advisory's
+  `needs_review`, or pin the real roots in `stitchgraph.toml [entry_points]`.
 
 ### `find_holes` reports edit-orphaned references, not first-index dangling calls
 - **Concern:** `find_holes` returns empty on a freshly-indexed project even when there's

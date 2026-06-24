@@ -6,6 +6,28 @@ ever *add* roots — they are precision-safe and can never newly flag live code 
 
 ## What changed
 
+### CARDINAL: a tree-sitter framework-subclass's class stays live
+
+The one release-blocking class of bug — live code flagged dead — caught by the final
+confirmation panel. The tree-sitter `_seed_callback_roles` marked a framework subclass's
+callback *methods* with the `callback` role (so they're roots) but never marked the enclosing
+*class*; the Python extractor's `_apply_callback_roles` has a `classes_with_callbacks` second
+pass that the tree-sitter side was missing. So a framework subclass in any tree-sitter
+language (a Rails `ApplicationController`, a React `Component`, an Express middleware class)
+that wasn't otherwise exported or constructed had its **class** flagged dead while its hook
+methods stayed live. The class-rooting pass is now mirrored on the tree-sitter side, tied to
+*having* callback methods (a bare unused subclass with no overrides still flags).
+
+### `reindex` survives a pathologically deep source file
+
+A huge flat expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder
+code) overflows the recursive AST walk with `RecursionError`, which wasn't in the per-file
+`except` and ran outside the `try` — so one bad file aborted the **entire** reindex and left
+an empty DB, defeating the "skip the one file, never abort" contract. `RecursionError` is now
+caught per file in both the Python and tree-sitter extractors and the resolver `parse()`
+helper. (Also defensive: `Result` now flags `needs_review` for an out-of-range/NaN confidence
+— latent, no current caller hits it.)
+
 ### `[project.scripts]` console entry points are roots (#21)
 
 `design.md` §4 lists `[project.scripts]` / `[project.entry-points]` console-script targets
@@ -98,11 +120,12 @@ are counted.
 
 ## Verification
 
-`pytest` 203 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 205 passed (new regression tests: console-script root + module-precision guard;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
 extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
 and the coverage-trace read; malformed-coverage-JSON-shape no-crash; malformed-`stitchgraph.toml`
-no-crash; unicode-filename churn counted) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
+no-crash; unicode-filename churn counted; tree-sitter callback *class* stays live;
+deep-AST reindex no-abort) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
 bundled 0.13.0. Confirmed by full three-model panels (opus + sonnet + haiku); both FIFO
 hangs (resolver-pipeline, then the `pyproject.toml` fixed-path read) were caught by opus
 reviewers across two panel rounds and fixed before release. Dogfood `src/`: unchanged. Full

@@ -75,21 +75,29 @@ def extract_project(root: str | Path,
 
     parsed: dict[str, ast.Module] = {}
     for path in files:
+        rel = path.relative_to(proj.root).as_posix()
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError, OSError):
-            continue  # OSError: a broken symlink / unreadable file (submodules, races)
-                      # — skip the one file, never abort the whole reindex (panel DDD).
-        rel = path.relative_to(proj.root).as_posix()
+            _collect_defs(proj, rel, path, tree)
+        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+            # Skip the one file, never abort the whole reindex (panel DDD/OOO).
+            # OSError: a broken symlink / unreadable file (submodules, races).
+            # RecursionError: a pathologically deep AST — a huge flat expression
+            # (generated SQL/HTML/string builders) overflows ast.parse or the walk;
+            # one bad file must not leave the entire DB empty.
+            parsed.pop(rel, None)
+            continue
         parsed[rel] = tree
-        _collect_defs(proj, rel, path, tree)
 
     _index(proj)
     _apply_entrypoint_roles(proj)
     _apply_script_roles(proj)
     _seed_entrypoint_classes(proj)
     for rel, tree in parsed.items():
-        _collect_edges(proj, rel, tree)
+        try:
+            _collect_edges(proj, rel, tree)
+        except RecursionError:
+            continue  # same pathological-depth guard for the edge pass (panel OOO)
     _apply_callback_roles(proj)
     _seed_test_classes(proj)
     return proj.nodes, proj.edges

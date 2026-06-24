@@ -55,8 +55,13 @@ class Result(Generic[T]):
     meta: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # needs_review fires when confidence is low OR provenance is ambiguous.
-        if self.confidence < REVIEW_THRESHOLD or self.provenance is Provenance.AMBIGUOUS:
+        # needs_review fires when confidence is low OR provenance is ambiguous. The
+        # `not (0.0 <= confidence <= 1.0)` clause also catches NaN and out-of-range
+        # confidence (NaN < threshold is False, so a NaN would otherwise silently skip
+        # review and emit invalid JSON) — defensive, no current caller hits it (panel PPP).
+        if (not (0.0 <= self.confidence <= 1.0)
+                or self.confidence < REVIEW_THRESHOLD
+                or self.provenance is Provenance.AMBIGUOUS):
             self.needs_review = True
         # Provenance gates the urgency ceiling: nothing low-confidence shouts red.
         if self.urgency is Urgency.RED and self.provenance is not Provenance.EXTRACTED:
