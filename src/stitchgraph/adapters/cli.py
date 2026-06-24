@@ -67,6 +67,30 @@ def build_app():
         from .report import build_report
         typer.echo(build_report(db, repo))
 
+    @app.command(name="doctor",
+                 help="Check tree-sitter grammar availability (polyglot offline-readiness).")
+    def _doctor(
+        strict: bool = typer.Option(
+            False, "--strict", help="exit non-zero if any supported grammar can't load"),
+    ) -> None:
+        from ..core.extract import treesitter as ts
+        backend = ts.grammar_backend()
+        if not backend.get("installed"):
+            typer.echo("tree-sitter not installed — polyglot extraction is OFF "
+                       "(Python still works). Install:  pip install 'stitchgraph[treesitter]'")
+            raise typer.Exit(1 if strict else 0)
+        typer.echo(f"tree-sitter-language-pack {backend['version']}  [{backend['model']}]")
+        if "cache_dir" in backend:
+            typer.echo(f"  grammar cache: {backend['cache_dir']}")
+        all_ok, rows = ts.grammar_status()
+        for lang, ok, detail in rows:
+            typer.echo(f"  {'ok  ' if ok else 'FAIL'}  {lang:12} {detail}")
+        n_ok = sum(1 for _, ok, _ in rows if ok)
+        typer.echo(f"{n_ok}/{len(rows)} grammars load"
+                   + ("" if all_ok else "  — missing grammars are skipped (their files "
+                      "won't be analysed); see 'pip install stitchgraph[treesitter]'"))
+        raise typer.Exit(1 if strict and not all_ok else 0)
+
     return app
 
 

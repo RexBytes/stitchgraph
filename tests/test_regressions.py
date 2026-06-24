@@ -1761,3 +1761,59 @@ def test_module_uses_does_not_descend_into_uncalled_function_expression(tmp_path
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
         assert "DeadCls" in stale   # referenced only inside an uncalled helper -> still dead
+
+
+# -- Issue #12 (1.0.3): offline-by-default grammars + adaptive load + doctor self-check -
+def test_grammar_status_and_backend_probe(tmp_path):
+    """`grammar_status`/`grammar_backend` power the `doctor` self-check: every supported
+    language's grammar is probed, and the backend reports the install model (bundled vs
+    download). In the test env all supported grammars load."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract import treesitter as ts
+    ok, rows = ts.grammar_status()
+    langs = {lang for lang, _, _ in rows}
+    assert {"rust", "javascript", "typescript", "go", "java", "ruby"} <= langs
+    assert ok  # all supported grammars load in the test environment
+    b = ts.grammar_backend()
+    assert b["installed"] and b["version"]
+    assert b["model"] in ("bundled (offline)", "download-on-demand")
+
+
+def test_load_grammar_retries_via_download_when_unbundled(monkeypatch):
+    """`_load_grammar` gets a grammar "the easiest way available": if `get_language`
+    fails and the installed pack exposes a `download()` API (the 1.x model), it fetches
+    once and retries — so a runtime download is used when possible (issue #12, Option 1).
+    On the bundled line (no `download`) a real failure propagates (→ issue-#7 warning)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    import tree_sitter_language_pack as pack
+
+    from stitchgraph.core.extract import treesitter as ts
+    calls = {"get": 0, "download": 0}
+    real_get = ts.get_language
+    def fake_get(lang):
+        calls["get"] += 1
+        if calls["get"] == 1:
+            raise RuntimeError("not present yet")
+        return real_get(lang)            # succeeds after the download
+    def fake_download(names):
+        calls["download"] += 1
+        return len(names)
+    monkeypatch.setattr(ts, "get_language", fake_get)
+    monkeypatch.setattr(pack, "download", fake_download, raising=False)
+    assert ts._load_grammar("rust") is not None
+    assert calls == {"get": 2, "download": 1}  # tried, downloaded, retried
+
+
+def test_doctor_strict_exit_code(monkeypatch):
+    """`stitchgraph doctor --strict` exits non-zero when a supported grammar can't load
+    (CI gate); plain `doctor` reports and exits 0."""
+    pytest.importorskip("typer")
+    from typer.testing import CliRunner
+
+    from stitchgraph.adapters.cli import build_app
+    from stitchgraph.core.extract import treesitter as ts
+    monkeypatch.setattr(ts, "grammar_status", lambda: (False, [("rust", False, "missing")]))
+    assert CliRunner().invoke(build_app(), ["doctor", "--strict"]).exit_code == 1
+    assert CliRunner().invoke(build_app(), ["doctor"]).exit_code == 0

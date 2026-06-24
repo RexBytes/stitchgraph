@@ -44,6 +44,25 @@ Notes:
   cross-file by name, so dead-code/orient/trace work without modelling imports;
   richer import/inheritance edges are incremental additions per `LangSpec`.
 
+## Installing the grammars (offline by default)
+
+`pip install 'stitchgraph[treesitter]'` is **self-contained and works offline**: it
+pins the bundled-grammar line of `tree-sitter-language-pack` (`>=0.7,<1.0`), whose
+wheels ship the compiled parsers. No network is touched at runtime. (The `1.x` line
+dropped bundling for a download-from-GitHub-on-first-use model that breaks offline /
+CI / air-gapped installs — issue #12.)
+
+- **Want the newest grammars instead?** `pip install 'stitchgraph[treesitter-download]'`
+  installs the `1.x` line — a smaller wheel that fetches parsers over the network on
+  first use (and caches them). stitchgraph's loader uses whichever pack is installed,
+  and on the download line it will fetch a missing grammar at runtime when it can.
+- **Check your install:** `stitchgraph doctor` reports the pack version, whether it's
+  the bundled or download model, the cache dir (download model), and which of the
+  supported grammars load. `stitchgraph doctor --strict` exits non-zero if any can't —
+  useful as a CI gate that the polyglot graph will actually be complete.
+- If a grammar still can't be loaded (e.g. download line, offline), those files are
+  **skipped with a warning**, not silently dropped (issue #7); Python is unaffected.
+
 ## Cross-language resolvers (the full-stack "gem")
 
 Pattern detectors that add edges spanning languages — enable only what you use:
