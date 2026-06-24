@@ -457,6 +457,19 @@
       ],
       "findings": {},
       "theme": "CLEAN (all three FINDINGS: none) confirming the issue-#12 fix (1.0.3): offline-by-default grammar pin (tree-sitter-language-pack>=0.7,<1.0 bundled line) + adaptive _load_grammar (download-and-retry when the pack supports it) + stitchgraph doctor/--strict self-check + [treesitter-download] opt-in. Verified the get_language->_load_grammar swap is behaviour-preserving (byte-identical node/edge/role/provenance graph across all 12 languages; success path makes zero download() calls); all 4 adaptive-load paths (success / fail+download->retry / fail+bundled->#7 warn+skip / download-itself-fails->propagate, never a silent empty graph or false-dead); doctor + --strict exit codes incl. not-installed path; pin bounds correct ([all] stays offline-by-default); no regression (172 tests, FF/nesting cardinal fixes hold); dogfood src/ 3 advisory / 0 holes. Offline operation independently verified earlier in a throwaway venv on bundled 0.13.0 with network OFF. First clean panel of the 1.0.3 batch; streak 1 of 2."
+    },
+    {
+      "id": "KK",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "LOW": 1
+      },
+      "theme": "First full-3-model panel of the 1.0.4 batch (#10 receiver-call demotion, #11 scan provenance propagation, #15 LIMITATIONS --precise wording), reviewed at f69df0b/b2873df. opus and haiku: FINDINGS: none \u2014 verified the cardinal invariant directly (weight stays 1.0, no new false-dead; #10 only relabels provenance), no scan crash/mislabel, jedi additive matches #15 wording. opus raised a non-blocking NOTE that became a real consistency fix (scored MEDIUM): #10 was tree-sitter-only \u2014 the Python ast extractor still labelled an unknown-receiver `x.save()` matched name-only to a lone project `save` as EXTRACTED (the same over-claim; a Python<->tree-sitter asymmetry, this project's standing defect class). Fixed by mirroring the demotion in _call_edge/_ref_edges (is_method param): scope-aware self./local-typed calls stay EXTRACTED, only the unknown-receiver fallback demotes. sonnet found a LOW 1.0.4 regression: C# `new MyApp.Widget()` parses with a `qualified_name` callee node (in _RECEIVER_CALLEE), so the namespace-qualified CONSTRUCTOR was wrongly demoted to INFERRED (cardinal-safe, weight 1.0, but a provenance-accuracy bug that could also under-count confident edges in scan). Fixed generally: constructor call-fields (\"constructor\"/\"type\") force is_method=False in _callee, so any qualified ctor stays EXTRACTED; Rust `Widget::new()` / Ruby `Widget.new` are real method-call nodes and keep their documented INFERRED. Both fixes regression-pinned (pytest 177). Not a clean panel \u2014 surfaced fixable findings; streak resets, fresh confirmation (LL) follows."
     }
   ]
 }
