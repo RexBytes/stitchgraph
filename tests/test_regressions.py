@@ -1682,3 +1682,42 @@ def test_rust_cfg_not_test_is_production_not_a_test_root(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
         assert "production_only" in stale   # production-only, unused -> flagged (not a test)
+
+
+# -- Panel FF (post-1.0.1, sonnet): two cardinal false-deads sonnet's fresh eyes caught -
+def test_js_export_default_predefined_identifier_is_exported(tmp_path):
+    """Panel FF (CARDINAL, pre-existing): `export default Foo;` where `Foo` is defined
+    earlier in the file (the canonical React/Angular/Vue/Node idiom) never set the
+    `exported` role, so the default-exported class/fn was flagged dead. `_reexport_names`
+    now feeds the default-exported identifier into the reexport->exported path."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "utils.ts": "export function seedMe() { return 1; }\n",  # an exported root
+        "service.ts": "class UserService { getUser() { return 1; } }\nexport default UserService;\n",
+        "handler.ts": "function handler() { return 1; }\nexport default handler;\n",
+        "dead.ts": "function deadOne() { return 1; }\nexport default () => {};\n",  # anon default
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "UserService" not in stale and "handler" not in stale  # default-exported -> live
+        assert "deadOne" in stale  # genuinely dead (anon default doesn't export it)
+
+
+def test_ruby_constant_receiver_in_rspec_block_keeps_class_live(tmp_path):
+    """Panel FF (CARDINAL, introduced by the 1.0.1 Bug-B call-based rooting): a class used
+    as a call receiver inside an RSpec `it` block (`Service.run`) got a CALLS edge to the
+    method but no REFERENCES edge to the class, so the live class was flagged dead.
+    `_module_uses` now collects name-references (incl. `constant` receivers) like
+    `_direct_refs`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "src/service.rb": "class Service\n  def self.run; 1; end\nend\n",
+        "src/spec/service_spec.rb": 'describe "Service" do\n  it "runs" do\n    Service.run\n  end\nend\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "Service" not in stale  # live via RSpec; class receiver now referenced

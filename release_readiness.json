@@ -402,6 +402,18 @@
       ],
       "findings": {},
       "theme": "CLEAN. Second consecutive full-diversity clean panel -> streak 2, release gate met for 1.0.1. Both FINDINGS: none, fresh independent confirmation (not a rerun of DD). opus ran 11 cross-language scenarios (Python pytest/unittest/inherited/nested/deep-chain, Java JUnit pkg-private abstract base + cross-file inherited base, C#/PHP/JS/Ruby call-based, Rust #[tokio::test], Go cross-file, mixed) -> only genuinely-dead helpers flagged; over-marking bounded (bare metaclass, dead prod, production testing/ & specs/ all flag); #7 silent on grammar-present run (under -W error); #9 candidates + qualified scoping for impact_of/get_callers/get_callees/trace_path; envelope contract intact (find_stale needs_review, conf<=0.6, INFERRED). haiku full sweep clean. Dogfood src/ = 3 advisory, 0 holes; 165 tests."
+    },
+    {
+      "id": "FF",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2
+      },
+      "theme": "First full-3-model panel after sonnet's restoration (post-1.0.1 confidence check). opus + haiku both clean, but FRESH sonnet found TWO CARDINAL false-deads the opus/haiku pair missed across all of W-EE: (1) JS/TS 'export default Foo;' where Foo is defined earlier in the file (canonical React/Angular/Vue/Node idiom) never set the exported role -> Foo flagged dead (PRE-EXISTING, in 1.0.0/1.0.1; _reexport_names only handled export { X }); (2) Ruby a class used as a call receiver in an RSpec describe/it block (Service.run) got a CALLS edge to the method but no REFERENCES edge to the class -> live class flagged dead (INTRODUCED by 1.0.1 Bug-B _module_calls, which collected calls + bare idents but not constant receivers, unlike _direct_refs). Both confirmed by real-input repro. Validates re-adding sonnet for diversity. Fixed for 1.0.2: _reexport_names handles export default <ident>; _module_calls -> _module_uses also collects name-references (constant/type_identifier/identifier/name) like _direct_refs."
     }
   ]
 }
