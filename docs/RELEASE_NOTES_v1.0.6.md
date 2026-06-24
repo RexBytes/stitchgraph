@@ -62,16 +62,20 @@ returns `False` on a FIFO without blocking, so the guard is safe.
 One more instance of the same class, in a *fixed-path* read rather than a walk: the #21
 console-script parser (`_console_script_targets`) read `<root>/pyproject.toml` behind an
 `exists()` guard — but `exists()` is `True` for a FIFO, so `read_text()` blocked forever. It
-now guards with `is_file()` (matching `config.py`'s already-safe `stitchgraph.toml` read). A
-full audit confirmed this was the only `exists()`-then-read site in `src/`; every other
-file read is either behind an `is_file()` walk guard or a stat-only call (`watch.py`).
+now guards with `is_file()` (matching `config.py`'s already-safe `stitchgraph.toml` read).
+For completeness the user-named coverage-trace read in `load_coverage` (reached via
+`ingest_trace`) got the same guard, so a FIFO trace path returns empty (its documented
+"empty on any problem" contract) rather than blocking. A full audit confirms every file
+read in `src/` is now behind an `is_file()` guard or a stat-only call (`watch.py`); there
+are no remaining `exists()`-then-read or unguarded discover-then-read sites.
 
 ## Verification
 
-`pytest` 199 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 200 passed (new regression tests: console-script root + module-precision guard;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
-extractors, the resolver pipeline, the route-gated resolvers, and the `pyproject.toml`
-read) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
+extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
+and the coverage-trace read) · ruff clean · mypy clean against **both** the dev pack
+(1.10.6) and the pinned
 bundled 0.13.0. Confirmed by full three-model panels (opus + sonnet + haiku); both FIFO
 hangs (resolver-pipeline, then the `pyproject.toml` fixed-path read) were caught by opus
 reviewers across two panel rounds and fixed before release. Dogfood `src/`: unchanged. Full

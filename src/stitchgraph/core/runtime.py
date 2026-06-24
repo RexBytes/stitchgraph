@@ -27,6 +27,11 @@ def load_coverage(trace_path: str | Path) -> tuple[dict[str, set[int]], str]:
     """Return ({file: executed_lines}, base_dir). Files may be absolute or
     relative; resolution is by suffix in `hit_node_ids`. Empty on any problem."""
     p = Path(trace_path)
+    if not p.is_file():
+        return {}, ""  # is_file() (not a bare read) so a FIFO/dir trace path returns
+                       # empty instead of blocking forever: read_text() opens a FIFO and
+                       # hangs, and the OSError guard never fires on a blocking open. This
+                       # honours the "Empty on any problem" contract above (panel-FIFO class).
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:

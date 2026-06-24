@@ -38,6 +38,8 @@ full three-model panels.
   fixed-path `pyproject.toml` read in `_console_script_targets` (the #21 path, run on every
   reindex) was also guarded with `exists()` — which is `True` for a FIFO — and is now
   guarded with `is_file()`, so a FIFO named `pyproject.toml` no longer hangs reindex.
+  `load_coverage` (reached via `ingest_trace`) was hardened the same way: a FIFO trace path
+  now returns empty (its documented "empty on any problem" contract) instead of blocking.
 
 ### Documentation
 

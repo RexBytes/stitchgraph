@@ -2479,3 +2479,19 @@ def test_reindex_skips_named_pipe_in_route_gated_resolvers(tmp_path):
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))             # must return, not hang
         assert "app.py::handler" in set(store.all_node_ids())
+
+
+def test_load_coverage_returns_empty_on_fifo_without_hanging(tmp_path):
+    """`load_coverage` (reached via `ingest_trace`) reads a user-named trace path and
+    promises "Empty on any problem", swallowing OSError to return ({}, ""). A FIFO would
+    block forever in read_text() instead — the OSError guard never fires on a blocking
+    open. It must guard with is_file() so a FIFO honours the empty-on-problem contract
+    (FIFO hang class, proactively closed)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    from stitchgraph.core.runtime import load_coverage
+    fifo = tmp_path / "coverage.fifo"
+    os.mkfifo(str(fifo))
+    assert load_coverage(str(fifo)) == ({}, "")      # must return empty, not hang
