@@ -4,6 +4,42 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.4] — 2026-06-24
+
+**Field-fix patch — confidence honesty for receiver calls and structural findings
+(issues #10, #11, #15).** Three reporting/confidence fixes from the field audit, none
+changing reachability: every one keeps the cardinal invariant (live code is never flagged
+dead). Confirmed by full three-model panels.
+
+### Fixed
+
+- **Receiver-based calls resolving to a single same-named symbol are now `INFERRED`, not
+  `EXTRACTED`** (issue #10). A call like `obj.save()` whose name matches exactly one
+  project definition was asserted at full `EXTRACTED` confidence — but without type
+  inference the receiver's type is unknown, so it may be a homonym `save` on a different
+  class. The edge is now labelled `INFERRED` (a guess), detected receiver-aware across all
+  tree-sitter languages (member/field/selector/scoped access, plus Java `object` / Ruby
+  `receiver` fields). **Weight is unchanged (1.0)**, so the edge still counts fully for
+  reachability / `find_stale` — only the asserted confidence is lowered, never the
+  liveness (cardinal-safe). Direct calls (`save()`) and constructors stay `EXTRACTED`.
+- **`scan` structural findings now reflect the provenance of the edges they rest on**
+  (issue #11). A cycle or god-object that exists *only* because of `AMBIGUOUS`
+  (over-approximated homonym) or `INFERRED` (heuristic) edges was reported at the same
+  🟠 urgency as one backed by confident `EXTRACTED` edges — on a language without type
+  resolution this made most structural findings indistinguishable artifacts. Each cycle /
+  god-object now carries a `confidence` and `needs_review` derived from its participating
+  edges, reports the confident-only degree, and is capped to 🟢 (sinking in the ranking)
+  when the coupling is dominated by name-ambiguous/heuristic edges. Confidently-linked
+  findings keep their 🟠 "look closer."
+
+### Changed
+
+- **`LIMITATIONS.md`: corrected the `--precise` escape-hatch description** (issue #15). It
+  no longer implies `--precise` "disambiguates" by pruning the `AMBIGUOUS` siblings; it
+  documents the actual **additive** behaviour (adds a confident go-to-definition edge,
+  never removes the competing candidates) and why that is deliberate — pruning a live
+  symbol's only caller on a single jedi mis-resolution would be the cardinal sin.
+
 ## [1.0.3] — 2026-06-24
 
 **Field-fix patch — offline-by-default grammars (issue #12).** `tree-sitter-language-pack`

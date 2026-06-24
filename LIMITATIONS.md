@@ -82,6 +82,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`, or re-export it
   with an idiomatic form (`module.exports = { Member }`).
 
+### A receiver call to a *single* same-named symbol is `INFERRED`, not `EXTRACTED`
+- **Concern:** `obj.save()` resolves to the one project `save` — obviously correct — yet
+  its CALLS edge is labelled `INFERRED` (a guess), not `EXTRACTED` (issue #10). Looks like
+  the extractor is under-claiming confidence on an unambiguous call.
+- **Decision:** any *receiver-based* call (`obj.save()`, `Class::save()`, `x->save()`) is
+  marked `INFERRED` even when exactly one project symbol matches the name; only a direct
+  call (`save()`) or a constructor (naming a type directly) stays `EXTRACTED`.
+- **Rationale:** without type inference the receiver's type is unknown, so a lone same-named
+  match may be a homonym `save` on a *different* class — asserting `EXTRACTED` there would
+  over-claim. The **weight stays 1.0**, so the edge still counts fully for reachability /
+  `find_stale` (it never under-counts a live caller — the cardinal-safe direction); only
+  the asserted confidence is lowered. Over-claiming confidence on a possibly-wrong target
+  is the worse error.
+- **Escape hatch:** `reindex --precise` (Python) adds a confident go-to-definition edge to
+  the true target; trust the per-edge `provenance`/`confidence`.
+
 ### Ambiguous calls link to *all* same-named candidates
 - **Concern:** one call produces several `AMBIGUOUS` edges, inflating reachability
   and `impact_of` blast radius.
@@ -89,7 +105,13 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Rationale:** under-counting reachability would flag live code dead
   (destructive); over-counting only under-reports dead code (safe). The
   confidence/provenance on each edge records the uncertainty.
-- **Escape hatch:** `--precise` disambiguates via go-to-definition.
+- **Escape hatch:** `reindex --precise` (Python) adds a confident go-to-definition
+  edge to the *true* target, so a consumer can prefer the `EXTRACTED`/`jedi` edge and
+  filter the `AMBIGUOUS` ones by provenance. It is **additive** — it does NOT prune the
+  competing `AMBIGUOUS` candidates, so it doesn't deflate `impact_of` / `find_stale`
+  reachability on its own (issue #15). That's deliberate: pruning the losing siblings
+  would let a single jedi mis-resolution drop a live symbol's only caller and flag it
+  dead — the cardinal sin — so the safe additive design is kept.
 
 ## Cost-of-fix exceeds value
 

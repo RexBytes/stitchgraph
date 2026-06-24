@@ -12,14 +12,16 @@ only read the index, never mutate source (design §4 read-only invariant).
 from __future__ import annotations
 
 import inspect
+from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from .entrypoints import EntryPointDetector, PythonLibraryDetector
 from .envelope import Provenance, Result, Urgency, ok, refuse
-from .model import NodeKind, Relation
+from .model import Edge, NodeKind, Relation
 from .reach import (
+    LIVENESS_RELATIONS,
     best_path,
     fan_in,
     fan_out,
@@ -301,6 +303,21 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
     return ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
 
 
+_SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
+
+
+def _confident_share(edges: list[Edge]) -> tuple[float, int, int]:
+    """(confident_fraction, confident_count, total) over a bag of edges — the share
+    backed by type-certain `EXTRACTED` provenance vs heuristic (`INFERRED`) or
+    over-approximated (`AMBIGUOUS`) ones. Empty -> treated as fully confident (1.0),
+    so a finding with no qualifying edges is never spuriously demoted (issue #11)."""
+    total = len(edges)
+    if total == 0:
+        return 1.0, 0, 0
+    confident = sum(1 for e in edges if e.provenance is Provenance.EXTRACTED)
+    return confident / total, confident, total
+
+
 @operation("Ranked issue list with urgency (structural scan).")
 def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
@@ -344,15 +361,40 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             + (" on a reachable path" if live else " (unreachable)"),
         })
 
+    # Provenance of the participating edges decides whether a *structural* finding is
+    # trustworthy or a resolution artifact (issue #11): a cycle / god object that exists
+    # only because of AMBIGUOUS (over-approximated homonym) or INFERRED (heuristic) edges
+    # is mostly noise on a language without type resolution. Index edges once.
+    all_edges = store.resolved_edges()
+    edges_by_src: dict[str, list[Edge]] = defaultdict(list)
+    edges_by_dst: dict[str, list[Edge]] = defaultdict(list)
+    for e in all_edges:
+        edges_by_src[e.src].append(e)
+        if e.dst_id is not None:
+            edges_by_dst[e.dst_id].append(e)
+
     # Circular dependencies (SCC > 1). Single-node self-loops are ordinary
     # recursion, not a coupling smell, so they're excluded.
     for comp in strongly_connected_components(store):
         if len(comp) < 2:
             continue
+        members = set(comp)
+        internal = [e for e in all_edges
+                    if e.src in members and e.dst_id in members
+                    and e.relation in _SCC_RELATIONS]
+        frac, conf_n, total = _confident_share(internal)
+        artifact = frac < 0.5  # majority of the linking edges are guesses
         issues.append({
             "kind": "cycle", "node": comp[0], "members": comp,
-            "urgency": Urgency.ORANGE.value,
-            "reason": f"circular dependency among {len(comp)} symbols",
+            # An artifact cycle is capped below ORANGE so it sinks in the ranking and
+            # never shouts; a confidently-linked cycle keeps its ORANGE "look closer".
+            "urgency": Urgency.GREEN.value if artifact else Urgency.ORANGE.value,
+            "confidence": round(0.3 + 0.6 * frac, 2),
+            "needs_review": artifact,
+            "confident_edges": conf_n, "edges": total,
+            "reason": f"circular dependency among {len(comp)} symbols"
+            + ("; rests mostly on name-ambiguous/heuristic edges "
+               f"({conf_n}/{total} confident) — verify before acting" if artifact else ""),
         })
 
     # Data loops: feedback through mutable global state (design §6.F).
@@ -366,13 +408,33 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         })
 
     # God objects: high fan-in AND fan-out.
+    _LIVENESS = set(LIVENESS_RELATIONS)
     fi, fo = fan_in(store), fan_out(store)
     for nid in set(fi) & set(fo):
         if fi[nid] >= 5 and fo[nid] >= 5:
+            # Confident-only degree: fan-in over liveness relations, fan-out over CALLS
+            # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
+            # coupling is mostly ambiguous/heuristic edges (homonym `new`/`build` calls
+            # that edge to every same-named def), the god-object smell is an artifact.
+            in_edges = [e for e in edges_by_dst.get(nid, ()) if e.relation in _LIVENESS]
+            out_edges = [e for e in edges_by_src.get(nid, ())
+                         if e.relation is Relation.CALLS]
+            in_frac, c_in, _ = _confident_share(in_edges)
+            out_frac, c_out, _ = _confident_share(out_edges)
+            # An artifact needs BOTH halves to survive on confident edges; if either the
+            # confident fan-in or fan-out falls below the threshold the coupling isn't
+            # really there once the guesses are removed.
+            artifact = c_in < 5 or c_out < 5
+            frac = (in_frac + out_frac) / 2
             issues.append({
                 "kind": "god_object", "node": nid,
-                "urgency": Urgency.ORANGE.value,
-                "reason": f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})",
+                "urgency": Urgency.GREEN.value if artifact else Urgency.ORANGE.value,
+                "confidence": round(0.3 + 0.6 * frac, 2),
+                "needs_review": artifact,
+                "confident_fan_in": c_in, "confident_fan_out": c_out,
+                "reason": f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
+                + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
+                   f"fan-out {c_out}) — verify before acting" if artifact else ""),
             })
 
     rank = {Urgency.RED.value: 0, Urgency.ORANGE.value: 1, Urgency.GREEN.value: 2}

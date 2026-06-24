@@ -29,7 +29,14 @@ for the agent rules that teach an LLM when to call which tool.
 
 Full support matrix in [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
 
-## Status (v1.0.0)
+The tree-sitter grammars ship **offline by default**: `pip install
+'stitchgraph[treesitter]'` (or `[all]`) pins the bundled-grammar line, so a full
+multi-language reindex runs with no network — local-first, CI- and air-gap-safe.
+Prefer the newest grammars fetched on first use? Install `[treesitter-download]`
+instead. Run `stitchgraph doctor` (`--strict` for a CI gate) to see which grammars
+load.
+
+## Status (v1.0.4)
 
 Working end-to-end and dogfooding on its own source. See
 [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
@@ -46,7 +53,7 @@ Working end-to-end and dogfooding on its own source. See
   `orient`, `find_stale`, `find_holes`, `impact_of`, `trace_path`, `scan`,
   `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
   plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
-  `report` and a `watch` command.
+  `report`, a `watch` command, and a `doctor` grammar self-check.
 - **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
   Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
   the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →
