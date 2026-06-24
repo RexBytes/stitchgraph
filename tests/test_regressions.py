@@ -2132,3 +2132,36 @@ def test_risk_empty_churn_is_a_refusal_not_vacuous_ok(tmp_path):
     report = build_report(db, str(tmp_path))
     risk_section = report.split("## Risk", 1)[1]
     assert "skipped" in risk_section            # explained, not a blank section
+
+
+def test_report_risk_section_never_blank_when_no_hotspots(tmp_path):
+    """When risk() runs successfully but finds nothing (churn exists, but every file
+    has zero centrality and there's no hidden coupling), risk legitimately returns
+    ok=True with empty lists — like find_stale returning []. The report must render an
+    explicit '(no risk ...)' line, never a blank section (panels SS/TT)."""
+    import os
+    import subprocess
+
+    from stitchgraph.adapters.report import build_report
+
+    # A single isolated function: committed (so churn>0) but no caller (centrality 0).
+    (tmp_path / "app.py").write_text("def isolated():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "init")
+
+    db = str(tmp_path / "g.db")
+    with sg.Store(db) as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.risk(store)
+        assert res.ok is True                       # ran fine, just found nothing
+        assert res.result == {"hotspots": [], "hidden_coupling": []}
+    risk_section = build_report(db, str(tmp_path)).split("## Risk", 1)[1]
+    assert risk_section.strip()                      # not blank
+    assert "no risk" in risk_section.lower()         # explicit empty marker

@@ -50,13 +50,19 @@ def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
 
     out += ["", "## Risk (git × structure)", ""]
     if risk.ok:
-        for h in (risk.result or {}).get("hotspots", [])[:5]:
+        hotspots = (risk.result or {}).get("hotspots", [])
+        hidden = (risk.result or {}).get("hidden_coupling", [])
+        for h in hotspots[:5]:
             out.append(f"- {h['urgency']} {h['file']} "
                        f"(churn {h['churn']}, risk {h['risk']})")
-        hidden = (risk.result or {}).get("hidden_coupling", [])
         if hidden:
             out.append(f"- Hidden coupling pairs: {len(hidden)} "
                        "(co-change with no structural edge)")
+        # risk ran but found nothing notable (every churned file has zero centrality,
+        # no hidden coupling). Render an explicit marker so the section is never blank —
+        # mirrors how the Cleanup section reports an empty stale list (panels SS/TT).
+        if not hotspots and not hidden:
+            out.append("- (no risk hotspots or hidden coupling found)")
     else:
         out.append(f"- (skipped: {risk.review_reasons[0] if risk.review_reasons else 'no git'})")
 
