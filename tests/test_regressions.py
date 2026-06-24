@@ -2384,3 +2384,39 @@ def test_reindex_survives_broken_symlink(tmp_path):
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))         # must not raise
         assert "good.py::main" in set(store.all_node_ids())
+
+
+def test_entrypoint_class_rescue_does_not_root_all_public_methods(tmp_path):
+    """The class-rescue for entry points is narrow: a class instantiated in `__main__`
+    keeps the methods it *invokes* live, NOT every public method. So a same-named class
+    in an unrelated module doesn't get its whole method surface hidden via a global
+    name collision (panel EEE — bounding the over-root blast radius)."""
+    _mk(tmp_path, {
+        "p/__init__.py": "",
+        "p/cli.py": "class Worker:\n    def run(self):\n        return 1\n\n"
+                    'if __name__ == "__main__":\n    Worker().run()\n',
+        # unrelated, never-used Worker; `extra` is not invoked anywhere
+        "p/other.py": "class Worker:\n    def run(self):\n        return 1\n"
+                      "    def extra(self):\n        return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "p/cli.py::Worker" not in stale       # the real entry class stays live
+        # the unrelated class's NON-invoked public method must still be flaggable
+        assert "p/other.py::Worker.extra" in stale
+
+
+def test_reindex_skips_named_pipe_without_hanging(tmp_path):
+    """A FIFO (or other non-regular file) named `*.py` must not hang reindex: `open()`
+    on a FIFO with no writer blocks forever, and the OSError guard never fires because
+    the open succeeds. The file walk now skips non-regular files (panel FFF)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    os.mkfifo(str(tmp_path / "blocker.py"))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "good.py::good" in set(store.all_node_ids())

@@ -69,7 +69,8 @@ def extract_project(root: str | Path,
     """
     proj = _Project(root=Path(root))
     files = sorted(p for p in proj.root.rglob("*.py")
-                   if _wanted(p, proj.root) and not _ignored(p, proj.root, ignore))
+                   if p.is_file() and _wanted(p, proj.root)
+                   and not _ignored(p, proj.root, ignore))
     proj.packages = _project_packages(files, proj.root)
 
     parsed: dict[str, ast.Module] = {}
@@ -322,40 +323,42 @@ def _apply_entrypoint_roles(proj: _Project) -> None:
             node.roles = node.roles | extra
 
 
-_ROOT_ROLES = frozenset({"exported", "main", "script"})
-
-
 def _seed_entrypoint_classes(proj: _Project) -> None:
-    """Keep a class live when it's reached through a root that targets one of its
-    methods, and keep a rooted class's public methods live — the 'method live, class
-    dead' / 'class live, methods dead' shapes (panel DDD, cardinal). Runs after all
-    role assignment so it sees `exported`/`main`/`script` roots:
-      (1) a root-bearing method roots its enclosing class chain (`App.run` script ->
-          `App` live; `Widget.Inner.go` -> `Widget.Inner` and `Widget`); and
-      (2) a root-bearing class roots its public (non-underscore) methods — external
-          callers can invoke them (generalises the exported-class-method rescue to the
-          `main`/`script` entry roots, e.g. `Worker()` in __main__ -> `Worker.run`).
-    Only ever adds roots (precision-safe — never flags live code dead)."""
+    """Keep a class live when an entry point targets one of its methods (the 'method
+    live, class dead' cardinal shape — panel DDD). Runs after all role assignment.
+
+    (1) A **`script`** root on a method (a console-script `Class.method` target, which is
+        module-path-matched and so collision-resistant) keeps its enclosing class chain
+        live (`App.run` -> `App`; `Widget.Inner.go` -> `Widget.Inner` and `Widget`).
+    (2) A class instantiated in a `__main__` block (it carries the `main` role from
+        `_apply_entrypoint_roles`) keeps the methods it *invokes* live — those whose name
+        appears in the same `main_calls` set (e.g. `Worker().run()` -> `run`).
+
+    Deliberately narrow (panel EEE): step (1) is restricted to the `script` role, and
+    step (2) to invoked method names — NOT every public method of every root-bearing
+    class — so a global bare-name collision (`exported`/`main` match by name across
+    modules) can't drag a whole unrelated class + its full method surface live. Only
+    ever adds roots (precision-safe — never flags live code dead)."""
     by_id = {n.id: n for n in proj.nodes}
-    # (1) class(es) enclosing a root-bearing method/function.
+    # (1) class(es) enclosing a `script`-rooted method (module-precise).
     for n in proj.nodes:
-        if n.kind not in (NodeKind.METHOD, NodeKind.FUNCTION) or not (n.roles & _ROOT_ROLES):
+        if n.kind not in (NodeKind.METHOD, NodeKind.FUNCTION) or "script" not in n.roles:
             continue
         cid = n.id
         while "::" in cid and "." in cid.split("::", 1)[1]:
             cid = cid.rsplit(".", 1)[0]
             owner = by_id.get(cid)
             if owner is not None and owner.kind is NodeKind.CLASS:
-                owner.roles = owner.roles | {"exported"}
-    # (2) public methods of a root-bearing class.
-    root_class_ids = {n.id for n in proj.nodes
-                      if n.kind is NodeKind.CLASS and (n.roles & _ROOT_ROLES)}
-    if root_class_ids:
+                owner.roles = owner.roles | {"script"}
+    # (2) invoked methods of a class instantiated in a `__main__` block.
+    main_class_ids = {n.id for n in proj.nodes
+                      if n.kind is NodeKind.CLASS and "main" in n.roles}
+    if main_class_ids:
         for n in proj.nodes:
-            if n.kind is NodeKind.METHOD and "." in n.id.split("::", 1)[-1] \
-                    and not n.name.startswith("_") \
-                    and n.id.rsplit(".", 1)[0] in root_class_ids:
-                n.roles = n.roles | {"exported"}
+            if n.kind is NodeKind.METHOD and not n.name.startswith("_") \
+                    and n.name in proj.main_calls \
+                    and n.id.rsplit(".", 1)[0] in main_class_ids:
+                n.roles = n.roles | {"main"}
 
 
 def _console_script_targets(root: Path) -> list[tuple[str, str]]:

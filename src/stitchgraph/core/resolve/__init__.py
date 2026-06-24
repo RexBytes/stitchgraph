@@ -36,6 +36,9 @@ class ResolveContext:
             if any(p in {".venv", "venv", "build", "dist", "__pycache__", ".git"}
                    for p in parts):
                 continue
+            if not path.is_file():
+                continue  # skip FIFOs/dirs/dead symlinks: open() on a FIFO blocks
+                          # forever (panel FFF) and never raises the OSError caught below
             try:
                 yield path.relative_to(self.root).as_posix(), ast.parse(
                     path.read_text(encoding="utf-8"))

@@ -197,7 +197,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     files = [p for p in sorted(root.rglob("*"))
-             if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
+             if p.suffix in EXT_LANG and p.is_file() and _wanted(p, root, ignore)]
     grammar_failed: dict[str, int] = {}  # lang -> files skipped (grammar unavailable)
     for path in files:
         lang = EXT_LANG[path.suffix]

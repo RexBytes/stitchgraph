@@ -137,6 +137,14 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   not matched — only same-suffix path copies are.
 - **Escape hatch:** pin the real target in `stitchgraph.toml [entry_points]`; the
   over-marked copy surfaces only as *not flagged*, never as a confident verdict.
+- **Related (same precision-safe class):** a class instantiated in an `if __name__ ==
+  "__main__"` block is rooted by **bare name** (a `__main__` call isn't a graph edge —
+  see "Module-level uses aren't attributed"), so a same-named class in another module is
+  also kept live. Name-based is required here (a `__main__` block legitimately instantiates
+  classes imported from other modules), so this is deliberate over-marking, not tightened.
+  The rescue is bounded — it roots the class and the methods it *invokes* (names in the
+  `__main__` block), not every public method — so an unrelated class's uninvoked methods
+  still flag.
 
 ### `find_holes` reports edit-orphaned references, not first-index dangling calls
 - **Concern:** `find_holes` returns empty on a freshly-indexed project even when there's
