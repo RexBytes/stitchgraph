@@ -35,9 +35,19 @@ first use. Scope comes from the **indexed graph** (`--db`), not a per-call path 
 the `path?` is removed and a new "On scope" note documents the real model: index the subset
 you want to analyse and query that DB from any cwd. The one exception, `risk`, is called out
 — its `--path` is the *git repo root* for history (now defaulting to the indexed root, #18),
-not a query filter. The table also listed a `structure_smells()` operation that was never
-registered (its cycles/god-objects/data-loops output is part of `scan`); it's folded into the
-`scan` row so §9 matches the actual operation set.
+not a query filter. The table was also scrubbed of three stale entries an adversarial
+review surfaced: the phantom `structure_smells()` operation (never registered — its
+cycles/god-objects/data-loops output is part of `scan`), the non-existent `relations?`
+argument on `trace_path`, and the unbuilt `type_at` primitive (a documented LSP roadmap item
+that belongs in `STATUS.md`, not the shipped-operation surface). §9 now lists only registered
+operations.
+
+### `stitchgraph.__version__` kept in sync (#19)
+
+The module attribute had been left at a hardcoded `"1.0.3"` through 1.0.4/1.0.5 while
+`--version` (correctly) read the live `importlib.metadata` version. `__version__` now derives
+from the same metadata, so the attribute and the CLI never disagree and there's no literal to
+bump by hand each release.
 
 ## Verification
 

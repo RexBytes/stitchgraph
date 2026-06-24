@@ -2070,3 +2070,31 @@ def test_report_includes_risk_from_foreign_cwd(tmp_path, monkeypatch):
     assert "## Risk" in report
     assert "not a git repository" not in report  # risk ran, wasn't skipped
     assert "m.py" in report                       # hotspot from the indexed repo
+
+
+def test_version_attr_matches_installed_metadata():
+    """`stitchgraph.__version__` must not drift from the installed distribution
+    version (it was left stale at 1.0.3 through 1.0.4/1.0.5). It now derives from
+    importlib.metadata, the same source `--version` uses (panel OO/PP)."""
+    import re
+    from importlib.metadata import version
+
+    import stitchgraph
+    assert stitchgraph.__version__ == version("stitchgraph")
+    assert re.match(r"\d+\.\d+\.\d+", stitchgraph.__version__)
+
+
+def test_design_section9_lists_only_real_operations():
+    """design.md §9 must not advertise operations/params the CLI doesn't have — the
+    recurring doc-vs-code drift behind #19.2. Pins the removed phantoms (panel
+    NN/OO/PP): structure_smells, type_at, and trace_path's non-existent relations?."""
+    from pathlib import Path
+
+    from stitchgraph.core.operations import registry
+    design = Path(__file__).resolve().parent.parent / "docs" / "design.md"
+    text = design.read_text()
+    names = {op.name for op in registry()}
+    assert "structure_smells" not in text       # folded into scan
+    assert "type_at" not in text                  # LSP roadmap, lives in STATUS.md
+    assert "relations?" not in text               # trace_path takes only (src, sink)
+    assert "type_at" not in names                 # sanity: really not an op
