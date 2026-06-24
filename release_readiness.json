@@ -470,6 +470,16 @@
         "LOW": 1
       },
       "theme": "First full-3-model panel of the 1.0.4 batch (#10 receiver-call demotion, #11 scan provenance propagation, #15 LIMITATIONS --precise wording), reviewed at f69df0b/b2873df. opus and haiku: FINDINGS: none \u2014 verified the cardinal invariant directly (weight stays 1.0, no new false-dead; #10 only relabels provenance), no scan crash/mislabel, jedi additive matches #15 wording. opus raised a non-blocking NOTE that became a real consistency fix (scored MEDIUM): #10 was tree-sitter-only \u2014 the Python ast extractor still labelled an unknown-receiver `x.save()` matched name-only to a lone project `save` as EXTRACTED (the same over-claim; a Python<->tree-sitter asymmetry, this project's standing defect class). Fixed by mirroring the demotion in _call_edge/_ref_edges (is_method param): scope-aware self./local-typed calls stay EXTRACTED, only the unknown-receiver fallback demotes. sonnet found a LOW 1.0.4 regression: C# `new MyApp.Widget()` parses with a `qualified_name` callee node (in _RECEIVER_CALLEE), so the namespace-qualified CONSTRUCTOR was wrongly demoted to INFERRED (cardinal-safe, weight 1.0, but a provenance-accuracy bug that could also under-count confident edges in scan). Fixed generally: constructor call-fields (\"constructor\"/\"type\") force is_method=False in _callee, so any qualified ctor stays EXTRACTED; Rust `Widget::new()` / Ruby `Widget.new` are real method-call nodes and keep their documented INFERRED. Both fixes regression-pinned (pytest 177). Not a clean panel \u2014 surfaced fixable findings; streak resets, fresh confirmation (LL) follows."
+    },
+    {
+      "id": "LL",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) \u2014 first clean panel of the 1.0.4 batch; fresh full-3-model confirmation on the final tree (a68f827) after the KK fixes. opus: end-to-end cardinal proof that liveness is provenance-agnostic \u2014 a symbol reached ONLY via a #10 INFERRED receiver edge is NOT flagged dead while a genuinely unused sibling is; verified the constructor call-fields (\"constructor\"/\"type\") bind EXCLUSIVELY to constructor node types across the LangSpec map (so no real method call is wrongly kept EXTRACTED), and that --precise is genuinely additive (_dedup_edges only collapses same (src,relation,dst_id); AMBIGUOUS siblings preserved). haiku: full suite 177 + dogfood 3 advisory/0 holes + scan on cycle/empty no crash. sonnet: re-ran the per-language constructor matrix (C#/Java/JS/TS/C++/Rust/Ruby/PHP \u2014 qualified & simple ctors EXTRACTED, method calls INFERRED, Rust ::new / Ruby .new documented INFERRED) and adversarial _resolve_member defeat attempts (chained calls, self.x.m(), annotated params, reassigned locals) \u2014 all correct. Streak 1 of 2."
     }
   ]
 }
