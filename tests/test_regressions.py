@@ -451,6 +451,27 @@ def test_malformed_coverage_json_shape_does_not_crash_ingest(tmp_path):
         # empty/garbage coverage grounds nothing -> honest refuse, never a traceback
 
 
+def test_malformed_stitchgraph_toml_does_not_crash_load_config(tmp_path):
+    """`_load` reads stitchgraph.toml on every CLI command and chained `.get().get()` over
+    its sections. A hand-edited config can put any TOML type under any key (a section as a
+    string, `threshold` non-numeric, `include` an int), which raised AttributeError/
+    ValueError and crashed every command. Each must fall back to its default, never crash
+    (same robustness class as the coverage-JSON shape guard)."""
+    from stitchgraph.core import config as cfg
+    for body in (
+        'entry_points = "oops"\n',                     # section is a string, not a table
+        'index = 42\n',                                # section is an int
+        '[review]\nthreshold = "high"\n',              # non-numeric threshold
+        '[entry_points]\ninclude = 5\n',               # include not a list
+        '[similar]\nembed_model = ["a", "b"]\n',       # embed_model not a string
+        'review = []\norient = "x"\n',                 # multiple bad sections
+    ):
+        (tmp_path / "stitchgraph.toml").write_text(body)
+        c = cfg.load_config(str(tmp_path))             # must not raise
+        assert c.threshold == 0.80 or isinstance(c.threshold, float)
+        assert isinstance(c.include, set) and isinstance(c.ignore, list)
+
+
 # -- Panel E / sonnet (HIGH): C/C++ functions must be extracted -----------------
 def test_c_and_cpp_functions_are_extracted(tmp_path):
     """`_name_of` read the C/C++ *return type* before the declarator, so every

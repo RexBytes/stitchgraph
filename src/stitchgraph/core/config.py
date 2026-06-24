@@ -57,16 +57,33 @@ def _load(start: str | Path | None) -> Config:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
         return Config()
-    ep = data.get("entry_points", {})
-    idx = data.get("index", {})
-    rev = data.get("review", {})
-    orient = data.get("orient", {})
+    # A hand-edited stitchgraph.toml can put any TOML type under any key, and config is
+    # loaded on every CLI command — so guard every access by shape: a malformed section or
+    # value falls back to its default instead of crashing. Same robustness class as the
+    # coverage-JSON shape guard (panel LLL); `exists()`-style assumptions bite here too.
+    if not isinstance(data, dict):
+        return Config(source=path)
+
+    def _table(key: str) -> dict:
+        v = data.get(key)
+        return v if isinstance(v, dict) else {}
+
+    def _str_list(v: object) -> list[str]:
+        return [str(x) for x in v] if isinstance(v, list) else []
+
+    ep, idx, rev = _table("entry_points"), _table("index"), _table("review")
+    orient, sim = _table("orient"), _table("similar")
+    try:
+        threshold = float(rev.get("threshold", 0.80))
+    except (TypeError, ValueError):
+        threshold = 0.80
+    embed = sim.get("embed_model")
     return Config(
-        include=set(ep.get("include", []) or []),
+        include=set(_str_list(ep.get("include"))),
         include_tests=bool(ep.get("include_tests", True)),
-        ignore=list(idx.get("ignore", []) or []),
-        threshold=float(rev.get("threshold", 0.80)),
+        ignore=_str_list(idx.get("ignore")),
+        threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
-        embed_model=(data.get("similar", {}) or {}).get("embed_model"),
+        embed_model=embed if isinstance(embed, str) else None,
         source=path,
     )

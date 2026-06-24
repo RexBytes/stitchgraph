@@ -46,6 +46,12 @@ full three-model panels.
   string/null, `executed_lines` a dict) raised an uncaught `AttributeError` through the public
   `ingest_trace` op/CLI. It now isinstance-gates the shape and degrades to empty, matching the
   "empty on any problem" contract and the already-tolerant LCOV/Go parsers.
+- **A malformed `stitchgraph.toml` no longer crashes every CLI command.** `_load` chained
+  `.get().get()` over the config's sections, so a hand-edited file with a section that is not
+  a table (`entry_points = "oops"`), a non-numeric `threshold`, or a non-list `include` raised
+  `AttributeError`/`ValueError` — and config is read on every command. Each section/value is
+  now shape-guarded and falls back to its default (the same robustness sweep that covered the
+  coverage-JSON and FIFO cases).
 
 ### Documentation
 

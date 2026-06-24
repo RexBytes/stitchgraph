@@ -79,13 +79,21 @@ straight through the op and CLI. It now isinstance-gates the shape and degrades 
 honouring the function's "empty on any problem" contract and matching the already-tolerant
 LCOV and Go parsers.
 
+A proactive sweep of the rest of the external-input surface (the same exercise that closed
+the FIFO class) hardened the one remaining gap: `config._load` chained `.get().get()` over
+`stitchgraph.toml`'s sections, so a hand-edited config with a non-table section, a
+non-numeric `threshold`, or a non-list `include` crashed **every** CLI command (config is
+read on each one). Each section/value is now shape-guarded with a default fallback. The
+audit confirms the remaining parsers — `pyproject.toml` (`_console_script_targets`) and the
+LCOV/Go coverage paths — were already isinstance-gated.
+
 ## Verification
 
-`pytest` 201 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 202 passed (new regression tests: console-script root + module-precision guard;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
 extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
-and the coverage-trace read; malformed-coverage-JSON-shape no-crash) · ruff clean · mypy
-clean against **both** the dev pack (1.10.6) and the pinned
+and the coverage-trace read; malformed-coverage-JSON-shape no-crash; malformed-`stitchgraph.toml`
+no-crash) · ruff clean · mypy clean against **both** the dev pack (1.10.6) and the pinned
 bundled 0.13.0. Confirmed by full three-model panels (opus + sonnet + haiku); both FIFO
 hangs (resolver-pipeline, then the `pyproject.toml` fixed-path read) were caught by opus
 reviewers across two panel rounds and fixed before release. Dogfood `src/`: unchanged. Full
