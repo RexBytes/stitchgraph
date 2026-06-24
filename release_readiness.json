@@ -1,6 +1,6 @@
 {
   "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md. || 1.0.1: field fixes #7/#8/#9 (panels W err-safe MEDIUM -> X clean) PLUS a polyglot generalization of test detection the maintainer asked for, driven to closure by panels Y-DD. The Y-DD line found and closed four successive CARDINAL test-class-liveness gaps (direct -> inherited/nested -> combined fixed point -> Python/tree-sitter is_test_file asymmetry); DD is clean on both models with an explicit convergence verdict that the class is closed. 1.0.1 ships on the maintainer's decision; the strict 2-consecutive-clean streak applies to the headline release line.",
-  "_available_models_note": "sonnet's API was unavailable for agent slots this cycle (it had already degraded to a third-party core-only review in Panels M-Q). Per the maintainer's decision (2026-06-23), the convergence panel is run on the two reliably-available models, opus + haiku, and 'full diversity' is defined as both of them. This weakens the diversity signal vs. the original three models; restore sonnet (or add a third model such as fable) here when available.",
+  "_available_models_note": "sonnet (claude-sonnet-4-6) was restored to the panel process on 2026-06-24 after the maintainer released 1.0.1 and confirmed sonnet's API is available again (it had degraded to a core-only third-party review in panels M-Q and was fully unavailable for W-EE; those panels ran on opus+haiku per the 2026-06-23 decision). Full diversity is again the three models opus+sonnet+haiku; a clean panel needs all three. Panel FF is the first full-3-model panel since the restoration \u2014 a post-1.0.1-release confidence check.",
   "package": "stitchgraph",
   "severity_weights": {
     "CRITICAL": 40,
@@ -11,6 +11,7 @@
   },
   "available_models": [
     "opus",
+    "sonnet",
     "haiku"
   ],
   "tau": 2,
