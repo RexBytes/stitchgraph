@@ -1957,3 +1957,32 @@ def test_python_unresolved_receiver_call_is_inferred_not_extracted(tmp_path):
         # cardinal: the method reached only via the unresolved receiver call is not stale
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "Repo.save" not in stale
+
+
+def test_csharp_qualified_constructor_stays_extracted(tmp_path):
+    """Panel KK (sonnet): a namespace-qualified C# constructor `new MyApp.Widget()`
+    has an `object_creation_expression` whose `type` field is a `qualified_name` node.
+    The #10 receiver demotion must NOT fire for constructors (they name a type
+    directly, no receiver ambiguity) — the edge stays EXTRACTED. A genuine method
+    call on the constructed object still demotes to INFERRED."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.cs": """
+            namespace MyApp {
+                public class Program {
+                    public static void Main() { var w = new MyApp.Widget(); w.Run(); }
+                }
+                public class Widget { public void Run() {} }
+            }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = store.resolved_edges(Relation.CALLS)
+        ctor = next(e for e in calls if e.dst_symbol == "Widget")
+        assert ctor.provenance.value == "extracted"   # constructor not demoted
+        assert ctor.weight == 1.0
+        run = next((e for e in calls if e.dst_symbol == "Run"), None)
+        if run is not None:                            # receiver method call still demoted
+            assert run.provenance.value == "inferred"

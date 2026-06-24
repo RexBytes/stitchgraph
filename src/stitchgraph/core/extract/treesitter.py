@@ -867,6 +867,12 @@ def _direct_refs(body, src, spec):
 # Call *node* types that are themselves receiver-based (the receiver isn't reachable
 # via the callee node, only via the call node's shape): PHP `$o->m()` / `C::m()`.
 _RECEIVER_CALL_NODES = frozenset({"member_call_expression", "scoped_call_expression"})
+# Call-fields that name a *constructor* (a type, directly) rather than a method on a
+# receiver: JS/cpp `new …` -> "constructor"/"type", C#/Java `object_creation_expression`
+# -> "type". A constructor is never a receiver call even when the type is namespace-
+# qualified (C# `new MyApp.Widget()` whose callee node is a `qualified_name`), so these
+# must stay EXTRACTED, not be demoted by #10 (issue found in panel KK by sonnet).
+_CONSTRUCTOR_FIELDS = frozenset({"constructor", "type"})
 # Callee *node* types that access a member/field on a receiver, so the call names a
 # method on a value of unknown type: `obj.save()` (py attribute / js member_expression /
 # rust field_expression / go selector_expression / c# member_access_expression),
@@ -893,6 +899,10 @@ def _callee(call, src, field):
     if fn is None:
         return None, False
     name = _trailing_id(fn, src)
+    # A constructor names a type directly — no receiver ambiguity — even when the type is
+    # namespace-qualified; never demote it (keeps `new ns.Widget()` EXTRACTED).
+    if field in _CONSTRUCTOR_FIELDS:
+        return name, False
     # Detected three ways across grammars: the call node itself is a member/scoped call
     # (PHP), the callee node is a member/field/selector/scoped access (Python/JS/Go/C#/
     # Rust), or the call carries an explicit object/receiver field (Java/Ruby). A bare
