@@ -1817,3 +1817,172 @@ def test_doctor_strict_exit_code(monkeypatch):
     monkeypatch.setattr(ts, "grammar_status", lambda: (False, [("rust", False, "missing")]))
     assert CliRunner().invoke(build_app(), ["doctor", "--strict"]).exit_code == 1
     assert CliRunner().invoke(build_app(), ["doctor"]).exit_code == 0
+
+
+# -- Issue #10: single-candidate receiver calls are INFERRED, not EXTRACTED ----
+def test_method_call_to_single_candidate_is_inferred_not_extracted(tmp_path):
+    """A receiver-based call (`r.save()`) that resolves to a lone same-named project
+    symbol is a guess (the receiver's type is unknown without inference), so its edge
+    is INFERRED — not asserted as EXTRACTED. A direct call (`persist()`) stays
+    EXTRACTED. Weight is unchanged on both, so reachability/find_stale are unaffected
+    (cardinal-safe: the demotion never drops or under-counts a live caller)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.js": """
+            class Repo {
+              save() { return persist(); }
+            }
+            function persist() { return 1; }
+            export function caller(r) { return r.save() + persist(); }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = store.resolved_edges(Relation.CALLS)
+        by_dst = {e.dst_id.split("::")[-1]: e for e in calls
+                  if e.src == "app.js::caller"}
+        # caller -> Repo.save (receiver call, single candidate) is INFERRED
+        assert by_dst["Repo.save"].provenance.value == "inferred"
+        assert by_dst["Repo.save"].weight == 1.0          # full weight: still reachable
+        # caller -> persist (direct call) stays EXTRACTED
+        assert by_dst["persist"].provenance.value == "extracted"
+        # cardinal invariant: the live method reached only via the receiver call is
+        # NOT flagged stale despite the demotion.
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Repo.save" not in stale
+
+
+# -- Issue #11: scan structural findings reflect participating-edge provenance --
+def test_scan_cycle_built_from_ambiguous_edges_is_demoted(tmp_path):
+    """A cycle that exists *only* because of AMBIGUOUS (homonym over-approximated)
+    edges is a resolution artifact, not a real coupling smell. scan must cap its
+    urgency below ORANGE, lower its confidence, and set needs_review — while a cycle
+    backed by confident EXTRACTED edges keeps its ORANGE 'look closer' (issue #11)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        # build()<->run() in a.js form the cycle, but both names are homonyms (also in
+        # b.js), so every linking edge is AMBIGUOUS — the cycle is an artifact.
+        "a.js": """
+            export function build(){ return run(); }
+            export function run(){ return build(); }
+        """,
+        "b.js": """
+            export function build(){ return 2; }
+            export function run(){ return 3; }
+        """,
+        # alpha()<->beta() have unique names -> EXTRACTED edges -> a real cycle.
+        "c.js": """
+            export function alpha(){ return beta(); }
+            export function beta(){ return alpha(); }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        cycles = {tuple(sorted(i["members"])): i
+                  for i in sg.scan(store).result if i["kind"] == "cycle"}
+        artifact = cycles[tuple(sorted(["a.js::build", "a.js::run"]))]
+        assert artifact["urgency"] == "green"           # capped below ORANGE
+        assert artifact["needs_review"] is True
+        assert artifact["confidence"] < 0.5
+        assert artifact["confident_edges"] == 0
+
+        real = cycles[tuple(sorted(["c.js::alpha", "c.js::beta"]))]
+        assert real["urgency"] == "orange"              # confident cycle unchanged
+        assert real["needs_review"] is False
+        assert real["confidence"] >= 0.8
+
+
+def test_scan_god_object_from_ambiguous_edges_is_demoted(tmp_path):
+    """A god object whose high coupling rests on name-ambiguous edges (homonym calls
+    that edge to every same-named def) is a resolution artifact: scan caps it below
+    ORANGE, sets needs_review, and reports the confident-only degree (issue #11)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    callers = "\n".join(f"export function caller{i}(){{ return hub(); }}"
+                        for i in range(5))
+    units = "\n".join(f"export function u{i}(){{ return {i}; }}" for i in range(5))
+    hub_body = "; ".join(f"u{i}()" for i in range(5))
+    _mk(tmp_path, {
+        # hub() is a homonym (also in dup.js) so every call to it is AMBIGUOUS; its
+        # fan-in of 5 collapses to 0 confident edges.
+        "a.js": f"export function hub(){{ {hub_body}; return 0; }}\n{units}\n{callers}\n",
+        "dup.js": "export function hub(){ return 9; }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        god = next(i for i in sg.scan(store).result
+                   if i["kind"] == "god_object" and i["node"] == "a.js::hub")
+        assert god["urgency"] == "green"            # capped below ORANGE
+        assert god["needs_review"] is True
+        assert god["confident_fan_in"] == 0         # the coupling vanishes when confident
+        assert god["confident_fan_out"] == 5
+
+
+def test_python_unresolved_receiver_call_is_inferred_not_extracted(tmp_path):
+    """Mirror of #10 in the Python ast extractor: an attribute call whose receiver
+    type can't be resolved scope-aware (`x.save()` where `x` is an unknown/external
+    type) is a name-only guess even with a single same-named project method — so it's
+    INFERRED, not EXTRACTED. A self/local-typed call (`r.save()` with `r = Repo()`)
+    stays EXTRACTED, and a bare call stays EXTRACTED. Weight is 1.0 throughout, so
+    reachability/find_stale are unchanged (cardinal-safe)."""
+    _mk(tmp_path, {
+        "m.py": """
+            class Repo:
+                def save(self):
+                    return 1
+
+            def unknown_receiver(x):
+                return x.save()
+
+            def self_call():
+                r = Repo()
+                return r.save()
+
+            if __name__ == "__main__":
+                unknown_receiver(None)
+                self_call()
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = store.resolved_edges(Relation.CALLS)
+        prov = {(e.src.split("::")[-1], e.dst_id.split("::")[-1]): e for e in calls}
+        unk = prov[("unknown_receiver", "Repo.save")]
+        assert unk.provenance.value == "inferred"      # receiver type unknown -> guess
+        assert unk.weight == 1.0                        # still fully reachable
+        typed = prov[("self_call", "Repo.save")]
+        assert typed.provenance.value == "extracted"    # local-typed receiver -> certain
+        # cardinal: the method reached only via the unresolved receiver call is not stale
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Repo.save" not in stale
+
+
+def test_csharp_qualified_constructor_stays_extracted(tmp_path):
+    """Panel KK (sonnet): a namespace-qualified C# constructor `new MyApp.Widget()`
+    has an `object_creation_expression` whose `type` field is a `qualified_name` node.
+    The #10 receiver demotion must NOT fire for constructors (they name a type
+    directly, no receiver ambiguity) — the edge stays EXTRACTED. A genuine method
+    call on the constructed object still demotes to INFERRED."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.cs": """
+            namespace MyApp {
+                public class Program {
+                    public static void Main() { var w = new MyApp.Widget(); w.Run(); }
+                }
+                public class Widget { public void Run() {} }
+            }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = store.resolved_edges(Relation.CALLS)
+        ctor = next(e for e in calls if e.dst_symbol == "Widget")
+        assert ctor.provenance.value == "extracted"   # constructor not demoted
+        assert ctor.weight == 1.0
+        run = next((e for e in calls if e.dst_symbol == "Run"), None)
+        if run is not None:                            # receiver method call still demoted
+            assert run.provenance.value == "inferred"

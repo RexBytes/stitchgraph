@@ -279,8 +279,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     for rel, def_id, body, lang in defs:
         by_name = by_lang.get(lang, {})
         called: set[str] = set()
-        for name, line in _direct_calls(body, src_by[rel], SPECS[lang]):
-            _ref(edges, def_id, name, by_name, rel, line)
+        for name, line, is_method in _direct_calls(body, src_by[rel], SPECS[lang]):
+            _ref(edges, def_id, name, by_name, rel, line, is_method=is_method)
             called.add(name)
         # Bare-name *references*: a symbol named by value/type (`const cb = handler`,
         # a class as the receiver of `Service.new` / `Color.RED`, a `new X()` class
@@ -758,18 +758,22 @@ def _is_test_name(name: str) -> bool:
 
 # -- pass 2: calls ----------------------------------------------------------
 def _direct_calls(body, src, spec):
-    out: list[tuple[str, int]] = []
+    # (name, line, is_method): is_method marks a receiver-based call (`obj.save()`),
+    # whose target type is unknown without type inference — see _callee / issue #10.
+    out: list[tuple[str, int, bool]] = []
 
     def rec(n, top):
         for c in n.children:
             if not top and (c.type in spec.defs or c.type in spec.container_only):
                 continue
             if c.type in spec.call_types:
-                name = _callee(c, src, spec.call_types[c.type])
+                name, is_method = _callee(c, src, spec.call_types[c.type])
                 if name:
-                    out.append((name, c.start_point[0] + 1))
+                    out.append((name, c.start_point[0] + 1, is_method))
             elif spec.bare_calls and c.type == "identifier" and _is_bare_call(n, c):
-                out.append((_text(c, src), c.start_point[0] + 1))
+                # A paren-less receiver-less Ruby call is a direct call, not a method
+                # on a receiver — confident (not is_method).
+                out.append((_text(c, src), c.start_point[0] + 1, False))
             rec(c, False)
 
     rec(body, True)
@@ -801,7 +805,7 @@ def _module_uses(root, src, spec):
                         "arrow_function", "function", "function_expression"):
                     continue
             if c.type in spec.call_types:
-                nm = _callee(c, src, spec.call_types[c.type])
+                nm, _ = _callee(c, src, spec.call_types[c.type])
                 if nm:
                     calls.append((nm, c.start_point[0] + 1))
             elif spec.bare_calls and c.type == "identifier" and _is_bare_call(n, c):
@@ -860,14 +864,56 @@ def _direct_refs(body, src, spec):
     return out
 
 
+# Call *node* types that are themselves receiver-based (the receiver isn't reachable
+# via the callee node, only via the call node's shape): PHP `$o->m()` / `C::m()`.
+_RECEIVER_CALL_NODES = frozenset({"member_call_expression", "scoped_call_expression"})
+# Call-fields that name a *constructor* (a type, directly) rather than a method on a
+# receiver: JS/cpp `new …` -> "constructor"/"type", C#/Java `object_creation_expression`
+# -> "type". A constructor is never a receiver call even when the type is namespace-
+# qualified (C# `new MyApp.Widget()` whose callee node is a `qualified_name`), so these
+# must stay EXTRACTED, not be demoted by #10 (issue found in panel KK by sonnet).
+_CONSTRUCTOR_FIELDS = frozenset({"constructor", "type"})
+# Callee *node* types that access a member/field on a receiver, so the call names a
+# method on a value of unknown type: `obj.save()` (py attribute / js member_expression /
+# rust field_expression / go selector_expression / c# member_access_expression),
+# `Foo::bar()` (rust scoped_identifier), qualified names.
+_RECEIVER_CALLEE = frozenset({
+    "attribute", "member_expression", "field_expression", "selector_expression",
+    "member_access_expression", "scoped_identifier", "qualified_name",
+})
+
+
 def _callee(call, src, field):
+    """Return (name, is_method). `is_method` is True for a receiver-based call —
+    `obj.save()`, `Class::save()`, `x->save()` — whose target type we can't know
+    without type inference, so a lone same-named project symbol is recorded as a
+    guess (INFERRED) rather than asserted (EXTRACTED). See issue #10. Weight is
+    unchanged, so the edge still counts for reachability — this only labels
+    confidence, it never drops the edge (cardinal-safe)."""
     if field is None:  # bash: command -> command_name
         cn = next((c for c in call.children if c.type == "command_name"), None)
         if cn is not None:
-            return _text(cn.children[0] if cn.children else cn, src)
-        return None
+            return _text(cn.children[0] if cn.children else cn, src), False
+        return None, False
     fn = call.child_by_field_name(field)
-    return _trailing_id(fn, src) if fn is not None else None
+    if fn is None:
+        return None, False
+    name = _trailing_id(fn, src)
+    # A constructor names a type directly — no receiver ambiguity — even when the type is
+    # namespace-qualified; never demote it (keeps `new ns.Widget()` EXTRACTED).
+    if field in _CONSTRUCTOR_FIELDS:
+        return name, False
+    # Detected three ways across grammars: the call node itself is a member/scoped call
+    # (PHP), the callee node is a member/field/selector/scoped access (Python/JS/Go/C#/
+    # Rust), or the call carries an explicit object/receiver field (Java/Ruby). A bare
+    # `foo()` / a constructor (`new Foo()`, naming a type directly) has none of these.
+    is_method = (
+        call.type in _RECEIVER_CALL_NODES
+        or fn.type in _RECEIVER_CALLEE
+        or call.child_by_field_name("object") is not None    # java method_invocation
+        or call.child_by_field_name("receiver") is not None  # ruby call
+    )
+    return name, is_method
 
 
 def _trailing_id(node, src):
@@ -896,7 +942,8 @@ def _trailing_id(node, src):
     return None
 
 
-def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS):
+def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS,
+         is_method=False):
     cands = by_name.get(name, [])
     # A function may legitimately CALL itself (recursion) — keep the self-edge, as
     # the Python extractor does, so both model the same graph. Self-reference is
@@ -910,8 +957,16 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS):
     if not cands:
         return
     if len(cands) == 1:
+        # A receiver-based call (`obj.save()`) that resolves to a *single* same-named
+        # project symbol is still a guess without type inference — the receiver's type
+        # is unknown, so this might be a homonym `save` on a different class (issue #10).
+        # Record it as INFERRED, not EXTRACTED. Weight stays 1.0 so the edge still
+        # counts fully for reachability/find_stale (never under-counts a live caller —
+        # cardinal-safe); only the asserted confidence is lowered.
+        prov = (Provenance.INFERRED if is_method and relation is Relation.CALLS
+                else Provenance.EXTRACTED)
         edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
-                          dst_id=cands[0], weight=1.0, provenance=Provenance.EXTRACTED,
+                          dst_id=cands[0], weight=1.0, provenance=prov,
                           location=loc, source="tree-sitter"))
     else:
         w = round(1.0 / len(cands), 3)

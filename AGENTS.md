@@ -28,7 +28,11 @@ tests to ground liveness in what actually executed.
   dead." Verify (dynamic dispatch, plugins, framework callbacks) before deleting.
 - **Hunting bugs / tech debt?** Call `scan` — ranked issues with urgency
   (🔴 fix now / 🟠 look closer / 🟢 cleanup): live stubs, holes, cycles, data
-  loops, god objects. Triage by urgency.
+  loops, god objects. Triage by urgency, **then by `needs_review`**: a cycle or
+  god-object whose coupling rests on name-ambiguous/heuristic edges is flagged
+  `needs_review: true`, capped to 🟢, and reports its confident-only degree — it's
+  likely a resolution artifact (common on languages without type resolution), so
+  verify before acting.
 - **Where's the risk?** Call `risk` — files that change often AND are depended on
   heavily, plus hidden coupling (files that co-change but share no code edge).
 - **Want the raw structure of one module?** `get_matrix <scope> <relation>` —

@@ -8,14 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 24 (Panels A–X; W–X are the 1.0.1 field-fix confirmation) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · no-open-defects ✅ |
-| Tests | 152 passing, 0 skipped (full extras) |
-| Coverage | 86.4% |
-| Release-Readiness Score | **93.3 / 100** |
-| Convergence | 1.0.0 gate: U (**0.0**) → V (**0.0**), streak 2 → released. 1.0.1 batch: W (1 MEDIUM, err-safe over-match in the #8 fix) → **X (0.0 CLEAN**, both models) |
-| Dogfood (self) | find_stale 3 advisory (no false-dead) · holes 0 · scan: 4 cycles / 1 data_loop / 12 god_objects · 349 nodes |
-| Verdict | **1.0.0 RELEASED** (tag `v1.0.0`). **1.0.1** (field fixes #7/#8/#9) ships on Panel X's clean dual-model confirmation; awaiting the maintainer's manual `1.0.1` tag |
+| Multi-model review panels | 38 (Panels A–LL; FF–LL are the post-sonnet-restoration full-3-model panels for 1.0.2/1.0.3/1.0.4) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ (dev 1.10.6 **and** pinned bundled 0.13.0) · no-open-defects ✅ |
+| Tests | 177 passing, 0 skipped (full extras) |
+| Coverage | ~86% |
+| Convergence | 1.0.0: U→V streak 2 → released. 1.0.1: W→X clean → released. 1.0.2: HH→II streak 2 → released. 1.0.3: JJ clean → released. 1.0.4: KK (1 MEDIUM Python-asymmetry + 1 LOW C# ctor, both fixed) → **LL → MM clean (streak 2, gate met, RRS confidence 0.86 → RELEASABLE)** |
+| Dogfood (self) | find_stale 3 advisory (no false-dead) · holes 0 |
+| Verdict | **1.0.0/1.0.1/1.0.2/1.0.3 RELEASED** (maintainer tags). **1.0.4** (confidence honesty #10/#11/#15) **RELEASABLE** — KK findings fixed, LL+MM clean streak met; awaiting the maintainer's manual `v1.0.4` tag |
 
 ## Trajectory
 
@@ -63,6 +62,12 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | II | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — second consecutive clean panel; the 1.0.2 gate is met (streak 2, RRS confidence 0.86 → RELEASABLE).** All three `FINDINGS: none`, fresh independent confirmation (~30 new export/test-receiver/nesting/cross-language shapes from sonnet; 25 export shapes + a non-export sub-agent sweep — SQL/ORM/events/envelope/metrics/persistence/CLI — from opus; full matrix from haiku). Export-rooting class confirmed closed; over-marking bounded; `#7`/`#9`, the four nesting hosts, and the 1.0.1 polyglot detection all hold; dedup/metric integrity intact. One borderline err-safe note (`module.exports = ns.Member` via a locally-built namespace not rooted) → documented limitation, advisory-only. Dogfood 3 advisory / 0 holes; 169 tests. |
 | — | _1.0.2 released (maintainer tag). Then maintainer raised the packaging side of #12 (offline install)._ | | | _Investigated `tree-sitter-language-pack`'s 1.0.0 switch from bundled to download-on-first-use; chose Option 1 (offline-default pin + adaptive load + doctor). 1.0.3 below._ |
 | JJ | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — confirms the issue-#12 fix (1.0.3): offline-by-default grammars.** All three `FINDINGS: none`. Root cause: `tree-sitter-language-pack` switched at v1.0.0 from bundling grammars in the wheel to downloading them on first use (breaks offline/CI/air-gapped); the 1.0.1 `<2` bound didn't fix it. Fix (Option 1): pin `[treesitter]` to the bundled line `>=0.7,<1.0` (+ `tree-sitter>=0.25.2,<1`); opt-in `[treesitter-download]` = 1.x; adaptive `_load_grammar` (download-and-retry when the pack supports it, else #7 warn+skip); `stitchgraph doctor`/`--strict` self-check. Verified the `get_language→_load_grammar` swap is **byte-identical** (all 12 langs; success path makes zero `download()` calls), all 4 adaptive-load paths, doctor incl. not-installed, pin bounds (`[all]` stays offline-by-default). Offline operation independently verified in a throwaway venv on bundled 0.13.0 with the network OFF. All 12 grammars MIT-licensed. Dogfood 3 advisory / 0 holes; 172 tests. |
+| — | _1.0.3 released (maintainer tag); #12 closed. Maintainer triaged the remaining open issues and asked to fix #10/#11/#15 as 1.0.4._ | | | _#10 single-candidate receiver calls over-claim EXTRACTED; #11 scan structural findings ignore edge provenance; #15 LIMITATIONS `--precise` wording. 1.0.4 below._ |
+| KK | opus · sonnet · haiku | 1 MEDIUM · 1 LOW | **5.0** | **First 1.0.4 panel (#10/#11/#15).** opus + haiku `FINDINGS: none` (cardinal invariant verified directly — #10 keeps weight 1.0, no new false-dead; scan no crash/mislabel; jedi additive matches #15). opus raised a non-blocking NOTE that became a real consistency fix (MEDIUM): #10 was tree-sitter-only, so the **Python `ast` extractor** still over-claimed `EXTRACTED` on an unknown-receiver name-only bind (`x.save()` → lone project `save`) — a Python↔tree-sitter asymmetry; mirrored the demotion in `_call_edge`/`_ref_edges` (scope-aware `self.`/local-typed calls stay `EXTRACTED`). sonnet found a LOW 1.0.4 regression: a C# namespace-qualified constructor `new MyApp.Widget()` (callee node `qualified_name`, in `_RECEIVER_CALLEE`) was wrongly demoted; fixed generally — constructor call-fields (`"constructor"`/`"type"`) force `is_method=False` so any qualified ctor stays `EXTRACTED` (Rust `Widget::new()` / Ruby `Widget.new` are real method-call nodes, keep documented INFERRED). Both fixed + regression-pinned. **Streak resets** (fixable findings surfaced). |
+
+| LL | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — first clean panel of the 1.0.4 batch (streak 1 of 2), fresh full-3-model confirmation on the final tree after the KK fixes.** All three `FINDINGS: none`. opus gave an end-to-end **cardinal proof** that liveness is provenance-agnostic — a symbol reached *only* via a #10 INFERRED receiver edge is not flagged dead while a genuinely-unused sibling is — and verified the constructor call-fields (`"constructor"`/`"type"`) bind **exclusively** to constructor node types across the `LangSpec` map (no real method call wrongly kept EXTRACTED), plus `--precise` is genuinely additive (`_dedup_edges` only collapses same `(src,relation,dst_id)`; AMBIGUOUS siblings preserved). sonnet re-ran the per-language constructor matrix (C#/Java/JS/TS/C++/Rust/Ruby/PHP) and adversarial `_resolve_member` defeat attempts (chained calls, `self.x.m()`, annotated params, reassigned locals) — all correct. haiku: full suite 177, dogfood 3 advisory / 0 holes, scan on cycle/empty no crash. |
+
+| MM | opus · sonnet · haiku | _none_ | **0.0** | **CLEAN — second consecutive clean panel; the 1.0.4 gate is met (streak 2, RRS confidence 0.86 → RELEASABLE).** All three `FINDINGS: none`, fresh independent sweep. opus proved end-to-end that the *only* consumers of provenance are reporting/ranking (`scan` RED/ORANGE ceiling, #11 capping, `trace_path` confidence) — none feed `reachable_from`/`find_stale`, so #10's INFERRED relabel cannot drop liveness; `_CONSTRUCTOR_FIELDS` maps exclusively to constructor callee fields. sonnet ran 12 #11 boundary scenarios (mixed EXTRACTED/AMBIGUOUS cycles straddling `frac<0.5`, god-object `c_in`/`c_out` boundaries, self-loop, god-object-in-cycle, REFERENCES-only no-cycle) — no genuine EXTRACTED finding ever wrongly capped GREEN — plus 7 downstream-op checks (`trace_path`/`impact_of`/`find_stale`/`orient`/stub-ceiling all provenance-agnostic for liveness) and 9 cross-extractor parity checks (the KK asymmetry stays closed). haiku: full suite 177, dogfood 3 advisory / 0 holes, the four spec repros, empty/single-file no crash. No false-dead, no metric inflation, no envelope-contract violation, no crash. |
 
 ## What each panel found and how it was fixed
 
@@ -709,6 +714,26 @@ grammars are MIT (so depending on the bundled wheels carries no redistribution b
 Readiness reads RELEASABLE, though note the streak counts II (1.0.2 code) + JJ (1.0.3 code) —
 JJ is the one panel that reviewed the #12 change, and it's a behaviour-preserving packaging
 fix. **Next step is the maintainer's manual `v1.0.3` tag** (and #12 can then be closed).
+
+**1.0.4 (confidence honesty for receiver calls + structural findings, issues #10/#11/#15)**
+is prepared: gates green (**177 tests** · ruff · mypy clean on **both** the dev pack 1.10.6
+and the pinned bundled 0.13.0 strict stub), in-repo version `1.0.4`, `CHANGELOG.md` +
+`docs/RELEASE_NOTES_v1.0.4.md` written. #10: a receiver-based call (`obj.save()`) resolving
+to a *single* same-named project symbol is now `INFERRED`, not `EXTRACTED` — without type
+inference the receiver type is unknown, so it may be a homonym on a stdlib/third-party class;
+**weight stays 1.0 so reachability/find_stale are unchanged (cardinal-safe)** — only the
+asserted confidence drops (tree-sitter: every receiver call; Python `ast`: only the
+unknown-receiver fallback — scope-aware `self.`/local-typed calls stay `EXTRACTED`). #11:
+`scan` cycles/god_objects now propagate participating-edge provenance — each carries
+`confidence`/`needs_review`, reports confident-only degree, and is capped 🟢 when dominated by
+AMBIGUOUS/INFERRED edges (resolution-artifact "look closer" issues sink in the ranking). #15:
+corrected the `LIMITATIONS.md` `--precise` wording (it is *additive* — adds a confident
+go-to-definition edge, never prunes the AMBIGUOUS siblings). **Panel KK** (full 3-model): opus
++ haiku clean; opus's non-blocking note became the Python-extractor consistency fix (MEDIUM)
+and sonnet caught a LOW C# qualified-constructor regression — both fixed + pinned, so KK is
+not a clean panel and the streak resets. **Panel LL** is the fresh full-3-model confirmation
+on the final tree; the gate needs two consecutive clean full-diversity panels. **The
+maintainer's manual `v1.0.4` tag is the last step** (then #10/#11/#15 can be closed).
 
 Deferred non-blockers: the `[treesitter-download]` (1.x) line still needs network on first use
 (by design — that's the opt-in); obscure JS/CJS export indirections (`module.exports` inside a function
