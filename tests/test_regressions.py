@@ -1448,3 +1448,93 @@ def test_rust_non_test_attribute_is_not_a_test_root(tmp_path):
         assert "feature_gated_unused" in stale    # #[cfg(feature="testing")] is NOT a test
         assert "documented_unused" in stale        # #[doc="...test..."] is NOT a test
         assert "real_test" not in stale             # genuine #[test] is a root
+
+
+# -- Polyglot test detection (1.0.1, generalising issue #8 across languages) ---------
+# The Rust #[test] fix exposed the same class everywhere: file-level test context never
+# seeds the `test` role, so only the test*/Test* NAME convention did — flagging idiomatic
+# tests (and their helpers) dead in every language whose tests aren't name-convention.
+
+def test_java_junit5_package_private_tests_not_flagged_dead(tmp_path):
+    """JUnit5's idiomatic test is a *package-private* `@Test void` (no `public`, so no
+    `exported` mask) with a free-form name — the whole test class, its `@Test`/
+    `@BeforeEach` methods, and private helpers were all flagged dead. The `@Test`/
+    `@BeforeEach` annotations (Rust `#[test]` analog) must seed the `test` role; a
+    genuinely-uncalled method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"CalcTest.java": (
+        "import org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.BeforeEach;\n"
+        "class CalcTest {\n  private int helper() { return 7; }\n"
+        "  @BeforeEach void setUp() {}\n"
+        "  @Test void addWorks() { int h = helper(); }\n"
+        "  void deadHelper() {}\n}\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        def hit(s):
+            return any(x == s or x.endswith("." + s) for x in stale)
+        assert not hit("addWorks") and not hit("setUp") and not hit("helper")  # all live
+        assert not any(x == "CalcTest" for x in stale)                          # class live
+        assert hit("deadHelper")                                                # still dead
+
+
+def test_csharp_xunit_internal_class_tests_not_flagged_dead(tmp_path):
+    """C# `[Fact]`/`[Theory]`/NUnit `[Test]` attributes on an internal class seed the
+    `test` role (the public-method `exported` mask doesn't cover internal classes)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"CalcTests.cs": (
+        "using Xunit;\nclass CalcTests {\n  int Helper() { return 7; }\n"
+        "  [Fact] public void AddWorks() { int h = Helper(); }\n}\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert not any(s.endswith("AddWorks") or s.endswith("Helper") or s == "CalcTests"
+                       for s in stale)
+
+
+def test_js_call_based_test_helpers_not_flagged_dead(tmp_path):
+    """JS/TS suites (Jest/Mocha/Vitest) define no named test function — `test()`/`it()`
+    take anonymous callbacks at module scope. A helper called only inside such a
+    callback was flagged dead. Module-level calls of a test file are now rooted from
+    the module node; a helper called by nothing still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"calc.test.js": (
+        "function makeFixture() { return 7; }\nfunction deadHelper() { return 0; }\n"
+        "describe('calc', () => { it('adds', () => { expect(makeFixture()).toBe(7); }); });\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "makeFixture" not in stale   # reached from a test() callback
+        assert "deadHelper" in stale         # called by nothing — still dead
+
+
+def test_ruby_rspec_spec_file_helpers_not_flagged_dead(tmp_path):
+    """RSpec `*_spec.rb` with `describe/it` blocks: `_is_test_file` now recognises the
+    `_spec.` convention, and helpers called inside `it` blocks are rooted (Bug B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"calc_spec.rb": (
+        'RSpec.describe "Calc" do\n  def make_fixture; 7; end\n  def dead_helper; 1; end\n'
+        '  it("adds") { expect(make_fixture).to eq(7) }\nend\n')})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert not any(s.endswith("make_fixture") for s in stale)   # reached from it block
+        assert any(s.endswith("dead_helper") for s in stale)         # still dead
+
+
+def test_python_unittest_testcase_subclass_not_flagged_dead(tmp_path):
+    """A `unittest.TestCase` subclass is framework-instantiated; its methods were kept
+    live (callback role) but the class itself was flagged. A framework subclass that
+    overrides hook methods is now rooted too — but a bare `class Meta(type): pass`
+    metaclass (no hooks) must still flag."""
+    _mk(tmp_path, {"test_u.py": (
+        "import unittest\nclass T(unittest.TestCase):\n    def setUp(self):\n        self.x = 1\n"
+        "    def test_a(self):\n        assert self.x == 1\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "T" not in stale

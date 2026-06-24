@@ -92,14 +92,27 @@ def extract_project(root: str | Path,
 def _apply_callback_roles(proj: _Project) -> None:
     """Methods of a class with a framework base are likely framework-invoked
     overrides (e.g. HTMLParser.handle_starttag) — mark them 'callback' so they're
-    roots, not dead-code false positives (design §7 caveat)."""
+    roots, not dead-code false positives (design §7 caveat). The class itself is
+    framework-instantiated too (e.g. a `unittest.TestCase` subclass, registered by a
+    test runner), so mark it a root as well — otherwise the methods are live but the
+    class is flagged dead (the 'method live, class dead' shape)."""
     if not proj.external_base_classes:
         return
+    classes_with_callbacks: set[str] = set()
     for node in proj.nodes:
         if node.kind is NodeKind.METHOD and "." in node.id:
             class_id = node.id.rsplit(".", 1)[0]
             if class_id in proj.external_base_classes:
                 node.roles = node.roles | {"callback"}
+                classes_with_callbacks.add(class_id)
+    # A framework subclass that actually overrides hook methods is framework-
+    # instantiated (a `unittest.TestCase`, an `HTMLParser`); mark the class a root so
+    # it isn't flagged dead while its methods are live. Tie this to *having* callback
+    # methods, not merely to the base — a bare `class Meta(type): pass` metaclass that
+    # is never used must still be flagged (it has no hook methods to override).
+    for node in proj.nodes:
+        if node.kind is NodeKind.CLASS and node.id in classes_with_callbacks:
+            node.roles = node.roles | {"callback"}
 
 
 # -- pass 1: definitions ----------------------------------------------------

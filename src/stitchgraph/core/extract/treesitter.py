@@ -170,6 +170,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     src_by: dict[str, bytes] = {}
     file_lang: dict[str, str] = {}
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
+    module_tests: list[tuple[str, str, str, list]] = []  # (mod_id, rel, lang, calls)
 
     files = [p for p in sorted(root.rglob("*"))
              if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
@@ -200,9 +201,16 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         file_lang[rel] = lang
         spec = SPECS[lang]
         mod_id = f"{rel}::{path.stem}"
-        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
-                          location=f"{rel}:1:0"))
         is_test = _is_test_file(rel)
+        # In a test file the module node is itself a test entry root, and its
+        # module-level calls (incl. those inside anonymous `test()`/`it()` callbacks)
+        # are rooted from it (Bug B) — so call-based suites that define no named test
+        # functions don't leave their helpers flagged dead.
+        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
+                          location=f"{rel}:1:0",
+                          roles=frozenset({"test"}) if is_test else frozenset()))
+        if is_test:
+            module_tests.append((mod_id, rel, lang, _module_calls(tree.root_node, src, spec)))
         _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                  defs=defs, inherits=inherits, exported=False, is_test=is_test,
                  contains=contains, enclosing_func=None)
@@ -233,6 +241,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
 
     _seed_exported_class_methods(nodes, file_lang)
     _seed_classes_from_exported_methods(nodes)
+    _seed_test_classes(nodes)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
@@ -257,6 +266,14 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
             if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
                 _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
+
+    # Root module-level calls of each test file from its module node (Bug B): the
+    # `test()`->helper chain in call-based suites (Jest/Mocha/RSpec) has no named test
+    # function to seed, so without this the helpers are flagged dead.
+    for mod_id, rel, lang, calls in module_tests:
+        by_name = by_lang.get(lang, {})
+        for name, line in calls:
+            _ref(edges, mod_id, name, by_name, rel, line)
 
     # `function -> nested def` containment edges (see _collect): the nested def's id is
     # known exactly, so emit a direct REFERENCES edge rather than resolving by name. The
@@ -365,6 +382,22 @@ def _seed_classes_from_exported_methods(nodes) -> None:
             n.roles = n.roles | {"exported"}
 
 
+def _seed_test_classes(nodes) -> None:
+    """A class with a test-role method is a test fixture — mark the class `test` too,
+    so the (often package-private) test *class* isn't flagged dead while its methods
+    are live (the contradictory 'method live, class dead' shape). Mirrors
+    `_seed_classes_from_exported_methods`; over-marking a fixture is precision-safe."""
+    class_ids = {n.id for n in nodes if n.kind is C}
+    test_classes = {n.id.rsplit(".", 1)[0] for n in nodes
+                    if n.kind is M and "test" in n.roles and "." in n.id
+                    and n.id.rsplit(".", 1)[0] in class_ids}
+    if not test_classes:
+        return
+    for n in nodes:
+        if n.id in test_classes:
+            n.roles = n.roles | {"test"}
+
+
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
     """Methods of a class with a framework base are framework-invoked overrides
     (e.g. React.Component.render, Express middleware). Mark them 'callback' so
@@ -398,6 +431,66 @@ def _is_rust_test_attr(attr_text: str) -> bool:
         inner = re.sub(r"\"[^\"]*\"", "", body[body.find("(") + 1: body.rfind(")")])
         return "test" in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", inner)
     return False
+
+
+# Annotation/attribute names that mark a method as a test entry or framework-invoked
+# test hook (JUnit/TestNG, xUnit/NUnit/MSTest, PHPUnit). The analog of Rust `#[test]`:
+# these decorate free-form-named methods that the test*/Test* name convention misses,
+# so without detection the whole (often package-private) test class is flagged dead.
+_TEST_ANNOTATIONS = {
+    "java": frozenset({
+        "Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate",
+        "BeforeEach", "AfterEach", "BeforeAll", "AfterAll", "Nested", "Disabled",
+        "Before", "After", "BeforeClass", "AfterClass",  # JUnit4 / TestNG
+    }),
+    "csharp": frozenset({
+        "Fact", "Theory", "Test", "TestCase", "TestCaseSource", "TestMethod",
+        "DataTestMethod", "SetUp", "TearDown", "OneTimeSetUp", "OneTimeTearDown",
+        "TestInitialize", "TestCleanup", "ClassInitialize", "ClassCleanup",
+        "TestFixture", "TestClass",  # class-level
+    }),
+    "php": frozenset({"Test", "DataProvider", "Before", "After", "BeforeClass", "AfterClass"}),
+}
+
+
+def _annotation_name(anno, src: str) -> str:
+    """Last path segment of an annotation/attribute name, with C#'s optional
+    `Attribute` suffix stripped (`[FactAttribute]` == `[Fact]`)."""
+    nm = anno.child_by_field_name("name")
+    if nm is None:
+        for c in anno.children:
+            if c.type in ("identifier", "scoped_identifier", "qualified_name",
+                          "name", "member_access_expression"):
+                nm = c
+                break
+    if nm is None:
+        return ""
+    txt = _text(nm, src).rsplit(".", 1)[-1].rsplit("\\", 1)[-1].strip()
+    return txt[:-9] if txt.endswith("Attribute") else txt
+
+
+def _annotation_idents(node, src: str) -> set[str]:
+    """Collect annotation/attribute names attached to a Java/C#/PHP declaration —
+    Java `modifiers > marker_annotation/annotation`, C# `attribute_list > attribute`,
+    PHP `attribute_list > attribute_group > attribute`."""
+    out: set[str] = set()
+    for c in node.children:
+        if c.type in ("modifiers", "attribute_list", "attribute_group"):
+            out |= _annotation_idents(c, src)
+        elif c.type in ("marker_annotation", "annotation", "attribute"):
+            nm = _annotation_name(c, src)
+            if nm:
+                out.add(nm)
+    return out
+
+
+def _has_test_annotation(node, lang: str, src: str) -> bool:
+    """True when a Java/C#/PHP declaration carries a test annotation/attribute — the
+    cross-language analog of the Rust `#[test]` check (issue #8 generalised)."""
+    annos = _TEST_ANNOTATIONS.get(lang)
+    if not annos:
+        return False
+    return bool(_annotation_idents(node, src) & annos)
 
 
 # -- pass 1: definitions ----------------------------------------------------
@@ -438,7 +531,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # convention never fires — they (and the helpers they *reach*) were flagged
             # dead, flooding find_stale (issue #8). A test helper reached by no test
             # stays flagged, consistent with a dead helper in any test file.
-            if _is_test_name(name) or attr_test:
+            if _is_test_name(name) or attr_test or _has_test_annotation(child, lang, src):
                 roles.add("test")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
@@ -548,10 +641,11 @@ def _import_names(root, src, spec):
 def _is_test_file(rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1].lower()
     parts = rel.lower().split("/")
-    if "test" in parts or "tests" in parts or "spec" in parts:
+    if {"test", "tests", "spec", "specs", "__tests__", "testing"} & set(parts):
         return True
-    return ("_test." in name or ".test." in name or ".spec." in name
-            or name.startswith("test_"))
+    # `_spec.` catches Ruby/JS RSpec/Jasmine `foo_spec.rb`; `_tests.` some C#/JS layouts.
+    return (name.startswith("test_")
+            or any(p in name for p in ("_test.", ".test.", "_spec.", ".spec.", "_tests.")))
 
 
 def _is_test_name(name: str) -> bool:
@@ -578,6 +672,32 @@ def _direct_calls(body, src, spec):
             rec(c, False)
 
     rec(body, True)
+    return out
+
+
+def _module_calls(root, src, spec):
+    """Calls made at *module scope* — descending into anonymous callbacks (the
+    arrow/function/block bodies of `test()`/`it()`/`describe()`) but NOT into named
+    defs (scanned per-def) or import statements. Used only for test files, to root the
+    `test()`->helper chain in call-based suites (Jest/Mocha/Vitest, RSpec) which define
+    no named test functions — so their helpers aren't flagged dead (Bug B). A helper
+    called by nothing still gets no edge and stays flagged, so genuinely-dead test
+    helpers are still found (the same contract as a dead helper in any test file)."""
+    out: list[tuple[str, int]] = []
+
+    def rec(n):
+        for c in n.children:
+            if c.type in spec.defs or c.type in spec.container_only or c.type in spec.imports:
+                continue  # a named def/class/import — handled elsewhere or not a use
+            if c.type in spec.call_types:
+                nm = _callee(c, src, spec.call_types[c.type])
+                if nm:
+                    out.append((nm, c.start_point[0] + 1))
+            elif spec.bare_calls and c.type == "identifier" and _is_bare_call(n, c):
+                out.append((_text(c, src), c.start_point[0] + 1))
+            rec(c)
+
+    rec(root)
     return out
 
 
