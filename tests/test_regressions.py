@@ -2098,3 +2098,37 @@ def test_design_section9_lists_only_real_operations():
     assert "type_at" not in text                  # LSP roadmap, lives in STATUS.md
     assert "relations?" not in text               # trace_path takes only (src, sink)
     assert "type_at" not in names                 # sanity: really not an op
+
+
+def test_risk_empty_churn_is_a_refusal_not_vacuous_ok(tmp_path):
+    """risk() on a git repo whose indexed source files have no commit history must
+    return ok=False (a real refusal), not ok=True with result={} — the latter made
+    `report` render a blank Risk section and broke the no-vacuous-ok envelope
+    contract (panels QQ/RR). report must show a 'skipped' line."""
+    import os
+    import subprocess
+
+    from stitchgraph.adapters.report import build_report
+
+    # Commit only a README; the indexed .py file is never committed → empty churn.
+    (tmp_path / "README").write_text("readme\n")
+    (tmp_path / "app.py").write_text("def main():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "README")
+    git("commit", "-m", "init")
+
+    db = str(tmp_path / "g.db")
+    with sg.Store(db) as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.risk(store)
+        assert res.ok is False                 # real refusal, not vacuous ok=True
+        assert res.result is None
+    report = build_report(db, str(tmp_path))
+    risk_section = report.split("## Risk", 1)[1]
+    assert "skipped" in risk_section            # explained, not a blank section

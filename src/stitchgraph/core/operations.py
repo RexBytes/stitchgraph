@@ -517,8 +517,11 @@ def risk(store: Store, path: str | None = None) -> Result:
 
     churn = gitrisk.churn(path)
     if not churn:
-        return refuse("no git history found for indexed source files",
-                      confidence=0.0, result={})
+        # A genuine refusal (ok=False), like the not-a-git-repo case above — NOT a
+        # vacuous ok=True with result={}, which made `report` render a blank Risk
+        # section (no "skipped" line) and broke the "no ok=True with empty result"
+        # envelope contract (panels QQ/RR).
+        return refuse("no git history found for indexed source files", confidence=0.0)
 
     # Node files are relative to the indexed root; git paths to the repo root.
     # Translate node files into git-relative paths so the two spaces line up.
