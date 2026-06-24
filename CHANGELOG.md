@@ -55,6 +55,18 @@ three-model panels.
   dropped the MODULE node and with it its module-only role (`script`/`test`, which has no
   redundant assignment), flagging the whole file's code dead. A shadowed module node's roles
   are now merged into the surviving symbol node.
+- **CARDINAL: a C++ class/struct in a `.h` header used from a `.cpp` is no longer flagged
+  dead.** C and C++ were separate name-resolution buckets, but real projects reference symbols
+  freely across `.h`/`.c`/`.cpp` (and a `.h` may be parsed under either grammar), so a header
+  type used by the other dialect never resolved. C and C++ now share one resolution bucket
+  (precision-safe — it only adds edges). The `.h`→C/C++ content sniff was also broadened
+  (access specifiers, `virtual`/`operator`/`nullptr`) so struct-with-methods headers route to
+  C++ and their members are extracted.
+- **CARDINAL: Rust trait-impl methods are no longer flagged dead.** A method in an
+  `impl Trait for X` block can't carry `pub` and is invoked via language sugar
+  (`Display::fmt` via `{}`, `Iterator::next` via `for`, operator overloads) with no call node,
+  so it got no `exported` role and no inbound edge. A new `_seed_trait_impl_methods` pass roots
+  trait-impl methods (a bare inherent `impl X` still flags).
 - **A JS/TS `export { X }` no longer roots a same-named symbol in another language**
   (a dead Ruby/Go/… `X` was hidden by an unrelated JS re-export). The reexport pass is now
   language-guarded — a precision (false-negative) fix, not cardinal.

@@ -46,6 +46,14 @@ rooting gap and surfaced a family of cardinal false-deads, all now fixed:
   role (`script`/`test`), flagging the file's code dead. A shadowed module's roles now merge
   into the surviving symbol node.
 
+- **C/C++ header types used cross-dialect**: C and C++ were separate name-resolution buckets,
+  so a C++ class/struct in a `.h` used from a `.cpp` (or a C header decl used from `.c`) never
+  resolved and flagged dead. C and C++ now share one resolution bucket (precision-safe); the
+  `.h`→C/C++ sniff was broadened so struct-with-methods headers extract their members.
+- **Rust trait-impl methods**: a method in `impl Trait for X` can't be `pub` and is invoked via
+  sugar (`Display::fmt` via `{}`, operators, `for`), so it got no role and no call edge —
+  flagged dead. A new `_seed_trait_impl_methods` pass roots them.
+
 (Precision fix, not cardinal: a JS/TS `export { X }` no longer roots a same-named symbol in
 another language.)
 
@@ -154,7 +162,7 @@ are counted.
 
 ## Verification
 
-`pytest` 213 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 216 passed (new regression tests: console-script root + module-precision guard;
 C++ framework-subclass class+methods live; C# internal `Main`-class live; deep-expression
 no-abort in the tree-sitter resolver pipeline;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the

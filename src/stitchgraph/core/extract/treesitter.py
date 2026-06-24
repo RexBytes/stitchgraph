@@ -181,6 +181,15 @@ def supported_languages() -> list[str]:
     return sorted(set(EXT_LANG.values()))
 
 
+def _canon_lang(lang: str) -> str:
+    """Canonical resolution bucket for a language. C and C++ share one symbol namespace:
+    real projects freely reference symbols across `.h`/`.c`/`.cpp`, and a `.h` may be parsed
+    under either grammar — so binding *within* a single dialect leaves a header symbol used
+    by the other dialect unresolved and flagged dead (panel UUU, cardinal). Merging C/C++ for
+    name resolution only ever adds edges (precision-safe), never removes them."""
+    return "cpp" if lang in ("c", "cpp") else lang
+
+
 def _header_lang(path: Path) -> str:
     """Resolve an ambiguous `.h` header to C or C++ by content. The C grammar has no
     class/namespace/template node types, so a C++ header parsed as C mis-structures its
@@ -191,7 +200,12 @@ def _header_lang(path: Path) -> str:
         head = path.read_bytes()[:16384]
     except OSError:
         return "c"
-    return "cpp" if re.search(rb"\b(class|namespace|template)\b|::", head) else "c"
+    # C++-only markers. Broad set (panel UUU): also catch access specifiers, virtual/operator/
+    # nullptr and `extern "C++"`, so a struct-with-methods header routes to C++ and its member
+    # functions are extracted. The C/C++ resolution buckets are unified, so a miss here is a
+    # recall gap (methods not extracted), never a cardinal false-dead.
+    markers = rb"\b(class|namespace|template|virtual|operator|nullptr|public|private|protected)\b|::"
+    return "cpp" if re.search(markers, head) else "c"
 
 
 def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
@@ -338,17 +352,19 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     _seed_classes_from_exported_methods(nodes)
     _seed_test_classes(nodes, inherits, file_lang)
     _seed_main_classes(nodes)
+    _seed_trait_impl_methods(nodes, defs)
 
-    # Resolve names *within a language* — a JS call must not bind to a Rust fn.
+    # Resolve names *within a language* — a JS call must not bind to a Rust fn. C and C++
+    # share one bucket (`_canon_lang`) so a header symbol resolves across the .h/.c/.cpp split.
     by_lang: dict[str, dict[str, list[str]]] = {}
     for n in nodes:
-        flang = file_lang.get(n.id.split("::", 1)[0])
-        if flang:
-            by_lang.setdefault(flang, {}).setdefault(n.name, []).append(n.id)
+        _fl = file_lang.get(n.id.split("::", 1)[0])
+        if _fl:
+            by_lang.setdefault(_canon_lang(_fl), {}).setdefault(n.name, []).append(n.id)
 
     edges: list[Edge] = []
     for rel, def_id, body, lang in defs:
-        by_name = by_lang.get(lang, {})
+        by_name = by_lang.get(_canon_lang(lang), {})
         called: set[str] = set()
         for name, line, is_method in _direct_calls(body, src_by[rel], SPECS[lang]):
             _ref(edges, def_id, name, by_name, rel, line, is_method=is_method)
@@ -369,7 +385,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     # name as a call receiver (`Service.run` in an RSpec block) so the class isn't
     # flagged dead while its method is live (Panel FF). Mirrors the per-def loop above.
     for mod_id, rel, lang, calls, refs in module_tests:
-        by_name = by_lang.get(lang, {})
+        by_name = by_lang.get(_canon_lang(lang), {})
         called = set()
         for name, line in calls:
             _ref(edges, mod_id, name, by_name, rel, line)
@@ -406,10 +422,10 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     _seed_callback_roles(nodes, external_base_classes)
 
     for class_id, base, lang in inherits:
-        _ref(edges, class_id, base, by_lang.get(lang, {}),
+        _ref(edges, class_id, base, by_lang.get(_canon_lang(lang), {}),
              class_id.split("::", 1)[0], 0, relation=Relation.INHERITS)
     for mod_id, name, lang in imports:
-        _ref(edges, mod_id, name, by_lang.get(lang, {}),
+        _ref(edges, mod_id, name, by_lang.get(_canon_lang(lang), {}),
              mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
     _seed_constructors(nodes, edges, file_lang)
     # A module node shares the id-space with same-named symbols: `run.sh::run` for a bash
@@ -582,6 +598,34 @@ def _seed_exported_interface_methods(nodes, interface_ids: set[str]) -> None:
         if n.kind is M and not n.name.startswith(("_", "#")) \
                 and n.id.rsplit(".", 1)[0] in exported_ifaces:
             n.roles = n.roles | {"exported"}
+
+
+def _seed_trait_impl_methods(nodes, defs) -> None:
+    """Methods inside a Rust `impl Trait for X` block are public-by-contract API invoked via
+    language sugar (operators, `Display::fmt` through `{}`, `Iterator::next` through `for`,
+    `Drop::drop`) — no call node — and cannot carry `pub`, so `_roles` never marks them
+    exported and they're flagged dead (panel UUU, cardinal). Root them as `callback`
+    (framework/contract-invoked). A bare inherent `impl X` (no trait) is NOT rooted — only
+    *trait* impls are public-by-contract."""
+    impl_method_ids: set[str] = set()
+    for _rel, cid, body, lang in defs:
+        if lang != "rust":
+            continue
+        node = cast(Any, body)
+        if node.type != "function_item":
+            continue
+        p = node.parent
+        while p is not None:
+            if p.type == "impl_item":
+                if p.child_by_field_name("trait") is not None:
+                    impl_method_ids.add(cid)
+                break
+            p = p.parent
+    if not impl_method_ids:
+        return
+    for n in nodes:
+        if n.id in impl_method_ids:
+            n.roles = n.roles | {"callback"}
 
 
 def _seed_main_classes(nodes) -> None:

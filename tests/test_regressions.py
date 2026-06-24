@@ -506,6 +506,58 @@ def test_js_reexport_does_not_root_same_named_symbol_in_other_language(tmp_path)
         assert "rb_widget.rb::Widget" in stale_ids     # genuinely-dead Ruby class flags
 
 
+def test_cpp_struct_with_methods_in_h_used_cross_file_is_live(tmp_path):
+    """CARDINAL (panel UUU): a C++ `struct` with member functions in a `.h` header (no
+    class/namespace/template marker) was sniffed as C and bucketed in language 'c', while the
+    `.cpp` using it is 'cpp' — and resolution binds within a language, so the cross-file use
+    never resolved and the struct flagged dead. C and C++ now share one resolution bucket."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "v.h": "#pragma once\nstruct V3 { double x,y,z; double len() const; };\n",
+        "m.cpp": ("#include \"v.h\"\ndouble V3::len() const { return x*x+y*y+z*z; }\n"
+                  "int main(){ V3 v{1,2,2}; return (int)v.len(); }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "v.h::V3" not in stale_ids             # struct used cross-file is live
+
+
+def test_c_header_decl_used_from_c_file_stays_live(tmp_path):
+    """Regression guard for the C/C++ resolution-bucket unification: a pure-C header decl
+    called from a `.c` file must still bind (the unification must not regress pure-C)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "util.h": "int add(int a, int b);\n",
+        "prog.c": "#include \"util.h\"\nint add(int a, int b){ return a+b; }\nint main(){ return add(1,2); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "util.h::add" not in stale_ids         # header decl bound to .c use
+
+
+def test_rust_trait_impl_method_invoked_via_sugar_is_live(tmp_path):
+    """CARDINAL (panel UUU): a method in a Rust `impl Trait for X` block can't carry `pub`
+    and is invoked via language sugar (`Display::fmt` through `{}`), so it got no `exported`
+    role and no call node — flagged dead. `_seed_trait_impl_methods` roots trait-impl methods
+    as callback (framework/contract-invoked); a bare inherent `impl X` is NOT rooted."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": ("use std::fmt;\nstruct Point { x: i32, y: i32 }\n"
+                   "impl fmt::Display for Point {\n"
+                   "    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, \"{}\", self.x) }\n"
+                   "}\nfn main() { let p = Point{x:1,y:2}; println!(\"{}\", p); }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Point.fmt" not in stale               # trait-impl method live
+
+
 def test_reindex_survives_deep_expression_in_tree_sitter_resolver(tmp_path):
     """The route resolvers (express/jsfetch/spring) run their OWN recursive descent over a
     tree-sitter tree, bypassing ResolveContext.parse()'s RecursionError guard — and
