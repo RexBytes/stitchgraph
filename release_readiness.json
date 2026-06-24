@@ -490,6 +490,110 @@
       ],
       "findings": {},
       "theme": "CLEAN (all three FINDINGS: none) \u2014 SECOND consecutive clean full-3-model panel; the 1.0.4 release gate is met (streak 2). Fresh independent confirmation, not a rerun. opus: proved end-to-end that the only provenance consumers are reporting/ranking (scan RED/ORANGE ceiling, #11 capping, trace_path confidence) \u2014 none feed reachable_from/find_stale, so #10's INFERRED relabel cannot drop liveness; _CONSTRUCTOR_FIELDS maps exclusively to constructor callee fields. sonnet: 12 #11 boundary scenarios (mixed EXTRACTED/AMBIGUOUS cycles straddling frac<0.5, god_object c_in/c_out boundaries, self-loop, god-object-in-cycle, REFERENCES-only no-cycle) \u2014 no genuine EXTRACTED finding ever wrongly capped GREEN; 7 downstream-op checks (trace_path/impact_of/find_stale/orient/stub-ceiling all provenance-agnostic for liveness); 9 cross-extractor parity checks (KK asymmetry stays closed). haiku: full suite 177, dogfood 3 advisory/0 holes, the four spec repros, empty/single-file no crash. No false-dead, no metric inflation, no envelope-contract violation, no crash. 1.0.4 is RELEASABLE; awaits the maintainer's manual v1.0.4 tag."
+    },
+    {
+      "id": "NN",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 2
+      },
+      "theme": "1.0.5 #18/#19 batch. opus/haiku clean; sonnet found report passed repo='.' to risk (same #18 cwd bug -> blank/skipped risk section from foreign cwd) + phantom structure_smells() in design.md \u00a79. Both fixed."
+    },
+    {
+      "id": "OO",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "1.0.5 confirm. 5/6 clean; sonnet: design.md \u00a79 still listed type_at (unbuilt LSP-roadmap op) \u2014 my CHANGELOG over-claimed '\u00a79 matches the operation set'. Fixed (type_at removed from \u00a79)."
+    },
+    {
+      "id": "PP",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 2
+      },
+      "theme": "1.0.5 confirm. 5/6 clean; sonnet: design.md \u00a79 still had trace_path's non-existent relations? arg; and stitchgraph.__version__ hardcoded '1.0.3' (stale 2 releases). Fixed: \u00a79 scrubbed + __version__ derived from importlib.metadata."
+    },
+    {
+      "id": "QQ",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "1.0.5 confirm (parallel with RR on 61339f3). 5/6 clean; sonnet (MEDIUM): risk() 'no git history' path used refuse(result={}) -> ok=True with vacuous result, so report rendered a blank Risk section (the one remaining ok=True-empty the 1.0.0 audit claimed absent). Fixed: drop result={} -> ok=False -> report '(skipped)'."
+    },
+    {
+      "id": "RR",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "1.0.5 confirm (parallel with QQ). Independently corroborated the same risk empty-churn vacuous-ok=True envelope bug (LOW/MEDIUM). Fixed with QQ."
+    },
+    {
+      "id": "SS",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "1.0.5 confirm (parallel with TT on 61339f3 after empty-churn fix). 5/6 clean; opus (MEDIUM): the empty-churn fix closed only one door \u2014 when churn is non-empty but all files have zero centrality and no hidden coupling, risk still returned ok=True with empty hotspots/hidden -> blank report section. Fixed."
+    },
+    {
+      "id": "TT",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "1.0.5 confirm (parallel with SS). opus+sonnet independently found the same empty-centrality blank-section. Consensus fix (codebase-consistent): risk keeps ok=True structured-empty (like find_stale []), and report renders '- (no risk hotspots or hidden coupling found)' so the section is populated-or-skipped, never blank. Fixed."
+    },
+    {
+      "id": "UU",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) on the final tree e5785fa. Full envelope-contract + cardinal + crash + risk/report empty-state sweep; the risk/report empty class is fully closed (refuse->'(skipped)' when risk can't run; ok=True structured-empty->'(none)' when it ran and found nothing). _root live_stub RED confirmed a genuine advisory (intentionally-empty Typer callback), not a false positive. Streak 1 of 2."
+    },
+    {
+      "id": "VV",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN (all three FINDINGS: none) \u2014 second consecutive clean full-3-model panel on e5785fa; 1.0.5 gate met (streak 2). Independent sweep: envelope contract across 15 ops, MCP end-to-end (risk path-omitted schema valid), multi-language cardinal repos (metaclass/class-body/nested-def/arrow-in-arrow/forward-ref/cross-language route+fetch \u2014 none false-dead), adversarial risk/report (worktree/submodule/spaces/relative-db/deleted-root) all clean. Dogfood 3 advisory / 0 holes."
     }
   ]
 }
