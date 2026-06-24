@@ -6,12 +6,20 @@ urgency tiers (Fix now / Look closer / Cleanup). Stdlib-only.
 
 from __future__ import annotations
 
+import sqlite3
+
 from ..core import operations as ops
 from ..core.store import Store
 
 
 def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
-    with Store(db) as store:
+    try:
+        store = Store(db)
+    except (sqlite3.Error, OSError) as exc:
+        # A db path that can't back a database yields a one-line report, not a raw
+        # sqlite traceback (panel R12).
+        return f"# stitchgraph report\n\ncannot open index database {db!r}: {exc}\n"
+    with store:
         orient = ops.orient(store)
         scan = ops.scan(store)
         stale = ops.find_stale(store)

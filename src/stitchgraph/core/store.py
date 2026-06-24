@@ -187,6 +187,40 @@ class Store:
             # then re-resolve any genuine hole the deletion may have disambiguated.
             self._drop_redundant_holes()
             self._resolve_worklist()
+            self._dedup_resolved_edges()
+
+    def _dedup_resolved_edges(self) -> None:
+        """Collapse duplicate resolved edges and drop redundant REFERENCES — the DB-level
+        twin of reindex's in-memory `_dedup_edges`. The incremental path bulk-inserts and
+        resolves edges without that pass, so it could leave parallel rows that inflate
+        fan_in / pagerank (panel R12B): a function named like its module collapses to one
+        node yet keeps two outbound edges per call site, and resolving a hole whose symbol
+        already has a resolved sibling adds a second row. Holes (dst_id IS NULL) are
+        distinct reference sites and are left untouched."""
+        # 1. one row per (src, relation, dst_id): drop any that has a strictly-better
+        #    sibling (higher weight, or equal weight with a lower id), keeping one best row.
+        self.conn.execute(
+            """DELETE FROM edges
+                WHERE dst_id IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM edges b
+                               WHERE b.dst_id IS NOT NULL
+                                 AND b.src = edges.src AND b.relation = edges.relation
+                                 AND b.dst_id = edges.dst_id
+                                 AND (b.weight > edges.weight
+                                      OR (b.weight = edges.weight AND b.id < edges.id)))"""
+        )
+        # 2. a CALLS edge subsumes a REFERENCES to the same (src, dst), and a REFERENCES
+        #    self-loop carries no liveness/impact meaning — both only inflate degree metrics
+        #    (a recursive CALLS self-loop is meaningful and kept). Mirrors `_dedup_edges`.
+        self.conn.execute(
+            """DELETE FROM edges
+                WHERE relation = ? AND dst_id IS NOT NULL
+                  AND (src = dst_id
+                       OR EXISTS (SELECT 1 FROM edges c
+                                   WHERE c.relation = ? AND c.src = edges.src
+                                     AND c.dst_id = edges.dst_id))""",
+            (Relation.REFERENCES.value, Relation.CALLS.value),
+        )
 
     def _drop_redundant_holes(self) -> None:
         """Delete unresolved edges that already have a resolved sibling.

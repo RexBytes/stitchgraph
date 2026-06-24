@@ -3028,3 +3028,162 @@ def test_html_resolver_survives_non_utf8_template(tmp_path):
         srcs = {e.src for e in submits}
         # the well-formed template still links despite the bad sibling
         assert "good.html::template" in srcs
+
+
+# -- Panel R12B / opus (CARDINAL): module-level use keeps a symbol live ---------
+def test_python_class_used_only_at_module_level_is_not_stale(tmp_path):
+    """A class instantiated only by module-level code (a registry value / dispatch table /
+    `REGISTRY = Spec(1)`) runs when the module loads, so it is live whenever the module is
+    loaded. The Python extractor edged only def/class-body scope, never module scope, so
+    such a class had no incoming edge and was flagged dead — reproduced in stitchgraph's own
+    `LangSpec` (panel R12, cardinal). A genuinely-unused class is still flagged."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/conf.py": """
+            class Spec:
+                def __init__(self, n): self.n = n
+            class TrulyDead:
+                def gone(self): return 1
+            REGISTRY = Spec(1)
+            def get_spec():
+                return REGISTRY
+        """,
+        "pkg/api.py": """
+            from .conf import get_spec
+            __all__ = ["run"]
+            def run():
+                return get_spec()
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "pkg/conf.py::Spec" not in stale          # live via module-level REGISTRY
+        assert "pkg/conf.py::TrulyDead" in stale          # genuinely unused, still flagged
+
+
+def test_js_toplevel_call_chain_is_not_stale(tmp_path):
+    """JS/TS/Ruby module top-level code runs on load; a function called only from a
+    top-level statement (`bootstrap()`) is live. The tree-sitter extractor ran the
+    module-scope use scan only for test/script files, so an ordinary exported module's
+    top-level call chain was flagged dead (panel R12, cardinal)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "index.js": """
+            export function publicApi() { return 1; }
+            function bootstrap() { return configure(); }
+            function configure() { return 2; }
+            bootstrap();
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "index.js::bootstrap" not in stale
+        assert "index.js::configure" not in stale
+
+
+def test_cpp_out_of_line_method_keeps_its_class_live(tmp_path):
+    """A C++ class declared in a header with all members defined out-of-line in a .cpp
+    (`int StringUtils::length(...){...}`) had the `StringUtils::` qualifier stripped, so the
+    method became a bare free function with no link to its class — the class was flagged dead
+    though a member is called (panel R12B, cardinal). A genuinely-unused member is still
+    flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "util.h": "class StringUtils { public: static int length(const char* s); "
+                  "static int hash(const char* s); };\n",
+        "util.cpp": '#include "util.h"\n'
+                    "int StringUtils::length(const char* s){ return 1; }\n"
+                    "int StringUtils::hash(const char* s){ return 2; }\n",
+        "main.cpp": '#include "util.h"\nint main(){ return StringUtils::length("hi"); }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "util.h::StringUtils" not in stale         # live: length() is called
+        assert "util.cpp::hash" in stale                  # genuinely unused, still flagged
+
+
+# -- Panel R12A+B / haiku (crash): adapter must refuse on an unusable --db ------
+def test_cli_command_refuses_on_unusable_db_without_traceback(tmp_path):
+    """`--db <a directory>` (or FIFO / device / unwritable path) made `Store()` raise an
+    uncaught sqlite OperationalError that escaped as a traceback. The CLI/MCP/report
+    adapters must return an envelope/clean message, not crash (panel R12)."""
+    pytest.importorskip("typer")
+    from typer.testing import CliRunner
+
+    from stitchgraph.adapters.cli import build_app
+    bad = tmp_path / "is_a_dir"
+    bad.mkdir()
+    res = CliRunner().invoke(build_app(), ["find-symbol", "x", "--db", str(bad)])
+    assert res.exit_code == 0          # clean refusal, not a crash
+    assert "cannot open index database" in res.stdout
+
+
+def test_report_adapter_refuses_on_unusable_db(tmp_path):
+    """The report adapter opens its own Store; an unusable --db must yield a one-line
+    report, not a sqlite traceback (panel R12)."""
+    from stitchgraph.adapters.report import build_report
+    bad = tmp_path / "dir.db"
+    bad.mkdir()
+    out = build_report(db=str(bad))
+    assert "cannot open index database" in out
+
+
+# -- Panel R12B / sonnet (metric): replace_file must not inflate fan_in ---------
+def test_replace_file_dedups_resolved_edges_matching_reindex(tmp_path):
+    """The incremental `replace_file` path bulk-inserts + resolves edges without reindex's
+    `_dedup_edges` pass, so a function named like its module (two collapsed nodes → two
+    edges per call site) and a hole resolved alongside a resolved sibling left duplicate
+    rows that inflated fan_in / pagerank (panel R12B). replace_file now dedups to match
+    reindex."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "hub.py": "def hub(): pass\n",
+        "main.py": "from hub import hub\ndef c1(): hub()\ndef c2(): hub()\ndef c3(): hub()\n",
+    })
+    with sg.Store(":memory:") as ref:
+        sg.reindex(ref, str(tmp_path))
+        expected = fan_in(ref).get("hub.py::hub")
+    nodes, edges = extract_project(str(tmp_path))
+    with sg.Store(":memory:") as store:
+        for n in nodes:
+            store.add_node(n)
+        for e in edges:
+            store.add_edge(e)
+        store.commit()
+        for f in ("hub.py", "main.py"):
+            fn = [n for n in nodes if n.id.split("::", 1)[0] == f]
+            fe = [e for e in edges if e.src.split("::", 1)[0] == f]
+            store.replace_file(f, fn, fe)
+        assert fan_in(store).get("hub.py::hub") == expected   # no inflation vs reindex
+
+
+def test_replace_file_no_duplicate_when_hole_resolves_alongside_sibling(tmp_path):
+    """If the edges handed to replace_file contain both a resolved edge and a hole for the
+    same (src, relation, dst_symbol), resolving the hole must not add a second row to a
+    target that already has a resolved edge (panel R12B finding 2)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+    with sg.Store(":memory:") as store:
+        a = Node(id="main.py::A", kind=NodeKind.FUNCTION, name="A", location="main.py:1:0")
+        foo = Node(id="lib.py::Foo", kind=NodeKind.FUNCTION, name="Foo", location="lib.py:1:0")
+        store.add_node(a, file="main.py")
+        store.add_node(foo, file="lib.py")
+        resolved = Edge(src="main.py::A", relation=Relation.CALLS, dst_symbol="Foo",
+                        dst_id="lib.py::Foo", weight=1.0, provenance=Provenance.EXTRACTED,
+                        location="main.py:2:0", source="ast")
+        store.add_edge(resolved, file="main.py")
+        store.commit()
+        hole = Edge(src="main.py::A", relation=Relation.CALLS, dst_symbol="Foo", dst_id=None,
+                    weight=0.7, provenance=Provenance.INFERRED, location="main.py:3:0",
+                    source="ast")
+        store.replace_file("main.py", [a], [resolved, hole])
+        assert fan_in(store).get("lib.py::Foo") == 1      # one logical caller, not two

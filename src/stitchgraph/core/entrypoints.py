@@ -71,6 +71,16 @@ class PythonLibraryDetector:
         for kind in (NodeKind.ROUTE, NodeKind.ENDPOINT):
             roots.update(n.id for n in store.nodes_by_kind(kind))
         roots.update(nid for nid in self.overrides if store.get_node(nid) is not None)
+        # A module's top-level code runs when the module is loaded, and the module is
+        # loaded whenever any symbol it defines is reached (you can't call an exported
+        # function or import a name without executing the module body). So a module that
+        # owns any root is itself a load root: its module-level uses — registries, dispatch
+        # tables, instantiations — then propagate liveness, instead of live code used only
+        # at module scope being flagged dead (panel R12, cardinal). Module nodes are not
+        # dead-code candidates, so seeding them never introduces a false dead.
+        root_files = {rid.split("::", 1)[0] for rid in roots}
+        roots.update(m.id for m in store.nodes_by_kind(NodeKind.MODULE)
+                     if m.id.split("::", 1)[0] in root_files)
         return roots
 
 

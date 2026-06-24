@@ -8,8 +8,10 @@ lazily so `import stitchgraph` never requires it.
 from __future__ import annotations
 
 import inspect
+import sqlite3
 from typing import Any
 
+from ..core.envelope import refuse
 from ..core.operations import Operation, registry
 from ..core.store import Store
 
@@ -37,7 +39,13 @@ def _make_tool(op: Operation, db: str):
     """Wrap an operation as an MCP tool: open the store, call, return the envelope."""
 
     def tool(**kwargs: Any) -> dict:
-        with Store(db) as store:
+        try:
+            store = Store(db)
+        except (sqlite3.Error, OSError) as exc:
+            # A db path that can't back a database must return an envelope, not raise
+            # a raw sqlite traceback through the MCP transport (panel R12).
+            return refuse(f"cannot open index database {db!r}: {exc}").to_dict()
+        with store:
             result = op.func(store, **kwargs)
         return result.to_dict()
 

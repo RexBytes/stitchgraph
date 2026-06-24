@@ -288,13 +288,19 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
                           location=f"{rel}:1:0", roles=frozenset(mod_roles)))
         try:
-            if is_test or is_script:
-                calls, refs = _module_uses(tree.root_node, src, spec)
-                if is_bash_script:
-                    # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
-                    # scan would miss the function arg of; root those too.
-                    calls = calls + _bash_trap_handlers(tree.root_node, src)
-                module_tests.append((mod_id, rel, lang, calls, refs))
+            # Module-level calls/refs are captured for EVERY file, not just test/script
+            # ones: top-level code runs when a module is loaded, so a symbol used only at
+            # module scope (a registry value, dispatch-table entry, or instantiation) is
+            # live whenever the module loads. The module node propagates this only when it
+            # is itself a load root — the detector seeds a module that owns any root — so an
+            # ordinary library module's edges don't over-root, but a class used only at the
+            # top level of an exported module isn't flagged dead (panel R12, cardinal).
+            calls, refs = _module_uses(tree.root_node, src, spec)
+            if is_bash_script:
+                # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
+                # scan would miss the function arg of; root those too.
+                calls = calls + _bash_trap_handlers(tree.root_node, src)
+            module_tests.append((mod_id, rel, lang, calls, refs))
             _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                      defs=defs, inherits=inherits, exported=False, is_test=is_test,
                      contains=contains, enclosing_func=None)
@@ -388,6 +394,16 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
             if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
                 _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
+        # C/C++ out-of-line member definition `RetT Scope::method(...) {...}`: the method
+        # body lives in a .cpp but its class is declared in a header, so the def is a bare
+        # FUNCTION with no link to its class. Edge it -> REFERENCES its class (resolved by
+        # name across the .h/.c/.cpp bucket) so a class whose members are all defined
+        # out-of-line isn't flagged dead while a member is reached (panel R12B, cardinal).
+        if lang in ("c", "cpp"):
+            scope = _cpp_method_scope(body, src_by[rel])
+            if scope:
+                _ref(edges, def_id, scope, by_name, rel,
+                     cast(Any, body).start_point[0] + 1, relation=Relation.REFERENCES)
 
     # Root module-level calls AND name-references of each test file from its module
     # node (Bug B): the `test()`->helper chain in call-based suites (Jest/Mocha/RSpec)
@@ -1260,6 +1276,33 @@ def _name_of(node, src):
     for c in node.children:
         if c.type in ("identifier", "type_identifier", "property_identifier"):
             return _text(c, src)
+    return None
+
+
+def _cpp_method_scope(node, src):
+    """For a C/C++ out-of-line member definition `RetT Scope::method(...)`, return the
+    enclosing class/struct name `Scope` so the method can be linked back to its class
+    (panel R12B). A free function (`int helper(...)`) has a plain identifier declarator
+    and yields None. The class name lives in the `scope` field of the `qualified_identifier`
+    that names the function inside the declarator chain (`pointer_declarator` for `T*`)."""
+    def _scope_of(qi):
+        # `scope` is a `namespace_identifier` leaf for `Class::m` (which _trailing_id
+        # doesn't recognise), or a nested `qualified_identifier` for `A::B::m` (take the
+        # immediate enclosing name). Fall back to the raw text for the leaf case.
+        scope = qi.child_by_field_name("scope")
+        if scope is None:
+            return None
+        return _trailing_id(scope, src) or _text(scope, src) or None
+
+    decl = node.child_by_field_name("declarator")
+    while decl is not None:
+        if decl.type == "qualified_identifier":
+            return _scope_of(decl)
+        nxt = decl.child_by_field_name("declarator")
+        if nxt is None:
+            qi = next((c for c in decl.children if c.type == "qualified_identifier"), None)
+            return _scope_of(qi) if qi is not None else None
+        decl = nxt
     return None
 
 

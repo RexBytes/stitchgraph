@@ -464,7 +464,27 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
                              node.lineno, leaf=alias.name, internal=internal)
 
     _walk_scope(proj, rel, tree, parent="", class_qual=None)
+    _module_scope_edges(proj, rel, tree, mod_id)
     _global_state(proj, rel, tree)
+
+
+def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str) -> None:
+    """Calls and by-name references made by module-level *executable* code, attributed to
+    the module node. Top-level statements run when the module is loaded, so a class/function
+    used only here — a registry value, a dispatch-table entry, or a module-level
+    instantiation (`REGISTRY = Builder()`, `_JS = LangSpec(...)`) — is live whenever the
+    module loads. Without this the symbol has no incoming edge and live code is flagged dead
+    (panel R12, cardinal); the module node propagates this only when it is itself a load
+    root (the detector seeds a module that owns any root). Module-level *defs* are NOT
+    auto-reached (finding dead ones is dead-code's job) and imports are modelled by
+    `_import_edge`; this mirrors the class-body pass that attributes class-level uses to the
+    class node."""
+    call_funcs: set[int] = set()
+    for call in _direct_calls(tree):
+        call_funcs.add(id(call.func))
+        _call_edge(proj, rel, mod_id, None, {}, call)
+    for nm in _direct_names(tree, call_funcs):
+        _ref_edges(proj, mod_id, nm.id, Relation.REFERENCES, rel, nm.lineno)
 
 
 def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
@@ -968,6 +988,19 @@ def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
                                dst_id=None, weight=0.6, provenance=Provenance.INFERRED,
                                location=loc, source="ast"))
         return
+    # Importing any symbol from an internal module *loads* that module, executing its
+    # top-level code — so link the importer to each target's module node, not only the
+    # symbol. A class used solely at module scope of an imported module (a registry built
+    # in `conf.py`, imported via a helper that isn't itself role-exported) is then live
+    # whenever the importer is, instead of flagged dead (panel R12, cardinal). Module
+    # nodes are never dead-code candidates, so this only confers liveness.
+    for cand_rel in {c.split("::", 1)[0] for c in cands}:
+        m_id = Node.make_id(cand_rel, _module_qualname(cand_rel))
+        if m_id in proj.ids and m_id != src_id:
+            proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS,
+                                   dst_symbol=_module_qualname(cand_rel), dst_id=m_id,
+                                   weight=1.0, provenance=Provenance.EXTRACTED,
+                                   location=loc, source="ast"))
     if len(cands) == 1:
         proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS, dst_symbol=symbol,
                                dst_id=cands[0], weight=1.0, provenance=Provenance.EXTRACTED,
