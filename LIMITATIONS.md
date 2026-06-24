@@ -28,23 +28,37 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `stitchgraph.toml [entry_points]`; `ingest_trace` a coverage run to raise
   confidence to 0.78 and seed liveness from what actually executed.
 
-### Only built-in Rust test attributes are recognized as test roots
-- **Concern:** Rust inline unit tests are kept live by detecting the `#[test]` /
-  `#[tokio::test]` (any `*::test`) attribute and the `#[cfg(test)]` module gate
-  (v1.0.1, issue #8). Tests driven *only* by a third-party runner macro whose
-  attribute path does not end in `test` — e.g. `#[rstest]`, `#[test_case(...)]`,
-  `#[googletest::gtest]` — are not recognized as roots, so such a test (and helpers
-  reached only from it) can surface as a stale candidate.
-- **Decision:** match the attribute **path** (`test`, `*::test`, bare `cfg(test)`),
-  not a raw `"test"` substring.
+### Test roots are detected per-language by convention, attribute, or call site
+- **Concern:** `find_stale` keeps idiomatic tests (and the helpers they reach) live by
+  recognizing tests across languages (v1.0.1, issue #8 + polyglot generalization):
+  the `test*`/`Test*`/`Benchmark*`/`Example*` **name** convention (Go, pytest,
+  Minitest, PHPUnit `testFoo`); **attributes/annotations** — Rust `#[test]`/
+  `#[tokio::test]`/`#[cfg(test)]`, Java `@Test`/`@BeforeEach`/… (JUnit/TestNG), C#
+  `[Fact]`/`[Theory]`/`[Test]`/… (xUnit/NUnit/MSTest), PHP `#[Test]` (PHPUnit); and,
+  for **call-based** suites that define no named test function (JS/TS Jest/Mocha/
+  Vitest, Ruby RSpec), the module-level `test()`/`it()`/`describe()` call sites in a
+  test file, rooted from the module node. A test driven *only* by a runner the
+  detector doesn't know — a third-party Rust macro whose attribute path doesn't end in
+  `test` (`#[rstest]`, `#[test_case]`, `#[googletest::gtest]`), or a custom
+  Java/C# annotation not on the allowlist — can surface as a stale candidate.
+- **Decisions / safe direction:** attributes match the annotation **path/name**
+  against an allowlist (not a raw `"test"` substring); annotation tests propagate the
+  `test` role to the enclosing class (`_seed_test_classes`) so a package-private
+  fixture isn't flagged while its methods are live; call-based rooting fires only for
+  files under strongly test-conventional dirs (`test`/`tests`/`spec`/`__tests__`) or
+  name patterns (`_test.`/`.test.`/`_spec.`/…). A test **helper reached by no test
+  still flags** — that is intended (a dead helper in a test file is still dead).
 - **Rationale:** the substring form (v1.0.0→1.0.1 dev) over-matched
-  `#[cfg(feature="testing")]`, `#[doc="...test..."]`, and features like `latest`,
-  *hiding* genuinely-dead production code (Panel W). The set of third-party test
-  macros is open-ended and unenumerable; recognizing them all would re-introduce
-  that over-match. These cases surface as `needs_review` advisories, never confident
-  verdicts.
+  `#[cfg(feature="testing")]`, `#[doc="...test..."]`, features like `latest`, *hiding*
+  genuinely-dead production code (Panel W); the dir set excludes ambiguous `testing`/
+  `specs` (plausible production dirs) for the same reason (Panel Y). The set of
+  third-party runners is open-ended; recognizing them all would re-introduce that
+  over-match. These cases surface as `needs_review` advisories, never confident verdicts.
+- **Residual tradeoff:** a *production* file that happens to live under a `test`/
+  `tests`/`spec`/`__tests__` directory has its module-level calls rooted — over-marking
+  (hides some dead code) in the precision-safe direction, never a false "dead".
 - **Escape hatch:** pin the test in `stitchgraph.toml [entry_points]`, or
-  `ingest_trace` a `cargo test` run to seed liveness from what actually executed.
+  `ingest_trace` a real test run to seed liveness from what actually executed.
 
 ### Ambiguous calls link to *all* same-named candidates
 - **Concern:** one call produces several `AMBIGUOUS` edges, inflating reachability

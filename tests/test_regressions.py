@@ -1538,3 +1538,21 @@ def test_python_unittest_testcase_subclass_not_flagged_dead(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
         assert "T" not in stale
+
+
+def test_production_testing_dir_not_misclassified_as_tests(tmp_path):
+    """Panel Y: `_is_test_file` must NOT treat `testing/` or `specs/` directories as
+    tests — they are plausible *production* dirs (Go `testing` helpers, shipped test
+    utilities, OpenAPI/webpack `specs`). Misclassifying one would root its module-level
+    calls and hide genuinely-dead code there (the Panel W over-marking class)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/testing/fixtures.js": (
+        "function registerFixture() { return 1; }\nregisterFixture();\n"
+        "function neverUsed() { return 2; }\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        # module-referenced-but-otherwise-dead code in a production testing/ dir must
+        # still surface — it is NOT a test file, so module calls are not rooted.
+        assert "registerFixture" in stale and "neverUsed" in stale

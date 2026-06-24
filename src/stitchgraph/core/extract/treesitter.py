@@ -641,7 +641,11 @@ def _import_names(root, src, spec):
 def _is_test_file(rel: str) -> bool:
     name = rel.rsplit("/", 1)[-1].lower()
     parts = rel.lower().split("/")
-    if {"test", "tests", "spec", "specs", "__tests__", "testing"} & set(parts):
+    # Strongly test-conventional dir names only. `testing`/`specs` are excluded: they
+    # are plausible *production* directories (Go `testing` helpers, shipped test
+    # utilities, OpenAPI/webpack `specs`), and misclassifying one roots its module-level
+    # calls and hides genuinely-dead code there (Panel Y, the Panel W over-marking class).
+    if {"test", "tests", "spec", "__tests__"} & set(parts):
         return True
     # `_spec.` catches Ruby/JS RSpec/Jasmine `foo_spec.rb`; `_tests.` some C#/JS layouts.
     return (name.startswith("test_")
