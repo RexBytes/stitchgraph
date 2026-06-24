@@ -661,12 +661,25 @@ def _identifiers(node, src):
 
 
 def _reexport_names(root, src):
-    """Local symbol names an `export` clause marks as public API: the `name` field of
-    each `export { A, B as C }` specifier, and the identifier of `export default Foo;`
-    where `Foo` is a symbol defined elsewhere in the file. The default case is the
-    canonical React/Angular/Vue/Node idiom (define a class/fn, then `export default`
-    it) — without it the default-exported symbol is false-flagged dead (Panel FF)."""
+    """Local symbol names an `export`/`module.exports` form marks as public API: the
+    `name` field of each `export { A, B as C }` specifier; the identifier of
+    `export default Foo;` (the React/Angular/Vue/Node idiom — define a class/fn, then
+    default-export it); and the whole-module CJS/TS-interop forms `module.exports = Foo`
+    / `module.exports = { A, B }` / `exports.x = Foo` / `export = Foo`. Without these the
+    public-exported symbol is false-flagged dead (Panel FF + GG)."""
     names: set[str] = set()
+
+    def add_value(n):  # collect the named symbol(s) on the RHS of a default/CJS export
+        if n.type in ("identifier", "type_identifier"):
+            names.add(_text(n, src))
+        elif n.type == "object":  # `module.exports = { A, B: localB }`
+            for c in n.children:
+                if c.type == "shorthand_property_identifier":
+                    names.add(_text(c, src))
+                elif c.type == "pair":
+                    v = c.child_by_field_name("value")
+                    if v is not None and v.type in ("identifier", "type_identifier"):
+                        names.add(_text(v, src))
 
     def rec(n):
         if n.type == "export_specifier":
@@ -674,14 +687,22 @@ def _reexport_names(root, src):
             t = _trailing_id(nm, src) if nm is not None else None
             if t:
                 names.add(t)
-        elif n.type == "export_statement" and any(c.type == "default" for c in n.children):
-            # `export default Foo;` — a bare identifier child names a predefined symbol.
-            # An inline `export default class/function …` has a declaration child (the
-            # export_statement -> exported recursion already marks it) and an anonymous
+        elif n.type == "export_statement" and any(c.type in ("default", "=") for c in n.children):
+            # `export default Foo;` / TS `export = Foo;` — a bare identifier child names a
+            # predefined symbol. Inline `export default class/function …` has a declaration
+            # child (the export_statement -> exported recursion marks it) and anonymous
             # `export default () => {}` / `{…}` has no identifier child, so both are skipped.
             for c in n.children:
-                if c.type in ("identifier", "type_identifier"):
-                    names.add(_text(c, src))
+                add_value(c)
+        elif n.type == "assignment_expression":
+            left = n.child_by_field_name("left")
+            if left is not None and left.type in ("member_expression", "subscript_expression"):
+                lt = _text(left, src)
+                if (lt == "module.exports" or lt.startswith("module.exports.")
+                        or lt.startswith("exports.")):  # CommonJS export targets
+                    right = n.child_by_field_name("right")
+                    if right is not None:
+                        add_value(right)
         for c in n.children:
             rec(c)
 
@@ -748,6 +769,14 @@ def _module_uses(root, src, spec):
         for c in n.children:
             if c.type in spec.defs or c.type in spec.container_only or c.type in spec.imports:
                 continue  # a named def/class/import — handled elsewhere or not a use
+            # A `const helper = () => {…}` / `= function(){…}` is itself a def (arrow_decls,
+            # scanned per-def); don't descend, else its body's uses are double-counted and
+            # over-rooted from the module even when the helper is uncalled (Panel GG).
+            if spec.arrow_decls and c.type == "variable_declarator":
+                val = c.child_by_field_name("value")
+                if val is not None and val.type in (
+                        "arrow_function", "function", "function_expression"):
+                    continue
             if c.type in spec.call_types:
                 nm = _callee(c, src, spec.call_types[c.type])
                 if nm:

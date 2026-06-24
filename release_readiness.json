@@ -414,6 +414,19 @@
         "CRITICAL": 2
       },
       "theme": "First full-3-model panel after sonnet's restoration (post-1.0.1 confidence check). opus + haiku both clean, but FRESH sonnet found TWO CARDINAL false-deads the opus/haiku pair missed across all of W-EE: (1) JS/TS 'export default Foo;' where Foo is defined earlier in the file (canonical React/Angular/Vue/Node idiom) never set the exported role -> Foo flagged dead (PRE-EXISTING, in 1.0.0/1.0.1; _reexport_names only handled export { X }); (2) Ruby a class used as a call receiver in an RSpec describe/it block (Service.run) got a CALLS edge to the method but no REFERENCES edge to the class -> live class flagged dead (INTRODUCED by 1.0.1 Bug-B _module_calls, which collected calls + bare idents but not constant receivers, unlike _direct_refs). Both confirmed by real-input repro. Validates re-adding sonnet for diversity. Fixed for 1.0.2: _reexport_names handles export default <ident>; _module_calls -> _module_uses also collects name-references (constant/type_identifier/identifier/name) like _direct_refs."
+    },
+    {
+      "id": "GG",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1,
+        "MEDIUM": 1
+      },
+      "theme": "Confirming the FF fixes (1.0.2). Both FF fixes (export default <ident>; _module_uses name-refs) verified correct both directions by all three models; F2 over-marking bounded + dedup intact. opus AND sonnet converged on a CARDINAL sibling of F1 (pre-existing): the whole-module CJS/TS-interop export forms module.exports = X / export = X / module.exports = {A,B} / exports.x = Y are not rooted -> live public export flagged dead. Fixed by extending _reexport_names to those forms. sonnet also found a MEDIUM err-safe over-rooting: _module_uses descended into a `const helper = function(){}` (a named def itself), over-rooting refs in its body even when uncalled; fixed by skipping variable_declarator-with-function-value in _module_uses (consistent with skipping spec.defs). Both fixed + regression-pinned."
     }
   ]
 }
