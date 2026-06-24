@@ -94,7 +94,8 @@ def build_app():
     @app.command(name="report", help="Full Markdown report (orientation + issues + risk).")
     def _report(
         db: str = typer.Option("stitchgraph.db", help="index database path"),
-        repo: str = typer.Option(".", help="repo root (for git risk)"),
+        repo: str | None = typer.Option(
+            None, help="repo root for git risk (default: the indexed root in the DB)"),
     ) -> None:
         from .report import build_report
         typer.echo(build_report(db, repo))

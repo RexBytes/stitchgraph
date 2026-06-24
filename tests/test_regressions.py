@@ -2038,3 +2038,35 @@ def test_cli_version_flag():
     bare = CliRunner().invoke(app, [])
     assert bare.exit_code != 0
     assert "Usage" in bare.stdout or "Commands" in bare.stdout
+
+
+def test_report_includes_risk_from_foreign_cwd(tmp_path, monkeypatch):
+    """`report` passed repo='.' to risk(), so the risk section was silently skipped
+    when run from outside the analysed repo — the same #18 root-scoping bug. With
+    repo defaulting to None (→ indexed root), `report --db <db>` includes risk from
+    any cwd."""
+    import os
+    import subprocess
+
+    from stitchgraph.adapters.report import build_report
+
+    (tmp_path / "m.py").write_text("def a():\n    return b()\n\ndef b():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "init")
+
+    db = str(tmp_path / "g.db")
+    with sg.Store(db) as store:
+        sg.reindex(store, str(tmp_path))
+
+    monkeypatch.chdir(tmp_path.parent)         # query from a foreign cwd
+    report = build_report(db)                    # repo=None -> indexed root
+    assert "## Risk" in report
+    assert "not a git repository" not in report  # risk ran, wasn't skipped
+    assert "m.py" in report                       # hotspot from the indexed repo

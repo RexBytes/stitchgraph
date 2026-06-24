@@ -14,7 +14,9 @@ anywhere but the analysed repo failed with `'.' is not a git repository`, breaki
 otherwise-consistent "index once, query from anywhere" workflow. The information was already
 on hand: the DB records the indexed root (`risk` itself reads it for path-mapping). `risk`
 now defaults `--path` to that recorded root; `--path` remains an explicit override. `risk
---db <db>` now works from any directory.
+--db <db>` now works from any directory. The same fix is applied to the `report` command,
+which passed `repo="."` to `risk` and so silently skipped its risk section from a foreign
+cwd — `stitchgraph report --db <db>` now includes risk from anywhere too.
 
 ### `stitchgraph --version` (#19)
 
@@ -28,12 +30,14 @@ distribution version via `importlib.metadata`, so it reflects what's actually on
 ### `docs/design.md` §9 reconciled with the CLI (#19)
 
 The "Operation surface" table advertised an optional `path?` argument on
-`orient`/`find_stale`/`find_holes`/`scan`/`structure_smells` that the CLI never accepted —
-mildly confusing on first use. Scope comes from the **indexed graph** (`--db`), not a
-per-call path filter, so the `path?` is removed and a new "On scope" note documents the real
-model: index the subset you want to analyse and query that DB from any cwd. The one
-exception, `risk`, is called out — its `--path` is the *git repo root* for history (now
-defaulting to the indexed root, #18), not a query filter.
+`orient`/`find_stale`/`find_holes`/`scan` that the CLI never accepted — mildly confusing on
+first use. Scope comes from the **indexed graph** (`--db`), not a per-call path filter, so
+the `path?` is removed and a new "On scope" note documents the real model: index the subset
+you want to analyse and query that DB from any cwd. The one exception, `risk`, is called out
+— its `--path` is the *git repo root* for history (now defaulting to the indexed root, #18),
+not a query filter. The table also listed a `structure_smells()` operation that was never
+registered (its cycles/god-objects/data-loops output is part of `scan`); it's folded into the
+`scan` row so §9 matches the actual operation set.
 
 ## Verification
 

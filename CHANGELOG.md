@@ -17,7 +17,9 @@ three-model panels.
   anywhere but the analysed repo failed with `'.' is not a git repository` — even though
   the DB already records the indexed root (and `risk` reads it for path-mapping two lines
   later). It now defaults `--path` to the indexed root stored in the DB; pass `--path` to
-  override. `risk --db <db>` now works from any directory.
+  override. `risk --db <db>` now works from any directory. The `report` command had the same
+  bug (it passed `repo="."` to `risk`, silently skipping its risk section from a foreign cwd)
+  and gets the same fix — `report --db <db>` now includes risk from anywhere.
 
 ### Added
 
@@ -29,10 +31,12 @@ three-model panels.
 ### Changed
 
 - **`docs/design.md` §9 reconciled with the CLI** (issue #19). The operation surface listed
-  a `path?` argument on `orient`/`find_stale`/`find_holes`/`scan`/`structure_smells` that
-  the CLI never accepted. Scope comes from the **indexed graph** (`--db`), not a per-call
-  path filter, so the `path?` is dropped and a "On scope" note documents the actual model
-  (index the subset you want; `risk`'s `--path` is the git root, not a query filter).
+  a `path?` argument on `orient`/`find_stale`/`find_holes`/`scan` that the CLI never
+  accepted. Scope comes from the **indexed graph** (`--db`), not a per-call path filter, so
+  the `path?` is dropped and a "On scope" note documents the actual model (index the subset
+  you want; `risk`'s `--path` is the git root, not a query filter). Also removed a phantom
+  `structure_smells()` row from the §9 table (never a registered op — its output is part of
+  `scan`), so the table matches the actual operation set.
 
 ## [1.0.4] — 2026-06-24
 

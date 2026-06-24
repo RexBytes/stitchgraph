@@ -511,8 +511,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 | `find_holes()` | dangling references / live stubs + reasons | D |
 | `impact_of(symbol)` | blast radius + which tests | B/G |
 | `trace_path(src, sink, relations?)` | full-stack cross-language path + confidence | B |
-| `structure_smells()` | cycles, god objects, layering violations, data loops | C/F |
-| `scan()` | ranked issue list with `urgency` + confidence + reasons | §7 |
+| `scan()` | ranked issue list with `urgency` + confidence + reasons — live stubs, holes, cycles, god objects, data loops | §7, C/F |
 | `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading | ✅ |
 | `find_symbol / get_callers / get_callees / type_at` | structural primitives | A |
 | `reindex(path)` | incremental update (admin) | — |

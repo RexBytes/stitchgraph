@@ -10,11 +10,13 @@ from ..core import operations as ops
 from ..core.store import Store
 
 
-def build_report(db: str = "stitchgraph.db", repo: str = ".") -> str:
+def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
     with Store(db) as store:
         orient = ops.orient(store)
         scan = ops.scan(store)
         stale = ops.find_stale(store)
+        # repo=None lets risk() default to the indexed root recorded in the DB, so
+        # `report --db <db>` includes the risk section from any cwd (issue #18).
         risk = ops.risk(store, repo)
 
     issues = scan.result or []
@@ -73,7 +75,7 @@ def _emit_issues(out: list[str], issues: list[dict]) -> None:
 def main() -> None:
     import sys
     db = sys.argv[1] if len(sys.argv) > 1 else "stitchgraph.db"
-    repo = sys.argv[2] if len(sys.argv) > 2 else "."
+    repo = sys.argv[2] if len(sys.argv) > 2 else None
     print(build_report(db, repo))
 
 
