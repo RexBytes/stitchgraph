@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md. || 1.0.1: post-release field fixes #7/#8/#9 confirmed by panels W (1 err-safe MEDIUM, fixed) and X (clean, opus+haiku). 1.0.1 ships on the maintainer's decision on X's clean confirmation; the strict 2-consecutive-clean streak applies to the headline release line.",
+  "_comment": "Per-project config for scripts/readiness.py. See RELEASE_READINESS.md. || 1.0.1: field fixes #7/#8/#9 (panels W err-safe MEDIUM -> X clean) PLUS a polyglot generalization of test detection the maintainer asked for, driven to closure by panels Y-DD. The Y-DD line found and closed four successive CARDINAL test-class-liveness gaps (direct -> inherited/nested -> combined fixed point -> Python/tree-sitter is_test_file asymmetry); DD is clean on both models with an explicit convergence verdict that the class is closed. 1.0.1 ships on the maintainer's decision; the strict 2-consecutive-clean streak applies to the headline release line.",
   "_available_models_note": "sonnet's API was unavailable for agent slots this cycle (it had already degraded to a third-party core-only review in Panels M-Q). Per the maintainer's decision (2026-06-23), the convergence panel is run on the two reliably-available models, opus + haiku, and 'full diversity' is defined as both of them. This weakens the diversity signal vs. the original three models; restore sonnet (or add a third model such as fable) here when available.",
   "package": "stitchgraph",
   "severity_weights": {
@@ -130,7 +130,7 @@
         "MEDIUM": 1,
         "LOW": 2
       },
-      "theme": "no HIGH, haiku clean — metrics/data-side polish: parallel-edge dedup (fan_in/get_matrix), get_matrix cells, ORM relationship() phantom column"
+      "theme": "no HIGH, haiku clean \u2014 metrics/data-side polish: parallel-edge dedup (fan_in/get_matrix), get_matrix cells, ORM relationship() phantom column"
     },
     {
       "id": "H",
@@ -140,7 +140,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "CLEAN — all three models returned FINDINGS: none; verified every recent fix for regressions, the precision invariant on adversarial input, the envelope contract, and GraphBLAS agreement"
+      "theme": "CLEAN \u2014 all three models returned FINDINGS: none; verified every recent fix for regressions, the precision invariant on adversarial input, the envelope contract, and GraphBLAS agreement"
     },
     {
       "id": "I",
@@ -153,7 +153,7 @@
         "HIGH": 1,
         "LOW": 1
       },
-      "theme": "confirmation gate caught a real one: new Foo() constructor calls not edged in JS/TS/C#/C++ (live class flagged dead) — eight panels missed it; plus read-only global false data_loop. Streak resets."
+      "theme": "confirmation gate caught a real one: new Foo() constructor calls not edged in JS/TS/C#/C++ (live class flagged dead) \u2014 eight panels missed it; plus read-only global false data_loop. Streak resets."
     },
     {
       "id": "J",
@@ -191,7 +191,7 @@
         "HIGH": 1,
         "MEDIUM": 2
       },
-      "theme": "constructing a class didn't reach its constructor -> constructions in __init__ flagged dead (haiku HIGH); Python twins of Panel K's tree-sitter metric fixes — CALLS+REFERENCES double-edge (opus) and REFERENCES self-loop (sonnet) — now fixed language-agnostically at the dedup boundary. (sonnet's slot hit a 500; finding salvaged from transcript and fixed.)"
+      "theme": "constructing a class didn't reach its constructor -> constructions in __init__ flagged dead (haiku HIGH); Python twins of Panel K's tree-sitter metric fixes \u2014 CALLS+REFERENCES double-edge (opus) and REFERENCES self-loop (sonnet) \u2014 now fixed language-agnostically at the dedup boundary. (sonnet's slot hit a 500; finding salvaged from transcript and fixed.)"
     },
     {
       "id": "M",
@@ -204,7 +204,7 @@
         "HIGH": 2,
         "MEDIUM": 3
       },
-      "theme": "PHP public class flagged dead (opus HIGH). Third-party 'sonnet' (core-only env) found the blind spot the all-extras agents miss: config loaded from cwd not the indexed root (HIGH); ingest_trace claims success grounding nothing (MEDIUM); edges-table migration + index-ordering on old DBs (MEDIUM); core-only CI red — unguarded hypothesis/tree-sitter test imports (MEDIUM). haiku clean."
+      "theme": "PHP public class flagged dead (opus HIGH). Third-party 'sonnet' (core-only env) found the blind spot the all-extras agents miss: config loaded from cwd not the indexed root (HIGH); ingest_trace claims success grounding nothing (MEDIUM); edges-table migration + index-ordering on old DBs (MEDIUM); core-only CI red \u2014 unguarded hypothesis/tree-sitter test imports (MEDIUM). haiku clean."
     },
     {
       "id": "N",
@@ -216,7 +216,7 @@
       "findings": {
         "HIGH": 1
       },
-      "theme": "opus+haiku CONVERGED: a class/fn used only as a Python parameter default value (def f(x=Strategy)) was flagged dead — func.args.defaults/kw_defaults weren't walked (the 3rd instance of Python-walks-body-not-signature, after Panel K annotations). _annotation_names -> _signature_ref_names now covers defaults too. Third-party 'sonnet' (core-only) clean, re-confirming Panel M's fixes."
+      "theme": "opus+haiku CONVERGED: a class/fn used only as a Python parameter default value (def f(x=Strategy)) was flagged dead \u2014 func.args.defaults/kw_defaults weren't walked (the 3rd instance of Python-walks-body-not-signature, after Panel K annotations). _annotation_names -> _signature_ref_names now covers defaults too. Third-party 'sonnet' (core-only) clean, re-confirming Panel M's fixes."
     },
     {
       "id": "O",
@@ -228,7 +228,7 @@
       "findings": {
         "MEDIUM": 1
       },
-      "theme": "lightest panel since clean H: opus+haiku CONVERGED on one narrow MEDIUM — a metaclass used only via class X(metaclass=Meta) flagged dead (_walk_scope edged child.bases but not child.keywords). Now walks class-def keywords. Third-party 'sonnet' (core-only) clean for the 2nd straight panel."
+      "theme": "lightest panel since clean H: opus+haiku CONVERGED on one narrow MEDIUM \u2014 a metaclass used only via class X(metaclass=Meta) flagged dead (_walk_scope edged child.bases but not child.keywords). Now walks class-def keywords. Third-party 'sonnet' (core-only) clean for the 2nd straight panel."
     },
     {
       "id": "P",
@@ -240,7 +240,7 @@
       "findings": {
         "HIGH": 1
       },
-      "theme": "the last un-walked Python scope: references in the class *body* itself (attribute assignments `h = Helper`, dispatch tables `TABLE = {\"a\": handle_a}`, class-level annotations) were never extracted — _walk_scope edged class bases/keywords/ctors and recursed into method bodies, but never the class body's own statements -> live symbols flagged dead (opus HIGH). Now walks class-body Load names via _direct_names, attributed to the class node (matching tree-sitter, which walks the whole class node). haiku clean; third-party 'sonnet' (core-only) clean for the 3rd straight panel."
+      "theme": "the last un-walked Python scope: references in the class *body* itself (attribute assignments `h = Helper`, dispatch tables `TABLE = {\"a\": handle_a}`, class-level annotations) were never extracted \u2014 _walk_scope edged class bases/keywords/ctors and recursed into method bodies, but never the class body's own statements -> live symbols flagged dead (opus HIGH). Now walks class-body Load names via _direct_names, attributed to the class node (matching tree-sitter, which walks the whole class node). haiku clean; third-party 'sonnet' (core-only) clean for the 3rd straight panel."
     },
     {
       "id": "Q",
@@ -254,7 +254,7 @@
         "HIGH": 1,
         "MEDIUM": 1
       },
-      "theme": "the confirmation gate caught a CRITICAL: a symbol used only inside a function-LOCAL class/closure was flagged dead — _def_node never descended into function bodies, so function-local defs were never nodes, yet _walk_scope emitted edges from their phantom qualnames that couldn't reach (opus, Python<->tree-sitter asymmetry, the un-walked NESTED scope after class bodies). _def_node now models nested defs as real nodes + a function->nested containment edge (a local def is live iff its enclosing fn is reachable; fixes decorator-registered @app.command handlers). Third-party 'sonnet' (core-only): public re-exports from __init__ (`from .api import Public`) weren't export roots -> live public API flagged dead (HIGH); version still 0.3.0 not 1.0.0 (MEDIUM, deferred to the manual release step). haiku clean. Streak resets."
+      "theme": "the confirmation gate caught a CRITICAL: a symbol used only inside a function-LOCAL class/closure was flagged dead \u2014 _def_node never descended into function bodies, so function-local defs were never nodes, yet _walk_scope emitted edges from their phantom qualnames that couldn't reach (opus, Python<->tree-sitter asymmetry, the un-walked NESTED scope after class bodies). _def_node now models nested defs as real nodes + a function->nested containment edge (a local def is live iff its enclosing fn is reachable; fixes decorator-registered @app.command handlers). Third-party 'sonnet' (core-only): public re-exports from __init__ (`from .api import Public`) weren't export roots -> live public API flagged dead (HIGH); version still 0.3.0 not 1.0.0 (MEDIUM, deferred to the manual release step). haiku clean. Streak resets."
     },
     {
       "id": "R",
@@ -265,7 +265,7 @@
       "findings": {
         "MEDIUM": 2
       },
-      "theme": "the metric twin of Panel Q's nested-def fix, in both extractors. opus+sonnet (sonnet partial, stopped on API issues but converged on the class-body variant first): the five Python `_direct_*` own-scope helpers leaked into nested defs — the driver loop ran rec() on a top-level stmt that was itself a nested def, so the nested def's calls/refs/globals were mis-attributed to the enclosing function (162 spurious CALLS + 40 spurious class->symbol REFERENCES on self; 15 false god-objects -> 11). Panel Q made it observable by giving nested defs real nodes, so the spurious parent edge now double-counts instead of being a dropped phantom. Fixed by skipping a top-level body stmt that is itself a def, in all five helpers (MEDIUM, metric inflation, errs safe). haiku: the tree-sitter SIDE of Panel Q's Python nesting — function-local defs were created at MODULE scope (`app.ts::helper` not `app.ts::setup.helper`), so two same-named defs merged into one node (corrupting get_callers/callees/impact_of for that name). Reproduced; errs safe for the cardinal invariant (no live-flagged-dead, confirmed by opus too) so downgraded from haiku's CRITICAL to MEDIUM. Fixed symmetrically: nest every def's children under its own qual + emit an enclosing-function->nested containment edge (Python parity, Panel Q), kept live iff the enclosing fn is reachable. sonnet's slot was stopped (API issues this session); diversity 2/3. Streak stays 0."
+      "theme": "the metric twin of Panel Q's nested-def fix, in both extractors. opus+sonnet (sonnet partial, stopped on API issues but converged on the class-body variant first): the five Python `_direct_*` own-scope helpers leaked into nested defs \u2014 the driver loop ran rec() on a top-level stmt that was itself a nested def, so the nested def's calls/refs/globals were mis-attributed to the enclosing function (162 spurious CALLS + 40 spurious class->symbol REFERENCES on self; 15 false god-objects -> 11). Panel Q made it observable by giving nested defs real nodes, so the spurious parent edge now double-counts instead of being a dropped phantom. Fixed by skipping a top-level body stmt that is itself a def, in all five helpers (MEDIUM, metric inflation, errs safe). haiku: the tree-sitter SIDE of Panel Q's Python nesting \u2014 function-local defs were created at MODULE scope (`app.ts::helper` not `app.ts::setup.helper`), so two same-named defs merged into one node (corrupting get_callers/callees/impact_of for that name). Reproduced; errs safe for the cardinal invariant (no live-flagged-dead, confirmed by opus too) so downgraded from haiku's CRITICAL to MEDIUM. Fixed symmetrically: nest every def's children under its own qual + emit an enclosing-function->nested containment edge (Python parity, Panel Q), kept live iff the enclosing fn is reachable. sonnet's slot was stopped (API issues this session); diversity 2/3. Streak stays 0."
     },
     {
       "id": "S",
@@ -276,7 +276,7 @@
       "findings": {
         "CRITICAL": 1
       },
-      "theme": "the confirmation gate caught a CRITICAL regression that Panel R itself introduced — exactly why consecutive clean panels are required. opus: Panel R fixed the nested-def body leak by having each of the five `_direct_*` driver loops `continue` on a top-level stmt that is itself a def. But a def's HEADER expressions — decorator calls/arguments (`@registry(make_validator())`) and a nested class's base expressions (`class L(get_base())`) — execute in the ENCLOSING function's scope at definition time, yet were syntactically part of the skipped statement. They aren't recovered elsewhere (`_decorator_edges` edges only the decorator name; `_walk_scope` edges a base only via `_name_of`, None for a Call). So a symbol used only there got zero inbound edges and was flagged dead — pre-R it erred safe (over-attributed to the enclosing fn), post-R it erred UNSAFE (false dead, the cardinal sin). Fixed with `_def_header_refs`: when the driver hits a nested def, it still walks the def's header (decorators + class bases/keywords) in the enclosing scope while skipping the body — restoring the dropped enclosing-scope refs without re-introducing the body leak (verified: outer no longer calls a body-only callee; build now reaches make_validator/make_base; self-scan unchanged at 3 advisory). haiku: clean (FINDINGS: none) after 48 adversarial tests verifying the Panel R fixes, the cardinal invariant across Python/TS/JS, metric-dedup, and cross-language parity. diversity 2/2 (opus+haiku full under the updated rule). Streak resets to 0."
+      "theme": "the confirmation gate caught a CRITICAL regression that Panel R itself introduced \u2014 exactly why consecutive clean panels are required. opus: Panel R fixed the nested-def body leak by having each of the five `_direct_*` driver loops `continue` on a top-level stmt that is itself a def. But a def's HEADER expressions \u2014 decorator calls/arguments (`@registry(make_validator())`) and a nested class's base expressions (`class L(get_base())`) \u2014 execute in the ENCLOSING function's scope at definition time, yet were syntactically part of the skipped statement. They aren't recovered elsewhere (`_decorator_edges` edges only the decorator name; `_walk_scope` edges a base only via `_name_of`, None for a Call). So a symbol used only there got zero inbound edges and was flagged dead \u2014 pre-R it erred safe (over-attributed to the enclosing fn), post-R it erred UNSAFE (false dead, the cardinal sin). Fixed with `_def_header_refs`: when the driver hits a nested def, it still walks the def's header (decorators + class bases/keywords) in the enclosing scope while skipping the body \u2014 restoring the dropped enclosing-scope refs without re-introducing the body leak (verified: outer no longer calls a body-only callee; build now reaches make_validator/make_base; self-scan unchanged at 3 advisory). haiku: clean (FINDINGS: none) after 48 adversarial tests verifying the Panel R fixes, the cardinal invariant across Python/TS/JS, metric-dedup, and cross-language parity. diversity 2/2 (opus+haiku full under the updated rule). Streak resets to 0."
     },
     {
       "id": "T",
@@ -287,7 +287,7 @@
       "findings": {
         "CRITICAL": 2
       },
-      "theme": "two more instances of the nested-scope class (Panel Q), in the two remaining nesting hosts — both CRITICAL false-deads, both pre-existing (not regressions). haiku: a Python def nested in a CONTROL-FLOW block (`if`/`for`/`while`/`try`/`with`/`match`) was never modeled — `_def_node`/`_walk_scope` walked only a function's *direct* body, so a def in an `if` got no node while `_walk_scope` emitted edges from its qualname (phantom source) -> a symbol used only there flagged dead. opus: the tree-sitter twin one host deeper — a def nested in a JS/TS ARROW function (`const h = () => { function w(){...} }`, pervasive) was never modeled because the arrow-declarator branch created the node but never recursed into the arrow body nor threaded the containment edge. Rather than wait for panels to find hosts one at a time, did a SYSTEMATIC nesting-host audit: a def can nest only in a function body (Q), class body (P), control-flow block, or function-expression/arrow (lambdas/comprehensions can't hold defs). Fixes: Python `_scope_defs` looks *through* control flow (no qual level added) in `_def_node`/`_walk_scope`/`_iter_funcs`/the module loop; tree-sitter arrow branch now recurses into the arrow body + emits the containment edge. Test matrix pins every host in both extractors (148 tests). Dogfood: find_stale still 3 advisory, 0 holes (precision intact). diversity 2/2. Streak resets to 0; the nesting-host enumeration is now believed complete."
+      "theme": "two more instances of the nested-scope class (Panel Q), in the two remaining nesting hosts \u2014 both CRITICAL false-deads, both pre-existing (not regressions). haiku: a Python def nested in a CONTROL-FLOW block (`if`/`for`/`while`/`try`/`with`/`match`) was never modeled \u2014 `_def_node`/`_walk_scope` walked only a function's *direct* body, so a def in an `if` got no node while `_walk_scope` emitted edges from its qualname (phantom source) -> a symbol used only there flagged dead. opus: the tree-sitter twin one host deeper \u2014 a def nested in a JS/TS ARROW function (`const h = () => { function w(){...} }`, pervasive) was never modeled because the arrow-declarator branch created the node but never recursed into the arrow body nor threaded the containment edge. Rather than wait for panels to find hosts one at a time, did a SYSTEMATIC nesting-host audit: a def can nest only in a function body (Q), class body (P), control-flow block, or function-expression/arrow (lambdas/comprehensions can't hold defs). Fixes: Python `_scope_defs` looks *through* control flow (no qual level added) in `_def_node`/`_walk_scope`/`_iter_funcs`/the module loop; tree-sitter arrow branch now recurses into the arrow body + emits the containment edge. Test matrix pins every host in both extractors (148 tests). Dogfood: find_stale still 3 advisory, 0 holes (precision intact). diversity 2/2. Streak resets to 0; the nesting-host enumeration is now believed complete."
     },
     {
       "id": "U",
@@ -296,7 +296,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "CLEAN — both opus and haiku returned FINDINGS: none at full diversity (opus+haiku), the first clean panel since the nesting-host audit. This panel also ran a REGRESSION-TEST-QUALITY audit (folded into scope at the maintainer's request after two test-authoring slips in R/S): both models confirmed the Panel Q-T nesting regression tests are NON-VACUOUS — opus monkeypatched `_scope_defs` back to a pre-fix direct-body-only variant in a /tmp repro and observed 5/5 control-flow tests FAIL (helper flagged dead, nested def not modeled), then pass post-fix; the tests assert on the right symbols, use projects with real entry points so dead-code analysis is meaningful, and have assertions that can fail. Source probing found no still-unmodeled def host (function/class/control-flow/arrow is complete; lambdas/comprehensions can't hold defs), verified the body-leak (R) and header-leak (S) fixes still hold, confirmed no metric inflation from containment edges (_dedup_edges collapses the CALLS+REFERENCES pair, fan_in==1), and checked module-level `try: import` fallback + `TYPE_CHECKING` idioms. Dogfood: find_stale 3 advisory, 0 holes (precision intact). Clean streak 1 of 2."
+      "theme": "CLEAN \u2014 both opus and haiku returned FINDINGS: none at full diversity (opus+haiku), the first clean panel since the nesting-host audit. This panel also ran a REGRESSION-TEST-QUALITY audit (folded into scope at the maintainer's request after two test-authoring slips in R/S): both models confirmed the Panel Q-T nesting regression tests are NON-VACUOUS \u2014 opus monkeypatched `_scope_defs` back to a pre-fix direct-body-only variant in a /tmp repro and observed 5/5 control-flow tests FAIL (helper flagged dead, nested def not modeled), then pass post-fix; the tests assert on the right symbols, use projects with real entry points so dead-code analysis is meaningful, and have assertions that can fail. Source probing found no still-unmodeled def host (function/class/control-flow/arrow is complete; lambdas/comprehensions can't hold defs), verified the body-leak (R) and header-leak (S) fixes still hold, confirmed no metric inflation from containment edges (_dedup_edges collapses the CALLS+REFERENCES pair, fan_in==1), and checked module-level `try: import` fallback + `TYPE_CHECKING` idioms. Dogfood: find_stale 3 advisory, 0 holes (precision intact). Clean streak 1 of 2."
     },
     {
       "id": "V",
@@ -305,7 +305,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "CLEAN — the SECOND consecutive full-diversity clean panel; the release gate is now met (gates green AND RRS >= 90 AND clean streak 2). Both opus and haiku returned FINDINGS: none after being steered AWAY from the now-closed nesting class and toward the less-trodden surfaces, so a clean verdict is earned: cross-language resolvers (SQL CTE/UNION/INSERT…SELECT/MERGE, ORM mapped_column/relationship exclusion, events additive-only), the full envelope contract (every operations.py urgency= assignment audited against the provenance ceiling; scan RED requires an EXTRACTED-only certain_live path; find_stale 0.6/INFERRED/needs_review; ingest_trace refuses on zero grounding; no ok=True-with-vacuous-result), persistence/migration (nodes+edges migrate, indexes after; replace_file confirmed wired into no product path), metrics (dedup on the full resolver-inclusive edge list; LIVENESS_RELATIONS excludes QUERIES/READS/WRITES/MAPS_TO; get_matrix N/N+1 bounds), a 2000-random-graph GraphBLAS-vs-pure-Python reachability fuzz (0 mismatches), and precision use-forms (walrus/comprehensions/f-strings/forward-refs/__all__/property/staticmethod). Two non-defect sub-observations recorded, neither flagged as a finding: SQL MERGE labels its target READS not WRITES (recall-only, err-safe, uncommon) and find_holes sets urgency=ORANGE on an empty hole list (cosmetic; ok=True/count=0/contract intact). Dogfood: find_stale 3 advisory, 0 holes. Clean streak 2 of 2 — RELEASABLE; the maintainer tags 1.0.0 manually."
+      "theme": "CLEAN \u2014 the SECOND consecutive full-diversity clean panel; the release gate is now met (gates green AND RRS >= 90 AND clean streak 2). Both opus and haiku returned FINDINGS: none after being steered AWAY from the now-closed nesting class and toward the less-trodden surfaces, so a clean verdict is earned: cross-language resolvers (SQL CTE/UNION/INSERT\u2026SELECT/MERGE, ORM mapped_column/relationship exclusion, events additive-only), the full envelope contract (every operations.py urgency= assignment audited against the provenance ceiling; scan RED requires an EXTRACTED-only certain_live path; find_stale 0.6/INFERRED/needs_review; ingest_trace refuses on zero grounding; no ok=True-with-vacuous-result), persistence/migration (nodes+edges migrate, indexes after; replace_file confirmed wired into no product path), metrics (dedup on the full resolver-inclusive edge list; LIVENESS_RELATIONS excludes QUERIES/READS/WRITES/MAPS_TO; get_matrix N/N+1 bounds), a 2000-random-graph GraphBLAS-vs-pure-Python reachability fuzz (0 mismatches), and precision use-forms (walrus/comprehensions/f-strings/forward-refs/__all__/property/staticmethod). Two non-defect sub-observations recorded, neither flagged as a finding: SQL MERGE labels its target READS not WRITES (recall-only, err-safe, uncommon) and find_holes sets urgency=ORANGE on an empty hole list (cosmetic; ok=True/count=0/contract intact). Dogfood: find_stale 3 advisory, 0 holes. Clean streak 2 of 2 \u2014 RELEASABLE; the maintainer tags 1.0.0 manually."
     },
     {
       "id": "W",
@@ -326,6 +326,72 @@
       ],
       "findings": {},
       "theme": "CLEAN 1.0.1 re-confirmation of the Panel W fix. Both FINDINGS: none. Path-based matcher verified BOTH directions: false-positives gone (#[cfg(feature=\"testing\")], #[doc], #[allow], #[derive], a feature literally named test), no false-negatives (#[test], #[ test ], #[tokio::test]/*::test, #[cfg(test)], #[cfg(all(test, feature=\"x\"))], inner attrs, free-form test-mod names); attribute-bleed resets correctly; core #8 liveness holds (test helper reached by no test + unused production still flag). #7/#9 re-confirmed; dogfood 3 advisory / 0 holes. One err-safe note documented in LIMITATIONS.md (third-party runner macros #[rstest]/#[test_case] under-mark; macro set unenumerable, matching them would re-open the W over-match), not a finding. Per the maintainer's decision, 1.0.1 ships on this clean dual-model confirmation (agreed fix -> confirmation-panel process) rather than re-establishing full streak-2."
+    },
+    {
+      "id": "Y",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "Polyglot test-detection review. New generalization (Java/C# @Test/[Fact], PHP #[Test], JS/TS/Ruby call-based test()/it(), _seed_test_classes, module-call rooting) verified clean both directions (annotation allowlist exact; call-based helpers live; dead helpers flagged). One err-safe MEDIUM both models converged on (Panel W class): _is_test_file matched testing/ and specs/ dirs, plausibly production (Go testing, OpenAPI specs), rooting their module calls and hiding dead code. Not cardinal. Fixed by trimming dir set to test/tests/spec/__tests__."
+    },
+    {
+      "id": "Z",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "opus caught a CARDINAL haiku missed: a pytest class TestWidget: whose methods are all test_* was flagged dead. Recognized test methods become NodeKind.TEST (not METHOD), so the callback path only rescued classes with a non-test override (setUp); the dominant all-test_* class got no role, no inbound liveness edge, flagged dead (live framework-collected code). Fixed: Python _seed_test_classes (a class with any NodeKind.TEST/test-role member seeded test). Bare class Meta(type) still flags. Streak resets."
+    },
+    {
+      "id": "AA",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2
+      },
+      "theme": "Two CARDINAL siblings of Z (same container-live/flagged-dead shape, one level removed; both pre-existing). opus: (1) a test class inheriting all its tests from a custom base (JUnit abstract-base + thin-subclass; pytest inherited tests) had no direct test member, not seeded, flagged; (2) the outer of a nested test class was flagged. Fixed: _seed_test_classes grows the seed set transitively (enclosing chain + subclasses of a test base) in both extractors. Java FQ/args annotations verified handled."
+    },
+    {
+      "id": "BB",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1,
+        "MEDIUM": 1
+      },
+      "theme": "opus broke the AA fix: the two growth axes ran sequentially, not to a combined fixed point, so a nested+inherited class left its outer flagged (idiomatic pytest grouping class TestApi: class TestV1(_SharedCases): pass; Java nested-extends-abstract-base). Fixed by co-iterating both axes in one while-changed loop (monotonic, terminates) in both extractors. MEDIUM err-safe: tree-sitter resolved bases by name across all languages; fixed by keying (lang, name). Streak resets."
+    },
+    {
+      "id": "CC",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1,
+        "MEDIUM": 1
+      },
+      "theme": "opus: the Python and tree-sitter is_test_file had drifted (Python checked only the filename, tree-sitter also directories), so a shared test base in tests/conftest.py got no test role and its inheriting subclass was flagged dead (CARDINAL). Fixed by extracting one shared directory-aware is_test_file (_testfile.py) used by both extractors so they cannot drift again. haiku MEDIUM err-safe: #[cfg(not(test))] production code marked a test root (the bare test token sat inside not(...)); fixed by dropping not(...) predicates before the scan. Streak resets."
+    },
+    {
+      "id": "DD",
+      "models": [
+        "opus",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN. Convergence verdict: the test-liveness class is CLOSED for 1.0.1. Both FINDINGS: none. opus confirmed all CC fixes (conftest base + subclass live; full Rust cfg matrix incl. not(test)/all(not(test),...)) and ran a final convergence attack (deep nesting x inheritance, mixins, metaclasses, JUnit @Nested) with no remaining live->dead case. The one residual (a test base in a non-test directory subclassed by an own-method-less test) is realistic-but-rare, precision-safe, needs_review-only, has escape hatches, and closing it generically would regress the Y/W over-match guard, so it is a documented limitation. haiku full-matrix sweep clean. Dogfood 3 advisory / 0 holes; 165 tests."
     }
   ]
 }

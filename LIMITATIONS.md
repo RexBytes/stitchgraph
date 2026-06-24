@@ -54,9 +54,16 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `specs` (plausible production dirs) for the same reason (Panel Y). The set of
   third-party runners is open-ended; recognizing them all would re-introduce that
   over-match. These cases surface as `needs_review` advisories, never confident verdicts.
-- **Residual tradeoff:** a *production* file that happens to live under a `test`/
+- **Residual tradeoffs:** (1) a *production* file that happens to live under a `test`/
   `tests`/`spec`/`__tests__` directory has its module-level calls rooted — over-marking
   (hides some dead code) in the precision-safe direction, never a false "dead".
+  (2) A test base class placed in a *non-test* directory (e.g. shipped test scaffolding
+  in `src/`) whose subclass — in a test location — declares **no own test method** is not
+  recognized: the base never gets the `test` role, so the inheriting subclass can surface
+  as a stale candidate (Panel CC/DD). Rare (it requires both the inverted layout and a
+  zero-own-test subclass); closing it generically would re-open the `testing`/`specs`
+  over-match, so it is left as a documented limitation. The subclass declaring even one
+  own test, or the base living under a test dir, resolves it.
 - **Escape hatch:** pin the test in `stitchgraph.toml [entry_points]`, or
   `ingest_trace` a real test run to seed liveness from what actually executed.
 

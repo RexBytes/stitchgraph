@@ -7,14 +7,32 @@ All notable changes to stitchgraph. Format follows
 ## [1.0.1] — 2026-06-24
 
 **Field-fix patch.** Three issues raised against 1.0.0 in real use on a Rust
-crate, fixed as a batch and re-confirmed by two review panels (W found one
-err-safe over-match in the fix, immediately corrected; X came back clean on both
-opus and haiku). The cardinal invariant — live code is never flagged dead — is
-preserved; no behaviour changed for the cases 1.0.0 already handled. See the
+crate (#7/#8/#9), plus — once #8 revealed the same test-detection gap in every
+other language — a **polyglot generalization of test detection**. Fixed as a
+batch and confirmed by eight review panels (W–DD). The cardinal invariant — live
+code is never flagged dead — is preserved throughout; the panels found and closed
+four successive cardinal gaps in cross-language test-class liveness (direct →
+inherited/nested → combined fixed point → Python/tree-sitter `is_test_file`
+asymmetry), with Panel DD declaring the class **closed**. See the
 [release notes](docs/RELEASE_NOTES_v1.0.1.md).
 
 ### Fixed
 
+- **Idiomatic tests are recognized across all languages** (issue #8 generalized,
+  precision; panels Y–DD). The root cause behind the Rust flood was universal:
+  file-level test context never seeded the `test` role, so only the
+  `test*`/`Test*` **name** convention did — flagging live tests (and the helpers
+  they reach) dead in every language whose tests aren't name-convention. Now:
+  **annotation/attribute** tests — Java `@Test`/`@BeforeEach`/… (JUnit/TestNG),
+  C# `[Fact]`/`[Theory]`/`[Test]`/… (xUnit/NUnit/MSTest), PHP `#[Test]` (PHPUnit)
+  — seed the `test` role; **call-based** suites with no named test function —
+  JS/TS Jest/Mocha/Vitest, Ruby RSpec — root their `test()`/`it()`/`describe()`
+  module-level call sites; and **test classes** are seeded transitively across
+  nesting and inheritance (the JUnit abstract-base + thin-subclass idiom; pytest
+  `class TestWidget:` / `unittest.TestCase`). `is_test_file` is now a single
+  directory-aware heuristic shared by both extractors (a prior Python-vs-tree-sitter
+  drift was itself a cardinal gap). A test helper/class reached by no test, and
+  unused production code, still flag.
 - **Rust inline unit tests no longer flood `find_stale`** (issue #8, precision).
   Idiomatic Rust tests live in `#[cfg(test)] mod tests { … }` with free-form
   names, so the `test*`/`Benchmark*`/`Example*` name convention never fired — the
