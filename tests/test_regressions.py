@@ -1578,3 +1578,41 @@ def test_python_test_class_with_only_test_methods_not_flagged_dead(tmp_path):
         assert "TestWidget" not in stale   # pytest test class — live
         assert "OnlyTests" not in stale     # unittest all-test-methods class — live
         assert "Unused" in stale            # non-test class — still flagged
+
+
+def test_test_class_inherited_and_nested_not_flagged_dead(tmp_path):
+    """Panel AA (CARDINAL siblings of Panel Z): a test class that inherits all its
+    tests from a custom base (idiomatic JUnit abstract-base + thin-subclass; pytest
+    inherited tests), or is the *outer* of a nested test class, was flagged dead — the
+    same 'container live, but flagged' shape, one level removed. `_seed_test_classes`
+    now propagates the `test` role transitively across inheritance and up the enclosing
+    chain. A non-test subclass is still flagged."""
+    _mk(tmp_path, {
+        "test_inh.py": ("class BaseTest:\n    def test_shared(self):\n        assert True\n"
+                        "class TestB(BaseTest):\n    pass\n"),          # inherits all tests
+        "test_nested.py": ("class TestOuter:\n    class TestInner:\n"
+                           "        def test_a(self):\n            assert True\n"),
+        "app.py": "class Base:\n    def run(self):\n        return 1\nclass Child(Base):\n    pass\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "TestB" not in stale and "BaseTest" not in stale   # inherited-tests class live
+        assert not any(s == "TestOuter" or s.endswith(".TestOuter") for s in stale)  # nested outer live
+        assert "Child" in stale                                    # non-test subclass still flagged
+
+
+def test_tree_sitter_inherited_test_class_not_flagged_dead(tmp_path):
+    """Tree-sitter twin of the inheritance sibling: a Java test class that inherits its
+    `@Test` methods from an abstract base (standard JUnit) must not be flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "AbstractFooTest.java": ("import org.junit.jupiter.api.Test;\n"
+                                 "abstract class AbstractFooTest { @Test void shared() {} }\n"),
+        "FooTest.java": "class FooTest extends AbstractFooTest {}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "FooTest" not in stale and "AbstractFooTest" not in stale

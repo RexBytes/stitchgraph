@@ -103,6 +103,26 @@ def _seed_test_classes(proj: _Project) -> None:
                     and n.id.rsplit(".", 1)[0] in class_ids}
     if not test_classes:
         return
+    # (a) enclosing containers of a nested test class are on the collection path.
+    for cid in list(test_classes):
+        rel, _, qual = cid.partition("::")
+        segs = qual.split(".")
+        for i in range(1, len(segs)):
+            anc = f"{rel}::{'.'.join(segs[:i])}"
+            if anc in class_ids:
+                test_classes.add(anc)
+    # (b) a subclass inherits its tests from a (custom) test base, transitively (the
+    # abstract-base + thin-subclass test idiom). INHERITS edges are already resolved
+    # child->base here (_collect_edges ran before this pass).
+    inh = [(e.src, e.dst_id) for e in proj.edges
+           if e.relation is Relation.INHERITS and e.dst_id]
+    changed = True
+    while changed:
+        changed = False
+        for child_id, base_id in inh:
+            if child_id not in test_classes and base_id in test_classes:
+                test_classes.add(child_id)
+                changed = True
     for n in proj.nodes:
         if n.id in test_classes:
             n.roles = n.roles | {"test"}

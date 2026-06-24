@@ -241,7 +241,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
 
     _seed_exported_class_methods(nodes, file_lang)
     _seed_classes_from_exported_methods(nodes)
-    _seed_test_classes(nodes)
+    _seed_test_classes(nodes, inherits)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
@@ -382,20 +382,50 @@ def _seed_classes_from_exported_methods(nodes) -> None:
             n.roles = n.roles | {"exported"}
 
 
-def _seed_test_classes(nodes) -> None:
-    """A class with a test-role method is a test fixture — mark the class `test` too,
-    so the (often package-private) test *class* isn't flagged dead while its methods
-    are live (the contradictory 'method live, class dead' shape). Mirrors
-    `_seed_classes_from_exported_methods`; over-marking a fixture is precision-safe."""
+def _seed_test_classes(nodes, inherits) -> None:
+    """A class is a test fixture if it has a test-role method, *contains* a nested test
+    class, or *inherits* its tests from a (custom) test base — mark all such classes
+    `test` so the fixture isn't flagged dead while its tests are live (the
+    'method/inner live, container dead' shape; Panel Z + AA). Over-marking a fixture is
+    precision-safe; this only ever adds roots. Mirrors `_seed_classes_from_exported_methods`."""
     class_ids = {n.id for n in nodes if n.kind is C}
     test_classes = {n.id.rsplit(".", 1)[0] for n in nodes
                     if n.kind is M and "test" in n.roles and "." in n.id
                     and n.id.rsplit(".", 1)[0] in class_ids}
     if not test_classes:
         return
+    name_to_ids: dict[str, list[str]] = {}
+    for n in nodes:
+        if n.kind is C:
+            name_to_ids.setdefault(n.name, []).append(n.id)
+    _grow_test_classes(test_classes, class_ids,
+                       [(c, b) for c, b, _lang in inherits], name_to_ids)
     for n in nodes:
         if n.id in test_classes:
             n.roles = n.roles | {"test"}
+
+
+def _grow_test_classes(test_classes: set, class_ids: set,
+                       inherits_by_name: list, name_to_ids: dict) -> None:
+    """Grow a seed set of test-class ids by (a) enclosing classes — a class that
+    contains a nested test class is on the collection path — and (b) transitive
+    inheritance — a subclass of a test base inherits its tests (e.g. the JUnit
+    abstract-base + thin-subclass idiom). In-place; precision-safe (only adds)."""
+    for cid in list(test_classes):  # (a) enclosing containers of a nested test class
+        rel, _, qual = cid.partition("::")
+        segs = qual.split(".")
+        for i in range(1, len(segs)):
+            anc = f"{rel}::{'.'.join(segs[:i])}"
+            if anc in class_ids:
+                test_classes.add(anc)
+    changed = True  # (b) subclasses of a test base, to a fixed point
+    while changed:
+        changed = False
+        for child_id, base_name in inherits_by_name:
+            if child_id not in test_classes and any(
+                    bid in test_classes for bid in name_to_ids.get(base_name, ())):
+                test_classes.add(child_id)
+                changed = True
 
 
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
