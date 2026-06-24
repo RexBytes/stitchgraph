@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
+from ._testfile import is_test_file as _is_test_file
 
 _BUILTINS = set(dir(builtins))
 
@@ -166,7 +167,10 @@ def _apply_callback_roles(proj: _Project) -> None:
 # -- pass 1: definitions ----------------------------------------------------
 def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> None:
     is_init = path.name == "__init__.py"
-    is_test_file = path.name.startswith("test_") or path.name.endswith("_test.py")
+    # Directory-aware (shared with the tree-sitter extractor) so a `test_*` method in a
+    # shared base under `tests/`/`conftest.py` is recognised — otherwise a thin subclass
+    # inheriting those tests is flagged dead (Panel CC).
+    is_test_file = _is_test_file(rel)
     module_qual = _module_qualname(rel)
     mod_id = Node.make_id(rel, module_qual)
 

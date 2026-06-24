@@ -1650,3 +1650,35 @@ def test_tree_sitter_test_class_seeding_is_language_scoped(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
         assert any(s == "Prod" for s in stale)   # dead JS production class still flagged
+
+
+def test_python_inherited_test_base_in_conftest_not_flagged_dead(tmp_path):
+    """Panel CC (CARDINAL): Python recognised test files by FILENAME only, while
+    tree-sitter also checked directories. A shared abstract test-case base in
+    `tests/conftest.py` (canonical pytest location) thus got no `test` role, so a thin
+    subclass inheriting its tests was flagged dead. The `is_test_file` heuristic is now
+    shared + directory-aware across both extractors."""
+    _mk(tmp_path, {
+        "tests/conftest.py": ("class SharedAPICases:\n    def test_get(self):\n        assert True\n"
+                              "    def test_post(self):\n        assert True\n"),
+        "tests/test_v1.py": "from conftest import SharedAPICases\nclass TestV1(SharedAPICases):\n    pass\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "SharedAPICases" not in stale and "TestV1" not in stale
+
+
+def test_rust_cfg_not_test_is_production_not_a_test_root(tmp_path):
+    """Panel CC: `#[cfg(not(test))]` gates *production*-only code — it must NOT be marked
+    a test root (which would hide it from dead-code detection). `_is_rust_test_attr`
+    now drops `not(...)` predicates before scanning the cfg for a bare `test` token."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"src/lib.rs": (
+        "#[cfg(not(test))]\nfn production_only() -> i32 { 1 }\n"
+        "#[cfg(test)]\nmod t { #[test] fn real() { assert!(true); } }\n")})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "production_only" in stale   # production-only, unused -> flagged (not a test)

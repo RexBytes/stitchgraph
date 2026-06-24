@@ -24,6 +24,7 @@ from pathlib import Path
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
+from ._testfile import is_test_file
 
 try:
     from tree_sitter import Parser
@@ -468,9 +469,11 @@ def _is_rust_test_attr(attr_text: str) -> bool:
         return True
     if path == "cfg" and "(" in body:
         # `cfg(test)` is test-gated; `cfg(feature="testing")` is not. Drop quoted string
-        # values first so a feature *value* containing "test" can't match, then look for
-        # a bare `test` config option token.
+        # values first (so a feature *value* containing "test" can't match), then drop
+        # `not(...)` predicates — `cfg(not(test))` gates *production*-only code, so it
+        # must NOT be marked a test (Panel CC) — then look for a bare `test` token.
         inner = re.sub(r"\"[^\"]*\"", "", body[body.find("(") + 1: body.rfind(")")])
+        inner = re.sub(r"not\s*\([^)]*\)", "", inner)
         return "test" in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", inner)
     return False
 
@@ -680,18 +683,7 @@ def _import_names(root, src, spec):
     return names
 
 
-def _is_test_file(rel: str) -> bool:
-    name = rel.rsplit("/", 1)[-1].lower()
-    parts = rel.lower().split("/")
-    # Strongly test-conventional dir names only. `testing`/`specs` are excluded: they
-    # are plausible *production* directories (Go `testing` helpers, shipped test
-    # utilities, OpenAPI/webpack `specs`), and misclassifying one roots its module-level
-    # calls and hides genuinely-dead code there (Panel Y, the Panel W over-marking class).
-    if {"test", "tests", "spec", "__tests__"} & set(parts):
-        return True
-    # `_spec.` catches Ruby/JS RSpec/Jasmine `foo_spec.rb`; `_tests.` some C#/JS layouts.
-    return (name.startswith("test_")
-            or any(p in name for p in ("_test.", ".test.", "_spec.", ".spec.", "_tests.")))
+_is_test_file = is_test_file  # shared with the Python extractor (see ._testfile)
 
 
 def _is_test_name(name: str) -> bool:
