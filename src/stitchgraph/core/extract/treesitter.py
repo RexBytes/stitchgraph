@@ -240,6 +240,12 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             mod_roles.add("test")
         if is_bash_script:
             mod_roles.add("script")
+        # Snapshot the mutable accumulators so a RecursionError mid-walk rolls the file
+        # back cleanly — no orphan MODULE node / partial defs left behind (panel QQQ LOW;
+        # mirrors the Python extractor's parsed-dict skip).
+        _n0, _d0, _i0, _c0, _mt0, _im0 = (
+            len(nodes), len(defs), len(inherits), len(contains),
+            len(module_tests), len(imports))
         nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
                           location=f"{rel}:1:0", roles=frozenset(mod_roles)))
         try:
@@ -260,6 +266,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
             # reindex (panel OOO, the tree-sitter analogue of the Python ast guard).
+            del nodes[_n0:], defs[_d0:], inherits[_i0:]
+            del contains[_c0:], module_tests[_mt0:], imports[_im0:]
             continue
 
     # Surface grammar-load failures instead of returning a silent empty graph (issue
@@ -283,9 +291,25 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             if n.kind in (C, F, M) and n.name in reexports:
                 n.roles = n.roles | {"exported"}
 
+    # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
+    # to FUNCTION even for methods defined inside a class body (there is no separate
+    # `method_declaration` node), so the method-based class-rooting passes below
+    # (exported/test/callback/main/constructor) — which all key on kind METHOD — would skip
+    # C++ methods and leave a live framework/entry class flagged dead (panels QQQ/RRR,
+    # cardinal). A FUNCTION whose immediate parent is a class IS a method; reclassify it so
+    # every rooting pass works for every language. The `.` + class-parent guard means a
+    # free function (no dot) or a function nested in a method (parent is a method) is left
+    # alone — only direct class members are promoted.
+    _class_ids = {n.id for n in nodes if n.kind is C}
+    if _class_ids:
+        for n in nodes:
+            if n.kind is F and "." in n.id and n.id.rsplit(".", 1)[0] in _class_ids:
+                n.kind = M
+
     _seed_exported_class_methods(nodes, file_lang)
     _seed_classes_from_exported_methods(nodes)
     _seed_test_classes(nodes, inherits, file_lang)
+    _seed_main_classes(nodes)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn.
     by_lang: dict[str, dict[str, list[str]]] = {}
@@ -489,6 +513,25 @@ def _grow_test_classes(test_classes: set, class_ids: set, inherits: list,
                     bid in test_classes for bid in name_to_ids.get((lang, base_name), ())):
                 test_classes.add(child_id)
                 changed = True
+
+
+def _seed_main_classes(nodes) -> None:
+    """An entry method (`main`/`Main` role) roots its enclosing class — otherwise an
+    entry-point class whose only role-bearing member is the main method is flagged dead
+    while its method is live. This bites idiomatic C# (`internal class Program { static
+    void Main }`): `Main` isn't public so the class never gets the `exported` role, and no
+    other pass roots it. The Python extractor has this rescue (`_seed_entrypoint_classes`);
+    the tree-sitter side was missing it (panel RRR, cardinal). Precision-safe: only adds
+    roots, only for classes that actually contain a `main`-role method."""
+    main_classes = {
+        n.id.rsplit(".", 1)[0] for n in nodes
+        if n.kind is M and "main" in n.roles and "." in n.id
+    }
+    if not main_classes:
+        return
+    for n in nodes:
+        if n.kind is C and n.id in main_classes:
+            n.roles = n.roles | {"main"}
 
 
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:

@@ -373,6 +373,68 @@ def test_tree_sitter_callback_class_itself_is_live_across_languages(tmp_path):
         assert "MyController.get_data" not in stale
 
 
+def test_cpp_framework_subclass_class_and_methods_are_live(tmp_path):
+    """CARDINAL (panel QQQ/RRR): C/C++ map every `function_definition` to FUNCTION, even
+    for methods in a class body — so the method-based class-rooting passes (which key on
+    METHOD) skipped C++ members, leaving a live framework subclass (a Qt widget) and its
+    framework-invoked methods flagged dead. In-class member functions are now normalized to
+    METHOD so every rooting pass works for every language."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "widget.cpp": (
+            "class MyWidget : public QWidget {\n"
+            "    void paintEvent() { return; }\n"
+            "    void show() { return; }\n};\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "MyWidget" not in stale            # class live (was false-dead)
+        assert "MyWidget.paintEvent" not in stale  # framework-invoked methods live
+        assert "MyWidget.show" not in stale
+
+
+def test_csharp_internal_main_class_is_live(tmp_path):
+    """CARDINAL (panel RRR): idiomatic C# `internal class Program { static void Main }` —
+    `Main` isn't public so the class never gets the `exported` role, and (unlike the Python
+    extractor) no tree-sitter pass rooted the enclosing class of a `main`-role method, so
+    the live entry-point class was flagged dead. `_seed_main_classes` now mirrors the
+    Python rescue."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Program.cs": (
+            "internal class Program {\n"
+            "    private static void Main(string[] args) { var s = new Service(); s.Start(); }\n"
+            "}\n"
+            "internal class Service { public void Start() { } }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Program" not in stale            # entry-point class live (was false-dead)
+
+
+def test_reindex_survives_deep_expression_in_tree_sitter_resolver(tmp_path):
+    """The route resolvers (express/jsfetch/spring) run their OWN recursive descent over a
+    tree-sitter tree, bypassing ResolveContext.parse()'s RecursionError guard — and
+    run_resolvers had no guard, so a deep `.js` expression aborted the whole reindex (panel
+    QQQ/RRR, the resolver-side analogue of the per-file extractor guard). A guard in
+    run_resolvers now degrades to 'no extra edges' instead of aborting."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    deep = "const T = " + " + ".join(['"x"'] * 3000) + ";\n"
+    (tmp_path / "build.js").write_text(deep + "app.post('/save', h);\nfunction h(){ return T; }\n")
+    (tmp_path / "other.py").write_text("def other():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        assert "other.py::other" in set(store.all_node_ids())
+
+
 def test_reindex_survives_pathologically_deep_python_file(tmp_path):
     """A deep-but-valid AST (a huge flat `a + a + ... ` chain, realistic in generated
     code) overflows the recursive extractor walk with RecursionError. That wasn't in the

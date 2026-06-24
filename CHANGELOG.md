@@ -23,13 +23,29 @@ full three-model panels.
   methods stayed live — the only release-blocking class of bug (live code flagged dead). The
   class-rooting pass is now mirrored. Tie is to *having* callback methods, so a bare unused
   subclass with no overrides still flags.
+- **CARDINAL: C/C++ in-class member functions now root their class.** C/C++ map every
+  `function_definition` to FUNCTION (there is no separate method node), so the five
+  method-based class-rooting passes (exported / test / callback / main / constructor), which
+  key on METHOD, silently skipped every C++ method — a live Qt/framework subclass and its
+  methods were flagged dead. In-class member functions are now normalized to METHOD, so all
+  five passes work for every language.
+- **CARDINAL: a C# `internal` entry-point class is no longer flagged dead.** Idiomatic C#
+  (`internal class Program { static void Main }`) has a non-public `Main`, so the class never
+  gets the `exported` role, and the tree-sitter extractor had no pass to root the enclosing
+  class of a `main`-role method (the Python extractor does). A new `_seed_main_classes` pass
+  mirrors the Python rescue.
 - **`reindex` no longer aborts on a pathologically deep source file.** A huge flat
   expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder code)
   overflows the recursive AST walk with `RecursionError`, which was not in the per-file
   `except (SyntaxError, UnicodeDecodeError, OSError)` and ran outside the `try` — so a single
   bad file aborted the **entire** reindex and left an empty DB. `RecursionError` is now
   caught per file in both extractors and the resolver `parse()` helper, honouring the
-  "skip the one file, never abort the whole reindex" contract.
+  "skip the one file, never abort the whole reindex" contract. The route resolvers
+  (express/jsfetch/spring) run their **own** recursive descent over a tree-sitter tree,
+  bypassing that helper, so `run_resolvers` now also guards each resolver — a deep `.js`
+  expression degrades to "no extra edges" instead of aborting the reindex. (Library hygiene:
+  the SCC passes that raise `sys.setrecursionlimit` now restore it; the tree-sitter
+  RecursionError skip no longer leaves an orphan module node.)
 - **`[project.scripts]` / `[project.entry-points]` console entry points are detected as
   roots** (issue #21). `design.md` §4 lists them as roots and `PythonLibraryDetector`
   already collected a `script` role, but nothing parsed `pyproject.toml` to set it — so a

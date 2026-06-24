@@ -122,7 +122,8 @@ def strongly_connected_components(
     nodes = store.all_node_ids()
 
     import sys
-    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))
+    _old_limit = sys.getrecursionlimit()  # restore in finally (panel QQQ LOW: don't leak
+    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))  # a raised limit to the host)
 
     def strongconnect(v: str) -> None:
         index[v] = low[v] = counter[0]
@@ -145,9 +146,12 @@ def strongly_connected_components(
                     break
             out.append(comp)
 
-    for v in nodes:
-        if v not in index:
-            strongconnect(v)
+    try:
+        for v in nodes:
+            if v not in index:
+                strongconnect(v)
+    finally:
+        sys.setrecursionlimit(_old_limit)
     # Keep only genuine cycles: multi-node components or self-loops.
     self_loops = {e.src for e in store.resolved_edges()
                   if e.dst_id == e.src and e.relation in set(relations)}

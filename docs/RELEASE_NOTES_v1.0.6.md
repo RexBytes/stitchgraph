@@ -18,6 +18,19 @@ that wasn't otherwise exported or constructed had its **class** flagged dead whi
 methods stayed live. The class-rooting pass is now mirrored on the tree-sitter side, tied to
 *having* callback methods (a bare unused subclass with no overrides still flags).
 
+A follow-up confirmation panel found this was one instance of a **systematic** Python↔tree-sitter
+rooting gap, and uncovered two more cardinal false-deads in the same family:
+
+- **C/C++** map every `function_definition` to FUNCTION (no separate method node), so *all
+  five* method-based class-rooting passes (exported/test/callback/main/constructor) — which
+  key on METHOD — silently skipped every C++ method, flagging a live Qt/framework subclass and
+  its methods dead. In-class member functions are now normalized to METHOD, fixing all five at
+  once for every language.
+- **C#** `internal class Program { static void Main }`: `Main` isn't public so the class never
+  gets the `exported` role, and the tree-sitter extractor (unlike Python) had no pass to root
+  the enclosing class of a `main`-role method. A new `_seed_main_classes` pass mirrors the
+  Python rescue.
+
 ### `reindex` survives a pathologically deep source file
 
 A huge flat expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder
@@ -25,8 +38,11 @@ code) overflows the recursive AST walk with `RecursionError`, which wasn't in th
 `except` and ran outside the `try` — so one bad file aborted the **entire** reindex and left
 an empty DB, defeating the "skip the one file, never abort" contract. `RecursionError` is now
 caught per file in both the Python and tree-sitter extractors and the resolver `parse()`
-helper. (Also defensive: `Result` now flags `needs_review` for an out-of-range/NaN confidence
-— latent, no current caller hits it.)
+helper — and, since the route resolvers (express/jsfetch/spring) run their own recursive
+descent that bypasses `parse()`, in `run_resolvers` too (a deep `.js` degrades to "no extra
+edges"). (Also defensive: `Result` now flags `needs_review` for an out-of-range/NaN
+confidence; the SCC passes restore `sys.setrecursionlimit`; the tree-sitter skip no longer
+leaves an orphan module node — all latent/hygiene, no current caller hits them.)
 
 ### `[project.scripts]` console entry points are roots (#21)
 
@@ -120,7 +136,9 @@ are counted.
 
 ## Verification
 
-`pytest` 205 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 208 passed (new regression tests: console-script root + module-precision guard;
+C++ framework-subclass class+methods live; C# internal `Main`-class live; deep-expression
+no-abort in the tree-sitter resolver pipeline;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the
 extractors, the resolver pipeline, the route-gated resolvers, the `pyproject.toml` read,
 and the coverage-trace read; malformed-coverage-JSON-shape no-crash; malformed-`stitchgraph.toml`

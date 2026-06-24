@@ -63,7 +63,15 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
         by_name=_name_index(nodes), ids={n.id for n in nodes},
     )
     for resolver in resolvers:
-        new_nodes, new_edges = resolver.resolve(ctx)
+        try:
+            new_nodes, new_edges = resolver.resolve(ctx)
+        except RecursionError:
+            # The tree-sitter route resolvers (express/jsfetch/spring) run their OWN
+            # recursive descent over a parsed tree, bypassing ResolveContext.parse()'s
+            # guard; a pathologically deep expression overflows it. Skip this resolver's
+            # enrichment rather than abort the whole reindex (panels QQQ/RRR — the
+            # resolver-side analogue of the per-file extractor guard).
+            continue
         for n in new_nodes:
             if n.id not in ctx.ids:
                 ctx.nodes.append(n)
