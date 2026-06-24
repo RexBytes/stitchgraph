@@ -556,7 +556,12 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
         if tid:
             return _add_call(proj, src_id, func.attr, tid, rel, line, weight=1.0,
                              prov=Provenance.EXTRACTED)
-        _ref_edges(proj, src_id, func.attr, Relation.CALLS, rel, line)
+        # Receiver type unknown (not self/cls, not a locally-typed var): the name-only
+        # bind to a lone same-named method is a guess, not an extraction (issue #10) —
+        # `recv` may be a stdlib/third-party type. Mark it INFERRED. Weight stays 1.0
+        # so reachability/find_stale are unchanged (cardinal-safe); mirrors the
+        # tree-sitter extractor's receiver-call demotion.
+        _ref_edges(proj, src_id, func.attr, Relation.CALLS, rel, line, is_method=True)
         return
 
     name = _name_of(func)
@@ -791,15 +796,20 @@ def _direct_calls(func: ast.AST) -> list[ast.Call]:
 
 # -- edge builders (precision-biased multi-candidate resolution) ------------
 def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
-               rel: str, line: int) -> None:
+               rel: str, line: int, is_method: bool = False) -> None:
     cands = proj.by_name.get(name, [])
     loc = f"{rel}:{line}:0"
     if not cands:
         return  # external / builtin / unknown -> drop (call holes are unreliable)
     if len(cands) == 1:
+        # A receiver-based call (`recv.m()`) whose receiver type we couldn't resolve
+        # is a name-only guess even with one candidate (issue #10): INFERRED, not
+        # EXTRACTED. Weight unchanged, so it never under-counts liveness (cardinal-safe).
+        prov = (Provenance.INFERRED if is_method and relation is Relation.CALLS
+                else Provenance.EXTRACTED)
         proj.edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                                dst_id=cands[0], weight=1.0,
-                               provenance=Provenance.EXTRACTED, location=loc, source="ast"))
+                               provenance=prov, location=loc, source="ast"))
         return
     # Several candidates: over-approximate so a live symbol is never called dead.
     w = round(1.0 / len(cands), 3)

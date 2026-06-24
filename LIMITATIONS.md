@@ -86,15 +86,20 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Concern:** `obj.save()` resolves to the one project `save` — obviously correct — yet
   its CALLS edge is labelled `INFERRED` (a guess), not `EXTRACTED` (issue #10). Looks like
   the extractor is under-claiming confidence on an unambiguous call.
-- **Decision:** any *receiver-based* call (`obj.save()`, `Class::save()`, `x->save()`) is
-  marked `INFERRED` even when exactly one project symbol matches the name; only a direct
-  call (`save()`) or a constructor (naming a type directly) stays `EXTRACTED`.
+- **Decision:** a *receiver-based* call whose receiver type isn't known is marked
+  `INFERRED` even when exactly one project symbol matches the name. In the **tree-sitter**
+  extractor (no type model) that is *every* receiver call (`obj.save()`, `Class::save()`,
+  `x->save()`); only a direct call (`save()`) or a constructor (naming a type directly)
+  stays `EXTRACTED`. In the **Python `ast`** extractor, scope-aware resolution still applies
+  first — `self.save()` and a locally-typed `r = Repo(); r.save()` resolve to the real
+  method and stay `EXTRACTED`; only a receiver of *unknown* type (`x.save()` for an
+  external/parameter `x`) falls back to the name-only bind and is demoted to `INFERRED`.
 - **Rationale:** without type inference the receiver's type is unknown, so a lone same-named
-  match may be a homonym `save` on a *different* class — asserting `EXTRACTED` there would
-  over-claim. The **weight stays 1.0**, so the edge still counts fully for reachability /
-  `find_stale` (it never under-counts a live caller — the cardinal-safe direction); only
-  the asserted confidence is lowered. Over-claiming confidence on a possibly-wrong target
-  is the worse error.
+  match may be a homonym `save` on a *different* (stdlib/third-party) class — asserting
+  `EXTRACTED` there would over-claim. The **weight stays 1.0**, so the edge still counts
+  fully for reachability / `find_stale` (it never under-counts a live caller — the
+  cardinal-safe direction); only the asserted confidence is lowered. Over-claiming
+  confidence on a possibly-wrong target is the worse error.
 - **Escape hatch:** `reindex --precise` (Python) adds a confident go-to-definition edge to
   the true target; trust the per-edge `provenance`/`confidence`.
 

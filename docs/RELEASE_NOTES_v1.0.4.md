@@ -9,15 +9,21 @@ function of the evidence it rests on*, end to end.
 
 ### Receiver calls to a single same-named symbol are `INFERRED`, not `EXTRACTED` (issue #10)
 
-A tree-sitter call like `obj.save()` whose name matched exactly one project definition was
-asserted at full `EXTRACTED` confidence. But without type inference the receiver's type is
-unknown, so the lone match might be a homonym `save` on a *different* class — over-claiming.
+A call like `obj.save()` whose name matched exactly one project definition was asserted at
+full `EXTRACTED` confidence. But without type inference the receiver's type is unknown, so
+the lone match might be a homonym `save` on a *different* (stdlib/third-party) class —
+over-claiming.
 
-Such receiver-based calls (`obj.save()`, `Class::save()`, `x->save()`) are now labelled
-`INFERRED` even when only one name matches, detected receiver-aware across every language
-(member / field / selector / scoped access; plus the Java `object` and Ruby `receiver`
-fields). Direct calls (`save()`) and constructors (which name a type directly) stay
-`EXTRACTED`.
+- **tree-sitter extractor** (no type model): every receiver-based call (`obj.save()`,
+  `Class::save()`, `x->save()`) is now labelled `INFERRED` even when only one name matches,
+  detected receiver-aware across every language (member / field / selector / scoped access;
+  plus the Java `object` and Ruby `receiver` fields). Direct calls (`save()`) and
+  constructors (which name a type directly) stay `EXTRACTED`.
+- **Python `ast` extractor**: scope-aware resolution still wins first, so `self.save()` and
+  a locally-typed `r = Repo(); r.save()` resolve to the real method and stay `EXTRACTED`.
+  Only the *unknown-receiver* fallback — `x.save()` for an external/parameter `x` that the
+  name-only path matched to a lone project `save` — is demoted to `INFERRED`. This removes
+  the Python↔tree-sitter asymmetry a reviewer flagged during the panel.
 
 **The edge weight stays 1.0**, so the edge still counts fully for reachability and
 `find_stale` — the demotion lowers only the asserted *confidence*, never the *liveness*.
@@ -58,7 +64,8 @@ The wording now says so, and a new entry documents why a single-candidate receiv
 
 ## Verification
 
-`pytest` 175 passed (3 new regression tests: receiver-call demotion + cardinal-safety,
+`pytest` 176 passed (4 new regression tests: tree-sitter receiver-call demotion +
+cardinal-safety, Python unknown-receiver demotion vs. scope-resolved EXTRACTED,
 artifact-cycle demotion vs. confident-cycle, artifact-god-object demotion) · ruff clean ·
 mypy clean against **both** the dev pack (1.10.6, loose stub) and the **pinned** bundled
 0.13.0 (strict `Literal` stub) — the version CI installs. Confirmed by full three-model

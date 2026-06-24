@@ -17,11 +17,16 @@ dead). Confirmed by full three-model panels.
   `EXTRACTED`** (issue #10). A call like `obj.save()` whose name matches exactly one
   project definition was asserted at full `EXTRACTED` confidence — but without type
   inference the receiver's type is unknown, so it may be a homonym `save` on a different
-  class. The edge is now labelled `INFERRED` (a guess), detected receiver-aware across all
-  tree-sitter languages (member/field/selector/scoped access, plus Java `object` / Ruby
-  `receiver` fields). **Weight is unchanged (1.0)**, so the edge still counts fully for
-  reachability / `find_stale` — only the asserted confidence is lowered, never the
-  liveness (cardinal-safe). Direct calls (`save()`) and constructors stay `EXTRACTED`.
+  (stdlib/third-party) class. The edge is now labelled `INFERRED` (a guess). In the
+  **tree-sitter** extractor this is detected receiver-aware across all languages
+  (member/field/selector/scoped access, plus Java `object` / Ruby `receiver` fields); every
+  receiver call is demoted, while direct calls (`save()`) and constructors stay
+  `EXTRACTED`. In the **Python `ast`** extractor, scope-aware resolution still wins first —
+  `self.save()` and a locally-typed `r = Repo(); r.save()` stay `EXTRACTED`; only an
+  unknown-receiver fallback (`x.save()`) is demoted, removing the Python↔tree-sitter
+  asymmetry. **Weight is unchanged (1.0)** everywhere, so the edge still counts fully for
+  reachability / `find_stale` — only the asserted confidence is lowered, never the liveness
+  (cardinal-safe).
 - **`scan` structural findings now reflect the provenance of the edges they rest on**
   (issue #11). A cycle or god-object that exists *only* because of `AMBIGUOUS`
   (over-approximated homonym) or `INFERRED` (heuristic) edges was reported at the same

@@ -1918,3 +1918,42 @@ def test_scan_god_object_from_ambiguous_edges_is_demoted(tmp_path):
         assert god["needs_review"] is True
         assert god["confident_fan_in"] == 0         # the coupling vanishes when confident
         assert god["confident_fan_out"] == 5
+
+
+def test_python_unresolved_receiver_call_is_inferred_not_extracted(tmp_path):
+    """Mirror of #10 in the Python ast extractor: an attribute call whose receiver
+    type can't be resolved scope-aware (`x.save()` where `x` is an unknown/external
+    type) is a name-only guess even with a single same-named project method — so it's
+    INFERRED, not EXTRACTED. A self/local-typed call (`r.save()` with `r = Repo()`)
+    stays EXTRACTED, and a bare call stays EXTRACTED. Weight is 1.0 throughout, so
+    reachability/find_stale are unchanged (cardinal-safe)."""
+    _mk(tmp_path, {
+        "m.py": """
+            class Repo:
+                def save(self):
+                    return 1
+
+            def unknown_receiver(x):
+                return x.save()
+
+            def self_call():
+                r = Repo()
+                return r.save()
+
+            if __name__ == "__main__":
+                unknown_receiver(None)
+                self_call()
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        calls = store.resolved_edges(Relation.CALLS)
+        prov = {(e.src.split("::")[-1], e.dst_id.split("::")[-1]): e for e in calls}
+        unk = prov[("unknown_receiver", "Repo.save")]
+        assert unk.provenance.value == "inferred"      # receiver type unknown -> guess
+        assert unk.weight == 1.0                        # still fully reachable
+        typed = prov[("self_call", "Repo.save")]
+        assert typed.provenance.value == "extracted"    # local-typed receiver -> certain
+        # cardinal: the method reached only via the unresolved receiver call is not stale
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Repo.save" not in stale
