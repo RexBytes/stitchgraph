@@ -2330,6 +2330,8 @@ def test_bash_trap_handler_parsing_matrix(tmp_path):
         "trap 'cleanup' EXIT": ["cleanup"],      # quoted identifier handler
         "trap 'rm -f x' EXIT": [],               # inline command, not an identifier
         "trap cleanup EXIT INT TERM": ["cleanup"],  # multi-signal, handler only
+        "trap -p EXIT": [],                      # print mode: signal arg, not a handler
+        "trap -l EXIT": [],                      # list mode: no handler
     }
     for code, expected in cases.items():
         src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
