@@ -145,6 +145,15 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   The rescue is bounded — it roots the class and the methods it *invokes* (names in the
   `__main__` block), not every public method — so an unrelated class's uninvoked methods
   still flag.
+- **Related (a `[project.scripts]` target that is a bare callable class):** a spec of the
+  form `cmd = "pkg.mod:MyClass"` (a class whose `__call__` is the entry point, no
+  `.method`) does **not** get a `script` role — `_apply_script_roles` builds its lookup
+  from `FUNCTION`/`METHOD` nodes only. If `MyClass` is neither exported (`__all__`) nor
+  instantiated in `__main__`, its methods surface as **advisory** stale candidates
+  (confidence 0.6, `needs_review=True`) — never a confident dead verdict, so the cardinal
+  invariant holds. This pattern is rare (virtually all console-script targets are
+  functions). **Escape hatch:** export the class, or pin it in
+  `stitchgraph.toml [entry_points]`.
 
 ### `find_holes` reports edit-orphaned references, not first-index dangling calls
 - **Concern:** `find_holes` returns empty on a freshly-indexed project even when there's

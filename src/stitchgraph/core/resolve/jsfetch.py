@@ -52,6 +52,9 @@ class JsFetchResolver:
             if any(p in {"node_modules", ".git", "dist", "build"}
                    for p in path.relative_to(ctx.root).parts):
                 continue
+            if not path.is_file():
+                continue  # skip FIFOs/special files: read_bytes() opens a FIFO
+                          # and blocks forever; the OSError guard never fires (panel GGG)
             lang = _EXT_LANG[path.suffix]
             if lang not in parsers:
                 try:

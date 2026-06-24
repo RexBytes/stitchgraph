@@ -47,10 +47,24 @@ design §6.D **is** delivered — by `scan`, as its `live_stub` finding (🔴 on
 path, 🟠 via an inferred one). `LIMITATIONS.md` and `AGENTS.md` now document this and point
 to `scan`. No behaviour change — expectation-setting only.
 
+### `reindex` no longer hangs on a FIFO / special file
+
+A named pipe (or other non-regular file) in the tree would hang `reindex` forever: `open()`
+on a FIFO with no writer blocks, and the `except OSError` guards never fire because the open
+doesn't error — it blocks. The fix skips non-regular files via `path.is_file()` in **every**
+file walk that reads bytes/text: the Python and tree-sitter extractors, the resolver
+`parse()` helper, and — caught by the release panel — the four route/template resolvers that
+do their own `rglob` walk (`express`, `jsfetch`, `spring`, `html`). The Express and Spring
+resolvers run on **every** `reindex`, so a FIFO named `*.js`/`*.java`/`*.html` would hang the
+primary CLI/MCP entry point even though the extractors were already guarded. `is_file()`
+returns `False` on a FIFO without blocking, so the guard is safe.
+
 ## Verification
 
-`pytest` 187 passed (3 new regression tests: console-script root + module-precision guard;
-bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan) · ruff clean · mypy
-clean against **both** the dev pack (1.10.6) and the pinned bundled 0.13.0. Confirmed by
-full three-model panels (opus + sonnet + haiku). Dogfood `src/`: unchanged. Full trajectory
-in `REVIEW_HISTORY.md`.
+`pytest` 197 passed (new regression tests: console-script root + module-precision guard;
+bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip in both the
+extractors and the resolver pipeline) · ruff clean · mypy clean against **both** the dev
+pack (1.10.6) and the pinned bundled 0.13.0. Confirmed by full three-model panels (opus +
+sonnet + haiku); the resolver-pipeline FIFO hang was caught by two independent opus
+reviewers in the final panel and fixed before release. Dogfood `src/`: unchanged. Full
+trajectory in `REVIEW_HISTORY.md`.

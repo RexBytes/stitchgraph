@@ -41,6 +41,9 @@ class SpringRouteResolver:
             if any(p in {".git", "build", "target"}
                    for p in path.relative_to(ctx.root).parts):
                 continue
+            if not path.is_file():
+                continue  # skip FIFOs/special files: read_bytes() opens a FIFO
+                          # and blocks forever; the OSError guard never fires (panel GGG)
             try:
                 src = path.read_bytes()
             except OSError:

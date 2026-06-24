@@ -81,7 +81,10 @@ def _routes_by_path(nodes: list[Node]) -> dict[str, list[str]]:
 def _template_files(ctx: ResolveContext):
     for glob in _TEMPLATE_GLOBS:
         for path in ctx.root.rglob(glob):
-            if not any(p in _SKIP for p in path.relative_to(ctx.root).parts):
+            # skip FIFOs/special files: read_text() opens a FIFO and blocks
+            # forever; the OSError guard at the read site never fires (panel GGG)
+            if path.is_file() and not any(
+                    p in _SKIP for p in path.relative_to(ctx.root).parts):
                 yield path
 
 

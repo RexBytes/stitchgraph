@@ -2420,3 +2420,22 @@ def test_reindex_skips_named_pipe_without_hanging(tmp_path):
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))             # must return, not hang
         assert "good.py::good" in set(store.all_node_ids())
+
+
+def test_reindex_skips_named_pipe_in_resolver_pipeline(tmp_path):
+    """The FFF FIFO-skip guard must also cover the route/template resolvers, which do
+    their OWN rglob walks + read_bytes()/read_text() (express/jsfetch/spring/html). The
+    Express and Spring resolvers run unconditionally on every reindex, so a FIFO named
+    `*.js`/`*.java`/`*.html` would hang reindex even though the extractors are guarded
+    (panel GGG — two independent opus reviewers, exit 124 before the fix)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    os.mkfifo(str(tmp_path / "blocker.js"))      # express resolver (unconditional)
+    os.mkfifo(str(tmp_path / "Blocker.java"))    # spring resolver (unconditional)
+    os.mkfifo(str(tmp_path / "blocker.html"))    # html template resolver
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "good.py::good" in set(store.all_node_ids())

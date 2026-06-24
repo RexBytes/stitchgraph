@@ -28,6 +28,13 @@ full three-model panels.
   calls are rooted — direct, via `$(...)` command substitution, and via `trap NAME` — so
   those functions are correctly live. A function reached by nothing (including its own top
   level) still flags, exactly as intended.
+- **`reindex` no longer hangs on a FIFO / special file.** `open()` on a named pipe with no
+  writer blocks forever, and the `except OSError` guards never fire (the open doesn't
+  error, it blocks). Every file walk that reads bytes/text now skips non-regular files via
+  `path.is_file()`: the Python and tree-sitter extractors, the resolver `parse()` helper,
+  and the four route/template resolvers that do their own `rglob` walk
+  (`express`, `jsfetch`, `spring`, `html`) — the last of which run on every `reindex`, so a
+  FIFO named `*.js`/`*.java`/`*.html` would otherwise hang the primary entry point.
 
 ### Documentation
 
