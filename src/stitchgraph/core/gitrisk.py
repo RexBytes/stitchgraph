@@ -41,7 +41,9 @@ def is_git_repo(path: str | Path) -> bool:
         r = subprocess.run(["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
                            capture_output=True, text=True, timeout=10)
         return r.returncode == 0 and r.stdout.strip() == "true"
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+        # ValueError: embedded NUL in path; UnicodeError: a lone-surrogate path can't be
+        # passed to the subprocess. A non-git/garbage path is simply not a repo (panel ZZZ).
         return False
 
 

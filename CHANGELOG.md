@@ -86,6 +86,22 @@ three-model panels.
   non-UTF-8 symbol name.** A lone surrogate (invalid-UTF-8 argv decoded via `surrogateescape`)
   or embedded NUL bound into SQLite raised `UnicodeEncodeError`/`ValueError`; the store lookups
   now refuse (no match) so the op returns a `Result` instead of a traceback.
+- **A resolver can no longer abort `reindex`.** Resolvers are heuristic enrichment, but a
+  `DELETE TABLE …` SQL string in analyzed source made sqlglot hand the SQL resolver a `bool`
+  `.this`, raising `AttributeError` and crashing the whole reindex. `run_resolvers` now skips
+  a resolver that raises (the base graph + other resolvers are unaffected), and the SQL
+  resolver guards on `Expression` before walking. A repo with stray SQL no longer fails to
+  index.
+- **`ingest_trace` no longer OOMs on a corrupt Go coverprofile.** A line with a huge end-line
+  expanded `range()` into a multi-GB set; the span is now bounded (>1M lines dropped),
+  matching the JSON/LCOV "empty on any problem" hardening.
+- **Path-taking ops refuse instead of crashing on a hostile path.** An over-long path,
+  embedded NUL, or lone surrogate passed to `reindex`/`ingest_trace`/`risk` (or read by
+  `find_config`/`load_coverage`) raised `OSError`/`ValueError`/`UnicodeError` from a
+  `stat()`/`resolve()`/bind. `reindex` now degrades to an empty index (like a missing path);
+  the others refuse cleanly.
+- **A malformed `[review] threshold` no longer silently disables review.** `threshold = "nan"`
+  (or out-of-range) made `confidence < nan` always False; it now clamps to the default.
 - **`reindex` no longer aborts on a pathologically deep source file.** A huge flat
   expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder code)
   overflows the recursive AST walk with `RecursionError`, which was not in the per-file

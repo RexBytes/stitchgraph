@@ -27,14 +27,16 @@ def load_coverage(trace_path: str | Path) -> tuple[dict[str, set[int]], str]:
     """Return ({file: executed_lines}, base_dir). Files may be absolute or
     relative; resolution is by suffix in `hit_node_ids`. Empty on any problem."""
     p = Path(trace_path)
-    if not p.is_file():
-        return {}, ""  # is_file() (not a bare read) so a FIFO/dir trace path returns
-                       # empty instead of blocking forever: read_text() opens a FIFO and
-                       # hangs, and the OSError guard never fires on a blocking open. This
-                       # honours the "Empty on any problem" contract above (panel-FIFO class).
     try:
+        # is_file() (not a bare read) so a FIFO/dir trace path returns empty instead of
+        # blocking forever (read_text on a FIFO hangs; the OSError guard never fires on a
+        # blocking open) — panel-FIFO class. is_file()/read_text themselves raise OSError on
+        # an over-long path and ValueError on an embedded NUL, so guard both: "Empty on any
+        # problem" (panels YYY/ZZZ).
+        if not p.is_file():
+            return {}, ""
         text = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except (OSError, ValueError):
         return {}, ""
     base = str(p.resolve().parent)
     stripped = text.lstrip()
@@ -107,6 +109,12 @@ def _parse_go(text: str) -> dict[str, set[int]]:
             start, end = span.split(",")
             s_line = int(start.split(".")[0])
             e_line = int(end.split(".")[0])
+            # Bound the span before materializing it: a corrupt/concatenated coverprofile
+            # with a huge end line would otherwise expand range() into a multi-GB set and
+            # OOM-kill the process (panel ZZZ). No real source file spans >1M lines; drop a
+            # nonsensical span rather than allocate proportionally to attacker input.
+            if e_line < s_line or e_line - s_line > 1_000_000:
+                continue
             out.setdefault(path, set()).update(range(s_line, e_line + 1))
         except (ValueError, IndexError):
             continue

@@ -686,9 +686,28 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
     """
+    import os
+
     from .config import load_config
     from .extract import extract_project
     from .resolve import default_resolvers, run_resolvers
+
+    # A hostile or non-directory root (over-long path, embedded NUL, lone surrogate, or a
+    # missing path) must degrade to an empty index like a missing path — NOT crash mid-extract
+    # on a stat()/is_file()/meta-bind (panels YYY/ZZZ/crash-sweep). Probe once up front;
+    # every downstream Path op on the root is then known-safe.
+    try:
+        usable = os.path.isdir(path)
+        abs_root = os.path.abspath(path)
+        abs_root.encode("utf-8")  # a surrogate/NUL root can't be stored as meta
+    except (OSError, ValueError, UnicodeError):
+        usable, abs_root = False, ""
+    if not usable:
+        with store.conn:
+            store.conn.execute("DELETE FROM nodes")
+            store.conn.execute("DELETE FROM edges")
+        store.set_meta("root", abs_root)
+        return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
 
     nodes, edges = extract_project(path, ignore=load_config(path).ignore)
     # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
@@ -712,8 +731,7 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         for e in edges:
             store.add_edge(e)
 
-    import os
-    store.set_meta("root", os.path.abspath(path))
+    store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
               files=len(files), nodes=store.node_count())

@@ -612,6 +612,54 @@ def test_lookup_by_non_utf8_name_refuses_without_crashing():
         assert r.ok is False
 
 
+def test_reindex_survives_delete_table_sql_in_source(tmp_path):
+    """CRASH (panel crash-sweep): a `DELETE TABLE ...` SQL string in analyzed source made
+    sqlglot return a Delete whose `.this` is a bool, so the SQL resolver's `.find_all` raised
+    AttributeError and aborted the whole reindex. Resolvers are heuristic enrichment and must
+    never abort reindex — `run_resolvers` now skips a crashing resolver, and the SQL guard
+    requires an Expression."""
+    _mk(tmp_path, {"m.py": 'def wipe(db):\n    db.execute("DELETE TABLE archived WHERE 1=1")\n'})
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        assert "m.py::wipe" in set(store.all_node_ids())
+
+
+def test_ingest_trace_bounds_go_coverprofile_span(tmp_path):
+    """DoS (panel ZZZ): a corrupt Go coverprofile with a huge end-line made `_parse_go`
+    materialize `range()` into a multi-GB set (OOM). The span is now bounded; a nonsensical
+    line is dropped, honouring the 'empty on any problem' contract — no OOM, no crash."""
+    from stitchgraph.core.runtime import load_coverage
+    bad = tmp_path / "corrupt.go.cov"
+    bad.write_text("mode: set\nfoo.go:1.1,999999999.1 1 1\n")
+    cov, _ = load_coverage(str(bad))               # must return fast without OOM
+    assert all(len(lines) <= 1_000_001 for lines in cov.values())
+
+
+def test_path_ops_refuse_on_hostile_path_without_crashing(tmp_path):
+    """CRASH/envelope (panels YYY/ZZZ): an over-long path, embedded NUL, or lone surrogate
+    passed to a path-taking op raised OSError/ValueError/UnicodeError from a stat()/bind
+    instead of returning a Result. reindex degrades to an empty index (like a missing path);
+    ingest_trace/risk refuse cleanly."""
+    long_p, nul_p, sur_p = "x" * 5000, "a\x00b", "\udc80"
+    with sg.Store(":memory:") as store:
+        for p in (long_p, nul_p, sur_p):
+            r = sg.reindex(store, p)                 # must not raise
+            assert r.ok and r.result["nodes"] == 0   # empty index, not a crash
+            assert hasattr(sg.ingest_trace(store, p), "ok")  # refuse, not crash
+            assert hasattr(sg.risk(store, p), "ok")
+
+
+def test_malformed_threshold_does_not_disable_review(tmp_path):
+    """Robustness (panel ZZZ): a `stitchgraph.toml` with `[review] threshold = "nan"` (or
+    out-of-range) would make `confidence < nan` always False and silently disable
+    needs_review. The threshold now clamps to the default on a non-[0,1] value."""
+    from stitchgraph.core import config as cfg
+    (tmp_path / "stitchgraph.toml").write_text('[review]\nthreshold = "nan"\n')
+    c = cfg.load_config(str(tmp_path))
+    assert c.threshold == 0.80
+
+
 def test_reindex_survives_deep_expression_in_tree_sitter_resolver(tmp_path):
     """The route resolvers (express/jsfetch/spring) run their OWN recursive descent over a
     tree-sitter tree, bypassing ResolveContext.parse()'s RecursionError guard — and

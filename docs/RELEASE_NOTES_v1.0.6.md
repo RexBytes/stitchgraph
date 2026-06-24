@@ -175,7 +175,7 @@ are counted.
 
 ## Verification
 
-`pytest` 219 passed (new regression tests: console-script root + module-precision guard;
+`pytest` 223 passed (new regression tests: console-script root + module-precision guard;
 C++ framework-subclass class+methods live; C# internal `Main`-class live; deep-expression
 no-abort in the tree-sitter resolver pipeline;
 bash top-level/`$(...)`/`trap` rooting with a still-flagged orphan; FIFO-skip across the

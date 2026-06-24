@@ -223,8 +223,11 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
-    files = [p for p in sorted(root.rglob("*"))
-             if p.suffix in EXT_LANG and p.is_file() and _wanted(p, root, ignore)]
+    try:
+        files = [p for p in sorted(root.rglob("*"))
+                 if p.suffix in EXT_LANG and p.is_file() and _wanted(p, root, ignore)]
+    except OSError:
+        files = []  # unwalkable root (over-long path / permission) -> empty, not a crash
     grammar_failed: dict[str, int] = {}  # lang -> files skipped (grammar unavailable)
     for path in files:
         lang = EXT_LANG[path.suffix]

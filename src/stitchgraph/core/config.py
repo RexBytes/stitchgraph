@@ -32,11 +32,17 @@ class Config:
 
 
 def find_config(start: str | Path | None = None) -> Path | None:
-    here = Path(start or Path.cwd()).resolve()
-    for d in (here, *here.parents):
-        candidate = d / "stitchgraph.toml"
-        if candidate.is_file():
-            return candidate
+    try:
+        here = Path(start or Path.cwd()).resolve()
+        for d in (here, *here.parents):
+            candidate = d / "stitchgraph.toml"
+            if candidate.is_file():
+                return candidate
+    except (OSError, ValueError):
+        # resolve()/is_file() raise on an over-long path or an embedded NUL; a bad start
+        # path simply has no config — return None so the caller falls back to defaults
+        # rather than crashing (panels YYY/ZZZ — same class as the store-lookup guard).
+        return None
     return None
 
 
@@ -76,6 +82,10 @@ def _load(start: str | Path | None) -> Config:
     try:
         threshold = float(rev.get("threshold", 0.80))
     except (TypeError, ValueError):
+        threshold = 0.80
+    if not (0.0 <= threshold <= 1.0):
+        # NaN (`float("nan")` doesn't raise) or out-of-range would silently disable
+        # needs_review (`conf < nan` is always False); fall back to the default (panel ZZZ).
         threshold = 0.80
     embed = sim.get("embed_model")
     return Config(

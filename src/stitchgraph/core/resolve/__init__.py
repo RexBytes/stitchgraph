@@ -65,12 +65,12 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
     for resolver in resolvers:
         try:
             new_nodes, new_edges = resolver.resolve(ctx)
-        except RecursionError:
-            # The tree-sitter route resolvers (express/jsfetch/spring) run their OWN
-            # recursive descent over a parsed tree, bypassing ResolveContext.parse()'s
-            # guard; a pathologically deep expression overflows it. Skip this resolver's
-            # enrichment rather than abort the whole reindex (panels QQQ/RRR — the
-            # resolver-side analogue of the per-file extractor guard).
+        except Exception:  # noqa: BLE001
+            # Resolvers are heuristic enrichment that must NEVER abort the core reindex.
+            # A pathologically deep tree (RecursionError, panels QQQ/RRR) or an unexpected
+            # parser shape (e.g. sqlglot returning a bool `.this` for `DELETE TABLE`, panel
+            # crash-sweep) should drop this resolver's extra edges, not crash the run. The
+            # base graph + other resolvers are unaffected.
             continue
         for n in new_nodes:
             if n.id not in ctx.ids:

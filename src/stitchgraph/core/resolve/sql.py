@@ -64,8 +64,11 @@ def _link_one(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
     # The DML *target* is a write; tables read by a nested SELECT/subquery are reads
     # (e.g. `INSERT INTO archive SELECT ... FROM users` writes `archive`, reads
     # `users`). The target lives in the statement's `this`; everything else is a read.
+    # `tree.this` is usually the target expression, but sqlglot can set it to a non-node
+    # (e.g. `DELETE TABLE x` parses to a Delete whose `.this` is the bool `False`), so guard
+    # on Expression before walking it — else `.find_all` raises on a bool (panel crash-sweep).
     write_tables = ({id(t) for t in tree.this.find_all(exp.Table)}
-                    if writes and tree.this is not None else set())
+                    if writes and isinstance(tree.this, exp.Expression) else set())
     # CTE names (`WITH recent AS (...)`) parse as Tables when referenced, but they
     # are query-local aliases, not real db tables — skip them so they don't become
     # phantom `db::` nodes that pollute trace_path / get_matrix.

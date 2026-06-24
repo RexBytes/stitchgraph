@@ -68,9 +68,13 @@ def extract_project(root: str | Path,
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
     """
     proj = _Project(root=Path(root))
-    files = sorted(p for p in proj.root.rglob("*.py")
-                   if p.is_file() and _wanted(p, proj.root)
-                   and not _ignored(p, proj.root, ignore))
+    try:
+        files = sorted(p for p in proj.root.rglob("*.py")
+                       if p.is_file() and _wanted(p, proj.root)
+                       and not _ignored(p, proj.root, ignore))
+    except OSError:
+        files = []  # unwalkable root (over-long path / permission) -> empty extraction,
+                    # not a crash; reindex degrades to 0 nodes like a missing path (panel YYY)
     proj.packages = _project_packages(files, proj.root)
 
     parsed: dict[str, ast.Module] = {}
