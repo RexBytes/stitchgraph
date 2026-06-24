@@ -12,6 +12,8 @@ no-op if it isn't installed.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from ..envelope import Provenance
 from ..model import Edge, NodeKind, Relation
 from . import ResolveContext
@@ -53,7 +55,7 @@ class JsFetchResolver:
             lang = _EXT_LANG[path.suffix]
             if lang not in parsers:
                 try:
-                    parsers[lang] = Parser(get_language(lang))
+                    parsers[lang] = Parser(get_language(cast(Any, lang)))
                 except Exception:  # noqa: BLE001
                     continue
             try:

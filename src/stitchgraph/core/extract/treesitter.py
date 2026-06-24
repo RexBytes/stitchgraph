@@ -21,6 +21,7 @@ import re
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
@@ -42,15 +43,18 @@ def _load_grammar(lang: str):
     including a runtime download when possible" holds even if auto-download is off
     (issue #12, Option 1). On the bundled line there's nothing to download, so a real
     failure propagates to the caller (surfaced as the issue-#7 warning)."""
+    # The bundled line types `get_language(name: Literal[<all langs>])`; our `lang` is a
+    # plain str (validated against SPECS), so cast to satisfy mypy across pack versions.
+    name = cast(Any, lang)
     try:
-        return get_language(lang)
+        return get_language(name)
     except Exception:  # noqa: BLE001
         import tree_sitter_language_pack as _pack
         download = getattr(_pack, "download", None)
         if download is None:
             raise
         download([lang])  # may raise offline/proxied — propagate to the caller
-        return get_language(lang)
+        return get_language(name)
 
 F, M, C = NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS
 
