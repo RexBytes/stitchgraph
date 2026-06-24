@@ -1986,3 +1986,49 @@ def test_csharp_qualified_constructor_stays_extracted(tmp_path):
         run = next((e for e in calls if e.dst_symbol == "Run"), None)
         if run is not None:                            # receiver method call still demoted
             assert run.provenance.value == "inferred"
+
+
+# -- Issue #18: risk scopes git history from the indexed root, not cwd ----------
+def test_risk_defaults_to_indexed_root_not_cwd(tmp_path, monkeypatch):
+    """`risk()` with no path must use the indexed root recorded in the DB (so
+    `risk --db <db>` works from any cwd, like every other read op), not the process
+    cwd. We index a git repo under tmp_path, then run risk from a *different* cwd and
+    confirm the hotspot is the indexed repo's file (proving it didn't use cwd)."""
+    import os
+    import subprocess
+
+    (tmp_path / "m.py").write_text("def a():\n    return b()\n\ndef b():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "init")
+
+    # Query from a cwd that is NOT the indexed repo (use the parent dir).
+    monkeypatch.chdir(tmp_path.parent)
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.risk(store)                      # no path -> indexed root from DB
+        assert res.ok, res.reasons               # not a "not a git repository" refuse
+        files = {h["file"] for h in res.result["hotspots"]}
+        assert "m.py" in files                    # used the indexed repo, not cwd
+
+
+# -- Issue #19: `stitchgraph --version` --------------------------------------
+def test_cli_version_flag():
+    """`stitchgraph --version` prints the package version and the active
+    tree-sitter-language-pack line, then exits 0 (issue #19)."""
+    pytest.importorskip("typer")
+    import re
+
+    from typer.testing import CliRunner
+
+    from stitchgraph.adapters.cli import build_app
+    result = CliRunner().invoke(build_app(), ["--version"])
+    assert result.exit_code == 0
+    assert re.search(r"stitchgraph \d+\.\d+\.\d+", result.stdout)
+    assert "tree-sitter-language-pack" in result.stdout

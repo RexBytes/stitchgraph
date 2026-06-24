@@ -30,6 +30,35 @@ def build_app():
     typer = _require_typer()
     app = typer.Typer(add_completion=False, help="stitchgraph — code intelligence")
 
+    def _version_callback(value: bool) -> None:
+        if not value:
+            return
+        from importlib.metadata import PackageNotFoundError, version
+
+        from ..core.extract import treesitter as ts
+        try:
+            ver = version("stitchgraph")
+        except PackageNotFoundError:  # pragma: no cover - not installed as a dist
+            ver = "unknown"
+        typer.echo(f"stitchgraph {ver}")
+        # The install model is version-keyed (bundled vs download grammar line, #12),
+        # so report the active tree-sitter-language-pack line too — exactly what a bug
+        # report needs (issue #19).
+        backend = ts.grammar_backend()
+        if backend.get("installed"):
+            typer.echo(f"tree-sitter-language-pack {backend['version']}  [{backend['model']}]")
+        else:
+            typer.echo("tree-sitter-language-pack not installed (Python-only extraction)")
+        raise typer.Exit()
+
+    @app.callback(invoke_without_command=True)
+    def _root(
+        version: bool = typer.Option(
+            False, "--version", callback=_version_callback, is_eager=True,
+            help="Show the stitchgraph version (and active grammar line) and exit."),
+    ) -> None:
+        pass
+
     for op in registry():
         app.command(name=op.name.replace("_", "-"), help=op.summary)(_make_command(typer, op))
 
