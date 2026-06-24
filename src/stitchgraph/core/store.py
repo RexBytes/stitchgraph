@@ -171,6 +171,12 @@ class Store:
         """
         nodes = list(nodes)
         edges = list(edges)
+        try:
+            self.conn.execute("SELECT ? ", (file,))  # probe: a lone-surrogate / NUL file
+        except (UnicodeEncodeError, ValueError):
+            # name (POSIX surrogateescape on a non-UTF-8 path) can't be bound by sqlite —
+            # skip the whole update rather than raise, mirroring add_node/add_edge (panel R15B).
+            return
         with self.conn:  # single transaction
             self.conn.execute("DELETE FROM nodes WHERE file = ?", (file,))
             self.conn.execute("DELETE FROM edges WHERE file = ?", (file,))

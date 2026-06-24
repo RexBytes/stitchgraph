@@ -520,6 +520,31 @@ def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str)
         _call_edge(proj, rel, mod_id, None, {}, call)
     for nm in _direct_names(tree, call_funcs):
         _ref_edges(proj, mod_id, nm.id, Relation.REFERENCES, rel, nm.lineno)
+    # A module-level *decorated* def runs its decorator(s) at import, which receive/register
+    # the def (the plugin/dispatch idiom `@register("x") def x`, or any wrapping decorator).
+    # So both the def and each decorator name are used at load — edge them from the module
+    # node, or a registry handler and the decorator itself are flagged dead while the
+    # equivalent dict-literal registry (`REGISTRY = {"x": x}`) is rescued (panel R15B). The
+    # plain `_direct_names` pass misses these: it skips def statements, and a bare-name
+    # decorator (`@memo`, no call) has no Name node it collects.
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                and stmt.decorator_list:
+            did = Node.make_id(rel, stmt.name)  # module-level def: qual is just its name
+            if did in proj.ids:
+                # INFERRED, not EXTRACTED: the decorator certainly *runs* at load, but
+                # whether it makes the def live (register) or just wraps it is heuristic —
+                # so a decorated stub stays ORANGE under the provenance ceiling, not RED
+                # (matches the route-resolver's INFERRED registration). Liveness still flows.
+                proj.edges.append(Edge(
+                    src=mod_id, relation=Relation.REFERENCES, dst_symbol=stmt.name,
+                    dst_id=did, weight=0.8, provenance=Provenance.INFERRED,
+                    location=f"{rel}:{stmt.lineno}:0", source="ast"))
+            for dec in stmt.decorator_list:
+                dname = _name_of(dec.func) if isinstance(dec, ast.Call) else _name_of(dec)
+                if dname:
+                    _ref_edges(proj, mod_id, dname, Relation.REFERENCES, rel,
+                               getattr(dec, "lineno", stmt.lineno))
 
 
 def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
@@ -992,7 +1017,12 @@ def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
     # dead code and inflating impact_of (panel R13B). Imports keep module resolution
     # (`_import_edge` / module-load edges), which don't go through here.
     if cands:
-        cands = [c for c in cands if c not in proj.module_ids]
+        # Drop module candidates AND collapse duplicate ids: a function named like its own
+        # module (`def compute()` in `compute.py`) makes the MODULE and FUNCTION nodes share
+        # one id, which `_index` lists twice in by_name — without dedup `_ref_edges` sees two
+        # candidates and wrongly emits an AMBIGUOUS 0.5 edge for a single real target
+        # (panel R15B). dict.fromkeys keeps first-seen order.
+        cands = list(dict.fromkeys(c for c in cands if c not in proj.module_ids))
     loc = f"{rel}:{line}:0"
     if not cands:
         return  # external / builtin / unknown -> drop (call holes are unreliable)
@@ -1062,7 +1092,7 @@ def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
     if not is_internal:
         return  # external dependency, not a hole
     symbol = leaf or dotted.split(".")[-1]
-    cands = proj.by_name.get(symbol, [])
+    cands = list(dict.fromkeys(proj.by_name.get(symbol, [])))  # collapse duplicate ids (R15B)
     if pkg_base and len(cands) > 1:
         # Disambiguate by the import's package: `from pkg1 import helper` must not bind to a
         # `helper` (function OR same-basename module, which `_index` aliases globally) in an

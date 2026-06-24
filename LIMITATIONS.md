@@ -184,21 +184,34 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   roots in `stitchgraph.toml [entry_points]`; `find_holes` after edits surfaces references
   a delete/rename orphaned.
 
-### Dynamic registration via a decorator body isn't traced
-- **Concern:** a function bound into a registry *inside a decorator's body* at import
-  (`@register("a") def handle_a: ...`, where `register` stashes the function in a dict)
-  has no statically-visible use of `handle_a`, so it can surface as a stale candidate.
-- **Now attributed (no longer a limitation):** statically-visible module-level uses —
-  a dispatch/registry literal (`HANDLERS = {"a": handle_a}`), a table of constructed
+### Module-level uses are attributed; only purely-runtime binding isn't
+- **Now attributed (kept live):** every statically-visible module-level use — a
+  dispatch/registry literal (`HANDLERS = {"a": handle_a}`), a table of constructed
   objects (`SPECS = {... LangSpec(...) ...}`), a top-level instantiation
-  (`REGISTRY = Builder()`), and any top-level call — *are* edged to the module node and
-  propagate liveness when the module is loaded.
-- **Decision:** edge module-level calls/references that are visible in the syntax; do
-  not model what a decorator does to its argument inside its own body.
-- **Rationale:** the in-decorator case is the same class as dynamic dispatch /
-  monkeypatching — the binding is invisible without running `register`; these surface as
-  `needs_review`, not confident verdicts.
+  (`REGISTRY = Builder()`), a subscript assignment (`REGISTRY["a"] = handle_a`), any
+  top-level call, AND a **module-level decorated def** (`@register("a") def handle_a`,
+  `@app.get(...) def view`) plus the decorator name itself — is edged to the module node
+  and propagates liveness when the module is loaded. The decorated-def edge is INFERRED
+  (the decorator certainly runs, but whether it registers vs merely wraps is heuristic),
+  so a decorated *stub* stays ORANGE under the provenance ceiling, not RED.
+- **Still not traced (rare):** a symbol bound into a registry *purely at runtime* with no
+  syntactic module-level use — e.g. `register(handler)` called from inside another
+  function that runs later, or attribute reassignment (`obj.method = patched`). Same class
+  as dynamic dispatch / monkeypatching; surfaces as `needs_review`, not a confident verdict.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
+
+### A function named identically to its own module can spawn a spurious within-file edge
+- **Concern:** when `compute.py` defines `def compute()`, the MODULE node and the FUNCTION
+  node share one id (`compute.py::compute`). Module-level executable code (e.g. a
+  `__main__` block) is attributed to the module node, so a call made there is mis-attributed
+  to the same-named function — which, combined with a real call back, can show a spurious
+  `cycle` in `scan` (ORANGE). Call resolution itself is deduped, so this no longer mislabels
+  call provenance or demotes a stub's urgency; only the structural-cycle artifact remains.
+- **Decision:** accept the narrow artifact rather than rework the module-id scheme.
+- **Rationale:** cardinal-safe (no live code flagged dead; it only *adds* an edge), and it
+  needs the exact coincidence of a function named like its file plus a within-file
+  `__main__` call chain. The `main.py` + `def main()` case produces only a harmless
+  self-loop (single-node SCCs aren't reported).
 
 ### Incremental `replace_file` resolves holes against the nodes present *now*
 - **Concern:** `Store.replace_file` (the experimental single-file incremental

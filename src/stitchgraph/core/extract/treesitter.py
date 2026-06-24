@@ -1294,7 +1294,15 @@ def _name_of(node, src):
                           if c.type in ("identifier", "field_identifier",
                                         "qualified_identifier", "operator_name",
                                         "destructor_name", "operator_cast")), None)
-            return _trailing_id(ident, src) if ident else None
+            if ident is not None:
+                return _trailing_id(ident, src)
+            # `reference_declarator` (`T&`/`T&&`) exposes its inner function_declarator as an
+            # UNNAMED child (no `declarator` field), unlike pointer_declarator — descend into
+            # any declarator-wrapper child so a reference-returning fn/method isn't dropped
+            # (panel R15A, cardinal). Robust to the whole declarator-wrapper family.
+            nxt = next((c for c in decl.children if c.type in _DECLARATOR_WRAPPERS), None)
+            if nxt is None:
+                return None
         decl = nxt
     # Rust `impl Container { ... }` names its target via the `type` field.
     ty = node.child_by_field_name("type")
@@ -1341,9 +1349,22 @@ def _cpp_method_scope(node, src):
         nxt = decl.child_by_field_name("declarator")
         if nxt is None:
             qi = next((c for c in decl.children if c.type == "qualified_identifier"), None)
-            return _scope_of(qi) if qi is not None else None
+            if qi is not None:
+                return _scope_of(qi)
+            # descend through an unnamed declarator wrapper (`reference_declarator` for a
+            # reference-returning out-of-line method) so its class link is still found (R15A)
+            nxt = next((c for c in decl.children if c.type in _DECLARATOR_WRAPPERS), None)
+            if nxt is None:
+                return None
         decl = nxt
     return None
+
+
+# C/C++ declarator wrappers that nest an inner declarator; some (reference_declarator)
+# expose it as an unnamed child rather than a `declarator` field, so the name/scope walks
+# must descend into them explicitly or a def is silently dropped (panel R15A).
+_DECLARATOR_WRAPPERS = ("function_declarator", "pointer_declarator", "reference_declarator",
+                        "array_declarator", "parenthesized_declarator", "init_declarator")
 
 
 def _roles(node, src, name, lang, exported):

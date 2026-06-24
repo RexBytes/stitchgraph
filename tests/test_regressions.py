@@ -3338,3 +3338,86 @@ def test_scan_excludes_module_pseudo_nodes_from_structural_findings(tmp_path):
                            and (n := store.get_node(i["node"])) is not None
                            and n.kind is NodeKind.MODULE]
         assert module_findings == []
+
+
+# -- Panel R15A / opus (CARDINAL): C/C++ reference-return defs must not be dropped -
+def test_cpp_reference_return_method_keeps_helper_live(tmp_path):
+    """A C/C++ function/method returning a reference (`int& W::refMethod()`, `const T&`)
+    has a `reference_declarator` that exposes its inner function_declarator as an UNNAMED
+    child, so `_name_of` dead-ended and the WHOLE def was dropped — a helper called only
+    from its body was flagged dead (panel R15A, cardinal). The declarator walk now descends
+    through reference (and all) declarator wrappers."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "a.h": "class W { public: int& refMethod(); };\nint helper();\n",
+        "a.cpp": '#include "a.h"\nint helper(){ return 5; }\n'
+                 "int& W::refMethod(){ static int x; helper(); return x; }\n",
+        "main.cpp": '#include "a.h"\nint main(){ W w; return w.refMethod(); }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "a.cpp::helper" not in stale       # live via W::refMethod()
+
+
+# -- Panel R15B / opus (CARDINAL): module-level decorator registry / bare decorator -
+def test_module_level_decorated_defs_and_decorator_are_live(tmp_path):
+    """A module-level decorated def is registered/wrapped when the module loads — a plugin
+    handler (`@register('x') def x`), a `@memo`-wrapped def, and the bare-name decorator
+    `memo` itself were all flagged dead while the equivalent dict-literal registry was
+    rescued (panel R15B). They are now edged from the module node."""
+    _mk(tmp_path, {
+        "app/__init__.py": "",
+        "app/plugins.py": """
+            PLUGINS = {}
+            def plugin(name):
+                def wrap(fn):
+                    PLUGINS[name] = fn
+                    return fn
+                return wrap
+            @plugin('greet')
+            def greet(): return "hi"
+            def memo(fn): return fn
+            @memo
+            def cached_thing(): return 1
+        """,
+        "app/run.py": """
+            from .plugins import PLUGINS
+            __all__ = ["run"]
+            def run(name): return PLUGINS[name]()
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        for nid in ("app/plugins.py::greet", "app/plugins.py::cached_thing",
+                    "app/plugins.py::memo"):
+            assert nid not in stale
+
+
+# -- Panel R15B / sonnet (LOW crash): replace_file on a lone-surrogate filename ----
+def test_replace_file_surrogate_filename_does_not_crash():
+    """`replace_file`'s `DELETE ... WHERE file = ?` binds failed on a lone-surrogate
+    filename (POSIX surrogateescape on a non-UTF-8 path); add_node/add_edge already guard
+    this, so replace_file must too (panel R15B)."""
+    from stitchgraph.core.store import Store
+    with Store(":memory:") as store:
+        store.replace_file("\ud800.py", [], [])   # must not raise
+
+
+# -- Panel R15B / sonnet (metric): function named like its module — call deduped ---
+def test_function_named_like_module_call_is_extracted_not_ambiguous(tmp_path):
+    """A function named like its file (`def compute()` in `compute.py`) makes the MODULE
+    and FUNCTION nodes share one id, listed twice in by_name; without dedup a within-file
+    call resolved AMBIGUOUS (0.5) and a live stub was demoted RED->ORANGE. The candidate
+    list is now deduped, so the stub stays RED (panel R15B)."""
+    _mk(tmp_path, {
+        "compute.py": "def compute(): ...\n"
+                      "def compute_twice(): return compute() * 2\n"
+                      'if __name__ == "__main__":\n    compute_twice()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stubs = [i for i in sg.scan(store).result if i["kind"] == "live_stub"]
+        assert any(i["urgency"] == "red" for i in stubs)   # not demoted by a false AMBIGUOUS
