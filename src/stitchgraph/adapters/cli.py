@@ -28,7 +28,39 @@ def _require_typer():
 
 def build_app():
     typer = _require_typer()
-    app = typer.Typer(add_completion=False, help="stitchgraph — code intelligence")
+    # no_args_is_help: bare `stitchgraph` shows help (not a silent exit) — the
+    # invoke_without_command callback below would otherwise swallow it (issue #19).
+    app = typer.Typer(add_completion=False, no_args_is_help=True,
+                      help="stitchgraph — code intelligence")
+
+    def _version_callback(value: bool) -> None:
+        if not value:
+            return
+        from importlib.metadata import PackageNotFoundError, version
+
+        from ..core.extract import treesitter as ts
+        try:
+            ver = version("stitchgraph")
+        except PackageNotFoundError:  # pragma: no cover - not installed as a dist
+            ver = "unknown"
+        typer.echo(f"stitchgraph {ver}")
+        # The install model is version-keyed (bundled vs download grammar line, #12),
+        # so report the active tree-sitter-language-pack line too — exactly what a bug
+        # report needs (issue #19).
+        backend = ts.grammar_backend()
+        if backend.get("installed"):
+            typer.echo(f"tree-sitter-language-pack {backend['version']}  [{backend['model']}]")
+        else:
+            typer.echo("tree-sitter-language-pack not installed (Python-only extraction)")
+        raise typer.Exit()
+
+    @app.callback(invoke_without_command=True)
+    def _root(
+        version: bool = typer.Option(
+            False, "--version", callback=_version_callback, is_eager=True,
+            help="Show the stitchgraph version (and active grammar line) and exit."),
+    ) -> None:
+        pass
 
     for op in registry():
         app.command(name=op.name.replace("_", "-"), help=op.summary)(_make_command(typer, op))
@@ -62,7 +94,8 @@ def build_app():
     @app.command(name="report", help="Full Markdown report (orientation + issues + risk).")
     def _report(
         db: str = typer.Option("stitchgraph.db", help="index database path"),
-        repo: str = typer.Option(".", help="repo root (for git risk)"),
+        repo: str | None = typer.Option(
+            None, help="repo root for git risk (default: the indexed root in the DB)"),
     ) -> None:
         from .report import build_report
         typer.echo(build_report(db, repo))

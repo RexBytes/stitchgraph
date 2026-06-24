@@ -10,11 +10,13 @@ from ..core import operations as ops
 from ..core.store import Store
 
 
-def build_report(db: str = "stitchgraph.db", repo: str = ".") -> str:
+def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
     with Store(db) as store:
         orient = ops.orient(store)
         scan = ops.scan(store)
         stale = ops.find_stale(store)
+        # repo=None lets risk() default to the indexed root recorded in the DB, so
+        # `report --db <db>` includes the risk section from any cwd (issue #18).
         risk = ops.risk(store, repo)
 
     issues = scan.result or []
@@ -48,13 +50,19 @@ def build_report(db: str = "stitchgraph.db", repo: str = ".") -> str:
 
     out += ["", "## Risk (git × structure)", ""]
     if risk.ok:
-        for h in (risk.result or {}).get("hotspots", [])[:5]:
+        hotspots = (risk.result or {}).get("hotspots", [])
+        hidden = (risk.result or {}).get("hidden_coupling", [])
+        for h in hotspots[:5]:
             out.append(f"- {h['urgency']} {h['file']} "
                        f"(churn {h['churn']}, risk {h['risk']})")
-        hidden = (risk.result or {}).get("hidden_coupling", [])
         if hidden:
             out.append(f"- Hidden coupling pairs: {len(hidden)} "
                        "(co-change with no structural edge)")
+        # risk ran but found nothing notable (every churned file has zero centrality,
+        # no hidden coupling). Render an explicit marker so the section is never blank —
+        # mirrors how the Cleanup section reports an empty stale list (panels SS/TT).
+        if not hotspots and not hidden:
+            out.append("- (no risk hotspots or hidden coupling found)")
     else:
         out.append(f"- (skipped: {risk.review_reasons[0] if risk.review_reasons else 'no git'})")
 
@@ -73,7 +81,7 @@ def _emit_issues(out: list[str], issues: list[dict]) -> None:
 def main() -> None:
     import sys
     db = sys.argv[1] if len(sys.argv) > 1 else "stitchgraph.db"
-    repo = sys.argv[2] if len(sys.argv) > 2 else "."
+    repo = sys.argv[2] if len(sys.argv) > 2 else None
     print(build_report(db, repo))
 
 

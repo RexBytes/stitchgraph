@@ -497,23 +497,31 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
 
 
 @operation("Risk hotspots (churn × centrality) and hidden coupling from git history.")
-def risk(store: Store, path: str = ".") -> Result:
+def risk(store: Store, path: str | None = None) -> Result:
     """Fuse git history with the structural graph (design §6.H).
 
-    `path` is the repo root (same as the indexed root). Returns risk hotspots
-    (files that change often *and* are depended on heavily) and hidden coupling
-    (files that co-change in git but have no structural edge — implicit deps the
-    call/import graph misses).
+    `path` is the repo root for git history. It defaults to the **indexed root
+    recorded in the DB** (so `risk --db <db>` works from any cwd, like every other
+    read op — issue #18); pass `--path` to override. Returns risk hotspots (files
+    that change often *and* are depended on heavily) and hidden coupling (files that
+    co-change in git but have no structural edge — implicit deps the call/import
+    graph misses).
     """
     from . import gitrisk
+
+    # Scope from the DB, not the process cwd: the indexed root was stored at reindex.
+    path = path or store.get_meta("root") or "."
 
     if not gitrisk.is_git_repo(path):
         return refuse(f"'{path}' is not a git repository", confidence=0.0)
 
     churn = gitrisk.churn(path)
     if not churn:
-        return refuse("no git history found for indexed source files",
-                      confidence=0.0, result={})
+        # A genuine refusal (ok=False), like the not-a-git-repo case above — NOT a
+        # vacuous ok=True with result={}, which made `report` render a blank Risk
+        # section (no "skipped" line) and broke the "no ok=True with empty result"
+        # envelope contract (panels QQ/RR).
+        return refuse("no git history found for indexed source files", confidence=0.0)
 
     # Node files are relative to the indexed root; git paths to the repo root.
     # Translate node files into git-relative paths so the two spaces line up.

@@ -4,6 +4,49 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.5] — 2026-06-24
+
+**Field-fix patch — CLI/UX papercuts (issues #18, #19).** Three small fixes found while
+running v1.0.4 against a real repo; no analysis-engine changes. Confirmed by full
+three-model panels.
+
+### Fixed
+
+- **`risk` is scoped from the indexed root, like every other read op** (issue #18).
+  `risk`'s git-history `--path` defaulted to the process **cwd**, so `risk --db <db>` from
+  anywhere but the analysed repo failed with `'.' is not a git repository` — even though
+  the DB already records the indexed root (and `risk` reads it for path-mapping two lines
+  later). It now defaults `--path` to the indexed root stored in the DB; pass `--path` to
+  override. `risk --db <db>` now works from any directory. The `report` command had the same
+  bug (it passed `repo="."` to `risk`, silently skipping its risk section from a foreign cwd)
+  and gets the same fix — `report --db <db>` now includes risk from anywhere.
+
+### Added
+
+- **`stitchgraph --version`** (issue #19). Prints the installed package version *and* the
+  active `tree-sitter-language-pack` line (bundled vs. download model) — the two things a
+  bug report needs, given the version-keyed install model (#12). There was previously no
+  way to confirm the installed version from the CLI.
+
+### Fixed (cont.)
+
+- **`stitchgraph.__version__` no longer drifts stale.** The literal had been left at
+  `"1.0.3"` through 1.0.4/1.0.5; it now derives from the installed distribution metadata
+  (`importlib.metadata`), the same source `--version` uses, so the attribute and the CLI
+  always agree and there's nothing to bump by hand.
+
+### Changed
+
+- **`docs/design.md` §9 reconciled with the CLI** (issue #19). The operation surface listed
+  a `path?` argument on `orient`/`find_stale`/`find_holes`/`scan` that the CLI never
+  accepted. Scope comes from the **indexed graph** (`--db`), not a per-call path filter, so
+  the `path?` is dropped and a "On scope" note documents the actual model (index the subset
+  you want; `risk`'s `--path` is the git root, not a query filter). The §9 table was also
+  scrubbed of stale entries: the phantom `structure_smells()` row (never a registered op —
+  its output is part of `scan`), the non-existent `relations?` argument on `trace_path`, and
+  the unbuilt `type_at` primitive (a documented LSP roadmap item that lives in `STATUS.md`,
+  not the shipped-operation surface). §9 now lists only registered operations.
+
 ## [1.0.4] — 2026-06-24
 
 **Field-fix patch — confidence honesty for receiver calls and structural findings

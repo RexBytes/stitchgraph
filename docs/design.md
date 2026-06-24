@@ -96,7 +96,7 @@ The surfaces differ only in *rendering*, never in *what exists*.
 
 ```python
 # core/operations.py — pure, no CLI/MCP imports
-def find_stale(path: str | None = None) -> Result[list[Node]]:
+def find_stale() -> Result[list[Node]]:
     """Code reachable in the graph from no entry point. Each result carries a
     confidence and review reasons; this never asserts 'dead' as fact."""
     ...
@@ -451,7 +451,7 @@ Nothing low-confidence can ever shout red. Urgency stays coupled to confidence �
 
 ### Operation
 
-`scan(path?)` → a ranked issue list, each with `urgency` + `confidence` +
+`scan()` → a ranked issue list, each with `urgency` + `confidence` +
 `review_reasons`. It is the backbone of the report's "Fix now / Look closer /
 Cleanup" structure.
 
@@ -506,16 +506,23 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 
 | Operation | Returns | Bucket |
 |---|---|---|
-| `orient(path?)` | entry points + top hubs + layers + subsystems | A |
-| `find_stale(path?)` | unreachable nodes + reasons | B/D |
-| `find_holes(path?)` | dangling references / live stubs + reasons | D |
+| `orient()` | entry points + top hubs + layers + subsystems | A |
+| `find_stale()` | unreachable nodes + reasons | B/D |
+| `find_holes()` | dangling references / live stubs + reasons | D |
 | `impact_of(symbol)` | blast radius + which tests | B/G |
-| `trace_path(src, sink, relations?)` | full-stack cross-language path + confidence | B |
-| `structure_smells(path?)` | cycles, god objects, layering violations, data loops | C/F |
-| `scan(path?)` | ranked issue list with `urgency` + confidence + reasons | §7 |
+| `trace_path(src, sink)` | full-stack cross-language path + confidence | B |
+| `scan()` | ranked issue list with `urgency` + confidence + reasons — live stubs, holes, cycles, god objects, data loops | §7, C/F |
 | `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading | ✅ |
-| `find_symbol / get_callers / get_callees / type_at` | structural primitives | A |
+| `find_symbol / get_callers / get_callees` | structural primitives | A |
 | `reindex(path)` | incremental update (admin) | — |
+
+**On scope:** the read operations are scoped by the **indexed graph** (the `--db`),
+not a per-call path filter — `reindex(path)` decides what's in the graph, then every
+query runs over that. So `orient`/`find_stale`/`find_holes`/`scan` take no path; index
+the subset you want to analyse (`stitchgraph reindex SUBDIR --db sub.db`) and query that
+DB from any cwd. The one exception is `risk`, whose optional `--path` is the *git repo
+root* for history (not a query filter); it defaults to the indexed root recorded in the
+DB (issue #18), so `risk --db <db>` works from anywhere too.
 
 **On handing the LLM "the full matrix":** never dump a repo-scale N×N matrix —
 it's the dense anti-pattern, token-expensive and unreadable. `get_matrix` returns

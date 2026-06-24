@@ -12,6 +12,9 @@ operations — same names, same params (design §3).
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
 from .core import (
     Edge,
     Node,
@@ -43,7 +46,13 @@ from .core.operations import (
     trace_path,
 )
 
-__version__ = "1.0.3"
+# Single source of truth: the installed distribution metadata (driven by
+# pyproject.toml's version). A hardcoded literal drifted stale across 1.0.3→1.0.5;
+# deriving it here keeps `stitchgraph.__version__` and `stitchgraph --version` in sync.
+try:
+    __version__ = _version("stitchgraph")
+except PackageNotFoundError:  # pragma: no cover - source tree without installed dist
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # types

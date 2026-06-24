@@ -1986,3 +1986,182 @@ def test_csharp_qualified_constructor_stays_extracted(tmp_path):
         run = next((e for e in calls if e.dst_symbol == "Run"), None)
         if run is not None:                            # receiver method call still demoted
             assert run.provenance.value == "inferred"
+
+
+# -- Issue #18: risk scopes git history from the indexed root, not cwd ----------
+def test_risk_defaults_to_indexed_root_not_cwd(tmp_path, monkeypatch):
+    """`risk()` with no path must use the indexed root recorded in the DB (so
+    `risk --db <db>` works from any cwd, like every other read op), not the process
+    cwd. We index a git repo under tmp_path, then run risk from a *different* cwd and
+    confirm the hotspot is the indexed repo's file (proving it didn't use cwd)."""
+    import os
+    import subprocess
+
+    (tmp_path / "m.py").write_text("def a():\n    return b()\n\ndef b():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "init")
+
+    # Query from a cwd that is NOT the indexed repo (use the parent dir).
+    monkeypatch.chdir(tmp_path.parent)
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.risk(store)                      # no path -> indexed root from DB
+        assert res.ok, res.reasons               # not a "not a git repository" refuse
+        files = {h["file"] for h in res.result["hotspots"]}
+        assert "m.py" in files                    # used the indexed repo, not cwd
+
+
+# -- Issue #19: `stitchgraph --version` --------------------------------------
+def test_cli_version_flag():
+    """`stitchgraph --version` prints the package version and the active
+    tree-sitter-language-pack line, then exits 0 (issue #19)."""
+    pytest.importorskip("typer")
+    import re
+
+    from typer.testing import CliRunner
+
+    from stitchgraph.adapters.cli import build_app
+    app = build_app()
+    result = CliRunner().invoke(app, ["--version"])
+    assert result.exit_code == 0
+    assert re.search(r"stitchgraph \d+\.\d+\.\d+", result.stdout)
+    assert "tree-sitter-language-pack" in result.stdout
+    # The --version callback must not swallow bare invocation: `stitchgraph` with no
+    # command still shows help, not a silent exit 0.
+    bare = CliRunner().invoke(app, [])
+    assert bare.exit_code != 0
+    assert "Usage" in bare.stdout or "Commands" in bare.stdout
+
+
+def test_report_includes_risk_from_foreign_cwd(tmp_path, monkeypatch):
+    """`report` passed repo='.' to risk(), so the risk section was silently skipped
+    when run from outside the analysed repo — the same #18 root-scoping bug. With
+    repo defaulting to None (→ indexed root), `report --db <db>` includes risk from
+    any cwd."""
+    import os
+    import subprocess
+
+    from stitchgraph.adapters.report import build_report
+
+    (tmp_path / "m.py").write_text("def a():\n    return b()\n\ndef b():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "init")
+
+    db = str(tmp_path / "g.db")
+    with sg.Store(db) as store:
+        sg.reindex(store, str(tmp_path))
+
+    monkeypatch.chdir(tmp_path.parent)         # query from a foreign cwd
+    report = build_report(db)                    # repo=None -> indexed root
+    assert "## Risk" in report
+    assert "not a git repository" not in report  # risk ran, wasn't skipped
+    assert "m.py" in report                       # hotspot from the indexed repo
+
+
+def test_version_attr_matches_installed_metadata():
+    """`stitchgraph.__version__` must not drift from the installed distribution
+    version (it was left stale at 1.0.3 through 1.0.4/1.0.5). It now derives from
+    importlib.metadata, the same source `--version` uses (panel OO/PP)."""
+    import re
+    from importlib.metadata import version
+
+    import stitchgraph
+    assert stitchgraph.__version__ == version("stitchgraph")
+    assert re.match(r"\d+\.\d+\.\d+", stitchgraph.__version__)
+
+
+def test_design_section9_lists_only_real_operations():
+    """design.md §9 must not advertise operations/params the CLI doesn't have — the
+    recurring doc-vs-code drift behind #19.2. Pins the removed phantoms (panel
+    NN/OO/PP): structure_smells, type_at, and trace_path's non-existent relations?."""
+    from pathlib import Path
+
+    from stitchgraph.core.operations import registry
+    design = Path(__file__).resolve().parent.parent / "docs" / "design.md"
+    text = design.read_text()
+    names = {op.name for op in registry()}
+    assert "structure_smells" not in text       # folded into scan
+    assert "type_at" not in text                  # LSP roadmap, lives in STATUS.md
+    assert "relations?" not in text               # trace_path takes only (src, sink)
+    assert "type_at" not in names                 # sanity: really not an op
+
+
+def test_risk_empty_churn_is_a_refusal_not_vacuous_ok(tmp_path):
+    """risk() on a git repo whose indexed source files have no commit history must
+    return ok=False (a real refusal), not ok=True with result={} — the latter made
+    `report` render a blank Risk section and broke the no-vacuous-ok envelope
+    contract (panels QQ/RR). report must show a 'skipped' line."""
+    import os
+    import subprocess
+
+    from stitchgraph.adapters.report import build_report
+
+    # Commit only a README; the indexed .py file is never committed → empty churn.
+    (tmp_path / "README").write_text("readme\n")
+    (tmp_path / "app.py").write_text("def main():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "README")
+    git("commit", "-m", "init")
+
+    db = str(tmp_path / "g.db")
+    with sg.Store(db) as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.risk(store)
+        assert res.ok is False                 # real refusal, not vacuous ok=True
+        assert res.result is None
+    report = build_report(db, str(tmp_path))
+    risk_section = report.split("## Risk", 1)[1]
+    assert "skipped" in risk_section            # explained, not a blank section
+
+
+def test_report_risk_section_never_blank_when_no_hotspots(tmp_path):
+    """When risk() runs successfully but finds nothing (churn exists, but every file
+    has zero centrality and there's no hidden coupling), risk legitimately returns
+    ok=True with empty lists — like find_stale returning []. The report must render an
+    explicit '(no risk ...)' line, never a blank section (panels SS/TT)."""
+    import os
+    import subprocess
+
+    from stitchgraph.adapters.report import build_report
+
+    # A single isolated function: committed (so churn>0) but no caller (centrality 0).
+    (tmp_path / "app.py").write_text("def isolated():\n    return 1\n")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "init")
+
+    db = str(tmp_path / "g.db")
+    with sg.Store(db) as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.risk(store)
+        assert res.ok is True                       # ran fine, just found nothing
+        assert res.result == {"hotspots": [], "hidden_coupling": []}
+    risk_section = build_report(db, str(tmp_path)).split("## Risk", 1)[1]
+    assert risk_section.strip()                      # not blank
+    assert "no risk" in risk_section.lower()         # explicit empty marker
