@@ -86,7 +86,26 @@ def extract_project(root: str | Path,
     for rel, tree in parsed.items():
         _collect_edges(proj, rel, tree)
     _apply_callback_roles(proj)
+    _seed_test_classes(proj)
     return proj.nodes, proj.edges
+
+
+def _seed_test_classes(proj: _Project) -> None:
+    """A class with a test member (a `test_*` method, recorded as `NodeKind.TEST`, or
+    any member carrying the `test` role) is a test fixture — mark the class `test` so it
+    isn't flagged dead while its methods are live (the 'method live, class dead' shape).
+    Mirrors the tree-sitter `_seed_test_classes`. This is the dominant Python test layout
+    (`class TestWidget:` / a `unittest.TestCase` with only `test_*` methods); the
+    callback path above only rescued classes with a *non-test* override (e.g. `setUp`)."""
+    class_ids = {n.id for n in proj.nodes if n.kind is NodeKind.CLASS}
+    test_classes = {n.id.rsplit(".", 1)[0] for n in proj.nodes
+                    if (n.kind is NodeKind.TEST or "test" in n.roles)
+                    and n.id.rsplit(".", 1)[0] in class_ids}
+    if not test_classes:
+        return
+    for n in proj.nodes:
+        if n.id in test_classes:
+            n.roles = n.roles | {"test"}
 
 
 def _apply_callback_roles(proj: _Project) -> None:

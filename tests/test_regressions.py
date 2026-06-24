@@ -1556,3 +1556,25 @@ def test_production_testing_dir_not_misclassified_as_tests(tmp_path):
         # module-referenced-but-otherwise-dead code in a production testing/ dir must
         # still surface — it is NOT a test file, so module calls are not rooted.
         assert "registerFixture" in stale and "neverUsed" in stale
+
+
+def test_python_test_class_with_only_test_methods_not_flagged_dead(tmp_path):
+    """Panel Z (CARDINAL): pytest's dominant idiom groups tests in `class TestWidget:`
+    whose methods are all `test_*` (recorded as NodeKind.TEST, not METHOD). The class
+    itself must be seeded `test` so it isn't flagged dead while its methods are live —
+    the 'method live, class dead' shape. The earlier unittest fix (callback path) only
+    rescued classes with a non-test override like `setUp`; this covers the all-tests
+    case. A genuinely-unused non-test class is still flagged."""
+    _mk(tmp_path, {
+        "test_widget.py": ("class TestWidget:\n    def test_create(self):\n        assert True\n"
+                           "    def test_destroy(self):\n        assert True\n"),
+        "test_case.py": ("import unittest\nclass OnlyTests(unittest.TestCase):\n"
+                         "    def test_b(self):\n        assert True\n"),
+        "app.py": "class Unused:\n    def m(self):\n        return 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::", 1)[-1] for c in sg.find_stale(store).result}
+        assert "TestWidget" not in stale   # pytest test class — live
+        assert "OnlyTests" not in stale     # unittest all-test-methods class — live
+        assert "Unused" in stale            # non-test class — still flagged
