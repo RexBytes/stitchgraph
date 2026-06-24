@@ -352,7 +352,14 @@ def _console_script_targets(root: Path) -> list[tuple[str, str]]:
             module = module.strip()
             obj = obj.split("[", 1)[0].strip()  # drop any "[extra]" suffix
             if module and obj:
-                out.append((module.replace(".", "/") + ".py", obj))
+                base = module.replace(".", "/")
+                # The module may be a plain module (`pkg/mod.py`) OR a package whose
+                # target lives in its `__init__.py` (`pkg:main` -> `pkg/__init__.py`) —
+                # emit both candidates so a package-level entry point is rooted too
+                # (panel ZZ, cardinal-class). The extra candidate is harmless: it only
+                # matches a node that actually exists at that path.
+                out.append((base + ".py", obj))
+                out.append((base + "/__init__.py", obj))
     return out
 
 

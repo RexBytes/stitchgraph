@@ -835,12 +835,10 @@ def _bash_trap_handlers(root, src):
     """`trap cleanup EXIT` registers `cleanup` to run on a signal — a real use the
     generic command scan misses (it sees the `trap` command, not its function argument).
     Yield the **handler** of each top-level trap as (name, line) so `_ref` roots it if it
-    names a project function. Issue #22. The trap form is `trap [FLAGS] HANDLER SIGNAL…`:
-    only the first non-flag word is the handler — subsequent words are signal names
-    (`EXIT`/`INT`/…), which must NOT be rooted or a function happening to share a signal's
-    name would be spuriously kept live (panel XX). A quoted/inline handler (`trap 'cmd'
-    EXIT`) is a string node, not a word, and is correctly skipped. Top-level scope only
-    (skips function bodies), matching `_module_uses`."""
+    names a project function. Issue #22. Only the handler (the first non-option argument)
+    is rooted — never a trailing signal word — so a function sharing a signal's name isn't
+    spuriously kept live (panels XX/YY/ZZ). Top-level scope only (skips function bodies),
+    matching `_module_uses`."""
     out: list[tuple[str, int]] = []
 
     def rec(n):
@@ -851,18 +849,39 @@ def _bash_trap_handlers(root, src):
                 cn = next((k for k in c.children if k.type == "command_name"), None)
                 head = _text(cn.children[0] if cn and cn.children else cn, src) if cn else ""
                 if head == "trap":
-                    for arg in c.children:
-                        if arg is cn or arg.type != "word":
-                            continue
-                        w = _text(arg, src)
-                        if w.startswith("-"):
-                            continue  # a flag (-- / -p / -l), not the handler
-                        out.append((w, arg.start_point[0] + 1))
-                        break  # first non-flag word is the handler; rest are signals
+                    _trap_handler(c, cn, src, out)
             rec(c)
 
     rec(root)
     return out
+
+
+def _trap_handler(call, cn, src, out):
+    """`trap [-lp] [--] ARG SIGNAL…`: ARG (the first non-option argument) is the handler;
+    the rest are signal names. Root ONLY the handler, and only when it's statically a
+    project-function name (panels XX/YY/ZZ)."""
+    for arg in call.children:
+        if arg is cn:
+            continue
+        if arg.type == "word":
+            w = _text(arg, src)
+            if w in ("-l", "-p", "--"):
+                continue  # trap option flag — keep scanning for the handler ARG
+            # `-` resets the trap (no handler); any other bare word is the handler.
+            if w != "-":
+                out.append((w, arg.start_point[0] + 1))
+            return  # handler slot consumed; remaining words are signals
+        if arg.type in ("string", "raw_string"):
+            # A quoted handler: root it only if it's a single bare identifier (a quoted
+            # function name); an inline command string / empty string roots nothing.
+            # Either way the handler slot is consumed — don't fall through to the signal.
+            text = _text(arg, src).strip().strip("\"'`")
+            if text.isidentifier():
+                out.append((text, arg.start_point[0] + 1))
+            return
+        # Any other handler-slot shape ($(...) substitution, $var expansion,
+        # concatenation) is dynamic — not statically resolvable; consume the slot.
+        return
 
 
 def _is_bare_call(parent, ident):

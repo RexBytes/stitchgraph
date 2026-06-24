@@ -2288,3 +2288,51 @@ def test_bash_trap_does_not_root_signal_name_functions(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "cleanup" not in stale       # the handler is rooted
         assert "EXIT" in stale              # signal name, not a rooted handler
+
+
+def test_pyproject_package_init_entry_point_is_rooted(tmp_path):
+    """A console-script target whose module is a *package* (`pkg:_main`) lives in
+    `pkg/__init__.py`, not `pkg.py`. The suffix matcher must try the `__init__.py`
+    candidate too, or an underscore/non-__all__ entry-point function is false-flagged
+    dead — the #21 bug for the package-init case (panel ZZ, cardinal-class)."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "pkg"\nversion = "0.1"\n'
+                          '[project.scripts]\nmy-tool = "pkg:_main"\n',
+        "pkg/__init__.py": '__all__ = ["public"]\n'
+                           "def public():\n    return 1\n"
+                           "def _main():\n    return public()\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        main = next(n for n in store.nodes_by_name("_main"))
+        assert "script" in main.roles
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "_main" not in stale          # package-level entry point = root
+
+
+def test_bash_trap_handler_parsing_matrix(tmp_path):
+    """The trap handler slot is parsed precisely (panels XX/YY/ZZ): root only the
+    handler ARG, never a trailing signal word, handle the `-` reset, option flags,
+    quoted-identifier handlers, and inline/empty/dynamic strings."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from stitchgraph.core.extract import treesitter as ts
+    parser = Parser(get_language("bash"))
+    cases = {
+        "trap cleanup EXIT": ["cleanup"],
+        "trap - EXIT": [],                       # reset, no handler
+        "trap -- cleanup EXIT": ["cleanup"],     # -- option skipped
+        "trap -p": [],                           # list mode, no handler
+        'trap "" EXIT': [],                      # empty handler, signal not promoted
+        "trap 'cleanup' EXIT": ["cleanup"],      # quoted identifier handler
+        "trap 'rm -f x' EXIT": [],               # inline command, not an identifier
+        "trap cleanup EXIT INT TERM": ["cleanup"],  # multi-signal, handler only
+    }
+    for code, expected in cases.items():
+        src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
+        tree = parser.parse(src)
+        got = [n for n, _ in ts._bash_trap_handlers(tree.root_node, src)]
+        assert got == expected, f"{code!r} -> {got}, expected {expected}"
