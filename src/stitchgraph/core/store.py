@@ -187,7 +187,7 @@ class Store:
             for e in edges:
                 self.add_edge(e, file=file)
             self._resolve_worklist()
-            self._invalidate_dangling()
+            self._invalidate_dangling(keep_file=file)
             # Deleting a file can sever one target of an ambiguous fan-out (caller ->
             # [a, b] as two AMBIGUOUS edges); _invalidate_dangling just turned that
             # edge into a hole even though the reference is still satisfied by the
@@ -438,13 +438,32 @@ class Store:
                     (row["src"], row["relation"], row["dst_symbol"], cid, w,
                      row["location"], row["source"], row["file"]))
 
-    def _invalidate_dangling(self) -> None:
-        """Any resolved edge pointing at a now-missing node reverts to a hole."""
-        self.conn.execute(
-            """UPDATE edges SET dst_id = NULL
-                WHERE dst_id IS NOT NULL
-                  AND dst_id NOT IN (SELECT id FROM nodes)"""
-        )
+    def _invalidate_dangling(self, keep_file: str | None = None) -> None:
+        """Revert a resolved edge whose target node no longer exists back to a hole — but
+        keep a PRECISE (name_based=0) edge whose target lives in a DIFFERENT file than the
+        one being replaced (`keep_file`). Such a target is a forward reference to a
+        not-yet-indexed file, not a deletion: nullifying it and re-resolving by name would
+        bind a precise import/call to an unrelated same-named symbol, inflating that (often
+        dead) symbol and diverging from a full reindex (panel R24A).
+
+        Still reverted to holes: (a) name-based edges (they re-resolve by name correctly),
+        and (b) any edge whose target lived in `keep_file` itself — i.e. a node THIS replace
+        actually removed (a genuine deletion). `dst_id` is `file::qual`, so the target's file
+        is the prefix before '::'.
+        """
+        if keep_file is None:
+            self.conn.execute(
+                """UPDATE edges SET dst_id = NULL
+                    WHERE dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes)"""
+            )
+        else:
+            self.conn.execute(
+                """UPDATE edges SET dst_id = NULL
+                    WHERE dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes)
+                      AND (name_based = 1
+                           OR substr(dst_id, 1, instr(dst_id, '::') - 1) = ?)""",
+                (keep_file,),
+            )
 
     # -- reads -------------------------------------------------------------
     def nodes_by_name(self, name: str) -> list[Node]:

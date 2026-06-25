@@ -3999,6 +3999,59 @@ def test_incremental_self_dispatch_override_not_stale(tmp_path):
     assert "sub.py::Sub._special" not in stale
 
 
+def test_incremental_forward_ref_precise_import_not_misresolved(tmp_path):
+    """A precise import (`from right import helper`) to a not-yet-indexed file must NOT be
+    nullified and re-resolved by name to an unrelated same-named symbol in another module —
+    that inflated the homonym's fan_in and diverged from a full reindex (panel R24A).
+    _invalidate_dangling keeps a precise forward-ref edge regardless of file order; only
+    genuine deletions (target in the replaced file) and name-based edges revert to holes."""
+    import itertools
+
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "wrong.py": "def helper(): return 99\n",
+        "right.py": "def helper(): return 1\n",
+        "caller.py": "from right import helper as h\ndef caller(): return h()\n",
+    })
+    nodes, edges = extract_project(str(tmp_path))
+    nbf, ebf = {}, {}
+    for n in nodes:
+        nbf.setdefault(n.id.split("::", 1)[0], []).append(n)
+    for e in edges:
+        ebf.setdefault(e.src.split("::", 1)[0], []).append(e)
+    full = sg.Store(":memory:")
+    sg.reindex(full, str(tmp_path))
+    want = fan_in(full).get("wrong.py::helper", 0)
+    full.close()
+    for order in itertools.permutations(["wrong.py", "right.py", "caller.py"]):
+        store = sg.Store(":memory:")
+        for f in order:
+            store.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        got = fan_in(store).get("wrong.py::helper", 0)
+        store.close()
+        assert got == want, f"order {order}: fan_in(wrong.helper)={got}, full={want}"
+
+
+def test_incremental_deletion_reverts_inbound_edge_to_hole():
+    """Deleting a node (replacing its file with nothing) must still revert another file's
+    edge to it back to a hole — the forward-ref guard must not suppress genuine deletions."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    def _n(i):
+        return Node(id=i, kind=NodeKind.FUNCTION, name=i.split("::")[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file("b.py", [_n("b.py::target")], [])
+        store.replace_file("a.py", [_n("a.py::caller")], [
+            Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="target",
+                 dst_id="b.py::target", weight=1.0, provenance=Provenance.EXTRACTED)])
+        store.replace_file("b.py", [], [])     # delete target
+        holes = {(e.src, e.dst_symbol) for e in store.unresolved_edges()}
+        assert ("a.py::caller", "target") in holes
+
+
 def test_incremental_dedup_preserves_name_based_for_rewiden(tmp_path):
     """A declared-type call emits a precise (name_based=0) AND a widening (name_based=1)
     edge to its declared target; _dedup_resolved_edges keeps the precise row and must NOT

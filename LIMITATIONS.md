@@ -270,16 +270,15 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   precise edges are kept bound to their target exactly as a full reindex would; and
   `Store._propagate_overrides` re-derives inheritance-aware override edges from the store's
   INHERITS graph, mirroring the extractor. An incremental sequence therefore converges to a
-  full reindex: `find_stale` is identical, and metrics match up to the documented
-  ambiguous-homonym over-approximation below.
-- **Residual (non-blocking, safe direction):** a *precise* import of a name that has more
-  than one definition (`reachable_from` exists in both `algebra.py` and `reach.py`) cannot
-  be resolved precisely if its target module is indexed *after* the importer — at that
-  moment the only clue is the name, so it degrades to an AMBIGUOUS link over all homonyms
-  (it links the real target too, so it is cardinal-safe; it merely over-approximates `fan_in`
-  by one vs a full reindex's single precise edge). It self-corrects on the next full
-  reindex. The shipped CLI/MCP always full-reindex, so this affects only direct library use
-  of `Store.replace_file`.
+  full reindex: `find_stale` is identical, and metrics (fan_in/fan_out/edges) match.
+- **Forward references (handled):** a *precise* import/call to a file indexed *after* the
+  importer is a forward reference, not a deletion. `_invalidate_dangling` keeps such a
+  precise edge bound to its target id (which resolves once that file is indexed) instead of
+  nullifying it and re-resolving by name — the latter would bind it to an unrelated
+  same-named symbol and inflate that symbol's `fan_in` (panel R24A). Only genuine deletions
+  (the target lived in the file being replaced) and name-based edges revert to holes, so an
+  incremental sequence converges to a full reindex on `find_stale` AND on degree metrics,
+  in any file order.
 
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are
