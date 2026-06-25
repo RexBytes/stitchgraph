@@ -156,3 +156,97 @@ The maintainer tags/releases manually; the version reads `1.0.0` only at that po
    re-litigate and agents don't "fix" intended behaviour.
 10. **Be honest in the bookkeeping** — dismiss false positives with a reason;
     keep the tree committed and `HEAD` verified.
+
+---
+
+## White-box symmetry closure (do this *before* the panel, not after)
+
+The multi-model panel is **black-box**: it samples a structured space and keeps
+hitting *different instances of the same gap*. That produces a long tail — you fix
+the reported instance, the next panel finds a sibling. The cure is to stop fixing
+*instances* and start closing *classes*, white-box, up front.
+
+**The recurring defect is a symmetry gap** (Lesson 5): a guard/behaviour present
+in one path but missing in its parallel siblings. The sibling set is almost always
+**small, finite, and enumerable by `grep`** — so enumerate it, fix every member in
+one pass, and pin the matrix with a test so the panel can never re-discover it.
+
+**Worked example (panels R30–R31).** A round-30 fix added an unknown-receiver
+name-based fallback to the *attribute-read* pass — but only in **one** of the three
+scope edge-builders. Two later panels then re-found the same class twice:
+
+| Scope edge-builder | `_direct_calls` | `_direct_names` | `_direct_attr_reads` |
+|---|---|---|---|
+| `_module_scope_edges` (module level) | ✅ | ✅ | ❌ → R31A cardinal |
+| `_walk_scope` ClassDef (class body)  | (names) | ✅ | ❌ → R31A cardinal |
+| `_walk_scope` FunctionDef (fn body)  | ✅ | ✅ | ✅ (round 30) |
+
+The same round-30 fix also (a) set the **wrong provenance** on its new edge
+(`_ref_edges` granted `INFERRED` only for `relation is CALLS`, so the new
+`REFERENCES` edge stayed `EXTRACTED` → a heuristic path shouted RED — R31B
+inflation) and (b) the parallel **corrupt-value** fix guarded the raw
+`all_node_ids` projection but **not** the two row mappers or `get_meta` (R31B
+crash). One fix, three follow-on blockers — all sibling sites the author didn't
+enumerate.
+
+**The method:**
+
+1. **Name the axes.** For any fix, write down what varies around it:
+   *scope* {module, class-body, function}; *expression kind* {call, attr-read,
+   name-ref}; *language extractor* {python, tree-sitter ×N}; *column × reader*
+   (every str-typed DB column × every site that reads it); *edge producer ×
+   provenance*. These axes ARE the matrix Lesson 5 names.
+2. **Enumerate the cells with `grep`, not memory.** e.g. `grep -n
+   '_direct_calls\|_direct_names\|_direct_attr_reads'` finds *all three* scope
+   builders at once; `grep -n 'row\["' src/.../store.py` plus "which reads bypass
+   the mappers" finds every corrupt-value site. The set is finite — list it.
+3. **Fix the whole column in one pass**, and trace each new artifact through the
+   *next* stage (a new `Edge`'s provenance → urgency; a new node id → every string
+   op that consumes it). Most R30–R31 fallout was an un-traced second-order effect.
+4. **Pin the matrix as an executable test**, so adding a new scope/language/column
+   without the guard fails CI instead of waiting for a panel:
+   - a **parametrized cardinal test** over `{module, class-body, function} ×
+     {call, attr-read, name-ref}` asserting live code is never flagged dead in any
+     cell;
+   - a **BLOB-in-every-str-column** test asserting no op raises on a corrupt index;
+   - a **provenance test**: a name-based member resolution (call *or* read) is
+     `INFERRED` → never RED.
+   A matrix test is worth more than N point regressions: it fails for the *cell you
+   haven't written yet*.
+
+**Rule of thumb:** when a panel finds a symmetry gap, the deliverable is not "patch
+that cell" — it's "enumerate the row/column, fix all of it, and add the matrix test
+that would have caught every cell." Treat a single-cell fix as incomplete by
+default.
+
+## Methods to adopt next (beyond panels + matrices)
+
+Ranked by expected leverage on stitchgraph's remaining tail:
+
+1. **Mutation testing** (`mutmut` / `cosmic-ray`) — measures *test strength*, not
+   coverage %. Surviving mutants name the contracts the suite doesn't actually
+   pin (e.g. a flipped `>=`/`>` in a confidence gate). Highest signal for "is the
+   suite real?"
+2. **Metamorphic / differential properties as standing Hypothesis tests** — the
+   ad-hoc "incremental == full reindex on find_stale AND fan_in across edit
+   orderings" harness should be a permanent property over *random* multi-file
+   projects and *random* edit sequences (add / delete / re-add / rename / move).
+   Metamorphic relation: final graph is independent of edit order.
+3. **Grammar-corpus tests per language** — for each tree-sitter grammar, a corpus
+   exercising *every node kind it emits*, asserting extraction maps it (directly
+   targets Lesson 7 "reach for the dependency's exact behaviour"; catches the
+   `name`/`csharp` class of surprises structurally).
+4. **AST-fuzzing the extractors** — Hypothesis strategies that generate random
+   *valid* source (or coverage JSON / config) into `reindex`/`ingest_trace`,
+   asserting two invariants only: never raise, never flag a reachable seed dead.
+   Coverage-guided (`atheris`) on the parse/ingest boundary for the crash class.
+5. **Edge-provenance audit** — enumerate every `Edge(...)` construction site and
+   assert its provenance is set deliberately (the R31B EXTRACTED-vs-INFERRED bug
+   was an un-audited producer). Pair with a "no RED on non-EXTRACTED" property.
+6. **Parallel-site lint** — a cheap repo test that asserts structural symmetry
+   directly: the scope edge-builders call the same pass set; no raw `row["id"]`
+   string-typed read exists outside the guarded mappers. Fails the moment a new
+   sibling diverges.
+
+These convert "stochastic panel rediscovery" into "structural guarantee," which is
+where the long tail actually ends.
