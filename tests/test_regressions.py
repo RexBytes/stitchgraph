@@ -3053,9 +3053,12 @@ def test_replace_file_drops_phantom_hole_when_ambiguous_target_deleted(tmp_path)
     caller = Node(id="caller.py::call_me", kind=NodeKind.FUNCTION, name="call_me", location="caller.py:1:0")
 
     def mk(dst):
+        # An ambiguous name-resolved fan-out is name_based (the resolver/`_ref_edges` set it):
+        # only such edges revert to holes on a target's deletion (a PRECISE edge is kept
+        # dangling and surfaced as a missing-target hole instead — panel R29A).
         return Edge(src="caller.py::call_me", relation=Relation.CALLS, dst_symbol="helper",
                     dst_id=dst, weight=0.5, provenance=Provenance.AMBIGUOUS,
-                    location="caller.py:2:0", source="test")
+                    location="caller.py:2:0", source="test", name_based=True)
     with Store(":memory:") as store:
         with store.conn:
             store.add_node(h1, file="h1.py")
@@ -4411,3 +4414,82 @@ def test_ingest_trace_json_depth_bomb_returns_result(tmp_path):
     with sg.Store(":memory:") as store:
         result = sg.ingest_trace(store, str(bomb))   # must return, not raise
     assert result.ok is False
+
+
+# -- Panel R29A / sonnet (fan_in inflation): delete->re-add must converge -------
+def test_incremental_delete_readd_precise_edge_does_not_widen(tmp_path):
+    """A precise import to reach.py::func, after reach.py is deleted then re-added, must NOT
+    re-widen across a same-named homonym in another file. The old code nullified the precise
+    edge on deletion, re-resolved it by bare name to the homonym, marked it name_based, then
+    `_rewiden_resolved` widened it to BOTH on re-add — inflating the dead homonym's fan_in and
+    masking it from find_stale. `_invalidate_dangling` now keeps a precise edge bound to its
+    exact id (dangling until the file returns), so the result equals a full reindex (panel R29A)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+
+    def _n(i, k=NodeKind.FUNCTION, **kw):
+        return Node(id=i, kind=k, name=i.split("::")[1], location=f"{i.split('::')[0]}:1:0", **kw)
+    cm = _n("caller.py::caller_module", NodeKind.MODULE)
+    cf = _n("caller.py::caller_func", roles=frozenset({"main"}))
+    rf = _n("reach.py::func")
+    af = _n("algebra.py::func")            # dead homonym, never referenced
+    ce = Edge(src="caller.py::caller_module", relation=Relation.IMPORTS, dst_symbol="func",
+              dst_id="reach.py::func", weight=1.0, provenance=Provenance.EXTRACTED)
+
+    def setup(s):
+        s.replace_file("caller.py", [cm, cf], [ce])
+        s.replace_file("reach.py", [rf], [])
+        s.replace_file("algebra.py", [af], [])
+
+    with sg.Store(":memory:") as full:
+        setup(full)
+        want_fi = fan_in(full).get("algebra.py::func", 0)
+        want_stale = {c["id"] for c in (sg.find_stale(full).result or [])}
+    with sg.Store(":memory:") as inc:
+        setup(inc)
+        inc.replace_file("reach.py", [], [])        # delete
+        inc.replace_file("reach.py", [rf], [])      # re-add same content
+        got_fi = fan_in(inc).get("algebra.py::func", 0)
+        got_stale = {c["id"] for c in (sg.find_stale(inc).result or [])}
+    assert got_fi == want_fi == 0, f"fan_in(algebra.func) inflated: {got_fi} vs {want_fi}"
+    assert got_stale == want_stale, f"stale diverged: {got_stale} vs {want_stale}"
+    assert "algebra.py::func" in got_stale          # dead homonym still correctly flagged
+
+
+# -- Panel R29B / opus (corrupt index): bad enum/weight must not crash an op ----
+def test_corrupt_index_values_do_not_crash_ops(tmp_path):
+    """A corrupt private index — a `kind`/`relation` string no stitchgraph writer emits, or a
+    non-finite edge weight (external tampering / on-disk bit-rot) — must not raise out of an
+    op. The row mappers skip an un-parseable enum row and clamp a non-finite weight, so ops
+    return a Result and JSON never carries `Infinity` (panel R29B)."""
+    import json
+    import sqlite3
+    db = str(tmp_path / "corrupt.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0, arity INTEGER, summary TEXT,"
+        " roles TEXT NOT NULL DEFAULT '', end_line INTEGER);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted',"
+        " location TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'x',"
+        " file TEXT NOT NULL DEFAULT '', name_based INTEGER NOT NULL DEFAULT 0);"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('a.py::z', 'BOGUSKIND', 'z')")
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('a.py::y', 'Function', 'y')")
+    conn.execute("INSERT INTO edges(src, relation, dst_symbol, dst_id, weight) "
+                 "VALUES ('a.py::y', 'BOGUSREL', 'z', 'a.py::z', 1e500)")   # corrupt rel + inf
+    conn.execute("INSERT INTO edges(src, relation, dst_symbol, dst_id, weight) "
+                 "VALUES ('a.py::y', 'CALLS', 'y', 'a.py::y', 1e500)")      # inf weight
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:
+        for op in (sg.find_stale, sg.scan, sg.orient, sg.find_holes):
+            assert op(store).ok in (True, False)        # returns a Result, never raises
+        assert store.get_node("a.py::z") is None         # corrupt-kind row skipped
+        assert store.get_node("a.py::y") is not None
+        assert "Infinity" not in json.dumps(sg.get_matrix(store, "a.py").to_dict())

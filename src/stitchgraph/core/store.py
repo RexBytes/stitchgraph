@@ -9,6 +9,7 @@ writes to analyzed source — only here.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Iterable
 from contextlib import closing
@@ -205,7 +206,7 @@ class Store:
             for e in edges:
                 self.add_edge(e, file=file)
             self._resolve_worklist()
-            self._invalidate_dangling(keep_file=file)
+            self._invalidate_dangling()
             # Deleting a file can sever one target of an ambiguous fan-out (caller ->
             # [a, b] as two AMBIGUOUS edges); _invalidate_dangling just turned that
             # edge into a hole even though the reference is still satisfied by the
@@ -462,32 +463,29 @@ class Store:
                     (row["src"], row["relation"], row["dst_symbol"], cid, w,
                      row["location"], row["source"], row["file"]))
 
-    def _invalidate_dangling(self, keep_file: str | None = None) -> None:
-        """Revert a resolved edge whose target node no longer exists back to a hole — but
-        keep a PRECISE (name_based=0) edge whose target lives in a DIFFERENT file than the
-        one being replaced (`keep_file`). Such a target is a forward reference to a
-        not-yet-indexed file, not a deletion: nullifying it and re-resolving by name would
-        bind a precise import/call to an unrelated same-named symbol, inflating that (often
-        dead) symbol and diverging from a full reindex (panel R24A).
+    def _invalidate_dangling(self) -> None:
+        """Revert a NAME-BASED resolved edge whose target node no longer exists back to a
+        hole, so it re-resolves by name against the new node set. A PRECISE (name_based=0)
+        edge is NEVER reverted: it stays pointing at its exact original id (dangling while
+        that id is absent) and auto-revalidates the instant the id returns.
 
-        Still reverted to holes: (a) name-based edges (they re-resolve by name correctly),
-        and (b) any edge whose target lived in `keep_file` itself — i.e. a node THIS replace
-        actually removed (a genuine deletion). `dst_id` is `file::qual`, so the target's file
-        is the prefix before '::'.
+        This keeps a precise import/call/declared-type/seeded edge bound to its ONE true
+        target and never name-rebinds it to an unrelated same-named symbol — covering both a
+        forward reference to a not-yet-indexed file (panel R24A) AND a delete->re-add of the
+        target's own file (panel R29A). The earlier code nullified a precise edge whose target
+        lived in the replaced file; `_resolve_worklist` then rebound that hole by bare name to
+        a homonym in another file and marked it name_based, so `_rewiden_resolved` widened it
+        to every homonym on re-add — inflating the (often dead) homonym's fan_in.
+
+        A precise edge to a genuinely-removed target is left dangling; `unresolved_edges`
+        still surfaces it as a hole (its id is absent from `nodes`), and the graph-metric
+        readers ignore an edge to a non-existent node, so nothing real is inflated.
         """
-        if keep_file is None:
-            self.conn.execute(
-                """UPDATE edges SET dst_id = NULL
-                    WHERE dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes)"""
-            )
-        else:
-            self.conn.execute(
-                """UPDATE edges SET dst_id = NULL
-                    WHERE dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes)
-                      AND (name_based = 1
-                           OR substr(dst_id, 1, instr(dst_id, '::') - 1) = ?)""",
-                (keep_file,),
-            )
+        self.conn.execute(
+            """UPDATE edges SET dst_id = NULL
+                WHERE dst_id IS NOT NULL AND name_based = 1
+                  AND dst_id NOT IN (SELECT id FROM nodes)"""
+        )
 
     # -- reads -------------------------------------------------------------
     def nodes_by_name(self, name: str) -> list[Node]:
@@ -500,7 +498,7 @@ class Store:
             # or an int beyond SQLite's signed-64-bit range (OverflowError, panel R20B).
             # Refuse with no match rather than crash the op (panels XXX/R18B).
             return []
-        return [_row_to_node(r) for r in rows]
+        return [n for r in rows if (n := _row_to_node(r))]
 
     def get_node(self, node_id: str) -> Node | None:
         try:
@@ -513,43 +511,53 @@ class Store:
 
     def nodes_by_kind(self, kind: NodeKind) -> list[Node]:
         rows = self.conn.execute("SELECT * FROM nodes WHERE kind = ?", (kind.value,)).fetchall()
-        return [_row_to_node(r) for r in rows]
+        return [n for r in rows if (n := _row_to_node(r))]
 
     def all_node_ids(self) -> list[str]:
         return [r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
 
     def all_nodes_full(self) -> list[Node]:
-        return [_row_to_node(r) for r in self.conn.execute("SELECT * FROM nodes").fetchall()]
+        return [n for r in self.conn.execute("SELECT * FROM nodes").fetchall()
+                if (n := _row_to_node(r))]
 
     def nodes_with_role(self, role: str) -> list[Node]:
         rows = self.conn.execute(
             "SELECT * FROM nodes WHERE (',' || roles || ',') LIKE ?",
             (f"%,{role},%",),
         ).fetchall()
-        return [_row_to_node(r) for r in rows]
+        return [n for r in rows if (n := _row_to_node(r))]
 
     def stub_nodes(self) -> list[Node]:
         rows = self.conn.execute("SELECT * FROM nodes WHERE is_stub = 1").fetchall()
-        return [_row_to_node(r) for r in rows]
+        return [n for r in rows if (n := _row_to_node(r))]
 
     def callers_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
         rows = self.conn.execute(
             "SELECT * FROM edges WHERE dst_id = ? AND relation = ?",
             (node_id, relation.value),
         ).fetchall()
-        return [_row_to_edge(r) for r in rows]
+        return [e for r in rows if (e := _row_to_edge(r))]
 
     def callees_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
         rows = self.conn.execute(
             "SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_id IS NOT NULL",
             (node_id, relation.value),
         ).fetchall()
-        return [_row_to_edge(r) for r in rows]
+        return [e for r in rows if (e := _row_to_edge(r))]
 
     def unresolved_edges(self) -> list[Edge]:
-        """Dangling references — the substrate of find_holes (design §4/§6.D)."""
-        rows = self.conn.execute("SELECT * FROM edges WHERE dst_id IS NULL").fetchall()
-        return [_row_to_edge(r) for r in rows]
+        """Dangling references — the substrate of find_holes (design §4/§6.D).
+
+        A hole is an edge with no resolvable target: either dst_id IS NULL (never resolved),
+        or dst_id points at a node that no longer exists (a PRECISE edge whose target file was
+        deleted — `_invalidate_dangling` keeps it bound to its exact id rather than nullifying
+        and mis-widening it, so find_holes must recognise the missing-target form too, panel
+        R29A; mirrors GraphBLAS dropping edges to ids outside the node set)."""
+        rows = self.conn.execute(
+            """SELECT * FROM edges
+                WHERE dst_id IS NULL OR dst_id NOT IN (SELECT id FROM nodes)"""
+        ).fetchall()
+        return [e for r in rows if (e := _row_to_edge(r))]
 
     def resolved_edges(self, relation: Relation | None = None) -> list[Edge]:
         if relation is None:
@@ -559,21 +567,28 @@ class Store:
                 "SELECT * FROM edges WHERE dst_id IS NOT NULL AND relation = ?",
                 (relation.value,),
             ).fetchall()
-        return [_row_to_edge(r) for r in rows]
+        return [e for r in rows if (e := _row_to_edge(r))]
 
     def node_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"]
 
 
 # -- row mappers -----------------------------------------------------------
-def _row_to_node(row: sqlite3.Row) -> Node:
+def _row_to_node(row: sqlite3.Row) -> Node | None:
     keys = row.keys()
     roles = row["roles"] if "roles" in keys else ""
     # Tolerate a row from an older/partial schema missing any optional column — mirror
     # _row_to_edge's defensive reads so an op never raises IndexError on such a DB (panel
     # R27A). Only id/kind/name are guaranteed (PRIMARY KEY / NOT NULL).
+    try:
+        kind = NodeKind(row["kind"])
+    except ValueError:
+        # A corrupt index (a `kind` string no stitchgraph writer ever emits — external
+        # tampering or on-disk bit-rot) must not crash the op: skip the row, the caller
+        # filters None and the op returns a (smaller) Result instead of raising (panel R29B).
+        return None
     return Node(
-        id=row["id"], kind=NodeKind(row["kind"]), name=row["name"],
+        id=row["id"], kind=kind, name=row["name"],
         location=row["location"] if "location" in keys else "",
         end_line=row["end_line"] if "end_line" in keys else None,
         is_stub=bool(row["is_stub"]) if "is_stub" in keys else False,
@@ -583,18 +598,28 @@ def _row_to_node(row: sqlite3.Row) -> Node:
     )
 
 
-def _row_to_edge(row: sqlite3.Row) -> Edge:
+def _row_to_edge(row: sqlite3.Row) -> Edge | None:
     # Tolerate a row from an older/partial schema or a column-subset projection missing any
     # optional column — only src/relation/dst_symbol are guaranteed (NOT NULL, no default)
     # — so an op never raises IndexError on such a row (panels R27A/R28B mirror _row_to_node).
     keys = row.keys()
+    try:
+        relation = Relation(row["relation"])
+    except ValueError:
+        return None  # corrupt relation: skip rather than crash (panel R29B, mirror node).
+    try:
+        provenance = (Provenance(row["provenance"]) if "provenance" in keys
+                      else Provenance.EXTRACTED)
+    except ValueError:
+        provenance = Provenance.AMBIGUOUS  # corrupt provenance -> least-confident, safe.
+    weight = row["weight"] if "weight" in keys else 1.0
+    if not isinstance(weight, (int, float)) or not math.isfinite(weight):
+        weight = 1.0  # a NaN/inf weight (corrupt index) would leak `Infinity` into JSON.
     return Edge(
-        src=row["src"], relation=Relation(row["relation"]),
+        src=row["src"], relation=relation,
         dst_symbol=row["dst_symbol"],
         dst_id=row["dst_id"] if "dst_id" in keys else None,
-        weight=row["weight"] if "weight" in keys else 1.0,
-        provenance=Provenance(row["provenance"]) if "provenance" in keys
-        else Provenance.EXTRACTED,
+        weight=weight, provenance=provenance,
         location=row["location"] if "location" in keys else "",
         source=row["source"] if "source" in keys else "tree-sitter",
         name_based=bool(row["name_based"]) if "name_based" in keys else False,
