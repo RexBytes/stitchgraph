@@ -73,6 +73,16 @@ def main() -> int:
     original = open(path).read()
     total = _count(original)
     print(f"{path}: {total} mutation sites; kill-signal: {' '.join(test_cmd)}\n")
+    # Verify the baseline is GREEN before mutating. A failing kill-signal on unmutated
+    # code makes EVERY mutant look KILLED (any nonzero exit reads as a kill), so a broken
+    # test silently turns the meta-oracle into a rubber stamp (panel R34 caught exactly
+    # this). Abort loudly instead of reporting a false all-killed.
+    baseline = subprocess.run(test_cmd, capture_output=True)
+    if baseline.returncode != 0:
+        print("BASELINE NOT GREEN — the kill-signal fails on unmutated code; fix the "
+              "tests first (a red baseline reports every mutant as falsely KILLED).")
+        sys.stderr.write(baseline.stdout.decode("utf-8", "replace")[-2000:])
+        return 2
     survived = []
     try:
         for i in range(total):

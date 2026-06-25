@@ -52,9 +52,12 @@ def test_include_tests_defaults_true_and_respects_override(tmp_path):
     True->False unnoticed — no test pinned it. Absent key must default True; an explicit
     false must be honoured."""
     from stitchgraph.core.config import load_config
-    no_key = tmp_path / "a.toml"
-    no_key.write_text("[entry_points]\ninclude = []\n")
+    # load_config(start) searches `start` (a directory) upward for stitchgraph.toml.
+    no_key = tmp_path / "nokey"
+    no_key.mkdir()
+    (no_key / "stitchgraph.toml").write_text("[entry_points]\ninclude = []\n")
     assert load_config(no_key).include_tests is True
-    explicit = tmp_path / "b.toml"
-    explicit.write_text("[entry_points]\ninclude_tests = false\n")
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    (explicit / "stitchgraph.toml").write_text("[entry_points]\ninclude_tests = false\n")
     assert load_config(explicit).include_tests is False

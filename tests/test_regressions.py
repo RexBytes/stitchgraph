@@ -4841,7 +4841,7 @@ def test_r33_config_str_list_drops_empty_entries():
     from stitchgraph.core.config import load_config
     cfg_dir = Path(__import__("tempfile").mkdtemp())
     (cfg_dir / "stitchgraph.toml").write_text('[index]\nignore = ["", "*.md", ""]\n')
-    cfg = load_config(cfg_dir / "stitchgraph.toml")
+    cfg = load_config(cfg_dir)  # load_config searches the DIR for stitchgraph.toml
     assert "" not in cfg.ignore and "*.md" in cfg.ignore
 
 
