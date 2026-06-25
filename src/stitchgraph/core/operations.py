@@ -221,7 +221,11 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     # Grounding in a runtime trace raises confidence: these were neither reached
     # statically nor observed executing (design §2c). Otherwise resolution is
     # name-based, so present as review candidates (design §5: LSP raises this).
-    if store.get_meta("has_runtime") == "1":
+    if store.get_meta("has_runtime") == "1" and store.nodes_with_role("runtime"):
+        # Require *actual* runtime-role nodes, not just the meta flag: an incremental
+        # replace_file could in principle drop the last runtime node while the flag
+        # lingers, which would inflate confidence to 0.78 with no grounding left (panel
+        # R33A). With grounding genuinely present, the trace earns the higher confidence.
         res = ok(candidates, confidence=0.78, provenance=Provenance.INFERRED,
                  count=len(candidates))
         res.add_reason("not reached statically AND not executed in the ingested "
@@ -311,8 +315,29 @@ def impact_of(store: Store, name: str) -> Result:
         "count": len(dependents),
         "tests_to_run": tests,
     }
-    return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
-              count=len(dependents), tests=len(tests))
+    # Confidence/provenance must reflect the edges the blast radius rests on, exactly as
+    # get_callers/_callgraph_result and trace_path do: a dependent reached only through
+    # name-based (AMBIGUOUS/INFERRED) edges is a heuristic guess, not a certain
+    # dependency — asserting provenance=extracted/0.9/no-review over it both inflates the
+    # over-approximation into type-certain fact and presents genuinely false dependents
+    # (homonym name-binds) as certain (panel R33A). The backing edges are the liveness
+    # edges induced on the blast radius (every dependent reaches the target through them).
+    radius = dependents | {target.id}
+    liveness = set(LIVENESS_RELATIONS)
+    backing = [e for e in store.resolved_edges()
+               if e.relation in liveness and e.src in dependents and e.dst_id in radius]
+    if not backing or all(e.provenance is Provenance.EXTRACTED for e in backing):
+        return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
+                  count=len(dependents), tests=len(tests))
+    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in backing)
+            else Provenance.INFERRED)
+    n_conf = sum(1 for e in backing if e.provenance is Provenance.EXTRACTED)
+    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(backing)), 2),
+             provenance=prov, count=len(dependents), tests=len(tests))
+    res.needs_review = True
+    res.add_reason("some dependents are reached only through name-based "
+                   "(inferred/ambiguous) edges — verify before relying")
+    return res
 
 
 @operation("Full-stack path between a source and a sink, with confidence.")
@@ -653,13 +678,31 @@ def _git_path_mapper(store: Store, path: str):
     return lambda f: f"{prefix}/{f}".replace(os.sep, "/")
 
 
+def _under_scope(nid: str, scope: str) -> bool:
+    """True if node id `nid` is `scope` itself or a genuine child/member of it.
+
+    A bare `nid.startswith(scope)` bleeds across id boundaries: scope `Foo` wrongly
+    swept in the sibling class `FooBar`, and file scope `model.py::Node` pulled in
+    `NodeKind` — inflating get_matrix cells/density and summarize_subsystem counts with
+    unrelated nodes (panel R33B). The char(s) right after the scope must be a real id
+    separator: `/` (dir→file), `::` (file→symbol), or `.` (class→member). A scope that
+    already ends in a separator matches by plain prefix.
+    """
+    if not nid.startswith(scope):
+        return False
+    if nid == scope or scope.endswith(("/", "::", ".")):
+        return True
+    rest = nid[len(scope):]
+    return rest[:2] == "::" or rest[:1] in ("/", ".")
+
+
 @operation("Compact structural summary of a subsystem (path prefix), for an LLM.")
 def summarize_subsystem(store: Store, path: str) -> Result:
     """A terse map of one subsystem (design §8): node counts, the hubs to read
     first, its public surface (who calls in), and what it depends on (calls out)."""
     if not isinstance(path, str):
         return refuse("path must be a string", confidence=0.0)  # None/wrong type (panel R17A)
-    members = [n for n in store.all_nodes_full() if n.id.startswith(path)]
+    members = [n for n in store.all_nodes_full() if _under_scope(n.id, path)]
     if not members:
         return refuse(f"no nodes under '{path}'", confidence=0.0)
     mids = {n.id for n in members}
@@ -712,7 +755,7 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     except ValueError:
         return refuse(f"unknown relation '{relation}'", confidence=0.0)
 
-    members = sorted(nid for nid in store.all_node_ids() if nid.startswith(scope))
+    members = sorted(nid for nid in store.all_node_ids() if _under_scope(nid, scope))
     if not members:
         return refuse(f"no nodes under scope '{scope}'", confidence=0.0)
     if len(members) > limit:

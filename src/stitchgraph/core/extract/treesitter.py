@@ -273,7 +273,14 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # as a script so its top-level calls / local functions aren't flagged dead (panel WWW).
         is_cs_toplevel = lang == "csharp" and any(
             c.type == "global_statement" for c in tree.root_node.children)
-        is_script = is_bash_script or is_cs_toplevel
+        # Ruby and PHP execute a file's top-level body every time it is required/loaded
+        # (like bash's top-level body and C#'s top-level statements) — there is no
+        # "definitions only, nothing runs" load mode the way an imported Python/JS module
+        # has. So a module-level call in `app.rb` / `app.php` roots the function it
+        # invokes; without this, top-level-only-used helpers in Ruby/PHP are flagged dead
+        # — live code as dead, the cardinal sin (panel R33A, same class as bash #22 / C# WWW).
+        is_exec_toplevel_lang = lang in ("ruby", "php")
+        is_script = is_bash_script or is_cs_toplevel or is_exec_toplevel_lang
         mod_roles: set[str] = set()
         if is_test:
             mod_roles.add("test")
@@ -1430,7 +1437,8 @@ def _wanted(path, root, ignore):
     rel = path.relative_to(root)
     if any(p in _SKIP for p in rel.parts):
         return False
-    return not (ignore and any(rel.match(pat) for pat in ignore))
+    # Skip empty patterns: rel.match("") raises ValueError("empty pattern") (panel R33B).
+    return not (ignore and any(rel.match(pat) for pat in ignore if pat))
 
 
 def grammar_status() -> tuple[bool, list[tuple[str, bool, str]]]:

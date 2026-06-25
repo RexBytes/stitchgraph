@@ -78,7 +78,9 @@ def _load(start: str | Path | None) -> Config:
         return v if isinstance(v, dict) else {}
 
     def _str_list(v: object) -> list[str]:
-        return [str(x) for x in v] if isinstance(v, list) else []
+        # Drop empty entries: an empty glob in `ignore` reaches PurePath.match() and
+        # raises "empty pattern" (panel R33B); a blank entry is never a useful value.
+        return [s for x in v if (s := str(x))] if isinstance(v, list) else []
 
     ep, idx, rev = _table("entry_points"), _table("index"), _table("review")
     orient, sim = _table("orient"), _table("similar")

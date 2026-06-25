@@ -4759,3 +4759,133 @@ def test_trace_path_returns_complete_node_path():
         store.commit()
         r = sg.trace_path(store, "a", "c")
     assert r.result == ["m.py::a", "m.py::b", "m.py::c"]
+
+
+# ===========================================================================
+# Round 33 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Five blockers,
+# all fixed at root cause; each pinned below as its owning verification layer.
+# ===========================================================================
+
+
+def test_r33_ruby_php_module_level_calls_root_functions(tmp_path):
+    """R33A-haiku (CARDINAL): Ruby/PHP execute a file's top-level body on require/load,
+    so a module-level call roots the function it invokes. `is_script` excluded them
+    (only bash + C# top-level), so top-level-only-used helpers were flagged dead — live
+    code as dead. Same class as bash #22 / C# WWW (treesitter.py is_script column)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "svc.rb": "def used_helper\n  42\nend\n\nused_helper\n",
+        "svc.php": "<?php\nfunction foo() {\n  return 1;\n}\nfoo();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("used_helper" in s for s in stale), f"Ruby top-level helper flagged dead: {stale}"
+    assert not any("svc.php::foo" in s for s in stale), f"PHP top-level fn flagged dead: {stale}"
+
+
+def test_r33_replace_file_preserves_runtime_role(tmp_path):
+    """R33A-sonnet (CARDINAL + INFLATION): ingest_trace sets a `runtime` role (a fact
+    about execution); a later replace_file delete+re-insert erased it while `has_runtime`
+    meta lingered, so an executed-but-dynamically-dispatched function was flagged dead at
+    confidence 0.78 (the confident path). replace_file must carry the runtime role across
+    for surviving ids (store.replace_file column)."""
+    import json
+
+    from stitchgraph.core.extract import extract_project
+    _mk(tmp_path, {
+        "main.py": 'def main():\n    return 0\nif __name__ == "__main__":\n    main()\n',
+        "lib.py": "def dynamic_callback():\n    return 42\ndef unused():\n    pass\n",
+    })
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "lib.py"): {"executed_lines": [2], "missing_lines": [4], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        sg.ingest_trace(store, str(cov_path))
+        nodes, edges = extract_project(str(tmp_path))
+        fn = [n for n in nodes if n.id.startswith("lib.py")]
+        fe = [e for e in edges if e.src.startswith("lib.py")]
+        store.replace_file("lib.py", fn, fe)
+        assert {n.id for n in store.nodes_with_role("runtime")} == {"lib.py::dynamic_callback"}
+        fs = sg.find_stale(store)
+        stale = {x["id"] for x in (fs.result or [])}
+    assert "lib.py::dynamic_callback" not in stale, "executed code flagged dead after replace_file"
+    assert "lib.py::unused" in stale  # genuinely unused stays flagged
+
+
+def test_r33_empty_ignore_glob_does_not_crash(tmp_path):
+    """R33B-opus (raises-instead-of-Result): `ignore = [""]` reached PurePath.match(""),
+    which raises ValueError('empty pattern') — reindex crashed with a raw traceback. The
+    glob chokepoints (_ignored / _wanted) must skip empty patterns; the config loader
+    drops them at the source too."""
+    from stitchgraph.core.extract import extract_project
+    _mk(tmp_path, {
+        "m.py": "def f():\n    return 1\n",
+        "stitchgraph.toml": '[index]\nignore = ["", "*.md", ""]\n',
+    })
+    nodes, _ = extract_project(str(tmp_path), ignore=[""])  # direct API must not raise
+    assert any(n.id == "m.py::f" for n in nodes)
+    # And end-to-end through a hand-edited config carrying an empty glob (the panel's
+    # path): reindex must return a Result, not crash with a raw traceback.
+    with sg.Store(":memory:") as store:
+        r = sg.reindex(store, str(tmp_path))
+        assert r.ok
+
+
+def test_r33_config_str_list_drops_empty_entries():
+    """R33B-opus (root producer): config `_str_list` must not pass empty strings into the
+    ignore list — they crash the glob matcher downstream."""
+    from stitchgraph.core.config import load_config
+    cfg_dir = Path(__import__("tempfile").mkdtemp())
+    (cfg_dir / "stitchgraph.toml").write_text('[index]\nignore = ["", "*.md", ""]\n')
+    cfg = load_config(cfg_dir / "stitchgraph.toml")
+    assert "" not in cfg.ignore and "*.md" in cfg.ignore
+
+
+def test_r33_impact_of_demotes_on_name_based_blast_radius(tmp_path):
+    """R33A-opus (INFLATION + envelope contract): impact_of hardcoded confidence=0.9 /
+    provenance=extracted / needs_review=false regardless of the edges backing the blast
+    radius, while sibling ops (get_callers, trace_path) demote name-based evidence. A
+    blast radius reached only through AMBIGUOUS homonym binds must be advisory, not
+    type-certain fact (operations.py provenance-demotion column)."""
+    _mk(tmp_path, {
+        "cli.py": 'def main():\n    return 0\nif __name__ == "__main__":\n    main()\n',
+        "mcp.py": 'def main():\n    return 1\nif __name__ == "__main__":\n    main()\n',
+        "report.py": 'def main():\n    return 2\nif __name__ == "__main__":\n    main()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.impact_of(store, "mcp.py::main")
+    assert r.needs_review is True
+    assert r.provenance.value in ("ambiguous", "inferred")
+    assert r.confidence < 0.9
+
+
+def test_r33_scope_matching_respects_id_boundaries(tmp_path):
+    """R33B-sonnet (INFLATION): get_matrix / summarize_subsystem used bare startswith,
+    so scope `Foo` swept in sibling class `FooBar` and file scope `...::Node` pulled in
+    `NodeKind` — inflating cells/density/counts with unrelated nodes. The char after the
+    scope must be a real id separator (operations._under_scope column)."""
+    from stitchgraph.core.operations import _under_scope
+    assert _under_scope("m.py::Foo", "m.py::Foo")
+    assert _under_scope("m.py::Foo.run", "m.py::Foo")
+    assert not _under_scope("m.py::FooBar", "m.py::Foo")
+    assert not _under_scope("m.py::NodeKind", "m.py::Node")
+    assert _under_scope("pkg/a.py::X", "pkg")
+    assert not _under_scope("pkgutil/a.py::X", "pkg")
+    # End-to-end: a class scope must not absorb a prefix-sharing sibling class.
+    _mk(tmp_path, {"model.py": (
+        "class Foo:\n"
+        "    def run(self):\n        self.helper()\n"
+        "    def helper(self):\n        pass\n\n"
+        "class FooBar:\n"
+        "    def execute(self):\n        f = Foo()\n        f.run()\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        m = sg.get_matrix(store, "model.py::Foo", relation="CALLS")
+    assert m.result["n"] == 3, f"scope bled into FooBar: labels={m.result['labels']}"
+    assert all("FooBar" not in lbl for lbl in m.result["labels"])

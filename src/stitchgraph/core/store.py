@@ -203,6 +203,18 @@ class Store:
             # name (POSIX surrogateescape on a non-UTF-8 path) can't be bound by sqlite —
             # skip the whole update rather than raise, mirroring add_node/add_edge (panel R15B).
             return
+        # A `runtime` role is set by ingest_trace from a coverage trace — a fact about
+        # execution, orthogonal to extraction. The freshly-extracted Node objects carry
+        # no runtime role, so a naive delete+re-insert erases it: a function observed
+        # executing would lose its seed and get flagged dead on the next incremental
+        # update (cardinal sin), while `has_runtime` meta stayed set and inflated
+        # find_stale's confidence to 0.78 (panel R33A). Carry the role across for every
+        # id that survives the re-extraction (add_role no-ops on a vanished id).
+        runtime_ids = {
+            row["id"] for row in self.conn.execute(
+                "SELECT id, roles FROM nodes WHERE file = ?", (file,))
+            if "runtime" in (row["roles"] or "").split(",")
+        }
         with self.conn:  # single transaction
             self.conn.execute("DELETE FROM nodes WHERE file = ?", (file,))
             self.conn.execute("DELETE FROM edges WHERE file = ?", (file,))
@@ -210,6 +222,8 @@ class Store:
                 self.add_node(n, file=file)
             for e in edges:
                 self.add_edge(e, file=file)
+            for nid in runtime_ids:
+                self.add_role(nid, "runtime")
             self._resolve_worklist()
             self._invalidate_dangling()
             # Deleting a file can sever one target of an ambiguous fan-out (caller ->

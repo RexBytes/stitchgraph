@@ -1500,4 +1500,7 @@ def _ignored(path: Path, root: Path, ignore: list[str] | None) -> bool:
     if not ignore:
         return False
     rel = path.relative_to(root)
-    return any(rel.match(pattern) for pattern in ignore)
+    # Skip empty patterns: PurePath.match("") raises ValueError("empty pattern"), so a
+    # hand-edited stitchgraph.toml with `ignore = [""]` (or a direct extract_project call)
+    # would crash reindex with a raw traceback instead of returning a Result (panel R33B).
+    return any(rel.match(pattern) for pattern in ignore if pattern)
