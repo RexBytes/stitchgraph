@@ -4321,3 +4321,93 @@ def test_old_schema_db_missing_node_columns_does_not_crash(tmp_path):
         assert sg.orient(store).ok              # reads nodes -> _row_to_node, must not raise
         assert sg.find_stale(store).ok
         assert sg.find_symbol(store, "f").ok
+
+
+# -- Panel R28A / opus (CARDINAL): __all__ built by += / concat / extend -------
+def test_dunder_all_augmented_and_computed_forms_are_exported(tmp_path):
+    """A regular (non-__init__) module's public API is declared ONLY via `__all__`.
+    `_dunder_all` recognized just `__all__ = [literal]`, so symbols added with the equally
+    idiomatic `__all__ += [...]`, `__all__ = [...] + [...]`, and `__all__.extend([...])`
+    got no `exported` role and were flagged dead — live public API as dead, the cardinal
+    sin (panel R28A)."""
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0.1"\n',
+        "pkg/__init__.py": "",
+        "pkg/aug.py": '''
+            __all__ = ["First"]
+            __all__ += ["second"]
+
+            class First: ...
+            def second(): return 1
+            def really_private(): return 2
+        ''',
+        "pkg/concat.py": '''
+            __all__ = ["VisibleA"] + ["VisibleB"]
+
+            class VisibleA: ...
+            def VisibleB(): return 1
+        ''',
+        "pkg/ext.py": '''
+            __all__ = ["KeepA"]
+            __all__.extend(["KeepB"])
+            __all__.append("KeepC")
+
+            class KeepA: ...
+            def KeepB(): return 1
+            def KeepC(): return 2
+        ''',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        stale = sg.find_stale(store)
+        ids = {c["id"] for c in (stale.result or [])}
+    # Every __all__-declared name (regardless of build form) must NOT be stale...
+    for exported in ("pkg/aug.py::First", "pkg/aug.py::second",
+                     "pkg/concat.py::VisibleA", "pkg/concat.py::VisibleB",
+                     "pkg/ext.py::KeepA", "pkg/ext.py::KeepB", "pkg/ext.py::KeepC"):
+        assert exported not in ids, f"public API flagged dead: {exported}"
+    # ...while a genuinely-private symbol stays a true positive.
+    assert "pkg/aug.py::really_private" in ids
+
+
+# -- Panel R28B / opus (BLOCKING): _migrate must backfill ALL schema columns ---
+def test_old_schema_db_missing_file_and_location_columns_does_not_crash(tmp_path):
+    """An index whose `nodes` predates `file` crashed `_INDEXES` (idx_nodes_file) at
+    construction; one whose `edges` predates `location` crashed every `_row_to_edge`.
+    `_migrate` now derives its backfill set from `_SCHEMA` itself, so it can never omit a
+    column again (panel R28B)."""
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        # nodes lacks file/is_stub/arity/summary/roles/end_line
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '');"
+        # edges lacks location/source/file/name_based
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted');"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('m.py::f', 'Function', 'f')")
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('m.py::g', 'Function', 'g')")
+    conn.execute("INSERT INTO edges(src, relation, dst_symbol, dst_id) "
+                 "VALUES ('m.py::f', 'CALLS', 'g', 'm.py::g')")  # exercises _row_to_edge
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:                 # must not raise in __init__ (idx_nodes_file)
+        assert sg.orient(store).ok
+        assert sg.find_stale(store).ok          # reads edges -> _row_to_edge, must not raise
+        assert sg.get_callers(store, "g").ok
+
+
+# -- Panel R28A / haiku (BLOCKING): coverage JSON depth-bomb must not crash -----
+def test_ingest_trace_json_depth_bomb_returns_result(tmp_path):
+    """A deeply nested coverage JSON makes `json.loads` exceed the recursion limit;
+    RecursionError is not a JSONDecodeError, so it escaped `_parse_json` and crashed
+    `ingest_trace`. The 'empty on any problem' contract must hold (panel R28A-haiku)."""
+    bomb = tmp_path / "cov.json"
+    bomb.write_text('{"a":' * 6000 + "1" + "}" * 6000)
+    with sg.Store(":memory:") as store:
+        result = sg.ingest_trace(store, str(bomb))   # must return, not raise
+    assert result.ok is False

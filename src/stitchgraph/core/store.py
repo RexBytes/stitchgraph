@@ -62,6 +62,29 @@ CREATE INDEX IF NOT EXISTS idx_edges_file   ON edges(file);
 CREATE INDEX IF NOT EXISTS idx_edges_rel    ON edges(relation);
 """
 
+def _canonical_columns() -> dict[str, dict[str, str]]:
+    """`{table: {column: ALTER-ready DDL}}` derived from `_SCHEMA` by materializing it in a
+    throwaway in-memory DB and reading `PRAGMA table_info`. `_migrate` uses this so its
+    backfill set is always exactly the schema's columns — no hand-maintained list to drift.
+    The reconstructed DDL preserves type, NOT NULL, and DEFAULT (PRAGMA `dflt_value` is
+    already a SQL literal), which is what `ALTER TABLE ADD COLUMN` needs for NOT NULL cols.
+    Cheap (one in-memory schema build) and only on the rare construct-on-old-DB path."""
+    out: dict[str, dict[str, str]] = {}
+    with closing(sqlite3.connect(":memory:")) as probe:
+        probe.row_factory = sqlite3.Row
+        probe.executescript(_SCHEMA)
+        for table in ("nodes", "edges"):
+            cols: dict[str, str] = {}
+            for r in probe.execute(f"PRAGMA table_info({table})"):
+                ddl = f"{r['name']} {r['type']}"
+                if r["notnull"]:
+                    ddl += " NOT NULL"
+                if r["dflt_value"] is not None:
+                    ddl += f" DEFAULT {r['dflt_value']}"
+                cols[r["name"]] = ddl
+            out[table] = cols
+    return out
+
 
 class Store:
     """The graph store. Use as a context manager or call .close()."""
@@ -83,24 +106,15 @@ class Store:
         self.conn.commit()
 
     def _migrate(self) -> None:
-        """Add columns missing from an older index file (forward-compatible). Covers
-        both tables: `_row_to_edge` reads `source`/`file` unconditionally, so an index
-        built before those edge columns existed must gain them or edge reads fail."""
-        tables = {
-            "nodes": (("location", "location TEXT NOT NULL DEFAULT ''"),
-                      ("is_stub", "is_stub INTEGER NOT NULL DEFAULT 0"),
-                      ("arity", "arity INTEGER"),
-                      ("summary", "summary TEXT"),
-                      ("roles", "roles TEXT NOT NULL DEFAULT ''"),
-                      ("end_line", "end_line INTEGER")),
-            "edges": (("source", "source TEXT NOT NULL DEFAULT 'tree-sitter'"),
-                      ("file", "file TEXT NOT NULL DEFAULT ''"),
-                      ("name_based", "name_based INTEGER NOT NULL DEFAULT 0")),
-        }
-        for table, cols in tables.items():
+        """Backfill every column the canonical schema declares that an older index file
+        lacks (forward-compatible). The wanted set is DERIVED from `_SCHEMA` itself, so the
+        backfill can never drift out of sync with the schema again: a hand-maintained list
+        previously omitted `nodes.file` (crashed `_INDEXES` on `idx_nodes_file`) and
+        `edges.location` (crashed `_row_to_edge` reads) on old DBs (panels R28A/R28B)."""
+        for table, cols in _canonical_columns().items():
             have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
-            for col, ddl in cols:
-                if col not in have:
+            for name, ddl in cols.items():
+                if name not in have:
                     self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
     # -- context manager ---------------------------------------------------
@@ -570,13 +584,20 @@ def _row_to_node(row: sqlite3.Row) -> Node:
 
 
 def _row_to_edge(row: sqlite3.Row) -> Edge:
+    # Tolerate a row from an older/partial schema or a column-subset projection missing any
+    # optional column — only src/relation/dst_symbol are guaranteed (NOT NULL, no default)
+    # — so an op never raises IndexError on such a row (panels R27A/R28B mirror _row_to_node).
+    keys = row.keys()
     return Edge(
         src=row["src"], relation=Relation(row["relation"]),
-        dst_symbol=row["dst_symbol"], dst_id=row["dst_id"], weight=row["weight"],
-        provenance=Provenance(row["provenance"]), location=row["location"],
-        source=row["source"],
-        # Tolerate a row that predates the column (e.g. a projection that didn't select it).
-        name_based=bool(row["name_based"]) if "name_based" in row.keys() else False,
+        dst_symbol=row["dst_symbol"],
+        dst_id=row["dst_id"] if "dst_id" in keys else None,
+        weight=row["weight"] if "weight" in keys else 1.0,
+        provenance=Provenance(row["provenance"]) if "provenance" in keys
+        else Provenance.EXTRACTED,
+        location=row["location"] if "location" in keys else "",
+        source=row["source"] if "source" in keys else "tree-sitter",
+        name_based=bool(row["name_based"]) if "name_based" in keys else False,
     )
 
 

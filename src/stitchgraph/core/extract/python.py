@@ -1369,15 +1369,50 @@ def _arity(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
     return len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs)
 
 
+def _str_elts(value: ast.AST | None) -> set[str]:
+    """String literals reachable in an `__all__` RHS, looking *through* concatenation so
+    `["a"] + ["b"]` and `("a",) + OTHER` both yield their literal names (non-literal
+    operands contribute nothing). A List/Tuple yields its string constants directly."""
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return {e.value for e in value.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        return _str_elts(value.left) | _str_elts(value.right)
+    return set()
+
+
 def _dunder_all(tree: ast.Module) -> set[str] | None:
+    """Names a module declares public via `__all__`. Recognizes every idiomatic build form,
+    not just a single list literal: `__all__ = [...]`, `__all__ = [...] + [...]`,
+    `__all__ += [...]` (AugAssign), and `__all__.extend([...])` / `.append("x")` calls.
+    Missing any of these dropped genuinely-exported symbols' `exported` role, so they were
+    flagged dead — live public API as dead, the cardinal sin (panel R28A). Returns None only
+    when no `__all__` is present at all (so the caller falls back to other export signals)."""
+    found = False
+    names: set[str] = set()
     for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "__all__" \
-                        and isinstance(node.value, (ast.List, ast.Tuple)):
-                    return {e.value for e in node.value.elts
-                            if isinstance(e, ast.Constant) and isinstance(e.value, str)}
-    return None
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            found = True
+            names |= _str_elts(node.value)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == "__all__" and isinstance(node.op, ast.Add):
+            found = True
+            names |= _str_elts(node.value)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            func = call.func
+            # `__all__.extend([...])` / `__all__.append("x")`
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                    and func.value.id == "__all__" and func.attr in ("extend", "append"):
+                found = True
+                for arg in call.args:
+                    if func.attr == "append" and isinstance(arg, ast.Constant) \
+                            and isinstance(arg.value, str):
+                        names.add(arg.value)
+                    elif func.attr == "extend":
+                        names |= _str_elts(arg)
+    return names if found else None
 
 
 def _main_block(tree: ast.Module) -> ast.If | None:

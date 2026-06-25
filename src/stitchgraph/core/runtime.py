@@ -52,7 +52,10 @@ def load_coverage(trace_path: str | Path) -> tuple[dict[str, set[int]], str]:
 def _parse_json(text: str, base: str) -> dict[str, set[int]]:
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # JSONDecodeError (a ValueError) for malformed JSON; RecursionError for a deeply
+        # nested object/array depth-bomb (json recurses per nesting level). Either way the
+        # docstring contract holds: "empty on any problem", never raise (panel R28A).
         return {}
     out: dict[str, set[int]] = {}
     # Defend the SHAPE, not just the values: a valid-JSON-but-wrong-shape report
