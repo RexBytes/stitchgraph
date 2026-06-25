@@ -308,6 +308,18 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   re-bind) would break legitimate forward-reference import resolution — risking a far worse
   *false-dead* (cardinal). Trust the per-edge `provenance` (the phantom is `ambiguous`/
   name-based) and prefer a full reindex when exact deletion-time metrics matter.
+- **Residual — `find_holes` count after an incremental delete (non-blocking, library-only):**
+  deleting a file via `Store.replace_file(file, [], [])` leaves the *precise* (import-by-path)
+  edges that targeted it dangling at their exact id (kept, by design, so they auto-revalidate
+  if the file is re-added — panels R24A/R29A). `find_holes` counts each such dangling edge, so
+  after a delete it can report MORE holes than a full reindex of the same end state, which
+  re-resolves the importing file's references and dedups them to one unresolved symbol (panel
+  R37A). This is **non-cardinal** and arguably more complete — the deleted target's importers
+  genuinely contain broken references — but it diverges from full-reindex `find_holes` count.
+  Same root and trade-off as the `fan_in`-on-delete residual above (nullifying precise edges
+  to converge the count would lose the precise re-add revalidation and risk a false-dead).
+  Affects only the incremental `replace_file` delete path; the shipped CLI/MCP full-reindex,
+  and it self-corrects on the next full reindex.
 
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are

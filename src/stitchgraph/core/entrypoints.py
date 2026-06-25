@@ -32,6 +32,16 @@ def _dir_of(file: str) -> str:
     return file.rsplit("/", 1)[0] if "/" in file else ""
 
 
+def _module_id_of(file: str) -> str:
+    """The MODULE node id stitchgraph assigns a file: `{file}::{stem}` (stem = the filename
+    without its final extension, matching pathlib.Path.stem). Used to seed the module-load
+    root by id even when a same-stem top-level class/function clobbered the MODULE node."""
+    name = file.rsplit("/", 1)[-1]
+    dot = name.rfind(".")
+    stem = name[:dot] if dot > 0 else name  # dot>0: a leading-dot name has no suffix
+    return f"{file}::{stem}"
+
+
 class EntryPointDetector(Protocol):
     def detect(self, store: Store) -> set[str]: ...
 
@@ -105,7 +115,17 @@ class PythonLibraryDetector:
         for m in store.nodes_by_kind(NodeKind.MODULE):
             mf = m.id.split("::", 1)[0]
             if mf in root_files or (_is_package_scoped(mf) and _dir_of(mf) in root_dirs):
-                roots.add(m.id)
+                roots.add(m.id)  # existing MODULE node (handles __init__ package-name ids, Go)
+        # Collision case: a top-level class/function sharing the file stem clobbers the MODULE
+        # node `{file}::{stem}` into a symbol node, so nodes_by_kind(MODULE) misses it and the
+        # module-level use edges (src = that id) lose their load-root — live module-load code is
+        # flagged dead (panel R37A, cardinal). Seed that id directly for any root-owning file;
+        # it's a no-op when the MODULE node survived (already seeded above) or when the computed
+        # id doesn't exist (e.g. an __init__ whose module id is the package name, not the stem).
+        for f in root_files:
+            mid = _module_id_of(f)
+            if store.get_node(mid) is not None:
+                roots.add(mid)
         return roots
 
 

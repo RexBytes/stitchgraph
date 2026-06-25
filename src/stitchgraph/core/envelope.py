@@ -133,8 +133,14 @@ def refuse(*reasons: str, confidence: float = 0.0,
 
 def _plain(value: Any) -> Any:
     """Best-effort conversion of dataclass payloads to JSON-friendly dicts."""
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, (str, int, bool)):
         return value
+    if isinstance(value, float):
+        # Non-finite floats serialize to Infinity/NaN (invalid JSON, RFC 8259). No current op
+        # puts a non-finite float in a payload/meta (weights are sanitized on read, confidences
+        # bounded), but _plain is the serialization chokepoint for ALL result/meta values, so
+        # drop a stray non-finite to None rather than emit invalid JSON (panel R37B, defense).
+        return value if math.isfinite(value) else None
     if isinstance(value, (list, tuple)):
         return [_plain(v) for v in value]
     if isinstance(value, dict):

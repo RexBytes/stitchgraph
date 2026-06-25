@@ -46,8 +46,11 @@ def _full():
 
 def _incremental(nbf, ebf, files):
     s = sg.Store(":memory:")
+    # Pass the whole-project exported-id set so cross-file `exported` roles converge with a
+    # full reindex even when a package __init__'s re-export surface changes (panel R37A).
+    exported_ids = {n.id for fnodes in nbf.values() for n in fnodes if "exported" in n.roles}
     for f in files:
-        s.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        s.replace_file(f, nbf.get(f, []), ebf.get(f, []), exported_ids=exported_ids)
     return s
 
 

@@ -217,13 +217,23 @@ class Store:
         val = row["value"]
         return val if isinstance(val, str) else None
 
-    def replace_file(self, file: str, nodes: Iterable[Node], edges: Iterable[Edge]) -> None:
+    def replace_file(self, file: str, nodes: Iterable[Node], edges: Iterable[Edge],
+                     *, exported_ids: set[str] | None = None) -> None:
         """Incremental update for one file (design §4, Store & incremental updates).
 
         1. Delete nodes/edges owned by this file.
         2. Insert the freshly-extracted nodes/edges.
         3. Re-resolve the unresolved worklist against new nodes.
         4. Invalidate inbound edges whose target id no longer exists.
+
+        `exported_ids` (optional): the COMPLETE set of node ids carrying the `exported` role
+        in a whole-project extract — `{n.id for n in nodes if "exported" in n.roles}`. When
+        given, the `exported` role is re-applied to match it exactly (set where in, cleared
+        where out), so an incremental update that changes a package __init__'s re-export
+        surface converges with a full reindex. Without it, replace_file is a single-file
+        update and cannot see another file's export change, leaving a newly re-exported symbol
+        flagged dead (panel R37A) — incremental callers should pass it, derived from the same
+        whole-project extract that produced `nodes`/`edges`.
         """
         nodes = list(nodes)
         edges = list(edges)
@@ -266,6 +276,24 @@ class Store:
             self._rewiden_resolved()
             self._propagate_overrides()
             self._dedup_resolved_edges()
+            if exported_ids is not None:
+                self._set_exported_roles(exported_ids)
+
+    def _set_exported_roles(self, exported_ids: set[str]) -> None:
+        """Make the cross-file `exported` role match `exported_ids` exactly — set on a node
+        whose id is in it, cleared from one whose id is not. The caller derives the set from a
+        whole-project extract (`{n.id for n in nodes if "exported" in n.roles}`), which already
+        did the precise per-node assignment (incl. exported-class public methods), so this is
+        an exact convergence with full reindex without re-deriving any export logic in the
+        store (panel R37A)."""
+        for row in self.conn.execute("SELECT id, roles FROM nodes").fetchall():
+            roles = set((row["roles"] or "").split(",")) - {""}
+            want = row["id"] in exported_ids
+            if want == ("exported" in roles):
+                continue
+            roles = roles | {"exported"} if want else roles - {"exported"}
+            self.conn.execute("UPDATE nodes SET roles = ? WHERE id = ?",
+                              (",".join(sorted(roles)), row["id"]))
 
     def _rewiden_resolved(self) -> None:
         """Re-normalize NAME-BASED resolved edges so an incremental update matches a full

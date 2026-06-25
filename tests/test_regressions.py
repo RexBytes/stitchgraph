@@ -5152,3 +5152,94 @@ def test_r36_envelope_clamps_nonfinite_confidence():
         assert r.needs_review is True
         dumped = json.dumps(r.to_dict())  # must be valid JSON
         assert "Infinity" not in dumped and "NaN" not in dumped
+
+
+# ===========================================================================
+# Round 37 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Two cardinals +
+# defense-in-depth; one finding documented as a known limitation (find_holes on
+# incremental delete), one non-blocking (Express middleware), one invalid earlier.
+# ===========================================================================
+
+
+def test_r37_module_symbol_collision_keeps_module_load_live_python(tmp_path):
+    """R37A-opus (CARDINAL): when a top-level class/function shares the file stem, the MODULE
+    node id `Service.py::Service` is clobbered into the symbol node, so module-load-root
+    seeding (via nodes_by_kind(MODULE)) misses it and a live module-level call is flagged
+    dead. The detector now seeds the module-load id computed from the file path (panel R37A)."""
+    _mk(tmp_path, {
+        "Service.py": ('__all__ = ["do_it"]\n'
+                       "class Service:\n    def run(self):\n        return 1\n"
+                       "_inst = prep()\n"
+                       "def prep():\n    return Service()\n"
+                       "def do_it():\n    return 42\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    # prep() runs at module load; Service is instantiated by it — both live.
+    assert "Service.py::prep" not in stale
+    assert "Service.py::Service" not in stale
+    # the genuinely-unused method is still flagged (precision preserved)
+    assert "Service.py::Service.run" in stale
+
+
+def test_r37_module_symbol_collision_keeps_module_load_live_js(tmp_path):
+    """R37A-opus (CARDINAL), tree-sitter sibling of the above."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Service.js": ("class Service { run() { return 1; } }\n"
+                       "const _inst = prep();\n"
+                       "function prep() { return new Service(); }\n"
+                       "export function doIt() { return 42; }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any(s in stale for s in ("Service.js::prep", "Service.js::Service"))
+
+
+def test_r37_incremental_init_export_change_converges(tmp_path):
+    """R37A-sonnet F1 (CARDINAL): incrementally editing __init__.py to re-export a symbol
+    defined in another file (adding it to __all__) must not leave that symbol flagged dead.
+    replace_file is a single-file update and can't see another file's export change, so the
+    incremental caller passes `exported_ids` from the whole-project extract; replace_file then
+    re-applies the cross-file `exported` role exactly, converging with a full reindex (panel
+    R37A)."""
+    from stitchgraph.core.extract import extract_project
+    _mk(tmp_path, {
+        "app/__init__.py": '__all__ = ["main"]\nfrom .main import main\n',
+        "app/main.py": "def main():\n    return 1\n",
+        "app/other.py": "def public_fn():\n    return 42\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert "app/other.py::public_fn" in {x["id"] for x in (sg.find_stale(store).result or [])}
+        (tmp_path / "app" / "__init__.py").write_text(
+            '__all__ = ["main", "public_fn"]\nfrom .main import main\nfrom .other import public_fn\n')
+        nodes, edges = extract_project(str(tmp_path))
+        exported_ids = {n.id for n in nodes if "exported" in n.roles}
+        fn = [n for n in nodes if n.id.startswith("app/__init__.py")]
+        fe = [e for e in edges if e.src.startswith("app/__init__.py")]
+        store.replace_file("app/__init__.py", fn, fe, exported_ids=exported_ids)
+        inc_stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    with sg.Store(":memory:") as full:
+        sg.reindex(full, str(tmp_path))
+        full_stale = {x["id"] for x in (sg.find_stale(full).result or [])}
+    assert "app/other.py::public_fn" not in inc_stale, "re-exported symbol flagged dead incrementally"
+    assert inc_stale == full_stale, f"incremental diverged from full: {inc_stale ^ full_stale}"
+
+
+def test_r37_plain_drops_nonfinite_floats():
+    """R37B-sonnet (defense-in-depth): _plain is the serialization chokepoint for every
+    result/meta value; a stray non-finite float must become None, never Infinity/NaN (invalid
+    JSON, RFC 8259) (panel R37B)."""
+    import json
+
+    from stitchgraph.core.envelope import _plain
+    assert _plain(float("inf")) is None
+    assert _plain(float("nan")) is None
+    assert _plain(1.5) == 1.5
+    assert _plain(True) is True and _plain(3) == 3
+    out = _plain({"a": float("inf"), "b": [float("nan"), 2.0], "c": "x"})
+    assert json.dumps(out) and "Infinity" not in json.dumps(out) and "NaN" not in json.dumps(out)
