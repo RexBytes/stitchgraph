@@ -340,6 +340,20 @@ class Store:
         node yet keeps two outbound edges per call site, and resolving a hole whose symbol
         already has a resolved sibling adds a second row. Holes (dst_id IS NULL) are
         distinct reference sites and are left untouched."""
+        # 0. Preserve name-based-ness across duplicates BEFORE collapsing them. A declared-
+        #    type call emits both a precise (name_based=0) and a widening (name_based=1) edge
+        #    to its declared target; step 1 keeps the higher-weight (precise) row and would
+        #    drop the name_based marker, so the group could never re-widen to a homonym added
+        #    later, flagging it dead (panel R23A, cardinal). OR the flag onto every row of a
+        #    (src, relation, dst_id) group so the survivor stays re-widenable.
+        self.conn.execute(
+            """UPDATE edges SET name_based = 1
+                WHERE dst_id IS NOT NULL AND name_based = 0
+                  AND EXISTS (SELECT 1 FROM edges b
+                               WHERE b.dst_id IS NOT NULL AND b.name_based = 1
+                                 AND b.src = edges.src AND b.relation = edges.relation
+                                 AND b.dst_id = edges.dst_id)"""
+        )
         # 1. one row per (src, relation, dst_id): drop any that has a strictly-better
         #    sibling (higher weight, or equal weight with a lower id), keeping one best row.
         self.conn.execute(

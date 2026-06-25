@@ -3999,6 +3999,46 @@ def test_incremental_self_dispatch_override_not_stale(tmp_path):
     assert "sub.py::Sub._special" not in stale
 
 
+def test_incremental_dedup_preserves_name_based_for_rewiden(tmp_path):
+    """A declared-type call emits a precise (name_based=0) AND a widening (name_based=1)
+    edge to its declared target; _dedup_resolved_edges keeps the precise row and must NOT
+    drop the name_based marker, or the group can never re-widen to a homonym whose file is
+    added later — flagging it dead (panel R23A, cardinal, incremental path)."""
+    _mk(tmp_path, {
+        "a.py": "class A:\n    def do(self): return 1\n",
+        "b.py": "class B:\n    def do(self): return 2\n",
+        "main.py": """
+            from a import A
+            def run():
+                x = A()
+                return x.do()
+            def main(): return run()
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    full = sg.Store(":memory:")
+    sg.reindex(full, str(tmp_path))
+    full_stale = {c["id"] for c in sg.find_stale(full).result}
+    full.close()
+    # Incrementally apply main.py BEFORE b.py exists (the failing order).
+    inc = _incremental_store_in_order(tmp_path, ["a.py", "main.py", "b.py"])
+    inc_stale = {c["id"] for c in sg.find_stale(inc).result}
+    inc.close()
+    assert "b.py::B.do" not in inc_stale       # the homonym must stay live (cardinal)
+    assert inc_stale == full_stale             # incremental converges to full reindex
+
+
+def _incremental_store_in_order(root, order):
+    from stitchgraph.core.extract.python import extract_project
+    nodes, edges = extract_project(str(root))
+    store = sg.Store(":memory:")
+    for f in order:
+        n = [x for x in nodes if x.id.split("::", 1)[0] == f]
+        e = [x for x in edges if x.src.split("::", 1)[0] == f]
+        store.replace_file(f, n, e)
+    return store
+
+
 def test_incremental_precise_import_not_over_widened(tmp_path):
     """A precise `from a import helper` resolution must stay bound to a's helper on an
     incremental replace of an UNRELATED file, never name-widened across a homonym in
