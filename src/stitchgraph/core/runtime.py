@@ -146,8 +146,20 @@ def hit_node_ids(store: Store, covmap: dict[str, set[int]], root: str) -> set[st
 
 
 def _by_suffix(norm: dict[str, set[int]], rel: str) -> set[int] | None:
+    """Fallback match for coverage paths recorded under a different root (absolute or
+    module-prefixed) when the exact root-join match missed. Suffix matching is inherently
+    ambiguous for a BARE top-level filename — `a.py` is a path-suffix of an unrelated
+    `b/a.py` — and a false match would mark an unexecuted node runtime, inflating
+    executed_nodes (panel R34A). So only attempt it for a rel WITH a directory component
+    (specific enough); a bare rel relies solely on the exact match, and a miss there
+    deflates (cardinal-safe) rather than stealing another file's coverage."""
     for k, v in norm.items():
-        if k.endswith(os.sep + rel) or k.endswith("/" + rel) or k.endswith(rel):
+        if k == rel:               # exact (relative coverage key == relative rel): unambiguous
+            return v
+    if "/" not in rel and os.sep not in rel:
+        return None                # bare filename: suffix matching would over-match (see above)
+    for k, v in norm.items():
+        if k.endswith(os.sep + rel) or k.endswith("/" + rel):
             return v
     return None
 

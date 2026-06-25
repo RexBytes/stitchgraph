@@ -4889,3 +4889,126 @@ def test_r33_scope_matching_respects_id_boundaries(tmp_path):
         m = sg.get_matrix(store, "model.py::Foo", relation="CALLS")
     assert m.result["n"] == 3, f"scope bled into FooBar: labels={m.result['labels']}"
     assert all("FooBar" not in lbl for lbl in m.result["labels"])
+
+
+# ===========================================================================
+# Round 34 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Three product
+# blockers + one consistency item; each fixed at root cause and pinned below.
+# ===========================================================================
+
+
+def test_r34_trace_path_demotes_name_based_path():
+    """R34B-opus (INFLATION + envelope contract): trace_path derived provenance from the
+    propagated confidence (conf>=0.99 => extracted), so a name-based AMBIGUOUS edge with
+    weight 1.0 was reported as a type-certain extracted path with needs_review=False. It
+    must demote on the real edges along the path, like impact_of/get_callers (the
+    provenance-demotion column)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for n in ("a", "b"):
+            store.add_node(Node(f"m.py::{n}", NodeKind.FUNCTION, n))
+        store.add_edge(Edge("m.py::a", Relation.CALLS, "b", dst_id="m.py::b",
+                            weight=1.0, provenance=Provenance.AMBIGUOUS))
+        store.commit()
+        r = sg.trace_path(store, "m.py::a", "m.py::b")
+    assert r.ok and r.confidence == 1.0          # confidence still reflects the weight
+    assert r.provenance is Provenance.AMBIGUOUS   # but provenance reflects the edge
+    assert r.needs_review is True and r.review_reasons
+
+
+def test_r34_trace_path_extracted_path_stays_certain():
+    """Companion to the above: an all-EXTRACTED path must NOT be demoted (no false
+    needs_review), so the demotion only fires on genuine name-based evidence."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for n in ("a", "b"):
+            store.add_node(Node(f"m.py::{n}", NodeKind.FUNCTION, n))
+        store.add_edge(Edge("m.py::a", Relation.CALLS, "b", dst_id="m.py::b",
+                            weight=1.0, provenance=Provenance.EXTRACTED))
+        store.commit()
+        r = sg.trace_path(store, "m.py::a", "m.py::b")
+    assert r.provenance is Provenance.EXTRACTED
+
+
+def test_r34_runtime_suffix_match_requires_separator_boundary():
+    """R34A-sonnet (INFLATION): _by_suffix had a bare endswith, so coverage for `b/a.py`
+    marked the unrelated top-level `a.py` runtime, inflating executed_nodes. A bare-filename
+    rel must not suffix-match a deeper path; only a rel with a directory component does."""
+    from stitchgraph.core.runtime import _by_suffix
+    assert _by_suffix({"/proj/b/a.py": {2}}, "a.py") is None      # bare rel: no false steal
+    assert _by_suffix({"/proj/a.py": {2}}, "a.py") is None        # bare rel relies on exact match
+    assert _by_suffix({"/abs/pkg/m.py": {2}}, "pkg/m.py") == {2}  # dir component: legit suffix
+
+
+def test_r34_runtime_suffix_inflation_end_to_end(tmp_path):
+    """R34A-sonnet end-to-end: coverage covering only `b/a.py` must not mark `a.py::alive`
+    runtime. executed_nodes must equal the truly-executed count."""
+    import json
+    _mk(tmp_path, {
+        "a.py": "def alive():\n    return 1\ndef dead():\n    return 2\n",
+        "b/a.py": "def other_func():\n    return 3\n",
+    })
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "b" / "a.py"): {"executed_lines": [2], "missing_lines": [], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.ingest_trace(store, str(cov_path))
+        runtime_ids = {n.id for n in store.nodes_with_role("runtime")}
+    assert runtime_ids == {"b/a.py::other_func"}, f"inflated runtime set: {runtime_ids}"
+    assert r.meta.get("executed") == 1
+
+
+def test_r34_incremental_resolution_is_per_language(tmp_path):
+    """R34A-opus (INFLATION): full reindex buckets name resolution per language (by_lang),
+    but the incremental store path was language-blind — a Rust `helper()` bound to a Go
+    `helper`, inflating fan_in/get_callers vs a full reindex. Name resolution must stay
+    within the same language family."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "lib.rs": "pub fn run() {\n    helper();\n}\nfn helper() {}\n",
+        "other.go": "package main\nfunc helper() {}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        nodes, edges = extract_project(str(tmp_path))
+        fn = [n for n in nodes if n.id.startswith("lib.rs")]
+        fe = [e for e in edges if e.src.startswith("lib.rs")]
+        store.replace_file("lib.rs", fn, fe)
+        fi = fan_in(store)
+        callers = {c["src"] for c in (sg.get_callers(store, "other.go::helper").result or [])}
+    assert fi.get("other.go::helper", 0) == 0, "Rust call bled into Go helper fan_in"
+    assert not callers, f"phantom cross-language caller: {callers}"
+
+
+def test_r34_same_lang_is_recall_safe_for_unknown_ids():
+    """The language filter must be recall-safe: an unknown extension / pseudo node (db::,
+    var::) must NOT be filtered out (returning 0 could drop a valid bind and flag live code
+    dead — the cardinal sin). C and C++ share one bucket (panel UUU)."""
+    from stitchgraph.core.store import _same_lang
+    assert _same_lang("a.rs::f", "b.rs::g") == 1       # same language
+    assert _same_lang("a.rs::f", "b.go::g") == 0       # different language
+    assert _same_lang("a.c::f", "b.cpp::g") == 1       # C/C++ share a bucket
+    assert _same_lang("db::table", "a.rs::f") == 1     # pseudo node: don't filter
+    assert _same_lang("a.unknownext::f", "b.go::g") == 1  # unknown ext: don't filter
+
+
+def test_r34_scan_inner_items_have_review_reasons(tmp_path):
+    """R34B-sonnet (consistency): scan cycle/god_object inner items set needs_review but
+    only carried `reason` (singular). Mirror the envelope contract on inner items — a
+    needs_review item must carry a non-empty review_reasons list."""
+    src = ["def hub():\n    pass\n"]
+    src += [f"def caller{i}():\n    hub()\n" for i in range(6)]
+    src += [f"def callee{i}():\n    pass\n" for i in range(6)]
+    _mk(tmp_path, {"m.py": "\n".join(src)})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        items = sg.scan(store).result
+    offenders = [it for it in items if it.get("needs_review") and not it.get("review_reasons")]
+    assert not offenders, f"needs_review item without review_reasons: {offenders}"

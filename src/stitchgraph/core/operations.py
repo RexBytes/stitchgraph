@@ -357,8 +357,38 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
         return refuse(f"no path from {src.id} to {dst.id} in the graph",
                       confidence=0.0)
     path, conf = found
-    prov = Provenance.EXTRACTED if conf >= 0.99 else Provenance.INFERRED
-    return ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
+    # Provenance must reflect the edges actually on the path, not just the propagated
+    # confidence: a name-based AMBIGUOUS/INFERRED edge can carry weight 1.0 (e.g. a
+    # synthetic override edge from _propagate_overrides), giving conf 1.0 that the old
+    # conf>=0.99 proxy mislabelled EXTRACTED/no-review. Mirror impact_of/get_callers —
+    # the provenance-demotion column (panel R34B).
+    hop_edges = _path_edges(store, path)
+    if not hop_edges or all(e.provenance is Provenance.EXTRACTED for e in hop_edges):
+        return ok(path, confidence=conf, provenance=Provenance.EXTRACTED, hops=len(path) - 1)
+    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in hop_edges)
+            else Provenance.INFERRED)
+    res = ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
+    res.needs_review = True
+    res.add_reason("the path includes name-based (inferred/ambiguous) edges — "
+                   "verify before relying")
+    return res
+
+
+def _path_edges(store: Store, path: list[str]) -> list[Edge]:
+    """The resolved edges actually traversed on `path` — for each hop, the max-weight edge
+    between consecutive nodes (matching best_path's (max, x) choice). Lets trace_path derive
+    provenance from real edge evidence rather than the propagated confidence alone."""
+    if len(path) < 2:
+        return []
+    wanted = set(zip(path, path[1:], strict=False))
+    by_pair: dict[tuple[str, str], Edge] = {}
+    for e in store.resolved_edges():
+        if e.dst_id is None:
+            continue
+        key = (e.src, e.dst_id)
+        if key in wanted and (key not in by_pair or e.weight > by_pair[key].weight):
+            by_pair[key] = e
+    return [by_pair[p] for p in wanted if p in by_pair]
 
 
 _SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
@@ -450,6 +480,9 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
                     and e.relation in _SCC_RELATIONS]
         frac, conf_n, total = _confident_share(internal)
         artifact = frac < 0.5  # majority of the linking edges are guesses
+        reason = (f"circular dependency among {len(comp)} symbols"
+                  + ("; rests mostly on name-ambiguous/heuristic edges "
+                     f"({conf_n}/{total} confident) — verify before acting" if artifact else ""))
         issues.append({
             "kind": "cycle", "node": comp[0], "members": comp,
             # An artifact cycle is capped below ORANGE so it sinks in the ranking and
@@ -458,9 +491,11 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             "confidence": round(0.3 + 0.6 * frac, 2),
             "needs_review": artifact,
             "confident_edges": conf_n, "edges": total,
-            "reason": f"circular dependency among {len(comp)} symbols"
-            + ("; rests mostly on name-ambiguous/heuristic edges "
-               f"({conf_n}/{total} confident) — verify before acting" if artifact else ""),
+            "reason": reason,
+            # Mirror the envelope's needs_review => review_reasons contract on the inner item
+            # so a consumer keying on review_reasons isn't left empty when needs_review is set
+            # (panel R34B).
+            "review_reasons": [reason] if artifact else [],
         })
 
     # Data loops: feedback through mutable global state (design §6.F).
@@ -499,15 +534,17 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # really there once the guesses are removed.
             artifact = c_in < 5 or c_out < 5
             frac = (in_frac + out_frac) / 2
+            reason = (f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
+                      + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
+                         f"fan-out {c_out}) — verify before acting" if artifact else ""))
             issues.append({
                 "kind": "god_object", "node": nid,
                 "urgency": Urgency.GREEN.value if artifact else Urgency.ORANGE.value,
                 "confidence": round(0.3 + 0.6 * frac, 2),
                 "needs_review": artifact,
                 "confident_fan_in": c_in, "confident_fan_out": c_out,
-                "reason": f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
-                + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
-                   f"fan-out {c_out}) — verify before acting" if artifact else ""),
+                "reason": reason,
+                "review_reasons": [reason] if artifact else [],  # inner-item contract (panel R34B)
             })
 
     rank = {Urgency.RED.value: 0, Urgency.ORANGE.value: 1, Urgency.GREEN.value: 2}

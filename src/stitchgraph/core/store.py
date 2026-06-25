@@ -87,6 +87,33 @@ def _canonical_columns() -> dict[str, dict[str, str]]:
     return out
 
 
+def _node_lang(node_id: str) -> str | None:
+    """Canonical language bucket for a node id, from its file extension — or None when
+    unknown (a pseudo node like `db::`/`var::`/`route::`, or an extension we don't map).
+    Reuses the extractor's EXT_LANG/_canon_lang (lazily, no import cycle) so the store's
+    notion of language can't drift from the extractor's (C/C++ share one bucket)."""
+    file = node_id.split("::", 1)[0]
+    ext = Path(file).suffix
+    if ext == ".py":
+        return "python"
+    from .extract.treesitter import EXT_LANG, _canon_lang
+    lang = EXT_LANG.get(ext)
+    return _canon_lang(lang) if lang else None
+
+
+def _same_lang(id_a: str, id_b: str) -> int:
+    """1 if two node ids are in the same language family, OR if either language is unknown
+    (recall-safe: never filter out a possibly-valid bind, which could flag live code dead —
+    the cardinal sin). Registered as a SQLite function so incremental name resolution stays
+    per-language, matching the full-reindex `by_lang` bucketing (panel R34A); the language-
+    blind store path otherwise bound e.g. a Rust `helper()` to a Go `helper`, inflating
+    fan_in/get_callers vs a full reindex."""
+    la, lb = _node_lang(id_a), _node_lang(id_b)
+    if la is None or lb is None:
+        return 1
+    return 1 if la == lb else 0
+
+
 class Store:
     """The graph store. Use as a context manager or call .close()."""
 
@@ -95,6 +122,9 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        # Per-language name resolution: keeps the incremental resolver from binding a bare
+        # name across languages (Rust helper -> Go helper), matching full reindex (panel R34A).
+        self.conn.create_function("same_lang", 2, _same_lang, deterministic=True)
         with closing(self.conn.cursor()) as cur:
             cur.executescript(_SCHEMA)   # tables (IF NOT EXISTS)
         self._migrate()                  # add columns an older file is missing
@@ -268,7 +298,7 @@ class Store:
                 (g["src"], g["relation"], g["dst_symbol"])).fetchall()
             if not nb:
                 continue
-            cands = self._name_candidates(g["dst_symbol"], g["relation"])
+            cands = self._name_candidates(g["dst_symbol"], g["relation"], g["src"])
             if not cands:
                 continue
             if len(cands) >= 2:
@@ -287,18 +317,24 @@ class Store:
                     continue
                 self._rebuild_name_based(g, nb[0], [(cands[0], 1.0, "inferred")])
 
-    def _name_candidates(self, dst_symbol: str, relation: str) -> list[str]:
+    def _name_candidates(self, dst_symbol: str, relation: str,
+                         src: str | None = None) -> list[str]:
         """Node ids a bare-name reference can resolve to. Excludes MODULE nodes for any
         non-IMPORTS relation: a CALLS/REFERENCES/INHERITS to a bare name is never a module
         (mirrors the extractor's `_ref_edges`, panel R13B) — resolving one to a same-named
         module inflated that module's fan_in on the incremental path (panel R31A). IMPORTS
-        keeps module resolution (`from pkg import submodule`)."""
-        if relation == Relation.IMPORTS.value:
-            return [r["id"] for r in self.conn.execute(
-                "SELECT id FROM nodes WHERE name = ?", (dst_symbol,)).fetchall()]
-        return [r["id"] for r in self.conn.execute(
-            "SELECT id FROM nodes WHERE name = ? AND kind != ?",
-            (dst_symbol, NodeKind.MODULE.value)).fetchall()]
+        keeps module resolution (`from pkg import submodule`). When `src` is given, restricts
+        candidates to the SAME language family as the referencing node, matching the full
+        reindex's per-language bucketing (panel R34A)."""
+        sql = "SELECT id FROM nodes WHERE name = ?"
+        params: list[object] = [dst_symbol]
+        if relation != Relation.IMPORTS.value:
+            sql += " AND kind != ?"
+            params.append(NodeKind.MODULE.value)
+        if src is not None:
+            sql += " AND same_lang(id, ?)"
+            params.append(src)
+        return [r["id"] for r in self.conn.execute(sql, params).fetchall()]
 
     def _rebuild_name_based(self, g: sqlite3.Row, tmpl: sqlite3.Row,
                             rows: list[tuple[str, float, str]]) -> None:
@@ -474,26 +510,32 @@ class Store:
         # n.kind != ?`), mirroring the extractor's `_ref_edges` (panel R13B). Resolving a
         # moved-function hole to a same-named MODULE node inflated that module's fan_in on the
         # incremental path (panel R31A). IMPORTS keeps module resolution (`from pkg import sub`).
+        # `same_lang(n.id, edges.src)` keeps name resolution per-language, matching the full
+        # reindex's by_lang bucketing — without it a Rust call bound to a Go same-named def on
+        # the incremental path, inflating fan_in/get_callers (panel R34A).
         imp, mod = Relation.IMPORTS.value, NodeKind.MODULE.value
         self.conn.execute(
             """UPDATE edges
                   SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol
-                                  AND (edges.relation = ? OR n.kind != ?) LIMIT 1),
+                                  AND (edges.relation = ? OR n.kind != ?)
+                                  AND same_lang(n.id, edges.src) LIMIT 1),
                       name_based = 1
                 WHERE dst_id IS NULL
                   AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol
-                         AND (edges.relation = ? OR n.kind != ?)) = 1""",
+                         AND (edges.relation = ? OR n.kind != ?)
+                         AND same_lang(n.id, edges.src)) = 1""",
             (imp, mod, imp, mod),
         )
         ambiguous = self.conn.execute(
             """SELECT * FROM edges
                 WHERE dst_id IS NULL
                   AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol
-                         AND (edges.relation = ? OR n.kind != ?)) >= 2""",
+                         AND (edges.relation = ? OR n.kind != ?)
+                         AND same_lang(n.id, edges.src)) >= 2""",
             (imp, mod),
         ).fetchall()
         for row in ambiguous:
-            cands = self._name_candidates(row["dst_symbol"], row["relation"])
+            cands = self._name_candidates(row["dst_symbol"], row["relation"], row["src"])
             w = round(1.0 / len(cands), 3)
             self.conn.execute("DELETE FROM edges WHERE id = ?", (row["id"],))
             for cid in cands:

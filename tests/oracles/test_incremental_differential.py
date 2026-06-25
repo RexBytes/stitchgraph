@@ -17,6 +17,7 @@ from collections import defaultdict
 import pytest
 
 import stitchgraph as sg
+from stitchgraph.core.extract import extract_project as extract_all  # combined polyglot
 from stitchgraph.core.extract.python import extract_project
 from stitchgraph.core.reach import fan_in
 
@@ -92,3 +93,35 @@ def test_delete_then_readd_converges(target):
     assert i_stale == f_stale, f"{target}: stale diverged on delete->readd"
     inflated = {k for k in i_fi if i_fi[k] > f_fi.get(k, 0)}
     assert not inflated, f"{target}: fan_in inflated on delete->readd: {inflated}"
+
+
+def test_polyglot_incremental_equals_full(tmp_path):
+    """Cross-language differential: the incremental replace_file path must agree with a full
+    reindex on a POLYGLOT tree. The Python-only oracle above never drove the tree-sitter
+    extractor through replace_file, so the store's language-blind name resolution (a Rust
+    `helper()` binding to a Go same-named def on the incremental path) was uncovered —
+    inflating fan_in vs full reindex (panel R34A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    files = {
+        "lib.rs": "pub fn run() {\n    helper();\n}\nfn helper() {}\n",
+        "other.go": "package main\nfunc helper() {}\nfunc main() {\n    helper()\n}\n",
+        "app.py": "def helper():\n    return 1\ndef run():\n    return helper()\n",
+    }
+    for rel, content in files.items():
+        (tmp_path / rel).write_text(content)
+    root = str(tmp_path)
+    nodes, edges = extract_all(root)
+    nbf, ebf = _by_file(nodes, lambda n: n.id), _by_file(edges, lambda e: e.src)
+    order = sorted(set(nbf) | set(ebf))
+    with sg.Store(":memory:") as full, sg.Store(":memory:") as inc:
+        sg.reindex(full, root)
+        for f in order:
+            inc.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        f_fi = {k: v for k, v in fan_in(full).items() if full.get_node(k) is not None}
+        i_fi = {k: v for k, v in fan_in(inc).items() if inc.get_node(k) is not None}
+        f_stale = {c["id"] for c in (sg.find_stale(full).result or [])}
+        i_stale = {c["id"] for c in (sg.find_stale(inc).result or [])}
+    inflated = {k: (i_fi[k], f_fi.get(k, 0)) for k in i_fi if i_fi[k] > f_fi.get(k, 0)}
+    assert not inflated, f"polyglot fan_in inflated (incremental > full): {inflated}"
+    assert i_stale == f_stale, f"polyglot stale diverged: {i_stale ^ f_stale}"
