@@ -3543,3 +3543,41 @@ def test_string_arg_ops_return_result_on_none_not_raise(tmp_path):
         for call in ops:
             res = call()                       # must not raise
             assert hasattr(res, "ok")          # a real Result envelope
+
+
+# -- Panel R17B / sonnet (non-blocking envelope correctness) ----------------------
+def test_find_holes_zero_holes_is_green_not_orange():
+    """find_holes emitted ORANGE unconditionally; zero dangling references is a clean
+    result, so urgency is GREEN when there are no holes (panel R17B)."""
+    from stitchgraph.core.envelope import Urgency
+    with sg.Store(":memory:") as store:
+        res = sg.find_holes(store)
+        assert res.result == [] and res.urgency == Urgency.GREEN
+
+
+def test_get_callers_reflects_edge_provenance():
+    """get_callers/get_callees reported confidence 1.0 / EXTRACTED / needs_review=False
+    regardless of edge provenance; a caller list resting on INFERRED/AMBIGUOUS edges must
+    reflect that uncertainty (panel R17B)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        store.add_node(Node(id="a.py::f", kind=NodeKind.FUNCTION, name="f"))
+        store.add_node(Node(id="b.py::g", kind=NodeKind.FUNCTION, name="g"))
+        store.add_edge(Edge(src="b.py::g", relation=Relation.CALLS, dst_symbol="f",
+                            dst_id="a.py::f", weight=0.3, provenance=Provenance.INFERRED))
+        store.commit()
+        res = sg.get_callers(store, "a.py::f")
+        assert res.provenance is Provenance.INFERRED and res.needs_review
+        assert res.confidence < 1.0
+        # the EXTRACTED case stays certain
+        store.add_node(Node(id="c.py::h", kind=NodeKind.FUNCTION, name="h"))
+        store.add_edge(Edge(src="c.py::h", relation=Relation.CALLS, dst_symbol="f",
+                            dst_id="a.py::f", weight=1.0, provenance=Provenance.EXTRACTED))
+        store.add_node(Node(id="d.py::k", kind=NodeKind.FUNCTION, name="k"))
+        store.add_edge(Edge(src="d.py::k", relation=Relation.CALLS, dst_symbol="kk",
+                            dst_id="d.py::k2", weight=1.0, provenance=Provenance.EXTRACTED))
+        store.add_node(Node(id="d.py::k2", kind=NodeKind.FUNCTION, name="k2"))
+        store.commit()
+        res2 = sg.get_callers(store, "d.py::k2")
+        assert res2.provenance is Provenance.EXTRACTED and not res2.needs_review

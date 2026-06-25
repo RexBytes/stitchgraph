@@ -120,7 +120,7 @@ def get_callers(store: Store, name: str) -> Result:
         return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
     edges = store.callers_of(target.id)
     callers = [{"src": e.src, "weight": round(e.weight, 3)} for e in edges]
-    return ok(callers, symbol=target.id, count=len(callers))
+    return _callgraph_result(callers, edges, symbol=target.id)
 
 
 @operation("Direct callees of a symbol.")
@@ -131,7 +131,24 @@ def get_callees(store: Store, name: str) -> Result:
         return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
     edges = store.callees_of(target.id)
     callees = [{"dst": e.dst_id, "weight": round(e.weight, 3)} for e in edges]
-    return ok(callees, symbol=target.id, count=len(callees))
+    return _callgraph_result(callees, edges, symbol=target.id)
+
+
+def _callgraph_result(payload: list, edges: list, **meta) -> Result:
+    """Envelope for get_callers/get_callees whose confidence/provenance reflect the edges
+    backing the answer: certain only when all are EXTRACTED, else INFERRED/AMBIGUOUS +
+    needs_review — a caller list resting on name-based (heuristic) edges must not report
+    confidence 1.0 / EXTRACTED (panel R17B)."""
+    if not edges or all(e.provenance is Provenance.EXTRACTED for e in edges):
+        return ok(payload, count=len(payload), **meta)
+    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in edges)
+            else Provenance.INFERRED)
+    n_conf = sum(1 for e in edges if e.provenance is Provenance.EXTRACTED)
+    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(edges)), 2),
+             provenance=prov, count=len(payload), **meta)
+    res.needs_review = True
+    res.add_reason("some edges are name-based (inferred/ambiguous) — verify before relying")
+    return res
 
 
 # --------------------------------------------------------------------------
@@ -154,8 +171,11 @@ def find_holes(store: Store) -> Result:
     ]
     res = ok(holes, confidence=0.7, provenance=Provenance.INFERRED,
              count=len(holes))
-    res.urgency = Urgency.ORANGE
-    res.add_reason("liveness of holes not yet ranked (entry-point detector pending)")
+    if holes:
+        res.urgency = Urgency.ORANGE
+        res.add_reason("liveness of holes not yet ranked (entry-point detector pending)")
+    else:
+        res.urgency = Urgency.GREEN  # zero holes is a clean result, not an anomaly (panel R17B)
     return res
 
 
