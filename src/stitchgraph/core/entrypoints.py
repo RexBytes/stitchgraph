@@ -17,6 +17,20 @@ from typing import Protocol
 from .model import NodeKind
 from .store import Store
 
+# Languages whose files share PACKAGE scope (a directory) and run startup code together,
+# with no per-file import edge to chain liveness — so module-node seeding is widened to the
+# whole directory when any file in it is a root (panel R35A). Go is the clear case; add an
+# extension here if another package-scoped language surfaces the same cardinal.
+_PACKAGE_SCOPED_EXTS = (".go",)
+
+
+def _is_package_scoped(file: str) -> bool:
+    return file.endswith(_PACKAGE_SCOPED_EXTS)
+
+
+def _dir_of(file: str) -> str:
+    return file.rsplit("/", 1)[0] if "/" in file else ""
+
 
 class EntryPointDetector(Protocol):
     def detect(self, store: Store) -> set[str]: ...
@@ -79,8 +93,19 @@ class PythonLibraryDetector:
         # at module scope being flagged dead (panel R12, cardinal). Module nodes are not
         # dead-code candidates, so seeding them never introduces a false dead.
         root_files = {rid.split("::", 1)[0] for rid in roots}
-        roots.update(m.id for m in store.nodes_by_kind(NodeKind.MODULE)
-                     if m.id.split("::", 1)[0] in root_files)
+        # Package-scoped languages (Go): all files in a package (a directory) compile and run
+        # as a unit — package-level `var` initializers and `init()` execute at startup for
+        # EVERY file once the package is loaded, with no per-file import edge to chain
+        # liveness (unlike Python, where an import edge loads a module on demand). So a
+        # rootless package file whose module-level code is live (a registration side effect)
+        # must be seeded when any SIBLING file in its directory is a root, or its functions
+        # are flagged dead (panel R35A, cardinal). Gated to package-scoped extensions so
+        # ordinary per-file-import languages aren't over-rooted.
+        root_dirs = {_dir_of(f) for f in root_files if _is_package_scoped(f)}
+        for m in store.nodes_by_kind(NodeKind.MODULE):
+            mf = m.id.split("::", 1)[0]
+            if mf in root_files or (_is_package_scoped(mf) and _dir_of(mf) in root_dirs):
+                roots.add(m.id)
         return roots
 
 

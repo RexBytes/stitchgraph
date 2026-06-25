@@ -72,9 +72,12 @@ def _parse_json(text: str, base: str) -> dict[str, set[int]]:
         if not isinstance(lines, list):
             continue
         # Coerce to ints and drop anything non-integer: a malformed/hand-crafted
-        # report must not crash the later `lo <= ln <= end` range test.
+        # report must not crash the later `lo <= ln <= end` range test. `bool` is an
+        # `int` subclass, so a JSON `true`/`false` in executed_lines would coerce to 1/0
+        # and plant a phantom line (panel R35B, inflation) — exclude it explicitly.
         out[os.path.normpath(os.path.join(base, rel))] = {
-            int(ln) for ln in lines if isinstance(ln, int)
+            int(ln) for ln in lines
+            if (isinstance(ln, int) and not isinstance(ln, bool))
             or (isinstance(ln, str) and ln.strip().lstrip("-").isdigit())
         }
     return out
@@ -125,18 +128,36 @@ def _parse_go(text: str) -> dict[str, set[int]]:
 
 
 def hit_node_ids(store: Store, covmap: dict[str, set[int]], root: str) -> set[str]:
-    """Node ids whose bodies executed. Matches a node's file to a coverage path
-    by absolute path, then by suffix (robust to module-prefixed / absolute paths)."""
+    """Node ids whose bodies executed. Matches a node's file to a coverage path by exact
+    root-relative path, falling back to suffix only when NO file matched exactly (coverage
+    recorded under a different root — CI vs local)."""
     norm = {os.path.normpath(k): v for k, v in covmap.items()}
-    hits: set[str] = set()
-    for node in store.all_nodes_full():
-        start = _start_line(node.location)
-        if start is None or node.end_line is None:
-            continue
+    nodes = [n for n in store.all_nodes_full()
+             if _start_line(n.location) is not None and n.end_line is not None]
+    # Exact root-relative match is unambiguous. Suffix matching is a fallback for coverage
+    # recorded under a DIFFERENT root; but if ANY node matched exactly the root aligns, so a
+    # non-matching node is genuinely uncovered — suffix-falling-back there would only risk a
+    # cross-root path-tail false match (`subdir/a.py` matching an unrelated project's
+    # `.../subdir/a.py`), inflating executed_nodes (panel R35A). So only fall back to suffix
+    # when NO node matched exactly (true root mismatch — suffix is the sole hope). The
+    # irreducible residual (a trace from an unrelated project that shares a path tail and has
+    # zero exact matches) is path-indistinguishable from a legit cross-root ingest; see
+    # LIMITATIONS.md.
+    exact: dict[str, set[int]] = {}
+    for node in nodes:
         rel = node.location.split(":", 1)[0]
-        lines = norm.get(os.path.normpath(os.path.join(root, rel))) or _by_suffix(norm, rel)
+        v = norm.get(os.path.normpath(os.path.join(root, rel)))
+        if v is not None:
+            exact[node.id] = v
+    use_suffix = not exact
+    hits: set[str] = set()
+    for node in nodes:
+        rel = node.location.split(":", 1)[0]
+        lines = exact.get(node.id) or (_by_suffix(norm, rel) if use_suffix else None)
         if not lines:
             continue
+        start = _start_line(node.location)
+        assert start is not None and node.end_line is not None  # filtered above; for mypy
         # Body lines: exclude the def line for multi-line defs (Python marks it at
         # import time), but for a one-line def the body IS the def line.
         lo = start if start == node.end_line else start + 1

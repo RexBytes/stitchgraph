@@ -5012,3 +5012,85 @@ def test_r34_scan_inner_items_have_review_reasons(tmp_path):
         items = sg.scan(store).result
     offenders = [it for it in items if it.get("needs_review") and not it.get("review_reasons")]
     assert not offenders, f"needs_review item without review_reasons: {offenders}"
+
+
+# ===========================================================================
+# Round 35 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Two cardinals +
+# two inflations; each fixed at root cause and pinned below.
+# ===========================================================================
+
+
+def test_r35_go_package_var_initializer_is_live(tmp_path):
+    """R35A-opus (CARDINAL): Go package files share scope — a package-level `var x = setup()`
+    initializer runs at startup for every file once the package loads. A rootless package
+    file (no main/exported) was never seeded, so its functions were flagged dead though they
+    run at startup. Module-node seeding must widen to the whole package directory (panel R35A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.go": 'package main\nfunc main() {\n    println("hi")\n}\n',
+        "reg.go": ("package main\nvar _registered = setup()\n"
+                   "func setup() int {\n    return configure()\n}\n"
+                   "func configure() int {\n    return 1\n}\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("setup" in s or "configure" in s for s in stale), \
+        f"live Go package-init code flagged dead: {stale}"
+
+
+def test_r35_express_method_reference_handler_is_live(tmp_path):
+    """R35B-haiku (CARDINAL): an Express route handler given as a method reference
+    (`ctrl.handleRequest`, a member_expression) got no ROUTES_TO edge — only bare-identifier
+    handlers were extracted — so the live handler method was flagged dead (panel R35B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.js": ("class Controller {\n  handleRequest(req, res) {}\n}\n"
+                   "const ctrl = new Controller();\n"
+                   "app.get('/api/test', ctrl.handleRequest);\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("handleRequest" in s for s in stale), \
+        f"live Express method handler flagged dead: {stale}"
+
+
+def test_r35_coverage_bool_line_is_not_int(tmp_path):
+    """R35B-sonnet (INFLATION): bool is an int subclass, so a JSON `true` in executed_lines
+    coerced to line 1, spuriously marking a one-liner at line 1 runtime — inflating
+    executed_nodes and find_stale confidence. bool must be excluded (panel R35B)."""
+    import json
+    _mk(tmp_path, {"mod.py": "def oneliner(): return 1\n"})
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "mod.py"): {"executed_lines": [True, False], "missing_lines": [], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.ingest_trace(store, str(cov_path))
+        runtime = {n.id for n in store.nodes_with_role("runtime")}
+    assert not runtime, f"bool coerced to a phantom executed line: {runtime}"
+    assert r.meta.get("executed") == 0
+
+
+def test_r35_coverage_exact_match_blocks_cross_file_suffix(tmp_path):
+    """R35A-sonnet (INFLATION): when the coverage root aligns (an exact root-relative match
+    exists), a non-matching node must NOT suffix-fall-back and steal another file's coverage
+    — coverage for `b/a.py` must not also mark the top-level `a.py` runtime (panel R35A)."""
+    import json
+    _mk(tmp_path, {
+        "a.py": "def alive():\n    return 1\n",
+        "b/a.py": "def other():\n    return 3\n",
+    })
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "b" / "a.py"): {"executed_lines": [2], "missing_lines": [], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        sg.ingest_trace(store, str(cov_path))
+        runtime = {n.id for n in store.nodes_with_role("runtime")}
+    assert runtime == {"b/a.py::other"}, f"cross-file suffix steal: {runtime}"

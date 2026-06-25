@@ -243,6 +243,23 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   as dynamic dispatch / monkeypatching; surfaces as `needs_review`, not a confident verdict.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
 
+### A coverage trace from an unrelated tree sharing a path tail can mis-attribute
+- **Concern:** `ingest_trace` matches a coverage file's paths to indexed nodes by exact
+  root-relative path first, then — only when *no* file matched exactly (the coverage was
+  recorded under a different root, e.g. CI vs local absolute paths) — by path **suffix**.
+  A single coverage file from an *unrelated* project that has zero exact matches but shares
+  a trailing path (`.../subdir/a.py` vs the indexed `subdir/a.py`) is, from paths alone,
+  indistinguishable from a legitimate cross-root ingest, so its lines can be attributed to
+  the look-alike file (marking it `runtime`, raising `find_stale` confidence to 0.78).
+- **Bounded:** the common case — coverage generated *for this project* (paths align with the
+  index root) — is fully precise: any exact match disables the suffix fallback, so a
+  non-matching node is treated as genuinely uncovered (panel R35A). The residual requires a
+  trace whose paths align with *no* indexed file yet coincidentally tail-match one.
+- **Direction:** the mis-attribution marks code *live* (suppresses dead-code findings — the
+  precision-over-recall direction), never flags live code dead.
+- **Escape hatch:** ingest a coverage report generated for the indexed tree (its paths then
+  match exactly); don't point `ingest_trace` at another project's report.
+
 ### A function named identically to its own module can spawn a spurious within-file edge
 - **Concern:** when `compute.py` defines `def compute()`, the MODULE node and the FUNCTION
   node share one id (`compute.py::compute`). Module-level executable code (e.g. a

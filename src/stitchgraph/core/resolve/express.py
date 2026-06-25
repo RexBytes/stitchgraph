@@ -126,10 +126,19 @@ def _express_call(call, src):
     path = src[string_args[0].start_byte:string_args[0].end_byte].decode().strip("`'\"")
     if not path.startswith("/"):
         return None
-    # last identifier argument is the handler reference
+    # The handler is the last reference argument. It may be a bare identifier
+    # (`handleRequest`) OR a method reference (`ctrl.handleRequest` / `this.handleRequest`)
+    # — a member_expression. Resolve the latter by its property (method) name: omitting it
+    # left a live route handler method with no ROUTES_TO edge, flagged dead (panel R35B,
+    # cardinal — the bare-function case worked, the method case didn't: a symmetry gap).
     handler = None
     for a in reversed(args.children):
         if a.type == "identifier":
             handler = src[a.start_byte:a.end_byte].decode()
             break
+        if a.type == "member_expression":
+            prop = a.child_by_field_name("property")
+            if prop is not None:
+                handler = src[prop.start_byte:prop.end_byte].decode()
+                break
     return verb.upper() if verb not in ("all", "use") else "ANY", path, handler
