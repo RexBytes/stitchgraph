@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS edges (
     provenance  TEXT NOT NULL DEFAULT 'extracted',
     location    TEXT NOT NULL DEFAULT '',
     source      TEXT NOT NULL DEFAULT 'tree-sitter',
-    file        TEXT NOT NULL DEFAULT ''     -- owning (source) file path
+    file        TEXT NOT NULL DEFAULT '',     -- owning (source) file path
+    name_based  INTEGER NOT NULL DEFAULT 0    -- 1 = resolved by name (re-widenable)
 );
 """
 
@@ -89,7 +90,8 @@ class Store:
             "nodes": (("roles", "roles TEXT NOT NULL DEFAULT ''"),
                       ("end_line", "end_line INTEGER")),
             "edges": (("source", "source TEXT NOT NULL DEFAULT 'tree-sitter'"),
-                      ("file", "file TEXT NOT NULL DEFAULT ''")),
+                      ("file", "file TEXT NOT NULL DEFAULT ''"),
+                      ("name_based", "name_based INTEGER NOT NULL DEFAULT 0")),
         }
         for table, cols in tables.items():
             have = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
@@ -137,11 +139,11 @@ class Store:
     def add_edge(self, edge: Edge, file: str = "") -> None:
         try:
             self.conn.execute(
-                """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight, provenance, location, source, file)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight, provenance, location, source, file, name_based)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (edge.src, edge.relation.value, edge.dst_symbol, edge.dst_id,
                  edge.weight, edge.provenance.value, edge.location, edge.source,
-                 file or _file_of(edge.src)),
+                 file or _file_of(edge.src), int(edge.name_based)),
             )
         except (UnicodeEncodeError, ValueError):
             # An edge touching a non-UTF-8 / NUL id (src, dst_symbol or dst_id) can't be
@@ -194,94 +196,141 @@ class Store:
             self._drop_redundant_holes()
             self._resolve_worklist()
             self._rewiden_resolved()
+            self._propagate_overrides()
             self._dedup_resolved_edges()
 
     def _rewiden_resolved(self) -> None:
-        """Re-normalize already-resolved edges so an incremental update matches a full
+        """Re-normalize NAME-BASED resolved edges so an incremental update matches a full
         reindex of the same final state. `_resolve_worklist` only revisits holes (dst_id
-        IS NULL); resolved edges are never reconsidered, so two directions drift:
+        IS NULL); resolved edges are never reconsidered, so a name-based group drifts:
 
-        * Widening (cardinal): when a prior update resolved `caller -> foo` uniquely and a
-          later update adds a second `foo`, the new node gets no inbound edge and
-          find_stale flags it dead (panels R15B/R16A/R18A). Rebuild the group AMBIGUOUS
-          over ALL same-named candidates at weight 1/n.
-        * Narrowing (non-blocking, panel R19A): when one arm of an N-way ambiguous
-          fan-out is deleted, the survivors keep weight 1/N_old instead of 1/(N-1) (or
-          1.0 when a single candidate remains), deflating best_path/trace_path confidence.
-          Re-normalize the survivors' weights.
+        * Widening (cardinal): when a prior update resolved a bare `caller -> foo` uniquely
+          and a later update adds a second `foo`, the new node gets no inbound edge and
+          find_stale flags it dead (panels R15B/R16A/R18A). Rebuild the name-based group
+          AMBIGUOUS over ALL same-named candidates at weight 1/n.
+        * Narrowing (panel R19A): when one arm of an N-way ambiguous fan-out is deleted,
+          the survivors keep weight 1/N_old instead of 1/(N-1) (or 1.0 when one candidate
+          remains), deflating best_path/trace_path confidence. Re-normalize the weights.
 
-        A pre-existing precise (non-AMBIGUOUS) edge is preserved while it still covers
-        every candidate — only a pure ambiguous fan-out is re-weighted. On narrowing to a
-        single candidate the rebuilt edge is marked INFERRED, not EXTRACTED: the pre-widen
-        provenance is not recoverable at the store layer, and under-claiming confidence is
-        the safe direction (issue #10). It self-corrects fully when the caller's file is
-        next re-extracted."""
+        Only edges marked `name_based` are touched: a PRECISE resolution (import by path,
+        self/cls scope, declared type, or a seeded structural edge) is kept bound to its
+        one target exactly as a full reindex would, never widened across same-named members
+        of unrelated classes (panels R21A/R21B/R22A/R22B). On narrowing to one candidate
+        the rebuilt edge is INFERRED, not EXTRACTED: the pre-widen provenance is not
+        recoverable at the store layer, and under-claiming is the safe direction (issue #10).
+        """
         groups = self.conn.execute(
             """SELECT DISTINCT src, relation, dst_symbol FROM edges
-                WHERE dst_id IS NOT NULL"""
+                WHERE dst_id IS NOT NULL AND name_based = 1"""
         ).fetchall()
         for g in groups:
+            nb = self.conn.execute(
+                """SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
+                    AND dst_id IS NOT NULL AND name_based = 1""",
+                (g["src"], g["relation"], g["dst_symbol"])).fetchall()
+            if not nb:
+                continue
             cands = [r["id"] for r in self.conn.execute(
                 "SELECT id FROM nodes WHERE name = ?", (g["dst_symbol"],)).fetchall()]
             if not cands:
                 continue
-            existing = self.conn.execute(
-                """SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
-                    AND dst_id IS NOT NULL""",
-                (g["src"], g["relation"], g["dst_symbol"])).fetchall()
-            if not existing:
-                continue
-            # A scope-internal edge — one that resolves to a member of the SOURCE's own
-            # class (the seeded class -> __init__/__call__ dunder edge) or to a sibling in
-            # the same class (a `self.method()` / `self.prop` bind) — is scope-precise, NOT
-            # a name-based resolution. A full reindex keeps it bound to that one member even
-            # when other classes declare the same name, so widening it across every
-            # same-named member inflates fan_in/impact/TFI of unrelated nodes on an
-            # incremental update (panels R21A/R21B). Such edges never need re-normalizing.
-            if any(_is_scope_internal(g["src"], e["dst_id"]) for e in existing):
-                continue
-            has_precise = any(e["provenance"] != "ambiguous" for e in existing)
             if len(cands) >= 2:
                 w = round(1.0 / len(cands), 3)
-                covers_all = {e["dst_id"] for e in existing}.issuperset(cands)
-                # Keep a precise resolution that already covers every candidate; only a
-                # pure ambiguous fan-out with a stale weight needs re-normalizing.
-                if covers_all and (has_precise
-                                   or all(e["weight"] == w for e in existing)):
-                    continue
-                tmpl = existing[0]
-                self.conn.execute(
-                    """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
-                        AND dst_id IS NOT NULL""",
-                    (g["src"], g["relation"], g["dst_symbol"]))
-                for cid in cands:
-                    self.conn.execute(
-                        """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
-                                             provenance, location, source, file)
-                           VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
-                        (g["src"], g["relation"], g["dst_symbol"], cid, w,
-                         tmpl["location"], tmpl["source"], tmpl["file"]))
+                if ({e["dst_id"] for e in nb} == set(cands)
+                        and all(e["provenance"] == "ambiguous" and e["weight"] == w
+                                for e in nb)):
+                    continue  # already the correct ambiguous fan-out
+                self._rebuild_name_based(g, nb[0], [(cid, w, "ambiguous") for cid in cands])
             else:
-                # Exactly one candidate -> one edge at full weight. Only rebuild a leftover
-                # widened fan-out: several rows, or a sole row left AMBIGUOUS by a prior
-                # widen. Test provenance, NOT weight<1.0 — a unique EXTRACTED REFERENCES
-                # edge is legitimately weight 0.95 and must not be downgraded to INFERRED
-                # (panel R20A deflation); only ambiguous fan-out survivors need rebuilding.
-                widened = len(existing) > 1 or any(
-                    e["provenance"] == "ambiguous" for e in existing)
+                # One candidate: rebuild only a leftover widened fan-out (several rows, or a
+                # sole AMBIGUOUS one) to a single weight-1.0 INFERRED edge; a clean single
+                # name-based edge (incl. a 0.95 EXTRACTED REFERENCES) is left untouched.
+                widened = len(nb) > 1 or any(e["provenance"] == "ambiguous" for e in nb)
                 if not widened:
                     continue
-                tmpl = existing[0]
-                self.conn.execute(
-                    """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
-                        AND dst_id IS NOT NULL""",
-                    (g["src"], g["relation"], g["dst_symbol"]))
+                self._rebuild_name_based(g, nb[0], [(cands[0], 1.0, "inferred")])
+
+    def _rebuild_name_based(self, g: sqlite3.Row, tmpl: sqlite3.Row,
+                            rows: list[tuple[str, float, str]]) -> None:
+        """Replace a (src, relation, dst_symbol) group's name-based resolved edges with
+        `rows` (dst_id, weight, provenance), reusing `tmpl`'s location/source/file."""
+        self.conn.execute(
+            """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
+                AND dst_id IS NOT NULL AND name_based = 1""",
+            (g["src"], g["relation"], g["dst_symbol"]))
+        for dst, w, prov in rows:
+            self.conn.execute(
+                """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                     provenance, location, source, file, name_based)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
+                (g["src"], g["relation"], g["dst_symbol"], dst, w, prov,
+                 tmpl["location"], tmpl["source"], tmpl["file"]))
+
+    def _propagate_overrides(self) -> None:
+        """Inheritance-aware override propagation, the store twin of the extractor's
+        `_propagate_overrides`. A full reindex widens a CALLS/REFERENCES edge bound to a
+        base-class member `B.m` (e.g. a `self.m()` dispatch, or a declared-type call) to the
+        same-named override `Sub.m` on every subclass, so a live override is never flagged
+        dead. On an incremental `replace_file` that adds a subclass in a DIFFERENT file, the
+        base's precise edge is untouched and `_rewiden_resolved` (name-based only) won't
+        reach it — so the override would be orphaned and confidently flagged dead (panel
+        R22A, cardinal). Re-derive those edges here from the store's INHERITS graph.
+
+        Scoped to the inheritance subtree (not by name), so unrelated same-named members are
+        never linked; AMBIGUOUS, so it only adds reachability, never under-counts."""
+        class_ids = {r["id"] for r in self.conn.execute(
+            "SELECT id FROM nodes WHERE kind = ?", (NodeKind.CLASS.value,)).fetchall()}
+        if not class_ids:
+            return
+        subclasses: dict[str, set[str]] = {}
+        for e in self.conn.execute(
+                "SELECT src, dst_id FROM edges WHERE relation = ? AND dst_id IS NOT NULL",
+                (Relation.INHERITS.value,)).fetchall():
+            if e["src"] in class_ids and e["dst_id"] in class_ids and e["src"] != e["dst_id"]:
+                subclasses.setdefault(e["dst_id"], set()).add(e["src"])
+        if not subclasses:
+            return
+        cache: dict[str, set[str]] = {}
+
+        def descendants(base_id: str) -> set[str]:
+            if base_id in cache:
+                return cache[base_id]
+            out: set[str] = set()
+            stack = list(subclasses.get(base_id, ()))
+            while stack:
+                s = stack.pop()
+                if s in out:
+                    continue
+                out.add(s)
+                stack.extend(subclasses.get(s, ()))
+            cache[base_id] = out
+            return out
+
+        node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()}
+        edges = self.conn.execute(
+            """SELECT src, relation, dst_symbol, dst_id, location, source, file FROM edges
+                WHERE dst_id IS NOT NULL AND relation IN (?, ?)""",
+            (Relation.CALLS.value, Relation.REFERENCES.value)).fetchall()
+        seen = {(e["src"], e["relation"], e["dst_id"]) for e in edges}
+        for e in edges:
+            base_id = _owner_scope(e["dst_id"])
+            if base_id is None or base_id not in class_ids:
+                continue
+            method = e["dst_id"].rsplit(".", 1)[1]
+            for sub_id in descendants(base_id):
+                override = f"{sub_id}.{method}"
+                if override == e["dst_id"] or override not in node_ids:
+                    continue
+                key = (e["src"], e["relation"], override)
+                if key in seen:
+                    continue
+                seen.add(key)
                 self.conn.execute(
                     """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
-                                         provenance, location, source, file)
-                       VALUES (?, ?, ?, ?, 1.0, 'inferred', ?, ?, ?)""",
-                    (g["src"], g["relation"], g["dst_symbol"], cands[0],
-                     tmpl["location"], tmpl["source"], tmpl["file"]))
+                                         provenance, location, source, file, name_based)
+                       VALUES (?, ?, ?, ?, 1.0, 'ambiguous', ?, ?, ?, 0)""",
+                    (e["src"], e["relation"], method, override,
+                     e["location"], e["source"], e["file"]))
 
     def _dedup_resolved_edges(self) -> None:
         """Collapse duplicate resolved edges and drop redundant REFERENCES — the DB-level
@@ -345,9 +394,15 @@ class Store:
         (precision over recall). This was the lone resolution site that linked to only
         one candidate.
         """
+        # Resolving a hole here is BY NAME (the only clue is dst_symbol), so mark the
+        # result name_based — if more homonyms are added later, `_rewiden_resolved` must be
+        # free to re-widen it (a precise import whose target wasn't yet indexed degrades to
+        # this name match; it must stay re-widenable so the real target is linked when it
+        # arrives — cardinal-safe, panel R22 convergence).
         self.conn.execute(
             """UPDATE edges
-                  SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol LIMIT 1)
+                  SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol LIMIT 1),
+                      name_based = 1
                 WHERE dst_id IS NULL
                   AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) = 1"""
         )
@@ -364,8 +419,8 @@ class Store:
             for cid in cands:
                 self.conn.execute(
                     """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
-                                         provenance, location, source, file)
-                       VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
+                                         provenance, location, source, file, name_based)
+                       VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?, 1)""",
                     (row["src"], row["relation"], row["dst_symbol"], cid, w,
                      row["location"], row["source"], row["file"]))
 
@@ -472,6 +527,8 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
         dst_symbol=row["dst_symbol"], dst_id=row["dst_id"], weight=row["weight"],
         provenance=Provenance(row["provenance"]), location=row["location"],
         source=row["source"],
+        # Tolerate a row that predates the column (e.g. a projection that didn't select it).
+        name_based=bool(row["name_based"]) if "name_based" in row.keys() else False,
     )
 
 
@@ -490,12 +547,3 @@ def _owner_scope(node_id: str) -> str | None:
     return f"{file}::{qual.rsplit('.', 1)[0]}"
 
 
-def _is_scope_internal(src: str, dst_id: str) -> bool:
-    """True when `dst_id` is a member of `src`'s own class — either `src` IS the class and
-    `dst` one of its members (class -> dunder seeding), or `src` and `dst` are siblings in
-    the same class (a `self.m()` bind). Such an edge is scope-precise and must not be
-    widened across same-named members of other classes (panels R21A/R21B)."""
-    dst_owner = _owner_scope(dst_id)
-    if dst_owner is None:
-        return False
-    return dst_owner == src or dst_owner == _owner_scope(src)

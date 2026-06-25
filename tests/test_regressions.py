@@ -3652,7 +3652,8 @@ def test_replace_file_rewidens_resolved_edge_on_new_homonym():
         store.replace_file("a.py", [_n("a.py::foo")], [])
         store.replace_file("c.py", [_n("c.py::caller")], [
             Edge(src="c.py::caller", relation=Relation.CALLS, dst_symbol="foo",
-                 dst_id="a.py::foo", weight=1.0, provenance=Provenance.EXTRACTED)])
+                 dst_id="a.py::foo", weight=1.0, provenance=Provenance.EXTRACTED,
+                 name_based=True)])
         store.replace_file("b.py", [_n("b.py::foo")], [])   # new homonym, added later
         fi = fan_in(store)
         assert fi.get("a.py::foo", 0) >= 1 and fi.get("b.py::foo", 0) >= 1
@@ -3956,6 +3957,68 @@ def test_incremental_replace_does_not_cross_widen_dunder_edges(tmp_path):
         assert fan_in(store).get("b.py::Bar.__init__") == 1
 
 
+def _incremental_store(root):
+    """Build a store by replace_file'ing each file of `root` independently (incremental
+    path), filtering one shared full extraction per file — the panel differential harness."""
+    from stitchgraph.core.extract.python import extract_project
+    nodes, edges = extract_project(str(root))
+    files = sorted({n.id.split("::", 1)[0] for n in nodes if "::" in n.id})
+    store = sg.Store(":memory:")
+    for f in files:
+        n = [x for x in nodes if x.id.split("::", 1)[0] == f]
+        e = [x for x in edges if x.src.split("::", 1)[0] == f]
+        store.replace_file(f, n, e)
+    return store
+
+
+def test_incremental_self_dispatch_override_not_stale(tmp_path):
+    """A subclass added in a DIFFERENT file via replace_file must have its override of a
+    `self`-dispatched base member kept live — the store's _propagate_overrides re-derives
+    the cross-file widening a full reindex does, or the override is flagged dead (panel
+    R22A, cardinal, incremental path)."""
+    _mk(tmp_path, {
+        "a.py": """
+            class Base:
+                def driver(self): return self.op()
+                def op(self): return 0
+            def run(b): return b.driver()
+            def main(): return run(Sub())
+            if __name__ == "__main__": print(main())
+        """,
+        "sub.py": """
+            from a import Base
+            class Sub(Base):
+                def op(self): return self._special()
+                def _special(self): return 1
+        """,
+    })
+    store = _incremental_store(tmp_path)
+    stale = {c["id"] for c in sg.find_stale(store).result}
+    store.close()
+    assert "sub.py::Sub.op" not in stale
+    assert "sub.py::Sub._special" not in stale
+
+
+def test_incremental_precise_import_not_over_widened(tmp_path):
+    """A precise `from a import helper` resolution must stay bound to a's helper on an
+    incremental replace of an UNRELATED file, never name-widened across a homonym in
+    another module (panel R22B, metric inflation)."""
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "a.py": "def helper(): return 1\n",
+        "b.py": "def helper(): return 2\n",
+        "main.py": "from a import helper\ndef go(): return helper()\n",
+        "other.py": "def unrelated(): return 9\n",
+    })
+    full = sg.Store(":memory:")
+    sg.reindex(full, str(tmp_path))
+    inc = _incremental_store(tmp_path)
+    # b.py's helper is a different module's homonym — main's precise import must not link it.
+    assert fan_in(full).get("b.py::helper") == fan_in(inc).get("b.py::helper")
+    full.close()
+    inc.close()
+
+
 def test_incremental_replace_does_not_widen_scope_precise_self_call():
     """A scope-precise self-call (`Impl.extra -> Impl.process`, EXTRACTED) must NOT be
     widened to a same-named method of an unrelated class added later via replace_file — a
@@ -4004,7 +4067,8 @@ def test_rewiden_renormalizes_weight_when_fanout_narrows():
         store.replace_file("b.py", [_n("b.py::foo")], [])
         store.replace_file("a.py", [_n("a.py::caller")], [
             Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="foo",
-                 dst_id="b.py::foo", weight=1.0, provenance=Provenance.EXTRACTED)])
+                 dst_id="b.py::foo", weight=1.0, provenance=Provenance.EXTRACTED,
+                 name_based=True)])
         store.replace_file("c.py", [_n("c.py::foo")], [])   # widen -> 0.5 / 0.5
         store.replace_file("c.py", [], [])                  # narrow back to one
         bp = best_path(store, "a.py::caller", "b.py::foo")
@@ -4018,7 +4082,8 @@ def test_rewiden_renormalizes_weight_when_fanout_narrows():
     with sg.Store(":memory:") as store:
         store.replace_file("a.py", [_n("a.py::caller")], [
             Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="m",
-                 dst_id="x.py::m", weight=1.0, provenance=Provenance.EXTRACTED)])
+                 dst_id="x.py::m", weight=1.0, provenance=Provenance.EXTRACTED,
+                 name_based=True)])
         for f in ("x.py", "y.py", "z.py"):
             store.replace_file(f, [_n(f"{f}::m")], [])
         store.replace_file("z.py", [], [])              # drop one arm

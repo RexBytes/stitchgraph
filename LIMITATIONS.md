@@ -256,16 +256,30 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `__main__` call chain. The `main.py` + `def main()` case produces only a harmless
   self-loop (single-node SCCs aren't reported).
 
-### Incremental `replace_file` matches a full reindex for homonyms (fixed)
-- **Was:** an edge uniquely resolved by an earlier `replace_file` was not re-expanded
-  when a *later* update introduced a new same-named definition, leaving the new
-  definition with no inbound edge (a false dead on the incremental path).
-- **Now:** `replace_file` runs a `_rewiden_resolved` pass that rebuilds any
-  `(src, relation, dst_symbol)` group whose name has more than one project node as
-  AMBIGUOUS over *all* candidates — so an incremental update sequence converges to the
-  same edges a full `reindex` of the final state produces. (A surviving edge after an
-  ambiguous→single disambiguation keeps its AMBIGUOUS weight until the next reindex —
-  honest, slightly under-confident, never a false dead.)
+### Incremental `replace_file` matches a full reindex (homonyms, dispatch, dunders)
+- **Was:** the incremental updater could not reconstruct the extractor's resolution
+  semantics, so an `(src, relation, dst_symbol)` group drifted from what a full `reindex`
+  produces — a later homonym left a new definition dead (false dead), or a precise
+  import/`self`-dispatch edge was widened across unrelated same-named members (inflation),
+  or an incrementally-added subclass override of a dispatched member was orphaned (false
+  dead) — panels R18–R22.
+- **Now:** each edge records whether it was resolved **by name** (`name_based`) or
+  **precisely** (by import path, scope, declared type, or structural seeding). On
+  `replace_file`, `_rewiden_resolved` re-normalizes only the name-based edges (rebuilding
+  them AMBIGUOUS over all current candidates, or to a single edge when one remains), while
+  precise edges are kept bound to their target exactly as a full reindex would; and
+  `Store._propagate_overrides` re-derives inheritance-aware override edges from the store's
+  INHERITS graph, mirroring the extractor. An incremental sequence therefore converges to a
+  full reindex: `find_stale` is identical, and metrics match up to the documented
+  ambiguous-homonym over-approximation below.
+- **Residual (non-blocking, safe direction):** a *precise* import of a name that has more
+  than one definition (`reachable_from` exists in both `algebra.py` and `reach.py`) cannot
+  be resolved precisely if its target module is indexed *after* the importer — at that
+  moment the only clue is the name, so it degrades to an AMBIGUOUS link over all homonyms
+  (it links the real target too, so it is cardinal-safe; it merely over-approximates `fan_in`
+  by one vs a full reindex's single precise edge). It self-corrects on the next full
+  reindex. The shipped CLI/MCP always full-reindex, so this affects only direct library use
+  of `Store.replace_file`.
 
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are

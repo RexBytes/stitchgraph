@@ -100,6 +100,13 @@ class Edge:
     provenance: Provenance = Provenance.EXTRACTED
     location: str = ""
     source: str = "tree-sitter"
+    # True when the target was resolved purely BY NAME (a bare call/reference whose only
+    # clue is the symbol's name), so an incremental update must re-widen it across newly
+    # added homonyms. False (default) marks a PRECISE resolution — by import path, by
+    # scope (self/cls), by declared type, or a structurally-seeded edge — which a full
+    # reindex keeps bound to its one target, so `Store._rewiden_resolved` must never widen
+    # it (design §4; panels R22A/R22B). Not persisted in `to_dict` — internal to indexing.
+    name_based: bool = False
 
     @property
     def resolved(self) -> bool:

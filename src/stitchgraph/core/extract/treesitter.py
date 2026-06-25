@@ -1267,13 +1267,13 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS,
                 else Provenance.EXTRACTED)
         edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                           dst_id=cands[0], weight=1.0, provenance=prov,
-                          location=loc, source="tree-sitter"))
+                          location=loc, source="tree-sitter", name_based=True))
     else:
         w = round(1.0 / len(cands), 3)
         for cid in cands:
             edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                               dst_id=cid, weight=w, provenance=Provenance.AMBIGUOUS,
-                              location=loc, source="tree-sitter"))
+                              location=loc, source="tree-sitter", name_based=True))
 
 
 # -- helpers ---------------------------------------------------------------

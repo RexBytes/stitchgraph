@@ -1152,14 +1152,15 @@ def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
                 else Provenance.EXTRACTED)
         proj.edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                                dst_id=cands[0], weight=1.0,
-                               provenance=prov, location=loc, source="ast"))
+                               provenance=prov, location=loc, source="ast",
+                               name_based=True))
         return
     # Several candidates: over-approximate so a live symbol is never called dead.
     w = round(1.0 / len(cands), 3)
     for cid in cands:
         proj.edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                                dst_id=cid, weight=w, provenance=Provenance.AMBIGUOUS,
-                               location=loc, source="ast"))
+                               location=loc, source="ast", name_based=True))
 
 
 def _resolve_import_base(rel: str, node: ast.ImportFrom) -> str | None:
