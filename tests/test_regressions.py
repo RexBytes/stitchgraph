@@ -1482,6 +1482,32 @@ def test_conditional_reexport_is_an_export_root(tmp_path):
         assert "_secret" in stale              # underscore re-export stays private
 
 
+def test_assignment_alias_reexport_is_an_export_root(tmp_path):
+    """An alias re-export by assignment (`Public = impl.Thing` / `Public = _Internal`) in a
+    package __init__ exposes the RHS symbol as public API, but the export scan only saw
+    defs/imports, flagging the aliased class dead (panel R26B). The scan now roots the RHS
+    symbol of a public alias assignment; a private-target alias stays dead."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": (
+            "from . import impl\n"
+            "Public = impl.Thing\n"          # public alias -> roots Thing
+            "_priv = impl.Secret\n"           # private target -> Secret stays dead
+        ),
+        "pkg/impl.py": (
+            "class Thing:\n    def go(self): return 1\n"
+            "class Secret:\n    pass\n"
+            "class Unused:\n    pass\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Thing" not in stale            # public alias target -> live API
+        assert "go" not in stale                # its method
+        assert "Secret" in stale               # private-target alias -> stays dead
+        assert "Unused" in stale               # never aliased -> genuinely dead
+
+
 def test_reexport_root_survives_when_all_is_declared(tmp_path):
     """A re-export not listed in __all__ is still importable as `pkg.Public`, so it
     must remain a root (additive with __all__, never flagged dead)."""

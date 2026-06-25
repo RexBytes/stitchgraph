@@ -332,6 +332,19 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                         # bound name (`import _hidden`) is skipped above, staying dead.
                         if isinstance(node, ast.ImportFrom):
                             proj.exported_names.add(alias.name)
+            # Alias re-export by assignment: `Public = impl.Thing` / `Public = _Internal`
+            # in a package __init__ exposes the RHS symbol as public API under `Public`.
+            # The scan above only sees defs/imports, so the aliased target was flagged dead
+            # (panel R26B). Gated on the assigned (public) name; root the RHS's referenced
+            # symbol (a bare Name or the leaf of an attribute like `impl.Thing`).
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                if any(isinstance(t, ast.Name) and not t.id.startswith("_")
+                       for t in targets):
+                    ref = _assign_rhs_name(node.value)
+                    if ref:
+                        proj.exported_names.add(ref)
 
     for node in _scope_defs(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
@@ -373,12 +386,22 @@ def _module_export_nodes(tree: ast.Module) -> list[ast.AST]:
     def _descend(node: ast.AST) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
-                                  ast.ImportFrom, ast.Import)):
-                out.append(child)   # a module-scope def/class or (re-)import; don't descend
+                                  ast.ImportFrom, ast.Import, ast.Assign, ast.AnnAssign)):
+                out.append(child)   # module-scope def/class/import/alias; don't descend
             else:
                 _descend(child)     # look through control flow
     _descend(tree)
     return out
+
+
+def _assign_rhs_name(value: ast.AST | None) -> str | None:
+    """The project symbol an alias assignment's RHS refers to: `Public = Thing` -> "Thing";
+    `Public = impl.Thing` -> "Thing" (attribute leaf). None for calls/constants/other."""
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    return None
 
 
 def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
