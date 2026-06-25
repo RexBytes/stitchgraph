@@ -169,13 +169,18 @@ def find_holes(store: Store) -> Result:
          "location": e.location}
         for e in store.unresolved_edges()
     ]
-    res = ok(holes, confidence=0.7, provenance=Provenance.INFERRED,
-             count=len(holes))
     if holes:
+        # Liveness of holes can't be ranked confidently until the entry-point detector
+        # lands, so flag them orange + needs_review with an explicit reason.
+        res = ok(holes, confidence=0.7, provenance=Provenance.INFERRED, count=len(holes))
         res.urgency = Urgency.ORANGE
         res.add_reason("liveness of holes not yet ranked (entry-point detector pending)")
     else:
-        res.urgency = Urgency.GREEN  # zero holes is a clean result, not an anomaly (panel R17B)
+        # Zero holes is a clean, factual result (every reference resolved), not a low-
+        # confidence anomaly — return it confident so needs_review stays False instead of
+        # firing with no review_reasons to explain it (panels R17B, R19B).
+        res = ok(holes, confidence=1.0, provenance=Provenance.INFERRED, count=0)
+        res.urgency = Urgency.GREEN
     return res
 
 

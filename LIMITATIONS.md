@@ -117,6 +117,18 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   reachability on its own (issue #15). That's deliberate: pruning the losing siblings
   would let a single jedi mis-resolution drop a live symbol's only caller and flag it
   dead — the cardinal sin — so the safe additive design is kept.
+- **Side effect — direct-degree inflation on dense homonym clusters (`fan_in` fallback
+  only):** several same-named inner helpers (e.g. a `rec` recursion helper repeated in
+  many modules) cross-link into a dense `AMBIGUOUS` sub-graph, so each one's *direct*
+  in-degree (`fan_in`) counts every sibling's call site, not just its real caller (panel
+  R19B). This is purely a **direct-degree** artifact: the GraphBLAS `transitive_fan_in`
+  used by `orient` counts distinct reachable *sources* and is unaffected, so the standard
+  install ranks hubs correctly; only the no-GraphBLAS `fan_in` fallback can let such a
+  cluster crowd the hub list. `scan` surfaces the cluster as `GREEN`/`needs_review`
+  `god_object`/`cycle` artifacts (confident edges = 0) — never a false `RED`/`ORANGE`, so
+  no cardinal or urgency impact. Tightening this needs lexical-scope name resolution
+  (binding a bare call to the enclosing-scope definition), which is a broad change kept
+  out of the 1.0.x line; install `python-graphblas` for accurate hub ranking meanwhile.
 
 ### A called base-class method keeps *all* subclass overrides live (Python)
 - **Concern:** a call that binds to a base method (`def go(b: Base): b.run()`, or a base

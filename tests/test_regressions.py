@@ -3548,11 +3548,14 @@ def test_string_arg_ops_return_result_on_none_not_raise(tmp_path):
 # -- Panel R17B / sonnet (non-blocking envelope correctness) ----------------------
 def test_find_holes_zero_holes_is_green_not_orange():
     """find_holes emitted ORANGE unconditionally; zero dangling references is a clean
-    result, so urgency is GREEN when there are no holes (panel R17B)."""
+    result, so urgency is GREEN when there are no holes (panel R17B). The clean result is
+    also confident — needs_review must be False, not True with an empty review_reasons
+    (an unexplained review flag, panel R19B)."""
     from stitchgraph.core.envelope import Urgency
     with sg.Store(":memory:") as store:
         res = sg.find_holes(store)
         assert res.result == [] and res.urgency == Urgency.GREEN
+        assert res.needs_review is False and res.review_reasons == []
 
 
 def test_get_callers_reflects_edge_provenance():
