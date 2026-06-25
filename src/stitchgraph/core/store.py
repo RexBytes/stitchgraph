@@ -197,13 +197,25 @@ class Store:
             self._dedup_resolved_edges()
 
     def _rewiden_resolved(self) -> None:
-        """Re-expand already-resolved edges when a newly-added node makes their symbol
-        ambiguous. `_resolve_worklist` only touches holes (dst_id IS NULL); when a prior
-        update resolved `caller -> foo` uniquely and a later update adds a second `foo`, the
-        old edge is never revisited, so the new `foo` has no inbound edge and find_stale
-        flags it dead (panels R15B/R16A/R18A, cardinal). Rebuild each (src, relation,
-        dst_symbol) group whose name now has >1 project node as AMBIGUOUS over ALL of them,
-        matching what a full reindex produces."""
+        """Re-normalize already-resolved edges so an incremental update matches a full
+        reindex of the same final state. `_resolve_worklist` only revisits holes (dst_id
+        IS NULL); resolved edges are never reconsidered, so two directions drift:
+
+        * Widening (cardinal): when a prior update resolved `caller -> foo` uniquely and a
+          later update adds a second `foo`, the new node gets no inbound edge and
+          find_stale flags it dead (panels R15B/R16A/R18A). Rebuild the group AMBIGUOUS
+          over ALL same-named candidates at weight 1/n.
+        * Narrowing (non-blocking, panel R19A): when one arm of an N-way ambiguous
+          fan-out is deleted, the survivors keep weight 1/N_old instead of 1/(N-1) (or
+          1.0 when a single candidate remains), deflating best_path/trace_path confidence.
+          Re-normalize the survivors' weights.
+
+        A pre-existing precise (non-AMBIGUOUS) edge is preserved while it still covers
+        every candidate — only a pure ambiguous fan-out is re-weighted. On narrowing to a
+        single candidate the rebuilt edge is marked INFERRED, not EXTRACTED: the pre-widen
+        provenance is not recoverable at the store layer, and under-claiming confidence is
+        the safe direction (issue #10). It self-corrects fully when the caller's file is
+        next re-extracted."""
         groups = self.conn.execute(
             """SELECT DISTINCT src, relation, dst_symbol FROM edges
                 WHERE dst_id IS NOT NULL"""
@@ -211,26 +223,53 @@ class Store:
         for g in groups:
             cands = [r["id"] for r in self.conn.execute(
                 "SELECT id FROM nodes WHERE name = ?", (g["dst_symbol"],)).fetchall()]
-            if len(cands) < 2:
+            if not cands:
                 continue
             existing = self.conn.execute(
                 """SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
                     AND dst_id IS NOT NULL""",
                 (g["src"], g["relation"], g["dst_symbol"])).fetchall()
-            if {e["dst_id"] for e in existing}.issuperset(cands):
-                continue  # already linked to every candidate
-            tmpl = existing[0]
-            self.conn.execute(
-                """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
-                    AND dst_id IS NOT NULL""",
-                (g["src"], g["relation"], g["dst_symbol"]))
-            w = round(1.0 / len(cands), 3)
-            for cid in cands:
+            if not existing:
+                continue
+            has_precise = any(e["provenance"] != "ambiguous" for e in existing)
+            if len(cands) >= 2:
+                w = round(1.0 / len(cands), 3)
+                covers_all = {e["dst_id"] for e in existing}.issuperset(cands)
+                # Keep a precise resolution that already covers every candidate; only a
+                # pure ambiguous fan-out with a stale weight needs re-normalizing.
+                if covers_all and (has_precise
+                                   or all(e["weight"] == w for e in existing)):
+                    continue
+                tmpl = existing[0]
+                self.conn.execute(
+                    """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
+                        AND dst_id IS NOT NULL""",
+                    (g["src"], g["relation"], g["dst_symbol"]))
+                for cid in cands:
+                    self.conn.execute(
+                        """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                             provenance, location, source, file)
+                           VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
+                        (g["src"], g["relation"], g["dst_symbol"], cid, w,
+                         tmpl["location"], tmpl["source"], tmpl["file"]))
+            else:
+                # Exactly one candidate -> one edge at full weight. Only rebuild a leftover
+                # widened fan-out (several rows, or a sole row still carrying an ambiguous
+                # weight<1); never downgrade a normal unique EXTRACTED/INFERRED edge.
+                widened = len(existing) > 1 or any(
+                    e["provenance"] == "ambiguous" or e["weight"] < 1.0 for e in existing)
+                if not widened:
+                    continue
+                tmpl = existing[0]
+                self.conn.execute(
+                    """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
+                        AND dst_id IS NOT NULL""",
+                    (g["src"], g["relation"], g["dst_symbol"]))
                 self.conn.execute(
                     """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
                                          provenance, location, source, file)
-                       VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
-                    (g["src"], g["relation"], g["dst_symbol"], cid, w,
+                       VALUES (?, ?, ?, ?, 1.0, 'inferred', ?, ?, ?)""",
+                    (g["src"], g["relation"], g["dst_symbol"], cands[0],
                      tmpl["location"], tmpl["source"], tmpl["file"]))
 
     def _dedup_resolved_edges(self) -> None:

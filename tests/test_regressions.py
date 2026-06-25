@@ -3751,3 +3751,42 @@ def test_override_propagation_does_not_resurrect_unrelated_dead_method(tmp_path)
         stale = {c["id"] for c in sg.find_stale(store).result}
         assert "main.py::Other.run" in stale            # unrelated class, genuinely dead
         assert "main.py::Derived.run" not in stale
+
+
+def test_rewiden_renormalizes_weight_when_fanout_narrows():
+    """Deleting one arm of an N-way ambiguous fan-out must re-normalize the survivors'
+    weights to match a full reindex (1/N -> 1/(N-1), or 1.0 when one candidate remains),
+    or best_path/trace_path confidence stays deflated (panel R19A, non-blocking)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import best_path
+
+    def _n(i):
+        return Node(id=i, kind=NodeKind.FUNCTION, name=i.split("::")[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file("b.py", [_n("b.py::foo")], [])
+        store.replace_file("a.py", [_n("a.py::caller")], [
+            Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="foo",
+                 dst_id="b.py::foo", weight=1.0, provenance=Provenance.EXTRACTED)])
+        store.replace_file("c.py", [_n("c.py::foo")], [])   # widen -> 0.5 / 0.5
+        store.replace_file("c.py", [], [])                  # narrow back to one
+        bp = best_path(store, "a.py::caller", "b.py::foo")
+        assert bp is not None and bp[1] == 1.0          # confidence restored, not 0.5
+        rows = store.conn.execute(
+            "SELECT weight FROM edges WHERE dst_symbol = 'foo' AND dst_id IS NOT NULL"
+        ).fetchall()
+        assert [r["weight"] for r in rows] == [1.0]
+
+    # 3-way fan-out narrowing to 2 re-normalizes 0.333 -> 0.5.
+    with sg.Store(":memory:") as store:
+        store.replace_file("a.py", [_n("a.py::caller")], [
+            Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="m",
+                 dst_id="x.py::m", weight=1.0, provenance=Provenance.EXTRACTED)])
+        for f in ("x.py", "y.py", "z.py"):
+            store.replace_file(f, [_n(f"{f}::m")], [])
+        store.replace_file("z.py", [], [])              # drop one arm
+        rows = store.conn.execute(
+            "SELECT weight FROM edges WHERE dst_symbol = 'm' AND dst_id IS NOT NULL"
+        ).fetchall()
+        assert sorted(r["weight"] for r in rows) == [0.5, 0.5]
