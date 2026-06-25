@@ -25,6 +25,13 @@ except ModuleNotFoundError:  # pragma: no cover
 _EXT = {".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
         ".ts": "typescript", ".tsx": "tsx"}
 _VERBS = {"get", "post", "put", "delete", "patch", "all", "use"}
+# Receivers that are HTTP *clients*, not Express apps/routers: `axios.post("/x")`,
+# `http.get("/x")` are client calls (the js-fetch resolver models them as SUBMITS_TO), not
+# server route registrations — skip them so they don't become phantom ROUTE nodes (panel
+# R16B). Deny-list only (not an app/router allow-list): mislabelling a real route would drop
+# its handler's only root and risk a false-dead, so keep every non-client receiver.
+_CLIENT_RECEIVERS = {"axios", "http", "https", "fetch", "got", "ky", "superagent",
+                     "request", "xhr", "needle", "phin"}
 
 
 class ExpressRouteResolver:
@@ -101,6 +108,15 @@ def _express_call(call, src):
     verb = src[prop.start_byte:prop.end_byte].decode() if prop else ""
     if verb not in _VERBS:
         return None
+    obj = fn.child_by_field_name("object")
+    recv = ""
+    if obj is not None and obj.type == "identifier":
+        recv = src[obj.start_byte:obj.end_byte].decode()
+    elif obj is not None and obj.type == "member_expression":
+        p = obj.child_by_field_name("property")  # `this.http.get` -> trailing `http`
+        recv = src[p.start_byte:p.end_byte].decode() if p else ""
+    if recv.lower() in _CLIENT_RECEIVERS:
+        return None  # client HTTP call, not a server route
     args = call.child_by_field_name("arguments")
     if args is None:
         return None

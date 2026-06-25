@@ -540,11 +540,13 @@ def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str)
                     src=mod_id, relation=Relation.REFERENCES, dst_symbol=stmt.name,
                     dst_id=did, weight=0.8, provenance=Provenance.INFERRED,
                     location=f"{rel}:{stmt.lineno}:0", source="ast"))
-            for dec in stmt.decorator_list:
-                dname = _name_of(dec.func) if isinstance(dec, ast.Call) else _name_of(dec)
-                if dname:
-                    _ref_edges(proj, mod_id, dname, Relation.REFERENCES, rel,
-                               getattr(dec, "lineno", stmt.lineno))
+                # Attribute the decorator reference to the DEF (like _decorator_edges does in
+                # function scope), not the module node: a `@memo def f` is a use of `memo` by
+                # `f`. Edging it from the module instead would add a per-importer edge to the
+                # decorator's fan_in and could push a shared decorator over the god_object
+                # threshold (panel R16B). The def is reachable via the module->def edge above,
+                # so the decorator stays live.
+                _decorator_edges(proj, did, stmt, rel)
 
 
 def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:

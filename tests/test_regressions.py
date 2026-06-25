@@ -3421,3 +3421,100 @@ def test_function_named_like_module_call_is_extracted_not_ambiguous(tmp_path):
         sg.reindex(store, str(tmp_path))
         stubs = [i for i in sg.scan(store).result if i["kind"] == "live_stub"]
         assert any(i["urgency"] == "red" for i in stubs)   # not demoted by a false AMBIGUOUS
+
+
+# -- Panel R16A2 / opus (CARDINAL): Rust trait impl emits INHERITS Type->Trait ----
+def test_rust_trait_kept_live_via_impl_inherits_edge(tmp_path):
+    """A Rust `impl Trait for Type` means Type satisfies Trait. Without an INHERITS edge
+    Type->Trait, a private trait whose method is reached (but whose name never appears in a
+    reachable body) was flagged dead (panel R16A, cardinal) — the analogue of Ruby
+    `include`. The impl block now emits the edge."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "src/lib.rs": """
+            trait Validator { fn validate(&self, input: &str) -> bool; }
+            struct LengthValidator { min: usize }
+            impl Validator for LengthValidator {
+                fn validate(&self, input: &str) -> bool { input.len() >= self.min }
+            }
+            pub fn check(input: &str) -> bool {
+                let v = LengthValidator { min: 3 };
+                v.validate(input)
+            }
+            fn never_called() -> bool { false }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "src/lib.rs::Validator" not in stale       # live: LengthValidator impls it
+        assert "src/lib.rs::never_called" in stale          # genuinely unused, still flagged
+
+
+# -- Panel R16B2 / opus (non-blocking): client HTTP calls aren't phantom routes ---
+def test_client_http_call_is_not_a_phantom_express_route(tmp_path):
+    """`http.get("/x")` / `axios.post("/x")` are client HTTP calls, not Express server
+    route registrations — they must not become phantom ROUTE nodes (panel R16B). The
+    express resolver skips known client-library receivers."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "client.js": 'const http = require("http");\nhttp.get("/api/data");\n'
+                     'const axios = require("axios");\naxios.post("/users", data);\n',
+    })
+    from stitchgraph.core.model import NodeKind as _NK
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert store.nodes_by_kind(_NK.ROUTE) == []        # no phantom routes
+
+
+def test_express_real_route_still_detected(tmp_path):
+    """The client-receiver skip must NOT drop a genuine `app.get`/`router.post` route —
+    that would orphan its handler (cardinal risk). Real routes still link (panel R16B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.model import NodeKind as _NK
+    _mk(tmp_path, {
+        "server.js": 'const app = express();\n'
+                     'function handler(req, res) { return res.send("ok"); }\n'
+                     'app.get("/health", handler);\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert store.nodes_by_kind(_NK.ROUTE)              # the real route survives
+
+
+# -- Panel R16B2 / opus (metric): transitive_fan_in excludes self for cyclic nodes -
+def test_transitive_fan_in_excludes_self_for_cycles():
+    """A node on a cycle reaches itself in the boolean closure; counting that made
+    transitive_fan_in report the node as its own depender, inconsistent with
+    reverse_reachable_from/impact_of (panel R16B). The diagonal is now dropped."""
+    pytest.importorskip("graphblas")
+    from stitchgraph.core import algebra
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for nid in ("m.py::a", "m.py::b"):
+            store.add_node(Node(id=nid, kind=NodeKind.FUNCTION, name=nid.split("::")[1]))
+        for s, d in (("m.py::a", "m.py::b"), ("m.py::b", "m.py::a")):
+            store.add_edge(Edge(src=s, relation=Relation.CALLS, dst_symbol=d.split("::")[1],
+                                dst_id=d, weight=1.0, provenance=Provenance.EXTRACTED))
+        store.commit()
+        tfi = algebra.transitive_fan_in(store)
+        assert tfi == {"m.py::a": 1, "m.py::b": 1}          # each other, not self
+
+
+# -- Panel R16B2 / opus (input validation): find_similar negative limit ------------
+def test_find_similar_negative_limit_does_not_return_near_all(tmp_path):
+    """A negative `limit` sliced from the end (`scored[:-5]`), returning nearly all results
+    instead of bounding to none (panel R16B). limit is now clamped to >=0."""
+    _mk(tmp_path, {
+        "m.py": "\n".join(f"def f{i}(): return store_edge()" for i in range(8))
+                + "\ndef store_edge(): return 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.find_similar(store, "store edge reachable", limit=-5)
+        # clamped: refuses with no payload rather than returning ~all-but-5
+        assert res.result in (None, [])

@@ -101,6 +101,7 @@ def find_similar(store: Store, snippet: str, limit: int = 10) -> list[tuple[str,
     Uses the dense embedder if one is registered (or model2vec auto-loads), else
     falls back to token cosine — identical interface, better ranking with a model.
     """
+    limit = max(0, limit)  # a negative limit must bound to nothing, not slice from the end
     callees: dict[str, list[str]] = {}
     for edge in store.resolved_edges(Relation.CALLS):
         if edge.dst_id:

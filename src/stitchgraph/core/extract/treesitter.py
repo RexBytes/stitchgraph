@@ -812,6 +812,16 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                      enclosing_func=enclosing_func)
         elif t in spec.container_only:
             qual = _join(parent, _name_of(child, src))
+            # A Rust `impl Trait for Type` block means `Type` satisfies `Trait` — emit an
+            # INHERITS Type -> Trait edge (resolved by name) so a private trait whose method
+            # is reached but whose name never appears in a reachable body isn't flagged dead
+            # (panel R16A, cardinal; the analogue of Ruby `include Module`). `impl Type` with
+            # no trait is inherent (no edge).
+            if t == "impl_item" and qual:
+                _tr = child.child_by_field_name("trait")
+                _trn = _trailing_id(_tr, src) if _tr is not None else None
+                if _trn:
+                    inherits.append((f"{rel}::{qual}", _trn, lang))
             _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
                      exported=False, is_test=is_test, contains=contains,
                      enclosing_func=enclosing_func)
