@@ -1456,6 +1456,32 @@ def test_renamed_reexport_target_is_an_export_root(tmp_path):
         assert "truly_dead" in stale           # never re-exported -> genuinely dead
 
 
+def test_conditional_reexport_is_an_export_root(tmp_path):
+    """A re-export nested in a `try/except ImportError` (optional dep) or `if
+    sys.version_info` (backport) is public API, but the __init__ export scan only walked
+    TOP-LEVEL statements, so the conditionally re-exported symbol was flagged dead at conf
+    0.6 (panel R26A, cardinal). The scan now looks through control-flow blocks. Underscore
+    re-exports nested in control flow stay private."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": (
+            "from .impl import PlainThing\n"
+            "try:\n    from .impl import OptThing\nexcept ImportError:\n    OptThing = None\n"
+            "try:\n    from .impl import _secret\nexcept ImportError:\n    _secret = None\n"
+        ),
+        "pkg/impl.py": (
+            "class PlainThing:\n    def work(self): return 1\n"
+            "class OptThing:\n    def work(self): return 2\n"
+            "def _secret(): return 3\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "OptThing" not in stale         # conditionally re-exported public API
+        assert "work" not in stale              # its method
+        assert "_secret" in stale              # underscore re-export stays private
+
+
 def test_reexport_root_survives_when_all_is_declared(tmp_path):
     """A re-export not listed in __all__ is still importable as `pkg.Public`, so it
     must remain a root (additive with __all__, never flagged dead)."""

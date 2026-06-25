@@ -300,7 +300,12 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     ))
     # Public names of a package __init__ are part of the export surface.
     if is_init:
-        for node in ast.iter_child_nodes(tree):
+        # Look THROUGH control-flow blocks (`try/except ImportError` for optional deps,
+        # `if sys.version_info` backport branches), which don't create a scope — a re-export
+        # nested there is still public API. Only top-level was scanned before, so a
+        # conditional re-export's target was flagged dead (panel R26A, cardinal). Mirror
+        # `_scope_defs`: recurse through control flow, never into a def/class body.
+        for node in _module_export_nodes(tree):
             nm = getattr(node, "name", None)
             if nm and not nm.startswith("_"):
                 proj.exported_names.add(nm)
@@ -353,6 +358,26 @@ def _scope_defs(scope: ast.AST) -> list[ast.AST]:
                 rec(child)         # look through control flow (and inert expressions)
 
     rec(scope)
+    return out
+
+
+def _module_export_nodes(tree: ast.Module) -> list[ast.AST]:
+    """Module-scope defs/classes AND imports of a package `__init__`, looking *through*
+    control-flow blocks (`try/except`, `if/else`) but never into a def/class body. Used to
+    scan the export surface so a re-export nested in an optional-dependency `try/except` or
+    a version-backport `if` is still recognized as public API (panel R26A)."""
+    out: list[ast.AST] = []
+
+    # Distinct name (not the shared `rec` of the other walkers) so this helper doesn't join
+    # the same-named inner-helper cluster that the documented fan_in-fallback note covers.
+    def _descend(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                  ast.ImportFrom, ast.Import)):
+                out.append(child)   # a module-scope def/class or (re-)import; don't descend
+            else:
+                _descend(child)     # look through control flow
+    _descend(tree)
     return out
 
 
