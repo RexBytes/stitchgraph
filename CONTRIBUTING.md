@@ -366,3 +366,57 @@ moves** — budget irregular re-validation:
 Treat oracles as a **small living layer**, re-derived when a change moves a chokepoint or
 alters an invariant — add "did this move a chokepoint / change an invariant? revisit the
 oracle" to the review checklist. Cheap oracles are also cheap to keep valid.
+
+## Partition ownership of defect classes (discover → assign → audit)
+
+The strategy that ends the tail: **every defect class has exactly ONE owning verification
+layer, and the other layers explicitly disown it.** The win is not "more layers" — it's
+that no class is left in a *seam* (half-covered by two layers that both report green) or
+left ownerless (rediscovered by panels round after round). One owner per class, the way
+the codebase keeps one producer per fact.
+
+The layers and what each is structurally best at owning:
+
+| Layer | Owns the class of… | Cost / cadence |
+|---|---|---|
+| **Oracle** (`tests/oracles/`) | differential properties (two computations must agree) + chokepoint/metamorphic invariants | cheap, every push |
+| **Mutation** (`scripts/mutate.py`) | "do the tests/oracles actually bite?" (test-strength) | medium, on demand / release |
+| **Panel** (multi-model) | *novelty* — a class no cheap layer covers yet | expensive, per round |
+| **Static** (ruff/mypy) | type/lint defects | cheap, every push |
+
+### How to partition — you DISCOVER it, you don't design it
+
+You cannot enumerate a system's defect classes up front (the spec is discovered through
+review — Rice's theorem). So:
+
+1. **Wait and watch first.** Run panels. A class that *recurs across rounds* is the
+   signal — it's a class with no owner (it was being "covered" by luck, not construction).
+   Don't pre-build oracles for imagined classes; build them for classes the panel proves
+   are real and recurring.
+2. **Assign by shape.** For the recurring class, ask the four-shape question (differential
+   / chokepoint-invariant / metamorphic / declared-contract). The shape that fits names
+   the cheap owner. If none fits cheaply, it stays **panel-owned** until a shape emerges.
+3. **Verify the owner is EXHAUSTIVE, then disown elsewhere.** A false owner is worse than
+   none: a consumer-level "corrupt-store" check that only hits one path *looks* like an
+   owner but false-cleans. Make the owner total (schema-derived, chokepoint-located), then
+   *write down* that the other layers don't own it (e.g. "reach.py filters are
+   oracle-owned; mutation cannot reach them").
+4. **Convergence signal.** The panel cadence trending toward zero new classes IS the proof
+   the partition is (currently) complete — not "no bugs", but "no *unowned* classes left".
+
+### Occasional retest — ownership rots, so audit the boundaries
+
+A partition is only valid for the architecture it was drawn on. Re-validate on a schedule
+(release / nightly / on any structural change), NOT every push:
+
+- **Chokepoint moved?** A new code path that bypasses the owning chokepoint silently voids
+  ownership (rounds 30–31: a raw query bypassed the guarded mapper). → **parallel-site lint.**
+- **Owner gone blind?** An oracle that passes for the wrong reason. → **mutation as the
+  meta-oracle.**
+- **Class boundary shifted?** A new sub-case the owner's generator/matrix doesn't reach. →
+  re-derive the owner from the single source of truth (schema/dataclass), and when a panel
+  *does* surface a new instance, the fix includes *extending the owner* so it stays total.
+
+The discipline in one line: **discover classes by watching panels; give each recurring
+class one exhaustive owner; disown it everywhere else; re-audit the boundaries when the
+architecture moves.**
