@@ -4,7 +4,7 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
-## [1.0.6] — 2026-06-24
+## [1.0.6] — 2026-06-25
 
 **Field-fix patch — entry-point coverage (#20/#21/#22) that grew into a robustness +
 cross-language cardinal-hardening release.** Under sustained multi-model adversarial-panel
@@ -14,6 +14,26 @@ grammar/extension edge cases — plus crash/hang hardening (FIFO/special files, 
 coverage JSON and `stitchgraph.toml`, deep-AST `RecursionError`) and a documentation
 correction. The cardinal fixes only ever *add* roots (precision-safe). Confirmed by full
 three-model panels.
+
+**Final hardening rounds (R33–R39).** A deeper full-diversity panel campaign (opus×2 ·
+sonnet×2 · haiku×2 per round) plus a three-layer release gate — adversarial panel +
+deterministic oracle suite (`tests/oracles/`) + in-house mutation meta-oracle
+(`scripts/mutate.py`) — drove the last veins of the cardinal/inflation classes to closure,
+each owned by a regression test or oracle so future panels don't re-spend budget:
+
+- More language execution-model rooting: Ruby/PHP module-level scripts, Go package-directory
+  `var`/`init` initializers, C++ translation-unit static initializers (reachability-driven),
+  and the module/symbol id-collision case (`Service.js` + `class Service`).
+- `replace_file` incremental convergence: runtime-role preservation, language-aware name
+  resolution (no cross-language bind), and exact cross-file `exported`-role convergence via a
+  new `exported_ids` parameter.
+- Provenance-demotion completed across the column (`trace_path` joined
+  `impact_of`/`get_callers`); `get_matrix`/`summarize_subsystem` id-boundary scoping;
+  coverage path-suffix and bool-as-int fixes; envelope non-finite clamp + `_plain` covering
+  all result/meta values.
+
+Released on a **two-consecutive-3-layer-clean** gate (rounds R38–R39: panel clean + oracle
+suite green + mutation clean), RRS 93.3/100. The maintainer applies the version tag.
 
 ### Fixed
 

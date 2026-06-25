@@ -747,6 +747,35 @@ documented); a test base in a *non-test* directory subclassed by an own-method-l
 third-party Rust runner macros (`#[rstest]`/`#[test_case]`); SQL MERGE WRITES label;
 `find_holes` empty-list urgency; the LSP backend and variable-granularity data flow.
 
+## 1.0.6 final campaign (R33–R39) — three-layer gate
+
+Full-diversity rounds (opus×2 · sonnet×2 · haiku×2) under a strengthened gate: a round is
+"clean" only when **all three** layers pass — adversarial panel + oracle suite
+(`tests/oracles/`) + mutation meta-oracle (`scripts/mutate.py`). Ship on **2 consecutive
+3-layer-clean rounds**.
+
+- **R33** (5): Ruby/PHP module-script rooting (CARD), replace_file runtime-role erase +
+  has_runtime inflation (CARD), empty-ignore glob crash, impact_of inflation, scope-prefix bleed.
+- **R34** (3): trace_path provenance inflation, cross-language bare-name widening (incremental),
+  runtime `_by_suffix` boundary inflation. (+ broken-config-test fix; mutation green-baseline guard.)
+- **R35** (4): Go package-var rooting (CARD), Express method-ref handler (CARD), coverage
+  bool-as-int line, cross-root coverage suffix.
+- **R36** (1): C++ TU static-init liveness (CARD, reachability fixpoint). + envelope non-finite clamp.
+- **R37** (2): module/symbol id-collision rooting (CARD), cross-file re-export on incremental
+  replace_file (CARD, `exported_ids` exact-convergence). + `_plain` non-finite drop.
+- **R38** (0): **first 3-layer-clean round.** One finding invalid (SUBMITS_TO premise/direction);
+  one latent non-blocking meta/_plain consistency item closed.
+- **R39** (0): **second consecutive 3-layer-clean round — gate met.** All 6 reviewers clean.
+  RRS 93.3/100, clean streak 2.
+
+Method note: late findings were almost all *symmetry siblings* of an already-known column
+(rooting / provenance-demotion / boundary-guard / incremental-convergence). Closing each whole
+column with an owning oracle or matrix test — not the single instance — is what drove the
+panel cadence to zero. Two `replace_file` divergences (find_holes-count and fan_in on
+incremental delete) are documented in LIMITATIONS.md as library-only (the shipped CLI/MCP/watch
+full-reindex). A round-39 reviewer ran a destructive `git reset` mid-run; future panel briefs
+forbid any git state mutation.
+
 ## Standing themes
 
 - Convergence is non-monotonic and never reaches zero — measure residual risk.
