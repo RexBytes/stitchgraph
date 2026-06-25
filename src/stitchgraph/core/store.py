@@ -231,6 +231,14 @@ class Store:
                 (g["src"], g["relation"], g["dst_symbol"])).fetchall()
             if not existing:
                 continue
+            # A structural self-member edge (a class -> its own member, dst_id == src +
+            # ".dst_symbol" — e.g. the seeded class -> __init__/__call__ dunder edge) is
+            # precise by construction, NOT a name-based resolution. Many classes share a
+            # dunder name, so widening it across every same-named member of OTHER classes
+            # cross-links untouched files and inflates fan_in/impact/TFI on an incremental
+            # update (panel R21B). Such edges never need re-normalizing — skip the group.
+            if any(e["dst_id"] == f"{g['src']}.{g['dst_symbol']}" for e in existing):
+                continue
             has_precise = any(e["provenance"] != "ambiguous" for e in existing)
             if len(cands) >= 2:
                 w = round(1.0 / len(cands), 3)

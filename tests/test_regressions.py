@@ -3933,6 +3933,29 @@ def test_needs_review_always_has_a_reason():
     assert r4.needs_review is False and r4.review_reasons == []
 
 
+def test_incremental_replace_does_not_cross_widen_dunder_edges(tmp_path):
+    """The seeded class->dunder REFERENCES edge (round 20) is precise/self-scoped, but
+    many classes share a dunder name. On an incremental replace_file, _rewiden_resolved
+    must not treat it as a name-ambiguous fan-out and cross-link every class's __init__ —
+    that inflated fan_in/impact on UNTOUCHED files (panel R21B). Incremental must converge
+    to the full-reindex graph."""
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "a.py": "class Foo:\n    def __init__(self): self.x = 1\n",
+        "b.py": "class Bar:\n    def __init__(self): self.y = 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert fan_in(store).get("b.py::Bar.__init__") == 1
+        nodes, edges = extract_project(str(tmp_path))
+        an = [n for n in nodes if n.id.startswith("a.py")]
+        ae = [e for e in edges if e.src.startswith("a.py")]
+        store.replace_file("a.py", an, ae)            # touch a.py only
+        # b.py is untouched: its dunder fan_in must stay 1, not gain a phantom from Foo.
+        assert fan_in(store).get("b.py::Bar.__init__") == 1
+
+
 def test_rewiden_renormalizes_weight_when_fanout_narrows():
     """Deleting one arm of an N-way ambiguous fan-out must re-normalize the survivors'
     weights to match a full reindex (1/N -> 1/(N-1), or 1.0 when one candidate remains),
