@@ -213,22 +213,16 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `__main__` call chain. The `main.py` + `def main()` case produces only a harmless
   self-loop (single-node SCCs aren't reported).
 
-### Incremental `replace_file` resolves holes against the nodes present *now*
-- **Concern:** `Store.replace_file` (the experimental single-file incremental
-  updater) over-approximates an ambiguous hole to *all* candidates that exist when
-  it runs — but if a *later* single-file update introduces a new same-named
-  definition, an edge already uniquely resolved by an earlier update is not
-  retroactively widened to include it.
-- **Decision:** the worklist over-approximates at resolution time; it does not
-  re-open already-resolved edges when a homonym appears in a subsequent update.
-- **Rationale:** `replace_file` is not wired into any product path — `watch` does a
-  full `reindex`, which always sees the complete symbol table and links to all
-  candidates. Tracking enough provenance to retroactively re-expand individual
-  resolved edges across updates is disproportionate for an experimental method
-  whose wired alternative is already exact.
-- **Escape hatch:** run a full `reindex` (the supported path) — it is authoritative
-  for ambiguity; or call `replace_file` for the affected files once all definitions
-  exist.
+### Incremental `replace_file` matches a full reindex for homonyms (fixed)
+- **Was:** an edge uniquely resolved by an earlier `replace_file` was not re-expanded
+  when a *later* update introduced a new same-named definition, leaving the new
+  definition with no inbound edge (a false dead on the incremental path).
+- **Now:** `replace_file` runs a `_rewiden_resolved` pass that rebuilds any
+  `(src, relation, dst_symbol)` group whose name has more than one project node as
+  AMBIGUOUS over *all* candidates — so an incremental update sequence converges to the
+  same edges a full `reindex` of the final state produces. (A surviving edge after an
+  ambiguous→single disambiguation keeps its AMBIGUOUS weight until the next reindex —
+  honest, slightly under-confident, never a false dead.)
 
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are

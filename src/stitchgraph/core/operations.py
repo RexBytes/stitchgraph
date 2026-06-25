@@ -500,6 +500,14 @@ def find_similar(store: Store, snippet: str, limit: int = 10) -> Result:
     classes by token similarity (name + docstring + callees) to the snippet."""
     from . import similar
 
+    # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
+    # raise (re.findall on a non-str; `max(0, limit)` / slice on a non-int) instead of
+    # returning a Result (panel R18B). The dense-embedder path masks the snippet case, so
+    # the stdlib-only default install is what crashes — guard here, at the op boundary.
+    if not isinstance(snippet, str):
+        return refuse("snippet must be a string", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return refuse("limit must be an integer", confidence=0.0)
     matches = similar.find_similar(store, snippet, limit)
     if not matches:
         return refuse("no similar code found (or snippet had no usable tokens)",
@@ -518,6 +526,10 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
     """
     from . import runtime
 
+    if not isinstance(trace, str):
+        # load_coverage does Path(trace) before its own guard; a non-str trace would raise
+        # instead of honouring the "empty on any problem" contract (panel R18B).
+        return refuse("trace path must be a string", confidence=0.0)
     covmap, _ = runtime.load_coverage(trace)
     if not covmap:
         return refuse(f"no usable coverage data in '{trace}' (supported: coverage.py "
@@ -682,12 +694,18 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     Refuses when the scope exceeds `limit` so the result stays small enough for an
     LLM to actually reason over.
     """
+    # Validate arg types BEFORE using them — relation.upper()/startswith()/`> limit` would
+    # otherwise raise on None/wrong-type from a library or MCP call (panel R18B).
+    if not isinstance(scope, str):
+        return refuse("scope must be a string", confidence=0.0)
+    if not isinstance(relation, str):
+        return refuse("relation must be a string", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return refuse("limit must be an integer", confidence=0.0)
     try:
         rel = Relation(relation.upper())
     except ValueError:
         return refuse(f"unknown relation '{relation}'", confidence=0.0)
-    if not isinstance(scope, str):
-        return refuse("scope must be a string", confidence=0.0)  # None/wrong type (panel R17A)
 
     members = sorted(nid for nid in store.all_node_ids() if nid.startswith(scope))
     if not members:
@@ -743,12 +761,14 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
     # on a stat()/is_file()/meta-bind (panels YYY/ZZZ/crash-sweep). Probe once up front;
     # every downstream Path op on the root is then known-safe.
     try:
-        usable = os.path.isdir(path)
-        abs_root = os.path.abspath(path)
+        usable = isinstance(path, str) and os.path.isdir(path)
+        abs_root = os.path.abspath(path) if isinstance(path, str) else ""
         abs_root.encode("utf-8")  # a surrogate/NUL root can't be stored as meta
     except (OSError, ValueError, UnicodeError, TypeError):
-        # TypeError: a non-str path (None / wrong type from a library or MCP call) — degrade
-        # to an empty index like a missing path instead of raising (panel R17A).
+        # A non-str path (None / bytes / wrong type from a library or MCP call) or an
+        # unusable string root degrades to an empty index, never raises (panels R17A/R18B).
+        # `bytes` is excluded up front: abspath(bytes) returns bytes, whose .encode is an
+        # AttributeError the probe wouldn't otherwise catch.
         usable, abs_root = False, ""
     if not usable:
         with store.conn:

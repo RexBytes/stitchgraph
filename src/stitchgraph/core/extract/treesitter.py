@@ -1383,6 +1383,13 @@ def _roles(node, src, name, lang, exported):
         roles.add("exported")
     if name in ("main", "Main"):
         roles.add("main")
+    # Go `init()` is a runtime entry point: the Go runtime calls it automatically at package
+    # initialization (driver/handler registration, etc.), never from source — so it (and its
+    # callees) must be rooted like main, or it's flagged dead (panel R18A, cardinal). Go-gated
+    # so a plain `init` in another language isn't spuriously rooted; cardinal-safe for a (rare)
+    # method named init too.
+    if lang == "go" and name == "init":
+        roles.add("main")
     if lang == "rust" and any(c.type == "visibility_modifier" for c in node.children):
         roles.add("exported")
     elif lang == "go" and name[:1].isupper():        # Go: capitalised = exported

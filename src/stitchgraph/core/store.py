@@ -193,7 +193,45 @@ class Store:
             # then re-resolve any genuine hole the deletion may have disambiguated.
             self._drop_redundant_holes()
             self._resolve_worklist()
+            self._rewiden_resolved()
             self._dedup_resolved_edges()
+
+    def _rewiden_resolved(self) -> None:
+        """Re-expand already-resolved edges when a newly-added node makes their symbol
+        ambiguous. `_resolve_worklist` only touches holes (dst_id IS NULL); when a prior
+        update resolved `caller -> foo` uniquely and a later update adds a second `foo`, the
+        old edge is never revisited, so the new `foo` has no inbound edge and find_stale
+        flags it dead (panels R15B/R16A/R18A, cardinal). Rebuild each (src, relation,
+        dst_symbol) group whose name now has >1 project node as AMBIGUOUS over ALL of them,
+        matching what a full reindex produces."""
+        groups = self.conn.execute(
+            """SELECT DISTINCT src, relation, dst_symbol FROM edges
+                WHERE dst_id IS NOT NULL"""
+        ).fetchall()
+        for g in groups:
+            cands = [r["id"] for r in self.conn.execute(
+                "SELECT id FROM nodes WHERE name = ?", (g["dst_symbol"],)).fetchall()]
+            if len(cands) < 2:
+                continue
+            existing = self.conn.execute(
+                """SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
+                    AND dst_id IS NOT NULL""",
+                (g["src"], g["relation"], g["dst_symbol"])).fetchall()
+            if {e["dst_id"] for e in existing}.issuperset(cands):
+                continue  # already linked to every candidate
+            tmpl = existing[0]
+            self.conn.execute(
+                """DELETE FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
+                    AND dst_id IS NOT NULL""",
+                (g["src"], g["relation"], g["dst_symbol"]))
+            w = round(1.0 / len(cands), 3)
+            for cid in cands:
+                self.conn.execute(
+                    """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                         provenance, location, source, file)
+                       VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?)""",
+                    (g["src"], g["relation"], g["dst_symbol"], cid, w,
+                     tmpl["location"], tmpl["source"], tmpl["file"]))
 
     def _dedup_resolved_edges(self) -> None:
         """Collapse duplicate resolved edges and drop redundant REFERENCES — the DB-level
@@ -293,18 +331,19 @@ class Store:
     def nodes_by_name(self, name: str) -> list[Node]:
         try:
             rows = self.conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchall()
-        except (UnicodeEncodeError, ValueError):
-            # A user-supplied name with a lone surrogate (invalid-UTF-8 argv via
-            # surrogateescape) or an embedded NUL can't be a stored symbol; sqlite raises
-            # on bind. Refuse with no match rather than crash the op (panel XXX).
+        except (sqlite3.Error, UnicodeEncodeError, ValueError, TypeError):
+            # A name that can't be a stored symbol: a lone surrogate / embedded NUL
+            # (ValueError/UnicodeEncodeError on bind), or a non-str type — list/dict/bytes —
+            # which sqlite rejects as an unsupported bind (sqlite3.ProgrammingError/TypeError).
+            # Refuse with no match rather than crash the op (panels XXX/R18B).
             return []
         return [_row_to_node(r) for r in rows]
 
     def get_node(self, node_id: str) -> Node | None:
         try:
             row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
-        except (UnicodeEncodeError, ValueError):
-            return None  # non-UTF-8 / NUL id can't exist; refuse, don't crash (panel XXX)
+        except (sqlite3.Error, UnicodeEncodeError, ValueError, TypeError):
+            return None  # non-UTF-8 / NUL / non-str id can't exist; refuse, don't crash (R18B)
         return _row_to_node(row) if row else None
 
     def nodes_by_kind(self, kind: NodeKind) -> list[Node]:

@@ -3581,3 +3581,75 @@ def test_get_callers_reflects_edge_provenance():
         store.commit()
         res2 = sg.get_callers(store, "d.py::k2")
         assert res2.provenance is Provenance.EXTRACTED and not res2.needs_review
+
+
+# -- Panel R18A / opus (CARDINAL): Go init() is a runtime entry point ------------
+def test_go_init_function_and_its_callees_are_live(tmp_path):
+    """Go's `init()` is invoked automatically by the runtime at package initialization
+    (driver/handler registration) — it and whatever it calls are live, but _roles only
+    rooted main/Main, so init+callees were flagged dead (panel R18A, cardinal)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.go": "package main\nimport \"fmt\"\nvar cfg string\n"
+                   "func main() { fmt.Println(getConfig()) }\n"
+                   "func getConfig() string { return cfg }\n"
+                   "func init() { cfg = loadDefault() }\n"
+                   "func loadDefault() string { return \"default\" }\n"
+                   "func trulyDead() string { return \"x\" }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.go::init" not in stale
+        assert "main.go::loadDefault" not in stale     # reached from init
+        assert "main.go::trulyDead" in stale            # genuinely unused, still flagged
+
+
+# -- Panel R18A+B (envelope/crash): wrong-type args return a Result, never raise --
+def test_ops_return_result_on_wrong_type_args(tmp_path):
+    """Beyond None, ops must not raise on list/dict/int/bytes args (sqlite bind errors,
+    tokeniser TypeErrors, Path()/relation.upper()/abspath crashes) — reachable via the
+    library and MCP surfaces (panels R18A/R18B). reindex degrades to empty; rest refuse."""
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        import stitchgraph.core.similar as _sim
+        _sim._EMBEDDER, _sim._M2V_TRIED = None, True  # force the stdlib token path
+        calls = [
+            lambda: sg.find_symbol(store, []),
+            lambda: sg.find_symbol(store, {}),
+            lambda: sg.find_similar(store, 7),
+            lambda: sg.find_similar(store, []),
+            lambda: sg.find_similar(store, "x", None),
+            lambda: sg.ingest_trace(store, None),
+            lambda: sg.ingest_trace(store, [1]),
+            lambda: sg.get_matrix(store, "m", None),
+            lambda: sg.get_matrix(store, "m", "CALLS", "5"),
+            lambda: sg.reindex(store, b"abc"),
+            lambda: sg.trace_path(store, [1], "x"),
+        ]
+        for call in calls:
+            assert hasattr(call(), "ok")               # a Result, not an exception
+
+
+# -- Panel R15B/R16A/R18A sonnet (CARDINAL): replace_file re-widens homonyms ------
+def test_replace_file_rewidens_resolved_edge_on_new_homonym():
+    """Adding a node whose name matches an already-resolved edge's symbol must re-expand
+    that edge to the new node (matching a full reindex), or the new node is unreachable and
+    find_stale flags it dead (panels R15B/R16A/R18A, cardinal)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+
+    def _n(i):
+        return Node(id=i, kind=NodeKind.FUNCTION, name=i.split("::")[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file("a.py", [_n("a.py::foo")], [])
+        store.replace_file("c.py", [_n("c.py::caller")], [
+            Edge(src="c.py::caller", relation=Relation.CALLS, dst_symbol="foo",
+                 dst_id="a.py::foo", weight=1.0, provenance=Provenance.EXTRACTED)])
+        store.replace_file("b.py", [_n("b.py::foo")], [])   # new homonym, added later
+        fi = fan_in(store)
+        assert fi.get("a.py::foo", 0) >= 1 and fi.get("b.py::foo", 0) >= 1
