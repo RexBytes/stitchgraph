@@ -666,6 +666,13 @@ def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str)
     for call in _direct_calls(tree):
         call_funcs.add(id(call.func))
         _call_edge(proj, rel, mod_id, None, {}, call)
+    # Module-level attribute reads (`RESULT = _E.compute`) on an unknown receiver need the
+    # same name-based REFERENCES fallback as the function-body pass, or a live member read at
+    # import is flagged dead — the read-side scope twin of the round-30 fix (panel R31A,
+    # cardinal). Module scope has no typed locals, so every receiver is unknown -> fallback.
+    for attr in _direct_attr_reads(tree, call_funcs):
+        _ref_edges(proj, mod_id, attr.attr, Relation.REFERENCES, rel, attr.lineno,
+                   is_method=True)
     for nm in _direct_names(tree, call_funcs):
         _ref_edges(proj, mod_id, nm.id, Relation.REFERENCES, rel, nm.lineno)
     # A module-level *decorated* def runs its decorator(s) at import, which receive/register
@@ -842,6 +849,15 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # Python ast walks only FunctionDef bodies below; without this the class
             # body's symbols are never edged -> live code flagged dead (matches the
             # tree-sitter extractor, which walks the whole class node).
+            # Class-body attribute reads (`DEFAULT = _E.handler`) on an unknown receiver need
+            # the name-based REFERENCES fallback too — the class-body scope twin of the round-30
+            # function-body fix, or a live member read while the class is built is flagged dead
+            # (panel R31A, cardinal). call_funcs excludes a method-call callee (`obj.m()`),
+            # which is a call not a read; `_direct_names` stays as-is (call callees included).
+            cls_call_funcs = {id(c.func) for c in _direct_calls(child)}
+            for attr in _direct_attr_reads(child, cls_call_funcs):
+                _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel, attr.lineno,
+                           is_method=True)
             for nm in _direct_names(child, set()):
                 _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
@@ -1213,11 +1229,14 @@ def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
     if not cands:
         return  # external / builtin / unknown -> drop (call holes are unreliable)
     if len(cands) == 1:
-        # A receiver-based call (`recv.m()`) whose receiver type we couldn't resolve
-        # is a name-only guess even with one candidate (issue #10): INFERRED, not
-        # EXTRACTED. Weight unchanged, so it never under-counts liveness (cardinal-safe).
-        prov = (Provenance.INFERRED if is_method and relation is Relation.CALLS
-                else Provenance.EXTRACTED)
+        # A receiver-based member resolution (`recv.m()` OR a read `recv.attr`) whose receiver
+        # type we couldn't resolve is a name-only guess even with one candidate (issue #10):
+        # INFERRED, not EXTRACTED. Gated on `is_method` ALONE, not the relation — a name-based
+        # attribute READ (REFERENCES) is exactly as uncertain as a name-based CALL, and gating
+        # on CALLS left the read EXTRACTED, so a stub reached only via it shouted RED instead
+        # of ORANGE (panel R31B, inflation). Weight unchanged -> never under-counts (cardinal-
+        # safe); a bare-name reference (is_method=False) stays EXTRACTED (the name is exact).
+        prov = Provenance.INFERRED if is_method else Provenance.EXTRACTED
         proj.edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                                dst_id=cands[0], weight=1.0,
                                provenance=prov, location=loc, source="ast",

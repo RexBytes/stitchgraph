@@ -4582,3 +4582,130 @@ def test_dangling_synthetic_override_edge_is_not_a_hole():
         store.replace_file("sub.py", [], [])                      # delete subclass file
         holes = {(e.src, e.dst_symbol) for e in store.unresolved_edges()}
         assert ("base.py::Base", "do") not in holes              # synthetic edge != hole
+
+
+# == Panel R31 fixes + bounding-matrix invariant tests ========================
+# These are "matrix" tests: they enumerate the axes where the late-stage symmetry
+# gaps live (scope × expression-kind; every str column; edit-sequence orderings)
+# so a not-yet-written cell fails CI instead of waiting for a panel. See
+# CONTRIBUTING.md "White-box symmetry closure".
+
+@pytest.mark.parametrize("scope", ["module", "class_body", "function"])
+def test_attr_read_unknown_receiver_live_in_every_scope(tmp_path, scope):
+    """CARDINAL matrix (panel R30/R31A): an attribute read on an unknown receiver must keep
+    the live member (and its private helper) alive in ALL three scope edge-builders —
+    `_module_scope_edges`, the `_walk_scope` ClassDef body, and the FunctionDef body. The
+    round-30 fix covered only the function body; this cell-per-scope test pins the column."""
+    site = {
+        "module":     "RESULT = _e.compute\ndef entry():\n    return RESULT\n",
+        "class_body": "class Holder:\n    DEFAULT = _e.compute\ndef entry():\n    return Holder\n",
+        "function":   "def entry():\n    def use(c):\n        return c.compute\n    return use(_e)\n",
+    }[scope]
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0.1"\n',
+        "pkg/__init__.py": "from .api import entry\n__all__ = ['entry']\n",
+        "pkg/api.py": "class Engine:\n    def compute(self):\n        return self._inner()\n"
+                      "    def _inner(self):\n        return 1\n"
+                      "def make():\n    return Engine()\n_e = make()\n" + site,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        ids = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert "pkg/api.py::Engine.compute" not in ids, f"{scope}: live member flagged dead"
+    assert "pkg/api.py::Engine._inner" not in ids, f"{scope}: live helper flagged dead"
+
+
+def test_name_based_attr_read_stub_is_not_red(tmp_path):
+    """INFLATION (panel R31B): a stub reached only via a name-based attribute READ on an
+    unknown receiver must be ORANGE, not RED — `_ref_edges` grants INFERRED on `is_method`
+    regardless of relation, so the REFERENCES read is as low-confidence as the CALLS call."""
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "c"\nversion = "0.1"\n'
+                          '[project.scripts]\nrun-app = "api:entry"\n',
+        "api.py": "def entry():\n    helper('x')\n"
+                  "def helper(obj):\n    return obj.value\n"
+                  "class Service:\n    def value(self):\n        raise NotImplementedError\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        reds = [i for i in sg.scan(store).result if i.get("urgency") == "red"]
+    assert not any("Service.value" in str(i.get("node")) for i in reds)
+
+
+def test_corrupt_index_blob_in_every_str_column_does_not_crash(tmp_path):
+    """CRASH matrix (panel R31B): a BLOB in ANY str-typed column (node id/name/roles/location,
+    edge src/dst_id/dst_symbol/location/source, meta.value) must not crash an op — the row
+    mappers skip un-parseable rows / coerce optional columns, `get_meta` ignores a non-str
+    value. One assertion per column would whack-a-mole; this writes a BLOB into all of them."""
+    import sqlite3
+    db = str(tmp_path / "blob.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value);"
+        "CREATE TABLE nodes (id, kind, name, location, file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0, arity INTEGER, summary TEXT, roles, end_line INTEGER);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src, relation, dst_symbol,"
+        " dst_id, weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted',"
+        " location, source, file TEXT NOT NULL DEFAULT '', name_based INTEGER NOT NULL DEFAULT 0);"
+    )
+    B = b"\x00\x01"
+    conn.execute("INSERT INTO meta VALUES ('root', ?)", (B,))
+    # a fully-valid node/edge so ops have something real to chew on...
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::f','Function','f','a.py:1:0','')")
+    # ...and rows with a BLOB in each str column (each must be skipped/coerced, never crash)
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES (?, 'Function','z','a.py:2:0','')", (B,))
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::z2','Function',?,'a.py:3:0','')", (B,))
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::z3','Function','z3',?,'')", (B,))
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::z4','Function','z4','a.py:4:0',?)", (B,))
+    conn.execute("INSERT INTO edges(src,relation,dst_symbol,dst_id) VALUES (?, 'CALLS','f','a.py::f')", (B,))
+    conn.execute("INSERT INTO edges(src,relation,dst_symbol,dst_id) VALUES ('a.py::f','CALLS',?, 'a.py::f')", (B,))
+    conn.execute("INSERT INTO edges(src,relation,dst_symbol,dst_id) VALUES ('a.py::f','CALLS','f', ?)", (B,))
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:
+        for op in (sg.find_stale, sg.scan, sg.orient, sg.find_holes):
+            assert op(store).ok in (True, False)
+        assert sg.get_matrix(store, "a.py").ok in (True, False)
+        assert sg.summarize_subsystem(store, "a.py").ok in (True, False)
+        assert sg.risk(store, str(tmp_path)).ok in (True, False)
+
+
+def test_incremental_function_move_no_module_fan_in_inflation():
+    """INFLATION (panel R31A): moving a function out of a same-named module file
+    (`helper.py` with `def helper()`) in a single batch must not leave a CALLS edge pointing
+    at the surviving MODULE node `helper.py::helper`. Verified order-independent vs full
+    reindex — the differential oracle (incremental == full) is the bounding test for the whole
+    incremental pipeline; see CONTRIBUTING.md 'Methods to adopt next'."""
+    import itertools
+    import tempfile
+
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+
+    def _by_file(items, key):
+        out = {}
+        for x in items:
+            out.setdefault(key(x).split("::", 1)[0], []).append(x)
+        return out
+
+    for order in itertools.permutations(["caller.py", "helper.py", "newplace.py"]):
+        root = Path(tempfile.mkdtemp())
+        (root / "caller.py").write_text("from helper import helper\n__all__=['run']\ndef run(): helper()\n")
+        (root / "helper.py").write_text("def helper(): pass\n")
+        (root / "newplace.py").write_text("# empty\n")
+        inc = sg.Store(":memory:")
+        sg.reindex(inc, str(root))                 # index the pre-move state incrementally
+        (root / "caller.py").write_text("from newplace import helper\n__all__=['run']\ndef run(): helper()\n")
+        (root / "helper.py").write_text("# empty\n")
+        (root / "newplace.py").write_text("def helper(): pass\n")
+        nodes, edges = extract_project(str(root))
+        nbf = _by_file(nodes, lambda n: n.id)
+        ebf = _by_file(edges, lambda e: e.src)
+        for f in order:                            # apply the move in the permuted order
+            inc.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        full = sg.Store(":memory:")
+        sg.reindex(full, str(root))
+        assert fan_in(inc).get("helper.py::helper", 0) == fan_in(full).get("helper.py::helper", 0), \
+            f"order {order}: module fan_in inflated"
+        inc.close()
+        full.close()

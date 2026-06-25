@@ -180,7 +180,12 @@ class Store:
 
     def get_meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-        return row["value"] if row else None
+        if not row:
+            return None
+        # A non-str value (a BLOB from a corrupt/tampered index) would crash a string
+        # consumer (e.g. `load_config(Path(value))`); treat it as absent (panel R31B).
+        val = row["value"]
+        return val if isinstance(val, str) else None
 
     def replace_file(self, file: str, nodes: Iterable[Node], edges: Iterable[Edge]) -> None:
         """Incremental update for one file (design §4, Store & incremental updates).
@@ -249,8 +254,7 @@ class Store:
                 (g["src"], g["relation"], g["dst_symbol"])).fetchall()
             if not nb:
                 continue
-            cands = [r["id"] for r in self.conn.execute(
-                "SELECT id FROM nodes WHERE name = ?", (g["dst_symbol"],)).fetchall()]
+            cands = self._name_candidates(g["dst_symbol"], g["relation"])
             if not cands:
                 continue
             if len(cands) >= 2:
@@ -268,6 +272,19 @@ class Store:
                 if not widened:
                     continue
                 self._rebuild_name_based(g, nb[0], [(cands[0], 1.0, "inferred")])
+
+    def _name_candidates(self, dst_symbol: str, relation: str) -> list[str]:
+        """Node ids a bare-name reference can resolve to. Excludes MODULE nodes for any
+        non-IMPORTS relation: a CALLS/REFERENCES/INHERITS to a bare name is never a module
+        (mirrors the extractor's `_ref_edges`, panel R13B) — resolving one to a same-named
+        module inflated that module's fan_in on the incremental path (panel R31A). IMPORTS
+        keeps module resolution (`from pkg import submodule`)."""
+        if relation == Relation.IMPORTS.value:
+            return [r["id"] for r in self.conn.execute(
+                "SELECT id FROM nodes WHERE name = ?", (dst_symbol,)).fetchall()]
+        return [r["id"] for r in self.conn.execute(
+            "SELECT id FROM nodes WHERE name = ? AND kind != ?",
+            (dst_symbol, NodeKind.MODULE.value)).fetchall()]
 
     def _rebuild_name_based(self, g: sqlite3.Row, tmpl: sqlite3.Row,
                             rows: list[tuple[str, float, str]]) -> None:
@@ -438,21 +455,31 @@ class Store:
         # free to re-widen it (a precise import whose target wasn't yet indexed degrades to
         # this name match; it must stay re-widenable so the real target is linked when it
         # arrives — cardinal-safe, panel R22 convergence).
+        # A bare CALLS/REFERENCES/INHERITS reference is never a module — exclude MODULE
+        # candidates for any non-IMPORTS relation (the correlated `edges.relation = ? OR
+        # n.kind != ?`), mirroring the extractor's `_ref_edges` (panel R13B). Resolving a
+        # moved-function hole to a same-named MODULE node inflated that module's fan_in on the
+        # incremental path (panel R31A). IMPORTS keeps module resolution (`from pkg import sub`).
+        imp, mod = Relation.IMPORTS.value, NodeKind.MODULE.value
         self.conn.execute(
             """UPDATE edges
-                  SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol LIMIT 1),
+                  SET dst_id = (SELECT n.id FROM nodes n WHERE n.name = edges.dst_symbol
+                                  AND (edges.relation = ? OR n.kind != ?) LIMIT 1),
                       name_based = 1
                 WHERE dst_id IS NULL
-                  AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) = 1"""
+                  AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol
+                         AND (edges.relation = ? OR n.kind != ?)) = 1""",
+            (imp, mod, imp, mod),
         )
         ambiguous = self.conn.execute(
             """SELECT * FROM edges
                 WHERE dst_id IS NULL
-                  AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol) >= 2"""
+                  AND (SELECT COUNT(*) FROM nodes n WHERE n.name = edges.dst_symbol
+                         AND (edges.relation = ? OR n.kind != ?)) >= 2""",
+            (imp, mod),
         ).fetchall()
         for row in ambiguous:
-            cands = [r["id"] for r in self.conn.execute(
-                "SELECT id FROM nodes WHERE name = ?", (row["dst_symbol"],)).fetchall()]
+            cands = self._name_candidates(row["dst_symbol"], row["relation"])
             w = round(1.0 / len(cands), 3)
             self.conn.execute("DELETE FROM edges WHERE id = ?", (row["id"],))
             for cid in cands:
@@ -480,11 +507,22 @@ class Store:
         A precise edge to a genuinely-removed target is left dangling; `unresolved_edges`
         still surfaces it as a hole (its id is absent from `nodes`), and the graph-metric
         readers ignore an edge to a non-existent node, so nothing real is inflated.
+
+        Also reverts a name-based NON-IMPORTS edge that now points at a MODULE node: when a
+        file `helper.py` defining `def helper()` is emptied, the function and module share the
+        id `helper.py::helper`, so the surviving MODULE node silently inherits an edge that was
+        resolved to the function — re-targeting a module a CALLS/REFERENCES edge must never
+        reach (`_ref_edges` invariant, panel R13B), inflating that module's fan_in (panel R31A).
+        Nullifying it lets `_resolve_worklist` re-bind it module-excluded to the real target.
         """
+        imp, mod = Relation.IMPORTS.value, NodeKind.MODULE.value
         self.conn.execute(
             """UPDATE edges SET dst_id = NULL
                 WHERE dst_id IS NOT NULL AND name_based = 1
-                  AND dst_id NOT IN (SELECT id FROM nodes)"""
+                  AND (dst_id NOT IN (SELECT id FROM nodes)
+                       OR (relation != ?
+                           AND dst_id IN (SELECT id FROM nodes WHERE kind = ?)))""",
+            (imp, mod),
         )
 
     # -- reads -------------------------------------------------------------
@@ -589,20 +627,27 @@ class Store:
 # -- row mappers -----------------------------------------------------------
 def _row_to_node(row: sqlite3.Row) -> Node | None:
     keys = row.keys()
-    roles = row["roles"] if "roles" in keys else ""
-    # Tolerate a row from an older/partial schema missing any optional column — mirror
-    # _row_to_edge's defensive reads so an op never raises IndexError on such a DB (panel
-    # R27A). Only id/kind/name are guaranteed (PRIMARY KEY / NOT NULL).
+    # Tolerate a row from an older/partial schema missing any optional column (panel R27A)
+    # AND a corrupt index whose str-typed columns hold non-str values (a BLOB from external
+    # tampering / on-disk bit-rot): a `kind` no writer emits, or a non-str `id`/`name`, can't
+    # be a real node — skip the row (the caller filters None) so an op returns a Result
+    # instead of raising downstream string ops (panels R29B/R31B). Other str columns are
+    # coerced to "". Only id/kind/name are guaranteed columns (PRIMARY KEY / NOT NULL).
     try:
         kind = NodeKind(row["kind"])
     except ValueError:
-        # A corrupt index (a `kind` string no stitchgraph writer ever emits — external
-        # tampering or on-disk bit-rot) must not crash the op: skip the row, the caller
-        # filters None and the op returns a (smaller) Result instead of raising (panel R29B).
         return None
+    nid, name = row["id"], row["name"]
+    if not isinstance(nid, str) or not isinstance(name, str):
+        return None
+    roles = row["roles"] if "roles" in keys else ""
+    if not isinstance(roles, str):
+        roles = ""
+    location = row["location"] if "location" in keys else ""
+    if not isinstance(location, str):
+        location = ""
     return Node(
-        id=row["id"], kind=kind, name=row["name"],
-        location=row["location"] if "location" in keys else "",
+        id=nid, kind=kind, name=name, location=location,
         end_line=row["end_line"] if "end_line" in keys else None,
         is_stub=bool(row["is_stub"]) if "is_stub" in keys else False,
         arity=row["arity"] if "arity" in keys else None,
@@ -620,6 +665,12 @@ def _row_to_edge(row: sqlite3.Row) -> Edge | None:
         relation = Relation(row["relation"])
     except ValueError:
         return None  # corrupt relation: skip rather than crash (panel R29B, mirror node).
+    src, dst_symbol = row["src"], row["dst_symbol"]
+    if not isinstance(src, str) or not isinstance(dst_symbol, str):
+        return None  # non-str src/dst_symbol (BLOB corruption) can't be a real edge (R31B).
+    dst_id = row["dst_id"] if "dst_id" in keys else None
+    if dst_id is not None and not isinstance(dst_id, str):
+        dst_id = None  # corrupt non-str dst_id -> treat as unresolved rather than crash.
     try:
         provenance = (Provenance(row["provenance"]) if "provenance" in keys
                       else Provenance.EXTRACTED)
@@ -628,13 +679,15 @@ def _row_to_edge(row: sqlite3.Row) -> Edge | None:
     weight = row["weight"] if "weight" in keys else 1.0
     if not isinstance(weight, (int, float)) or not math.isfinite(weight):
         weight = 1.0  # a NaN/inf weight (corrupt index) would leak `Infinity` into JSON.
+    location = row["location"] if "location" in keys else ""
+    if not isinstance(location, str):
+        location = ""
+    source = row["source"] if "source" in keys else "tree-sitter"
+    if not isinstance(source, str):
+        source = "tree-sitter"
     return Edge(
-        src=row["src"], relation=relation,
-        dst_symbol=row["dst_symbol"],
-        dst_id=row["dst_id"] if "dst_id" in keys else None,
-        weight=weight, provenance=provenance,
-        location=row["location"] if "location" in keys else "",
-        source=row["source"] if "source" in keys else "tree-sitter",
+        src=src, relation=relation, dst_symbol=dst_symbol, dst_id=dst_id,
+        weight=weight, provenance=provenance, location=location, source=source,
         name_based=bool(row["name_based"]) if "name_based" in keys else False,
     )
 
