@@ -1429,6 +1429,33 @@ def test_package_reexport_is_an_export_root(tmp_path):
         assert "_hidden" in stale              # underscore re-export stays private
 
 
+def test_renamed_reexport_target_is_an_export_root(tmp_path):
+    """`from .core import Engine as PublicEngine` (with/without __all__) makes the DEFINED
+    symbol `Engine` public API under an alias. The export-role match is by defined name, so
+    the alias-only `exported_names` entry missed `Engine`, flagging the live public class and
+    its methods dead at conf 0.6 (panel R25A, cardinal). Register the original name too,
+    gated on the bound (public) alias; a privately-bound re-export stays dead."""
+    _mk(tmp_path, {
+        "mypkg/__init__.py": (
+            "from .core import Engine as PublicEngine\n"
+            "from .core import secret as _priv\n"
+            "__all__ = [\"PublicEngine\"]\n"
+        ),
+        "mypkg/core.py": (
+            "class Engine:\n    def run(self):\n        return 1\n"
+            "def secret():\n    return 2\n"
+            "def truly_dead():\n    return 3\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Engine" not in stale          # renamed-re-exported public class
+        assert "run" not in stale              # its public method
+        assert "secret" in stale               # bound privately (as _priv) -> stays dead
+        assert "truly_dead" in stale           # never re-exported -> genuinely dead
+
+
 def test_reexport_root_survives_when_all_is_declared(tmp_path):
     """A re-export not listed in __all__ is still importable as `pkg.Public`, so it
     must remain a root (additive with __all__, never flagged dead)."""

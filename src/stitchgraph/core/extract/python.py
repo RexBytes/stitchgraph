@@ -318,6 +318,15 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                         bound = alias.asname or alias.name
                     if bound != "*" and not bound.startswith("_"):
                         proj.exported_names.add(bound)
+                        # Under a RENAMED re-export (`from .core import Engine as Public`),
+                        # the bound public name (`Public`) differs from the actually-defined
+                        # symbol's name (`Engine`). `_apply_entrypoint_roles` matches nodes by
+                        # their defined name, so also register the original leaf — gated on
+                        # the *bound* name being public — or the renamed re-export's target
+                        # (and its methods) is flagged dead (panel R25A, cardinal). A private
+                        # bound name (`import _hidden`) is skipped above, staying dead.
+                        if isinstance(node, ast.ImportFrom):
+                            proj.exported_names.add(alias.name)
 
     for node in _scope_defs(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
