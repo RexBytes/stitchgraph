@@ -620,6 +620,8 @@ def _git_path_mapper(store: Store, path: str):
 def summarize_subsystem(store: Store, path: str) -> Result:
     """A terse map of one subsystem (design §8): node counts, the hubs to read
     first, its public surface (who calls in), and what it depends on (calls out)."""
+    if not isinstance(path, str):
+        return refuse("path must be a string", confidence=0.0)  # None/wrong type (panel R17A)
     members = [n for n in store.all_nodes_full() if n.id.startswith(path)]
     if not members:
         return refuse(f"no nodes under '{path}'", confidence=0.0)
@@ -664,6 +666,8 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         rel = Relation(relation.upper())
     except ValueError:
         return refuse(f"unknown relation '{relation}'", confidence=0.0)
+    if not isinstance(scope, str):
+        return refuse("scope must be a string", confidence=0.0)  # None/wrong type (panel R17A)
 
     members = sorted(nid for nid in store.all_node_ids() if nid.startswith(scope))
     if not members:
@@ -722,7 +726,9 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         usable = os.path.isdir(path)
         abs_root = os.path.abspath(path)
         abs_root.encode("utf-8")  # a surrogate/NUL root can't be stored as meta
-    except (OSError, ValueError, UnicodeError):
+    except (OSError, ValueError, UnicodeError, TypeError):
+        # TypeError: a non-str path (None / wrong type from a library or MCP call) — degrade
+        # to an empty index like a missing path instead of raising (panel R17A).
         usable, abs_root = False, ""
     if not usable:
         with store.conn:
@@ -803,6 +809,11 @@ def _resolve_target(store: Store, name: str):
     scoped from the CLI/MCP instead of just refused (issue #9). Returns
     `(node | None, candidates)`; on an ambiguous bare name `node` is None and
     `candidates` lists every match."""
+    if not isinstance(name, str):
+        # A non-str symbol (None / wrong type from a library or malformed MCP call) can't
+        # name a node — refuse with no match rather than raise, honouring the "every op
+        # returns a Result, never raises" contract (panel R17A).
+        return None, []
     if "::" in name:  # a full node id pins exactly one
         n = store.get_node(name)
         return n, ([n] if n else [])

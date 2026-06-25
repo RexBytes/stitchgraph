@@ -3518,3 +3518,28 @@ def test_find_similar_negative_limit_does_not_return_near_all(tmp_path):
         res = sg.find_similar(store, "store edge reachable", limit=-5)
         # clamped: refuses with no payload rather than returning ~all-but-5
         assert res.result in (None, [])
+
+
+# -- Panel R17A / haiku (envelope/crash): None string args must return a Result ----
+def test_string_arg_ops_return_result_on_none_not_raise(tmp_path):
+    """A None (wrong-type) path/symbol/scope passed to a library op raised TypeError instead
+    of returning a Result envelope — the CLI is type-safe but the library/MCP surface can
+    hit it, violating "every op returns a Result, never raises" (panel R17A). reindex
+    degrades to an empty index; the rest refuse cleanly."""
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ops = [
+            lambda: sg.reindex(store, None),
+            lambda: sg.find_symbol(store, None),
+            lambda: sg.get_callers(store, None),
+            lambda: sg.get_callees(store, None),
+            lambda: sg.impact_of(store, None),
+            lambda: sg.trace_path(store, None, None),
+            lambda: sg.find_similar(store, None),
+            lambda: sg.summarize_subsystem(store, None),
+            lambda: sg.get_matrix(store, None),
+        ]
+        for call in ops:
+            res = call()                       # must not raise
+            assert hasattr(res, "ok")          # a real Result envelope
