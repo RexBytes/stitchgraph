@@ -41,18 +41,25 @@ a 40-line oracle in CI should never be left for a multi-agent panel to rediscove
 
 Ordered by leverage. Each names the failure mode it would close.
 
-1. **Mutation testing — NEXT.** *Failure mode it catches: a test/oracle that does not
-   actually bite (false-clean).* It is the **meta-oracle** — the only layer that checks
-   the other layers. We watched two consumer-level oracles report "clean" on a real bug
-   this cycle; mutation testing catches that systematically: inject a one-line mutation,
-   the suite must turn red. Surviving mutants name un-pinned contracts.
-   - *Plan:* `mutmut` (or `cosmic-ray`), dev-dep + config; start **scoped** to the
-     highest-value, densest-logic modules (`core/store.py` row mappers + resolution,
-     `core/envelope.py`, `core/reach.py`) rather than the whole tree (mutating everything
-     is slow and noisy). A surviving mutant → add the test that kills it. Run on demand /
-     nightly, not every push.
-   - *Caveat:* mutmut rewrites source files in place while running — never run it
-     concurrently with a review panel or other source-touching work.
+1. **Mutation testing — IMPLEMENTED (`scripts/mutate.py`), expanding.** *Failure mode it
+   catches: a test/oracle that does not actually bite (false-clean).* It is the
+   **meta-oracle** — the only layer that checks the other layers. A tiny in-house AST
+   mutator (one mutation at a time, revert after) rather than `mutmut`/`cosmic-ray`, whose
+   mutants/-copy model fights this repo's src-layout + editable install (keep it cheap).
+
+       python scripts/mutate.py src/stitchgraph/core/envelope.py \
+           -- python -m pytest -x -q tests/test_core.py tests/test_properties.py \
+              tests/test_regressions.py tests/test_eval.py
+
+   *Kill-signal must be the tests that cover the module* (a too-narrow signal reports false
+   survivors). Use a FAST subset, not the 70s oracle suite. A SURVIVED mutant → add the
+   test that kills it (this cycle: 4 un-pinned `envelope` contracts found and pinned → 17/17
+   killed). Run on demand / at release, not every push (it mutates source in place — never
+   concurrently with a review panel).
+   - *Status:* `core/envelope.py` at 100%. **Target set to expand:** `core/store.py` (row
+     mappers + resolution), `core/reach.py`, `core/operations.py`.
+   - *Equivalent mutants:* some mutations have no observable effect (redundant defensive
+     code); triage rather than chase 100% blindly.
 
 2. **Performance / resource budgets.** *Failure mode: a change makes reindex go
    quadratic, OOM, or leak file handles on large inputs.* Today only ad-hoc reviewer

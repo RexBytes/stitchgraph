@@ -4709,3 +4709,36 @@ def test_incremental_function_move_no_module_fan_in_inflation():
             f"order {order}: module fan_in inflated"
         inc.close()
         full.close()
+
+
+# == Mutation-testing-found gaps (scripts/mutate.py) ==========================
+# The meta-oracle: each test below kills a mutant that SURVIVED the suite — an envelope
+# contract that was executed but not pinned. See docs/TESTING.md "mutation testing".
+def test_red_urgency_kept_only_for_extracted_provenance():
+    """Mutant: the urgency gate `RED and not EXTRACTED` -> `or` survived. A RED result with
+    EXTRACTED provenance must STAY red; only non-EXTRACTED demotes to ORANGE."""
+    from stitchgraph.core.envelope import Provenance, Result, Urgency
+    assert Result(ok=True, confidence=1.0, provenance=Provenance.EXTRACTED,
+                  urgency=Urgency.RED).urgency is Urgency.RED
+    assert Result(ok=True, confidence=1.0, provenance=Provenance.INFERRED,
+                  urgency=Urgency.RED).urgency is Urgency.ORANGE
+
+
+def test_refuse_always_needs_review_even_high_confidence_extracted():
+    """Mutant: `refuse(... needs_review=False ...)` survived. refuse() is refuse-when-unsure;
+    it must flag review even if a caller passes high-confidence EXTRACTED args."""
+    from stitchgraph.core.envelope import Provenance, refuse
+    r = refuse("unsure", confidence=0.95, provenance=Provenance.EXTRACTED)
+    assert r.needs_review is True
+    assert "unsure" in r.review_reasons
+
+
+def test_plain_converts_objects_and_preserves_none():
+    """Mutants: the `_plain` primitive/None guard flips survived. A dataclass/object must be
+    converted (not returned as-is); None must stay None (not stringified)."""
+    from stitchgraph.core.envelope import _plain
+    from stitchgraph.core.model import Node, NodeKind
+    assert _plain(None) is None
+    assert _plain(5) == 5 and _plain("x") == "x"
+    out = _plain(Node("a.py::b", NodeKind.FUNCTION, "b"))
+    assert isinstance(out, dict) and out.get("id") == "a.py::b"
