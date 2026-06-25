@@ -231,13 +231,14 @@ class Store:
                 (g["src"], g["relation"], g["dst_symbol"])).fetchall()
             if not existing:
                 continue
-            # A structural self-member edge (a class -> its own member, dst_id == src +
-            # ".dst_symbol" — e.g. the seeded class -> __init__/__call__ dunder edge) is
-            # precise by construction, NOT a name-based resolution. Many classes share a
-            # dunder name, so widening it across every same-named member of OTHER classes
-            # cross-links untouched files and inflates fan_in/impact/TFI on an incremental
-            # update (panel R21B). Such edges never need re-normalizing — skip the group.
-            if any(e["dst_id"] == f"{g['src']}.{g['dst_symbol']}" for e in existing):
+            # A scope-internal edge — one that resolves to a member of the SOURCE's own
+            # class (the seeded class -> __init__/__call__ dunder edge) or to a sibling in
+            # the same class (a `self.method()` / `self.prop` bind) — is scope-precise, NOT
+            # a name-based resolution. A full reindex keeps it bound to that one member even
+            # when other classes declare the same name, so widening it across every
+            # same-named member inflates fan_in/impact/TFI of unrelated nodes on an
+            # incremental update (panels R21A/R21B). Such edges never need re-normalizing.
+            if any(_is_scope_internal(g["src"], e["dst_id"]) for e in existing):
                 continue
             has_precise = any(e["provenance"] != "ambiguous" for e in existing)
             if len(cands) >= 2:
@@ -477,3 +478,24 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
 def _file_of(node_id: str) -> str:
     """Owning file path is the part of the id before '::' (design §4 ids)."""
     return node_id.split("::", 1)[0] if "::" in node_id else ""
+
+
+def _owner_scope(node_id: str) -> str | None:
+    """The enclosing class/scope of a member id (`file::A.B.m` -> `file::A.B`), or None for
+    a top-level (module-level) symbol. Splits on '::' first so the file extension's dot is
+    never mistaken for a qualname separator."""
+    file, sep, qual = node_id.partition("::")
+    if not sep or "." not in qual:
+        return None
+    return f"{file}::{qual.rsplit('.', 1)[0]}"
+
+
+def _is_scope_internal(src: str, dst_id: str) -> bool:
+    """True when `dst_id` is a member of `src`'s own class — either `src` IS the class and
+    `dst` one of its members (class -> dunder seeding), or `src` and `dst` are siblings in
+    the same class (a `self.m()` bind). Such an edge is scope-precise and must not be
+    widened across same-named members of other classes (panels R21A/R21B)."""
+    dst_owner = _owner_scope(dst_id)
+    if dst_owner is None:
+        return False
+    return dst_owner == src or dst_owner == _owner_scope(src)

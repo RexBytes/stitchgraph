@@ -3956,6 +3956,39 @@ def test_incremental_replace_does_not_cross_widen_dunder_edges(tmp_path):
         assert fan_in(store).get("b.py::Bar.__init__") == 1
 
 
+def test_incremental_replace_does_not_widen_scope_precise_self_call():
+    """A scope-precise self-call (`Impl.extra -> Impl.process`, EXTRACTED) must NOT be
+    widened to a same-named method of an unrelated class added later via replace_file — a
+    full reindex keeps it bound to Impl.process, so widening inflates fan_in/impact of the
+    unrelated method (panel R21A). Distinct from the class->member dunder case."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+
+    def _c(i):
+        return Node(id=i, kind=NodeKind.CLASS, name=i.split(".")[-1])
+
+    def _m(i):
+        return Node(id=i, kind=NodeKind.METHOD, name=i.rsplit(".", 1)[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file(
+            "impl.py",
+            [_c("impl.py::Impl"), _m("impl.py::Impl.process"), _m("impl.py::Impl.extra")],
+            [Edge(src="impl.py::Impl.extra", relation=Relation.CALLS, dst_symbol="process",
+                  dst_id="impl.py::Impl.process", weight=1.0,
+                  provenance=Provenance.EXTRACTED)])
+        store.replace_file("other.py",          # unrelated class, same method name
+                           [_c("other.py::Other"), _m("other.py::Other.process")], [])
+        fi = fan_in(store)
+        assert fi.get("impl.py::Impl.process") == 1
+        assert fi.get("other.py::Other.process", 0) == 0   # no phantom inbound
+        rows = store.conn.execute(
+            "SELECT provenance, weight FROM edges WHERE src = 'impl.py::Impl.extra' "
+            "AND dst_id IS NOT NULL").fetchall()
+        assert [(r["provenance"], r["weight"]) for r in rows] == [("extracted", 1.0)]
+
+
 def test_rewiden_renormalizes_weight_when_fanout_narrows():
     """Deleting one arm of an N-way ambiguous fan-out must re-normalize the survivors'
     weights to match a full reindex (1/N -> 1/(N-1), or 1.0 when one candidate remains),
