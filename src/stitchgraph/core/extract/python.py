@@ -208,18 +208,21 @@ def _seed_protocol_dunders(proj: _Project) -> None:
 
 
 def _propagate_overrides(proj: _Project) -> None:
-    """Polymorphic dispatch: a CALLS edge bound to a base-class method must also reach
-    overriding methods in subclasses, or a live override gets no inbound edge and is
-    flagged dead (CARDINAL). `_call_edge`'s precision paths bind `self.m()` to the
-    *enclosing* class and `var.m()` (var annotated `Base`/`Protocol`/`ABC`) to the
-    *declared* class — neither widens to the concrete subclass that actually runs at
-    runtime. Mirror the unknown-receiver widening (`_ref_edges`) by adding AMBIGUOUS
-    CALLS edges from the same caller to every subclass override of the bound method.
+    """Polymorphic dispatch: a CALLS or REFERENCES edge bound to a base-class member must
+    also reach overriding members in subclasses, or a live override gets no inbound edge
+    and is flagged dead (CARDINAL). The precision paths bind `self.m()` / `self.prop` to
+    the *enclosing* class and `var.m()` / `var.prop` (var annotated `Base`/`Protocol`/`ABC`)
+    to the *declared* class — neither widens to the concrete subclass that runs at runtime.
+    Mirror the unknown-receiver widening by adding AMBIGUOUS edges (same relation) from the
+    same source to every subclass override of the bound member. REFERENCES is included so a
+    property/attribute read on `self` whose subclass overrides it is not flagged dead (the
+    read-side twin of the call case, panel R21A).
 
     Adding edges can only make more nodes reachable, never fewer, so this is cardinal-
     safe by construction; the cost is mild over-approximation (a genuinely-dead override
-    of a called base method stays live), which is the documented lower-severity trade-off.
+    of a used base member stays live), which is the documented lower-severity trade-off.
     """
+    _WIDENED = (Relation.CALLS, Relation.REFERENCES)
     class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
     if not class_ids:
         return
@@ -247,11 +250,11 @@ def _propagate_overrides(proj: _Project) -> None:
         cache[base_id] = out
         return out
 
-    # Never duplicate a (caller, target) CALLS edge we already emitted.
-    seen = {(e.src, e.dst_id) for e in proj.edges if e.relation is Relation.CALLS}
+    # Never duplicate a (source, relation, target) edge we already emitted.
+    seen = {(e.src, e.relation, e.dst_id) for e in proj.edges if e.relation in _WIDENED}
     new_edges: list[Edge] = []
     for e in list(proj.edges):
-        if e.relation is not Relation.CALLS or not e.dst_id:
+        if e.relation not in _WIDENED or not e.dst_id:
             continue
         base_id, sep, method = e.dst_id.rpartition(".")
         if not sep or base_id not in class_ids:
@@ -260,11 +263,11 @@ def _propagate_overrides(proj: _Project) -> None:
             override = f"{sub_id}.{method}"
             if override == e.dst_id or override not in proj.ids:
                 continue
-            if (e.src, override) in seen:
+            if (e.src, e.relation, override) in seen:
                 continue
-            seen.add((e.src, override))
+            seen.add((e.src, e.relation, override))
             new_edges.append(Edge(
-                src=e.src, relation=Relation.CALLS, dst_symbol=method,
+                src=e.src, relation=e.relation, dst_symbol=method,
                 dst_id=override, weight=1.0, provenance=Provenance.AMBIGUOUS,
                 location=e.location, source="ast"))
     proj.edges.extend(new_edges)
@@ -808,10 +811,18 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # Attribute *reads* (e.g. a property `x.resolved`) -> REFERENCES, so a
             # used property/method isn't wrongly flagged dead.
             for attr in _direct_attr_reads(child, call_funcs):
-                tid, _exact = _resolve_member(proj, rel, class_qual, local_types,
-                                              attr.attr, attr.value)
+                tid, exact = _resolve_member(proj, rel, class_qual, local_types,
+                                             attr.attr, attr.value)
                 if tid:
                     _add_ref(proj, cid, attr.attr, tid, rel, attr.lineno)
+                    if not exact:
+                        # A property/attribute read through a declared (annotation) type is
+                        # the read-side twin of the call-site widening: the runtime object
+                        # may be a subclass / structural Protocol impl / duck-typed class,
+                        # so widen REFERENCES to all same-named members or the live override
+                        # (and its private helpers) is flagged dead (panel R21A, cardinal).
+                        _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel,
+                                   attr.lineno)
             # Bare-name *value* references (not the callee of a call): a function or
             # class passed by name (`register(handler)`, `fn = worker`), or a class
             # accessed as `Color.RED` / `Widget.create()` (the receiver is a bare

@@ -3830,6 +3830,67 @@ def test_callable_dunder_helper_is_not_stale(tmp_path):
         assert "main.py::Double.calc" not in stale
 
 
+def test_property_read_through_declared_type_is_not_stale(tmp_path):
+    """A property/attribute READ through a declared type is the read-side twin of the call
+    case: the runtime object may be a subclass, structural Protocol impl, or duck-typed
+    class. Round-20 widened CALLS but left REFERENCES (reads) narrow, so an overriding
+    property and its helpers were confidently flagged dead (panel R21A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            import typing
+            class HasName(typing.Protocol):
+                @property
+                def name(self) -> str: ...
+            class Dog:                          # structural impl, no inheritance
+                @property
+                def name(self): return self._dog_name()
+                def _dog_name(self): return "rex"
+            class Base:
+                @property
+                def label(self): return "b"
+            class Sub(Base):                    # subclass property override
+                @property
+                def label(self): return self._sub_lbl()
+                def _sub_lbl(self): return "s"
+            def greet(h: HasName): return h.name
+            def show(b: Base): return b.label
+            def main(): return greet(Dog()) + show(Sub())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        for live in ("main.py::Dog.name", "main.py::Dog._dog_name",
+                     "main.py::Sub.label", "main.py::Sub._sub_lbl"):
+            assert live not in stale
+
+
+def test_self_property_override_is_not_stale(tmp_path):
+    """A base method reading `self.title` (a property) dispatches to a subclass override at
+    runtime; _propagate_overrides must widen REFERENCES (not just CALLS) across subclass
+    overrides or the override and its helper are flagged dead (panel R21A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return self.title
+                @property
+                def title(self): return "b"
+            class Sub(Base):
+                @property
+                def title(self): return self._mk()
+                def _mk(self): return "s"
+            def main(): return Sub().run()
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Sub.title" not in stale
+        assert "main.py::Sub._mk" not in stale
+
+
 def test_non_utf8_config_does_not_crash(tmp_path):
     """A non-UTF-8 stitchgraph.toml must degrade to defaults, not raise UnicodeDecodeError
     out of every CLI command (panel R20A)."""
