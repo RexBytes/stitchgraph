@@ -880,6 +880,17 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                         # (and its private helpers) is flagged dead (panel R21A, cardinal).
                         _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel,
                                    attr.lineno)
+                else:
+                    # Receiver type unknown (a constructor result `Config().threshold`, or an
+                    # unannotated parameter `def f(cfg): return cfg.threshold`): emit the
+                    # name-based REFERENCES fallback — the read-side twin of `_call_edge`'s
+                    # unknown-receiver CALLS fallback. Without it a live property/attribute read
+                    # on an unknown receiver (and its private helpers) is flagged dead — and an
+                    # unannotated-parameter attribute read is an everyday shape (panel R30A,
+                    # cardinal). Over-approximated through `_ref_edges` (only project symbols
+                    # resolve, INFERRED), exactly as the call path does.
+                    _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel,
+                               attr.lineno, is_method=True)
             # Bare-name *value* references (not the callee of a call): a function or
             # class passed by name (`register(handler)`, `fn = worker`), or a class
             # accessed as `Color.RED` / `Widget.create()` (the receiver is a bare

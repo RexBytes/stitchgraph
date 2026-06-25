@@ -514,7 +514,12 @@ class Store:
         return [n for r in rows if (n := _row_to_node(r))]
 
     def all_node_ids(self) -> list[str]:
-        return [r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()]
+        # This raw projection bypasses `_row_to_node`, so guard the corrupt-index case here
+        # too: a non-str `id` (a BLOB from external tampering / bit-rot) can't be a real node
+        # id and would crash callers that do string ops on it (get_matrix/risk) — drop it, so
+        # every op returns a Result instead of raising (panel R30B, mirrors R29B row mappers).
+        return [r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()
+                if isinstance(r["id"], str)]
 
     def all_nodes_full(self) -> list[Node]:
         return [n for r in self.conn.execute("SELECT * FROM nodes").fetchall()
@@ -552,10 +557,18 @@ class Store:
         or dst_id points at a node that no longer exists (a PRECISE edge whose target file was
         deleted — `_invalidate_dangling` keeps it bound to its exact id rather than nullifying
         and mis-widening it, so find_holes must recognise the missing-target form too, panel
-        R29A; mirrors GraphBLAS dropping edges to ids outside the node set)."""
+        R29A; mirrors GraphBLAS dropping edges to ids outside the node set).
+
+        Synthetic `_propagate_overrides` edges (provenance='ambiguous' AND name_based=0 — the
+        only edges with that combination) are NOT source references: they are derived liveness
+        links to subclass overrides, regenerated each update. A stale one left dangling by a
+        subclass file's deletion is not a real broken reference, so it is excluded here rather
+        than reported as a spurious hole (panel R30A, non-blocking find_holes over-count)."""
         rows = self.conn.execute(
             """SELECT * FROM edges
-                WHERE dst_id IS NULL OR dst_id NOT IN (SELECT id FROM nodes)"""
+                WHERE dst_id IS NULL
+                   OR (dst_id NOT IN (SELECT id FROM nodes)
+                       AND NOT (provenance = 'ambiguous' AND name_based = 0))"""
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
 

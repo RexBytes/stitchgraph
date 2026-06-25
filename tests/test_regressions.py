@@ -4493,3 +4493,92 @@ def test_corrupt_index_values_do_not_crash_ops(tmp_path):
         assert store.get_node("a.py::z") is None         # corrupt-kind row skipped
         assert store.get_node("a.py::y") is not None
         assert "Infinity" not in json.dumps(sg.get_matrix(store, "a.py").to_dict())
+
+
+# -- Panel R30A / opus (CARDINAL): attribute read on an unknown receiver --------
+def test_attribute_read_unknown_receiver_not_flagged_dead(tmp_path):
+    """A property/attribute read on a receiver whose type we can't resolve — a constructor
+    result `Config().threshold` or, the everyday shape, an unannotated parameter
+    `def f(cfg): return cfg.threshold` — got NO edge, so the live property (and its private
+    helpers) were flagged dead. The attribute-read pass now has the same name-based fallback
+    as the call path (`_call_edge`), so an unknown-receiver read can't flag live code dead
+    (panel R30A, cardinal)."""
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0.1"\n',
+        "pkg/__init__.py": "from .main import main\n__all__ = ['main']\n",
+        "pkg/lib.py": '''
+            class Config:
+                @property
+                def threshold(self):
+                    return self._compute()
+                def _compute(self):
+                    return 0.5
+        ''',
+        "pkg/main.py": '''
+            from .lib import Config
+            def main():
+                cfg = Config()
+                def use(c):              # unannotated parameter -> unknown receiver
+                    return c.threshold
+                return use(cfg)
+        ''',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        ids = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert "pkg/lib.py::Config.threshold" not in ids   # live property
+    assert "pkg/lib.py::Config._compute" not in ids     # its private helper
+
+
+# -- Panel R30B / opus (BLOCKING): non-str id in a corrupt index must not crash -
+def test_corrupt_index_blob_node_id_does_not_crash_ops(tmp_path):
+    """`all_node_ids()` does a raw projection that bypasses the row mappers, so a BLOB (bytes)
+    `nodes.id` (external tampering / bit-rot) leaked to `get_matrix`/`risk`, which do string
+    ops on it -> TypeError instead of a Result. A non-str id can't be a real node id; it is
+    dropped, so every op returns a Result (panel R30B)."""
+    import sqlite3
+    db = str(tmp_path / "blob.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0, arity INTEGER, summary TEXT,"
+        " roles TEXT NOT NULL DEFAULT '', end_line INTEGER);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted',"
+        " location TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'x',"
+        " file TEXT NOT NULL DEFAULT '', name_based INTEGER NOT NULL DEFAULT 0);"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES (?, 'Function', 'z')", (b"\x00\x01blob",))
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('a.py::y', 'Function', 'y')")
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:
+        assert store.all_node_ids() == ["a.py::y"]       # BLOB id dropped
+        assert sg.get_matrix(store, "").ok in (True, False)   # no TypeError
+        assert sg.risk(store, str(tmp_path)).ok in (True, False)
+
+
+# -- Panel R30A / sonnet (non-blocking): synthetic override edge isn't a hole ----
+def test_dangling_synthetic_override_edge_is_not_a_hole():
+    """A `_propagate_overrides` edge (provenance='ambiguous', name_based=0) left dangling by a
+    subclass file's deletion is a derived liveness link, not a source reference, so it must NOT
+    be reported as a hole — only genuine missing-target references are (panel R30A)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    def _n(i, k=NodeKind.FUNCTION):
+        return Node(id=i, kind=k, name=i.split("::")[-1].split(".")[-1],
+                    location=f"{i.split('::')[0]}:1:0")
+    with sg.Store(":memory:") as store:
+        store.replace_file("base.py", [_n("base.py::Base", NodeKind.CLASS)], [])
+        # a synthetic override edge (ambiguous + name_based=0) to a symbol in sub.py
+        store.replace_file("sub.py", [_n("sub.py::Sub.do", NodeKind.METHOD)], [
+            Edge(src="base.py::Base", relation=Relation.REFERENCES, dst_symbol="do",
+                 dst_id="sub.py::Sub.do", weight=1.0, provenance=Provenance.AMBIGUOUS,
+                 name_based=False)])
+        store.replace_file("sub.py", [], [])                      # delete subclass file
+        holes = {(e.src, e.dst_symbol) for e in store.unresolved_edges()}
+        assert ("base.py::Base", "do") not in holes              # synthetic edge != hole
