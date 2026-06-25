@@ -130,21 +130,36 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   (binding a bare call to the enclosing-scope definition), which is a broad change kept
   out of the 1.0.x line; install `python-graphblas` for accurate hub ranking meanwhile.
 
-### A called base-class method keeps *all* subclass overrides live (Python)
-- **Concern:** a call that binds to a base method (`def go(b: Base): b.run()`, or a base
-  method's own `self.step()`) also marks the same-named override on **every** subclass live —
-  even a subclass that is never instantiated, so a genuinely-dead override is not flagged.
-- **Decision:** after resolution, every `CALLS` edge to a base method `B.m` is widened with
-  `AMBIGUOUS` edges to `Sub.m` for each project subclass `Sub` of `B` (transitively).
-- **Rationale:** the runtime object behind a base/`Protocol`/`ABC`-typed variable is a
-  subclass, so the override is what actually executes. The scope-aware precision path bound
-  the edge to the declared (base) class only; without this widening the live override gets
-  **no** inbound edge and is confidently flagged dead — the cardinal sin (panel R19A).
-  Over-keeping an unused override live only under-reports dead code (the safe direction).
-  Widening is scoped to the inheritance hierarchy — an unrelated same-named method on a
-  class outside the `B` subtree is **not** touched, so it is still flagged when dead.
-- **Escape hatch:** trust the per-edge `provenance` — the concrete-dispatch edges are
-  `AMBIGUOUS`; an `EXTRACTED`/`--precise` edge identifies the statically-bound target.
+### A method call through a declared type keeps *all* same-named methods live (Python)
+- **Concern:** a call bound to a declared type (`def go(b: Base): b.run()`, or a method's
+  own `self.step()`) marks **every** same-named `run`/`step` in the project live — including
+  one on a class that is never instantiated — so a genuinely-dead method of that name is not
+  flagged.
+- **Decision:** the scope-aware resolver still emits a precise `EXTRACTED` edge to the
+  declared type's method, but a binding via an *annotation* type (parameter/variable) is
+  additionally widened with `AMBIGUOUS` edges to all same-named methods; a `self`/`cls`
+  binding is widened to the enclosing class's subclasses (transitive `INHERITS`).
+- **Rationale:** a type annotation is only a hint — the runtime object behind `b: Base` may
+  be a subclass, a **structural** `typing.Protocol` implementer (no `INHERITS` edge), or an
+  unrelated **duck-typed** class that merely provides the method (panels R19A, R20A). Any of
+  them is what actually executes, so without widening the live implementation gets **no**
+  inbound edge and is confidently flagged dead — the cardinal sin. Without type inference we
+  cannot know which class the object is, so all same-named methods must be kept live.
+  Over-keeping an unused same-named method live only under-reports dead code (the safe
+  direction); the precise `EXTRACTED` edge still records the statically-declared target.
+- **Escape hatch:** trust the per-edge `provenance` — the concrete-dispatch candidates are
+  `AMBIGUOUS`; the `EXTRACTED`/`--precise` edge identifies the declared target.
+
+### Implicitly-invoked dunder methods are rooted to their class (Python)
+- **Concern:** a class's dunder (`__call__`, `__get__`/`__set__`/`__delete__`,
+  `__getitem__`, `__enter__`, operators, …) is invoked by the interpreter with no explicit
+  call site, so a helper it alone calls would be orphaned and flagged dead (panel R20A).
+- **Decision:** seed a `REFERENCES` edge from each class to its dunder methods, so that when
+  the class is reachable its dunders — and their callees — are reachable too.
+- **Rationale:** dunders are real, implicitly-reachable entry points whenever instances of
+  the class are used. Tying the edge to the *class* (not rooting the dunder unconditionally)
+  keeps a dead class's dunders dead, so this rescues only genuinely-live callees. Dunders are
+  already excluded from stale candidates, so this changes only their callees' liveness.
 
 ## Cost-of-fix exceeds value
 

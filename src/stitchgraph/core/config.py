@@ -61,7 +61,10 @@ def _load(start: str | Path | None) -> Config:
         return Config()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # A non-UTF-8 stitchgraph.toml (hand-edited in a legacy encoding) must degrade to
+        # defaults, not crash every CLI command — same robustness class as malformed TOML
+        # and the non-UTF-8 source-file guard in the extractor (panel R20A).
         return Config()
     # A hand-edited stitchgraph.toml can put any TOML type under any key, and config is
     # loaded on every CLI command — so guard every access by shape: a malformed section or

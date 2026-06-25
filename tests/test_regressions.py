@@ -3732,28 +3732,144 @@ def test_override_via_abc_typed_param_is_not_stale(tmp_path):
         assert "main.py::Impl._do" not in stale
 
 
-def test_override_propagation_does_not_resurrect_unrelated_dead_method(tmp_path):
-    """Override propagation must widen only to subclasses of the *called* base, never to
-    an unrelated same-named method on a class outside the hierarchy — otherwise it would
-    over-suppress beyond the documented trade-off."""
+def test_duck_typed_call_keeps_unrelated_same_named_method_live(tmp_path):
+    """A call bound to a declared (annotation) type is only a hint: the runtime object may
+    be a subclass OR an unrelated duck-typed class with the same method. `go(b: Base)`
+    calling `b.run()` must keep EVERY same-named `run` live — the precise INHERITS subtree
+    is not enough, because the real object can be outside it (panel R20A, cardinal). The
+    over-approximation (an unrelated never-used `run` kept live) is the documented
+    cardinal-safe trade-off."""
     _mk(tmp_path, {
         "main.py": """
             class Base:
                 def run(self): return 0
             class Derived(Base):
                 def run(self): return 1
-            class Other:
-                def run(self): return 99
+            class Duck:                       # unrelated, not a Base subclass
+                def run(self): return self._go()
+                def _go(self): return 99
             def go(b: Base): return b.run()
-            def main(): return go(Derived())
+            def main():
+                go(Derived())
+                return go(Duck())             # real object is duck-typed, not a Base
             if __name__ == "__main__": print(main())
         """,
     })
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
         stale = {c["id"] for c in sg.find_stale(store).result}
-        assert "main.py::Other.run" in stale            # unrelated class, genuinely dead
-        assert "main.py::Derived.run" not in stale
+        assert "main.py::Derived.run" not in stale      # subclass override, live
+        assert "main.py::Duck.run" not in stale         # duck-typed impl, live (cardinal)
+        assert "main.py::Duck._go" not in stale         # reached only via Duck.run
+
+
+def test_structural_protocol_impl_is_not_stale(tmp_path):
+    """A class satisfying a typing.Protocol WITHOUT inheriting it (idiomatic structural
+    typing) has no INHERITS edge, so override-propagation alone can't keep it live; the
+    declared-type call must widen to all same-named methods (panel R20A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            import typing
+            class Renderer(typing.Protocol):
+                def render(self) -> int: ...
+            class HtmlRenderer:
+                def render(self): return self._impl()
+                def _impl(self): return 1
+            def show(r: Renderer): return r.render()
+            def main(): return show(HtmlRenderer())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::HtmlRenderer.render" not in stale
+        assert "main.py::HtmlRenderer._impl" not in stale
+
+
+def test_descriptor_get_helper_is_not_stale(tmp_path):
+    """A descriptor's __get__ is invoked implicitly by attribute access; a helper it alone
+    calls must stay live when the descriptor class is used (panel R20A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Field:
+                def __get__(self, obj, owner): return self._fetch()
+                def _fetch(self): return 42
+            class Model:
+                val = Field()
+            def main():
+                m = Model()
+                return m.val
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Field._fetch" not in stale
+
+
+def test_callable_dunder_helper_is_not_stale(tmp_path):
+    """An instance call `s(...)` invokes __call__ implicitly; a helper reached only via
+    __call__ must stay live when the instance is called (panel R20A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Strategy:
+                def __call__(self, x): return x
+            class Double(Strategy):
+                def __call__(self, x): return self.calc(x)
+                def calc(self, x): return x * 2
+            def run(s: Strategy): return s(5)
+            def main(): return run(Double())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Double.calc" not in stale
+
+
+def test_non_utf8_config_does_not_crash(tmp_path):
+    """A non-UTF-8 stitchgraph.toml must degrade to defaults, not raise UnicodeDecodeError
+    out of every CLI command (panel R20A)."""
+    (tmp_path / "m.py").write_text("def foo(): pass\n")
+    (tmp_path / "stitchgraph.toml").write_bytes(b"[tool.stitchgraph]\n# bad: \xe9\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))
+        assert res.ok
+
+
+def test_out_of_range_int_arg_returns_result_not_overflow(tmp_path):
+    """An int beyond SQLite's signed-64-bit range must return a Result, not raise
+    OverflowError from the store bind (panel R20B). Reaches find_symbol -> nodes_by_name
+    and trace_path -> get_node."""
+    _mk(tmp_path, {"m.py": "def foo(): pass\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert sg.find_symbol(store, 2**63).ok is False
+        assert sg.trace_path(store, 2**63, "x").ok is False
+        assert sg.trace_path(store, "x", 2**63).ok is False
+
+
+def test_needs_review_always_has_a_reason():
+    """The envelope guarantees needs_review => review_reasons non-empty, centrally, so no
+    op can emit an unexplained review flag (panels R19B/R20B). A specific reason added
+    later supersedes the generic fallback."""
+    from stitchgraph.core.envelope import Provenance, Result
+    # Low confidence with no explicit reason -> generic fallback present.
+    r = Result(ok=True, result=[], confidence=0.5, provenance=Provenance.INFERRED)
+    assert r.needs_review and r.review_reasons
+    # Ambiguous provenance likewise.
+    r2 = Result(ok=True, result=[], confidence=1.0, provenance=Provenance.AMBIGUOUS)
+    assert r2.needs_review and r2.review_reasons
+    # A specific reason replaces the generic fallback rather than doubling it.
+    r3 = Result(ok=True, result=[], confidence=0.5, provenance=Provenance.INFERRED)
+    r3.add_reason("specific cause")
+    assert r3.review_reasons == ["specific cause"]
+    # A confident clean result is not flagged and carries no reasons.
+    r4 = Result(ok=True, result=[], confidence=1.0, provenance=Provenance.EXTRACTED)
+    assert r4.needs_review is False and r4.review_reasons == []
 
 
 def test_rewiden_renormalizes_weight_when_fanout_narrows():

@@ -106,6 +106,7 @@ def extract_project(root: str | Path,
             continue  # same pathological-depth guard for the edge pass (panel OOO)
     _apply_callback_roles(proj)
     _seed_test_classes(proj)
+    _seed_protocol_dunders(proj)
     _propagate_overrides(proj)
     return proj.nodes, proj.edges
 
@@ -181,6 +182,29 @@ def _apply_callback_roles(proj: _Project) -> None:
     for node in proj.nodes:
         if node.kind is NodeKind.CLASS and node.id in classes_with_callbacks:
             node.roles = node.roles | {"callback"}
+
+
+def _seed_protocol_dunders(proj: _Project) -> None:
+    """Tie each dunder method's liveness to its class. A dunder is invoked implicitly by
+    the interpreter (`instance()` -> `__call__`; attribute access on a descriptor ->
+    `__get__`/`__set__`; `obj[k]` -> `__getitem__`; `with obj` -> `__enter__`; etc.), so it
+    has no explicit call site — a helper it alone calls is orphaned and confidently flagged
+    dead once the class is in use (panel R20A, cardinal). Add a REFERENCES edge class ->
+    dunder so that when the class is reachable, its dunders (and their callees) are too.
+
+    Scoped to the class: a dead class's dunders stay dead (no over-rooting). Dunders are
+    already excluded from stale candidates, so this only rescues their *callees*."""
+    class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
+    for node in proj.nodes:
+        name = node.name
+        if (node.kind is NodeKind.METHOD and "." in node.id
+                and len(name) > 4 and name.startswith("__") and name.endswith("__")):
+            class_id = node.id.rsplit(".", 1)[0]
+            if class_id in class_ids:
+                proj.edges.append(Edge(
+                    src=class_id, relation=Relation.REFERENCES, dst_symbol=name,
+                    dst_id=node.id, weight=1.0, provenance=Provenance.INFERRED,
+                    location=node.location, source="ast"))
 
 
 def _propagate_overrides(proj: _Project) -> None:
@@ -784,8 +808,8 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # Attribute *reads* (e.g. a property `x.resolved`) -> REFERENCES, so a
             # used property/method isn't wrongly flagged dead.
             for attr in _direct_attr_reads(child, call_funcs):
-                tid = _resolve_member(proj, rel, class_qual, local_types,
-                                      attr.attr, attr.value)
+                tid, _exact = _resolve_member(proj, rel, class_qual, local_types,
+                                              attr.attr, attr.value)
                 if tid:
                     _add_ref(proj, cid, attr.attr, tid, rel, attr.lineno)
             # Bare-name *value* references (not the callee of a call): a function or
@@ -830,10 +854,19 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
     line = call.lineno
 
     if isinstance(func, ast.Attribute):
-        tid = _resolve_member(proj, rel, class_qual, local_types, func.attr, func.value)
+        tid, exact = _resolve_member(proj, rel, class_qual, local_types, func.attr,
+                                     func.value)
         if tid:
-            return _add_call(proj, src_id, func.attr, tid, rel, line, weight=1.0,
-                             prov=Provenance.EXTRACTED)
+            _add_call(proj, src_id, func.attr, tid, rel, line, weight=1.0,
+                      prov=Provenance.EXTRACTED)
+            if not exact:
+                # Declared type is a hint (subclass / structural Protocol / duck typing):
+                # widen to every same-named method so a live override/implementation is
+                # never flagged dead (panel R20A, cardinal). The precise edge above stays
+                # EXTRACTED — `_dedup_edges` keeps the higher weight; the rest go AMBIGUOUS.
+                _ref_edges(proj, src_id, func.attr, Relation.CALLS, rel, line,
+                           is_method=True)
+            return
         # Receiver type unknown (not self/cls, not a locally-typed var): the name-only
         # bind to a lone same-named method is a guess, not an extraction (issue #10) —
         # `recv` may be a stdlib/third-party type. Mark it INFERRED. Weight stays 1.0
@@ -848,21 +881,29 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
 
 
 def _resolve_member(proj: _Project, rel: str, class_qual: str | None,
-                    local_types: dict[str, str], attr: str, recv: ast.AST) -> str | None:
-    """Resolve `recv.attr` to a member node id, scope-aware (self / local type)."""
+                    local_types: dict[str, str], attr: str,
+                    recv: ast.AST) -> tuple[str | None, bool]:
+    """Resolve `recv.attr` to a member node id, scope-aware (self / local type).
+
+    Returns (node_id, exact). `exact` is True only for a `self`/`cls` receiver, whose
+    runtime type IS the enclosing class (or a subclass, handled by `_propagate_overrides`).
+    A binding via a declared local/parameter TYPE is `exact=False`: the annotation is only
+    a hint — the runtime object may be a subclass, a structural `Protocol` implementer, or
+    an unrelated duck-typed class with the same method (panel R20A), so the caller must
+    widen to all same-named methods to stay cardinal-safe."""
     if not isinstance(recv, ast.Name):
-        return None
+        return None, False
     if recv.id in ("self", "cls") and class_qual:
         tid = Node.make_id(rel, f"{class_qual}.{attr}")
         if tid in proj.ids:
-            return tid
+            return tid, True
     cls = local_types.get(recv.id)
     if cls:
         for class_id in proj.class_by_name.get(cls, []):
             mid = f"{class_id}.{attr}"
             if mid in proj.ids:
-                return mid
-    return None
+                return mid, False
+    return None, False
 
 
 def _add_call(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,

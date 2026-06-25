@@ -254,10 +254,12 @@ class Store:
                          tmpl["location"], tmpl["source"], tmpl["file"]))
             else:
                 # Exactly one candidate -> one edge at full weight. Only rebuild a leftover
-                # widened fan-out (several rows, or a sole row still carrying an ambiguous
-                # weight<1); never downgrade a normal unique EXTRACTED/INFERRED edge.
+                # widened fan-out: several rows, or a sole row left AMBIGUOUS by a prior
+                # widen. Test provenance, NOT weight<1.0 — a unique EXTRACTED REFERENCES
+                # edge is legitimately weight 0.95 and must not be downgraded to INFERRED
+                # (panel R20A deflation); only ambiguous fan-out survivors need rebuilding.
                 widened = len(existing) > 1 or any(
-                    e["provenance"] == "ambiguous" or e["weight"] < 1.0 for e in existing)
+                    e["provenance"] == "ambiguous" for e in existing)
                 if not widened:
                     continue
                 tmpl = existing[0]
@@ -370,10 +372,11 @@ class Store:
     def nodes_by_name(self, name: str) -> list[Node]:
         try:
             rows = self.conn.execute("SELECT * FROM nodes WHERE name = ?", (name,)).fetchall()
-        except (sqlite3.Error, UnicodeEncodeError, ValueError, TypeError):
+        except (sqlite3.Error, UnicodeEncodeError, ValueError, TypeError, OverflowError):
             # A name that can't be a stored symbol: a lone surrogate / embedded NUL
-            # (ValueError/UnicodeEncodeError on bind), or a non-str type — list/dict/bytes —
-            # which sqlite rejects as an unsupported bind (sqlite3.ProgrammingError/TypeError).
+            # (ValueError/UnicodeEncodeError on bind), a non-str type — list/dict/bytes —
+            # which sqlite rejects as an unsupported bind (sqlite3.ProgrammingError/TypeError),
+            # or an int beyond SQLite's signed-64-bit range (OverflowError, panel R20B).
             # Refuse with no match rather than crash the op (panels XXX/R18B).
             return []
         return [_row_to_node(r) for r in rows]
@@ -381,8 +384,10 @@ class Store:
     def get_node(self, node_id: str) -> Node | None:
         try:
             row = self.conn.execute("SELECT * FROM nodes WHERE id = ?", (node_id,)).fetchone()
-        except (sqlite3.Error, UnicodeEncodeError, ValueError, TypeError):
-            return None  # non-UTF-8 / NUL / non-str id can't exist; refuse, don't crash (R18B)
+        except (sqlite3.Error, UnicodeEncodeError, ValueError, TypeError, OverflowError):
+            # non-UTF-8 / NUL / non-str id, or an out-of-range int (OverflowError, panel
+            # R20B), can't be a stored id; refuse, don't crash (R18B).
+            return None
         return _row_to_node(row) if row else None
 
     def nodes_by_kind(self, kind: NodeKind) -> list[Node]:

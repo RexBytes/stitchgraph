@@ -21,6 +21,12 @@ T = TypeVar("T")
 # envelope stays stdlib-only (config depends on envelope, never the reverse).
 REVIEW_THRESHOLD = 0.80
 
+# Generic fallback so `needs_review` is never True with an empty `review_reasons` — an
+# unexplained review flag a consumer (LLM/CLI) can't act on (panels R19B/R20B). A specific
+# reason added later via `add_reason` supersedes it.
+_DEFAULT_REVIEW_REASON = (
+    "low-confidence or name-based result — verify before relying on it")
+
 
 def set_review_threshold(value: float) -> None:
     """Set the review-confidence threshold (called by config when a toml is loaded)."""
@@ -63,12 +69,20 @@ class Result(Generic[T]):
                 or self.confidence < REVIEW_THRESHOLD
                 or self.provenance is Provenance.AMBIGUOUS):
             self.needs_review = True
+        # An op may flag review without an explicit reason (low confidence / ambiguous
+        # provenance); guarantee the contract `needs_review => review_reasons non-empty`
+        # centrally so no single op can reintroduce an unexplained flag (panels R19B/R20B).
+        if self.needs_review and not self.review_reasons:
+            self.review_reasons.append(_DEFAULT_REVIEW_REASON)
         # Provenance gates the urgency ceiling: nothing low-confidence shouts red.
         if self.urgency is Urgency.RED and self.provenance is not Provenance.EXTRACTED:
             self.urgency = Urgency.ORANGE
 
     def add_reason(self, reason: str) -> Result[T]:
         if reason not in self.review_reasons:
+            # A specific reason supersedes the generic fallback added in __post_init__.
+            if self.review_reasons == [_DEFAULT_REVIEW_REASON]:
+                self.review_reasons = []
             self.review_reasons.append(reason)
             self.needs_review = True
         return self
