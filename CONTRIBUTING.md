@@ -250,3 +250,69 @@ Ranked by expected leverage on stitchgraph's remaining tail:
 
 These convert "stochastic panel rediscovery" into "structural guarantee," which is
 where the long tail actually ends.
+
+## The differential-oracle harness (the tail-killer)
+
+A review panel is **expensive black-box sampling** (several agents × minutes ×
+tokens) of a structured space. A **differential oracle** is **cheap deterministic
+sampling of the same space** (seconds, free, every CI run): generate an input,
+compute the answer two independent ways, assert they agree. Move tail-hunting from
+panels to oracles; reserve panels for discovering *novel classes* no oracle covers.
+
+### The layer insight (why panels kept finding what property tests missed)
+
+stitchgraph is a pipeline: **source → (extract) → graph → (mutate incrementally) →
+graph → (algebra) → answer.** Oracles must be installed at *each* layer; a green
+oracle one layer down says nothing about the layer above.
+
+| Layer | Oracle that exists today | Status |
+|---|---|---|
+| **algebra** (graph → answer) | `test_properties.py`: GraphBLAS == pure-Python; `find_stale` never flags a reachable node; reverse-reachable is the inverse — over *random adjacency graphs* | **covered & converged** — no graph-level defect in rounds 28–31 |
+| **incremental** (graph → graph) | only fixed-case tests (`test_incremental_*`, the function-move differential) | **partial** — needs a generator |
+| **extract** (source → graph) | only fixed-case per-language tests + the scope×attr matrix | **partial** — needs a generator |
+| **boundary** (corrupt/hostile input) | fixed BLOB-every-column + safety tests | **partial** — needs a fuzzer |
+
+This is the whole story of rounds 28–31: the property tests stayed green because
+the graph layer is solid, while **every real defect lived in the extract and
+incremental layers** — which have fixed-case tests but **no generators**. The
+tail ends when those two layers get the same generator-backed oracle the graph
+layer already has.
+
+### The three oracles to build (Hypothesis, in `tests/test_properties.py`)
+
+1. **Incremental differential** (highest leverage — the richest defect vein, rounds
+   22/24/29/31).
+   - *Generator:* a random small multi-file project, then a random *edit sequence*
+     — add / delete / re-add / rename-symbol / move-symbol-between-files / empty-a-file
+     / introduce-a-homonym, applied via `Store.replace_file`.
+   - *Oracle:* a full `sg.reindex` of the final on-disk state.
+   - *Assert:* incremental == full on `find_stale`, `fan_in`, and `find_holes`.
+     (Metamorphic corollary: the final graph is independent of edit order.)
+   - Hypothesis *shrinks* a failure to the minimal project+sequence — the repro the
+     panel would have spent an agent to construct. Would have auto-caught R29A and
+     R31A's fan_in inflations.
+2. **Cardinal source-matrix** (rounds 28/30/31).
+   - *Generator:* random *valid* source placing a defined-and-used symbol across the
+     axes — scope {module, class-body, function} × use-kind {call, attribute-read,
+     name-ref, subscript, decorator, annotation} × indirection {direct, via-unannotated-
+     param, via-constructor-result, via-subclass}.
+   - *Oracle:* the symbol is reachable from a seeded entry point by construction.
+   - *Assert:* reachable-by-construction ⟹ never in `find_stale` at confidence ≥ 0.5.
+3. **Corrupt-store / hostile-input fuzz** (rounds 29/30/31).
+   - *Generator:* take a valid index and mutate it — set a random column to a BLOB /
+     NaN / inf / bad-enum string, truncate, drop a column; OR feed random bytes as
+     source / coverage / config.
+   - *Assert:* every op returns a `Result` (never raises) and emits no `Infinity`/`NaN`
+     in `--json`. (`atheris` coverage-guided fuzzing is the heavier upgrade.)
+
+### Economics and division of labour
+
+- **Oracles own the tail.** They re-run every CI push in seconds for $0 and fail on
+  the *cell you haven't written yet*. A bug a full panel took ~20 min and 6 agents to
+  surface, a generator surfaces (and shrinks) in seconds, repeatably.
+- **Panels own novelty.** Their value is finding a *new class* an oracle's generators
+  don't yet reach (a new language quirk, a new envelope contract). Once a panel finds
+  a class, the deliverable includes *extending the generator* so the oracle owns it
+  thereafter — that is how the panel cadence trends to zero.
+- **Mutation testing keeps the oracles honest** — it measures whether the suite
+  (oracles included) actually pins the contracts, vs merely executing them.
