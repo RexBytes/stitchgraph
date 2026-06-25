@@ -87,7 +87,11 @@ class Store:
         both tables: `_row_to_edge` reads `source`/`file` unconditionally, so an index
         built before those edge columns existed must gain them or edge reads fail."""
         tables = {
-            "nodes": (("roles", "roles TEXT NOT NULL DEFAULT ''"),
+            "nodes": (("location", "location TEXT NOT NULL DEFAULT ''"),
+                      ("is_stub", "is_stub INTEGER NOT NULL DEFAULT 0"),
+                      ("arity", "arity INTEGER"),
+                      ("summary", "summary TEXT"),
+                      ("roles", "roles TEXT NOT NULL DEFAULT ''"),
                       ("end_line", "end_line INTEGER")),
             "edges": (("source", "source TEXT NOT NULL DEFAULT 'tree-sitter'"),
                       ("file", "file TEXT NOT NULL DEFAULT ''"),
@@ -551,11 +555,16 @@ class Store:
 def _row_to_node(row: sqlite3.Row) -> Node:
     keys = row.keys()
     roles = row["roles"] if "roles" in keys else ""
+    # Tolerate a row from an older/partial schema missing any optional column — mirror
+    # _row_to_edge's defensive reads so an op never raises IndexError on such a DB (panel
+    # R27A). Only id/kind/name are guaranteed (PRIMARY KEY / NOT NULL).
     return Node(
         id=row["id"], kind=NodeKind(row["kind"]), name=row["name"],
-        location=row["location"],
+        location=row["location"] if "location" in keys else "",
         end_line=row["end_line"] if "end_line" in keys else None,
-        is_stub=bool(row["is_stub"]), arity=row["arity"], summary=row["summary"],
+        is_stub=bool(row["is_stub"]) if "is_stub" in keys else False,
+        arity=row["arity"] if "arity" in keys else None,
+        summary=row["summary"] if "summary" in keys else None,
         roles=frozenset(r for r in roles.split(",") if r),
     )
 

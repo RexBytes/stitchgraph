@@ -4295,3 +4295,29 @@ def test_rewiden_renormalizes_weight_when_fanout_narrows():
             "SELECT weight FROM edges WHERE dst_symbol = 'm' AND dst_id IS NOT NULL"
         ).fetchall()
         assert sorted(r["weight"] for r in rows) == [0.5, 0.5]
+
+
+def test_old_schema_db_missing_node_columns_does_not_crash(tmp_path):
+    """Opening an index built by an older stitchgraph whose `nodes` table lacks newer
+    columns (arity/summary/...) must not raise IndexError at read time — _row_to_node now
+    tolerates missing optional columns and _migrate backfills them, mirroring the edge-row
+    guard (panel R27A)."""
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0);"   # no arity/summary/roles/end_line
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted');"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('m.py::f', 'Function', 'f')")
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:                 # _migrate backfills missing columns
+        assert sg.orient(store).ok              # reads nodes -> _row_to_node, must not raise
+        assert sg.find_stale(store).ok
+        assert sg.find_symbol(store, "f").ok
