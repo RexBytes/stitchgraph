@@ -106,6 +106,7 @@ def extract_project(root: str | Path,
             continue  # same pathological-depth guard for the edge pass (panel OOO)
     _apply_callback_roles(proj)
     _seed_test_classes(proj)
+    _propagate_overrides(proj)
     return proj.nodes, proj.edges
 
 
@@ -180,6 +181,69 @@ def _apply_callback_roles(proj: _Project) -> None:
     for node in proj.nodes:
         if node.kind is NodeKind.CLASS and node.id in classes_with_callbacks:
             node.roles = node.roles | {"callback"}
+
+
+def _propagate_overrides(proj: _Project) -> None:
+    """Polymorphic dispatch: a CALLS edge bound to a base-class method must also reach
+    overriding methods in subclasses, or a live override gets no inbound edge and is
+    flagged dead (CARDINAL). `_call_edge`'s precision paths bind `self.m()` to the
+    *enclosing* class and `var.m()` (var annotated `Base`/`Protocol`/`ABC`) to the
+    *declared* class — neither widens to the concrete subclass that actually runs at
+    runtime. Mirror the unknown-receiver widening (`_ref_edges`) by adding AMBIGUOUS
+    CALLS edges from the same caller to every subclass override of the bound method.
+
+    Adding edges can only make more nodes reachable, never fewer, so this is cardinal-
+    safe by construction; the cost is mild over-approximation (a genuinely-dead override
+    of a called base method stays live), which is the documented lower-severity trade-off.
+    """
+    class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
+    if not class_ids:
+        return
+    # direct subclass map: base_class_id -> {subclass_id, ...} (project classes only).
+    subclasses: dict[str, set[str]] = {}
+    for e in proj.edges:
+        if (e.relation is Relation.INHERITS and e.src in class_ids
+                and e.dst_id in class_ids and e.src != e.dst_id):
+            subclasses.setdefault(e.dst_id, set()).add(e.src)
+    if not subclasses:
+        return
+    cache: dict[str, set[str]] = {}
+
+    def descendants(base_id: str) -> set[str]:
+        if base_id in cache:
+            return cache[base_id]
+        out: set[str] = set()
+        stack = list(subclasses.get(base_id, ()))
+        while stack:
+            s = stack.pop()
+            if s in out:
+                continue
+            out.add(s)
+            stack.extend(subclasses.get(s, ()))
+        cache[base_id] = out
+        return out
+
+    # Never duplicate a (caller, target) CALLS edge we already emitted.
+    seen = {(e.src, e.dst_id) for e in proj.edges if e.relation is Relation.CALLS}
+    new_edges: list[Edge] = []
+    for e in list(proj.edges):
+        if e.relation is not Relation.CALLS or not e.dst_id:
+            continue
+        base_id, sep, method = e.dst_id.rpartition(".")
+        if not sep or base_id not in class_ids:
+            continue
+        for sub_id in descendants(base_id):
+            override = f"{sub_id}.{method}"
+            if override == e.dst_id or override not in proj.ids:
+                continue
+            if (e.src, override) in seen:
+                continue
+            seen.add((e.src, override))
+            new_edges.append(Edge(
+                src=e.src, relation=Relation.CALLS, dst_symbol=method,
+                dst_id=override, weight=1.0, provenance=Provenance.AMBIGUOUS,
+                location=e.location, source="ast"))
+    proj.edges.extend(new_edges)
 
 
 # -- pass 1: definitions ----------------------------------------------------

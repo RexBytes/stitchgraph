@@ -118,6 +118,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   would let a single jedi mis-resolution drop a live symbol's only caller and flag it
   dead — the cardinal sin — so the safe additive design is kept.
 
+### A called base-class method keeps *all* subclass overrides live (Python)
+- **Concern:** a call that binds to a base method (`def go(b: Base): b.run()`, or a base
+  method's own `self.step()`) also marks the same-named override on **every** subclass live —
+  even a subclass that is never instantiated, so a genuinely-dead override is not flagged.
+- **Decision:** after resolution, every `CALLS` edge to a base method `B.m` is widened with
+  `AMBIGUOUS` edges to `Sub.m` for each project subclass `Sub` of `B` (transitively).
+- **Rationale:** the runtime object behind a base/`Protocol`/`ABC`-typed variable is a
+  subclass, so the override is what actually executes. The scope-aware precision path bound
+  the edge to the declared (base) class only; without this widening the live override gets
+  **no** inbound edge and is confidently flagged dead — the cardinal sin (panel R19A).
+  Over-keeping an unused override live only under-reports dead code (the safe direction).
+  Widening is scoped to the inheritance hierarchy — an unrelated same-named method on a
+  class outside the `B` subtree is **not** touched, so it is still flagged when dead.
+- **Escape hatch:** trust the per-edge `provenance` — the concrete-dispatch edges are
+  `AMBIGUOUS`; an `EXTRACTED`/`--precise` edge identifies the statically-bound target.
+
 ## Cost-of-fix exceeds value
 
 ### A console-script target maps to its module by path suffix (a shadow copy is over-rooted)

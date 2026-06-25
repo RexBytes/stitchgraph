@@ -3653,3 +3653,101 @@ def test_replace_file_rewidens_resolved_edge_on_new_homonym():
         store.replace_file("b.py", [_n("b.py::foo")], [])   # new homonym, added later
         fi = fan_in(store)
         assert fi.get("a.py::foo", 0) >= 1 and fi.get("b.py::foo", 0) >= 1
+
+
+# -- Panel R19A (cardinal): polymorphic dispatch must keep subclass overrides live --
+def test_override_via_base_typed_param_is_not_stale(tmp_path):
+    """`def go(b: Base): b.run()` dispatches at runtime to the override on the concrete
+    subclass, but the precision path bound the CALLS edge to Base.run only, leaving the
+    live Derived.run with no inbound edge -> flagged dead at conf 0.6 (panel R19A,
+    cardinal). The override must stay live; only genuinely-unused code is flagged."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return 0
+            class Derived(Base):
+                def run(self): return self._extra()
+                def _extra(self): return 1
+            class Unused(Base):
+                def run(self): return 2
+            def go(b: Base): return b.run()
+            def main(): return go(Derived())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Derived.run" not in stale     # the override that runs
+        assert "main.py::Derived._extra" not in stale   # reached only via the override
+
+
+def test_override_via_self_dispatch_is_not_stale(tmp_path):
+    """A base method calling `self.step()` dispatches to the subclass override at runtime;
+    binding the edge to the enclosing (base) class left the override dead (panel R19A,
+    cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return self.step()
+                def step(self): return 0
+            class Derived(Base):
+                def step(self): return 1
+            def main():
+                d = Derived()
+                return d.run()
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Derived.step" not in stale
+
+
+def test_override_via_abc_typed_param_is_not_stale(tmp_path):
+    """Same defect via an `abc.ABC` + `@abstractmethod` declared type — DI/polymorphism
+    through an abstract base is the common idiom (panel R19A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            import abc
+            class Iface(abc.ABC):
+                @abc.abstractmethod
+                def handle(self): ...
+            class Impl(Iface):
+                def handle(self): return self._do()
+                def _do(self): return 1
+            def run(x: Iface): return x.handle()
+            def main(): return run(Impl())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Impl.handle" not in stale
+        assert "main.py::Impl._do" not in stale
+
+
+def test_override_propagation_does_not_resurrect_unrelated_dead_method(tmp_path):
+    """Override propagation must widen only to subclasses of the *called* base, never to
+    an unrelated same-named method on a class outside the hierarchy — otherwise it would
+    over-suppress beyond the documented trade-off."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return 0
+            class Derived(Base):
+                def run(self): return 1
+            class Other:
+                def run(self): return 99
+            def go(b: Base): return b.run()
+            def main(): return go(Derived())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Other.run" in stale            # unrelated class, genuinely dead
+        assert "main.py::Derived.run" not in stale
