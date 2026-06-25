@@ -3998,6 +3998,38 @@ def _incremental_store(root):
     return store
 
 
+def test_incremental_drop_redundant_holes_respects_name_based(tmp_path):
+    """_drop_redundant_holes must not treat an unrelated PRECISE edge (to a different
+    class's same-named method) as satisfying a name-based widening hole. Two classes named
+    MyClass in different files, the precise target class indexed last: dropping the hole
+    left the live target method unreferenced and flagged dead (panel R25A, cardinal)."""
+    import itertools
+
+    from stitchgraph.core.extract.python import extract_project
+    _mk(tmp_path, {
+        "target.py": ("class MyClass:\n    def method(self): return self._helper()\n"
+                      "    def _helper(self): return 1\n"),
+        "other.py": "class MyClass:\n    def method(self): return 2\n",
+        "caller.py": "from target import MyClass\ndef use(m: MyClass): return m.method()\n",
+        "main.py": ("from caller import use\nfrom target import MyClass\n"
+                    "def main(): return use(MyClass())\n"
+                    "if __name__ == '__main__': print(main())\n"),
+    })
+    nodes, edges = extract_project(str(tmp_path))
+    nbf, ebf = {}, {}
+    for n in nodes:
+        nbf.setdefault(n.id.split("::", 1)[0], []).append(n)
+    for e in edges:
+        ebf.setdefault(e.src.split("::", 1)[0], []).append(e)
+    for order in itertools.permutations(["target.py", "other.py", "caller.py", "main.py"]):
+        store = sg.Store(":memory:")
+        for f in order:
+            store.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        store.close()
+        assert "target.py::MyClass.method" not in stale, f"order {order}"
+
+
 def test_incremental_self_dispatch_override_not_stale(tmp_path):
     """A subclass added in a DIFFERENT file via replace_file must have its override of a
     `self`-dispatched base member kept live — the store's _propagate_overrides re-derives

@@ -380,13 +380,18 @@ class Store:
         )
 
     def _drop_redundant_holes(self) -> None:
-        """Delete unresolved edges that already have a resolved sibling.
+        """Delete unresolved edges that already have a resolved sibling OF THE SAME KIND.
 
-        A sibling shares (src, relation, dst_symbol): the reference is still linked,
-        so the hole is a phantom left by invalidating one arm of an ambiguous
-        fan-out. Dropping it (rather than re-resolving to the surviving target)
-        avoids both the spurious hole and a duplicate edge that would inflate
-        fan_in (panel R11B). Genuine holes — no resolved sibling — are kept.
+        A sibling shares (src, relation, dst_symbol) AND name_based-ness: the hole is a
+        phantom left by invalidating one arm of an ambiguous fan-out (all name-based), and
+        the surviving same-kind arm still links the reference. Dropping it avoids the
+        spurious hole and a fan_in-inflating duplicate (panel R11B).
+
+        The name_based match is essential: a name-based widening hole (a reference to one of
+        several same-named members) must NOT be considered satisfied by an unrelated PRECISE
+        edge to a different class's same-named member — that hole is a real pending link, and
+        dropping it leaves the genuine target unreferenced and flagged dead once indexed
+        (panel R25A, cardinal). Genuine holes with no same-kind resolved sibling are kept.
         """
         self.conn.execute(
             """DELETE FROM edges
@@ -395,7 +400,8 @@ class Store:
                                WHERE r.dst_id IS NOT NULL
                                  AND r.src = edges.src
                                  AND r.relation = edges.relation
-                                 AND r.dst_symbol = edges.dst_symbol)"""
+                                 AND r.dst_symbol = edges.dst_symbol
+                                 AND r.name_based = edges.name_based)"""
         )
 
     def _resolve_worklist(self) -> None:

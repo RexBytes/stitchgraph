@@ -279,6 +279,18 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   (the target lived in the file being replaced) and name-based edges revert to holes, so an
   incremental sequence converges to a full reindex on `find_stale` AND on degree metrics,
   in any file order.
+- **Residual — deleting an imported module (non-blocking, library-only):** when a file
+  whose symbol was imported elsewhere (`from util import helper`) is *deleted* via
+  `Store.replace_file(file, [], [])`, the now-dangling precise import is reverted to a hole
+  and `_resolve_worklist` may re-bind it by name to an unrelated same-named symbol in
+  another module, over-approximating that symbol's `fan_in` by one. It is **non-cardinal**
+  (over-approximation — never flags live code dead), affects only the incremental
+  `replace_file` deletion path (the shipped CLI/MCP always full-reindex), and self-corrects
+  on the next full reindex. It is left as-is because the precise-import module context is
+  not recoverable once the target is gone, and the candidate fixes (suppressing the
+  re-bind) would break legitimate forward-reference import resolution — risking a far worse
+  *false-dead* (cardinal). Trust the per-edge `provenance` (the phantom is `ambiguous`/
+  name-based) and prefer a full reindex when exact deletion-time metrics matter.
 
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are
