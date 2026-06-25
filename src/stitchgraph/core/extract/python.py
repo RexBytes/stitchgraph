@@ -849,16 +849,21 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # Python ast walks only FunctionDef bodies below; without this the class
             # body's symbols are never edged -> live code flagged dead (matches the
             # tree-sitter extractor, which walks the whole class node).
-            # Class-body attribute reads (`DEFAULT = _E.handler`) on an unknown receiver need
-            # the name-based REFERENCES fallback too — the class-body scope twin of the round-30
-            # function-body fix, or a live member read while the class is built is flagged dead
-            # (panel R31A, cardinal). call_funcs excludes a method-call callee (`obj.m()`),
-            # which is a call not a read; `_direct_names` stays as-is (call callees included).
-            cls_call_funcs = {id(c.func) for c in _direct_calls(child)}
+            # The class body runs the SAME three passes as a function body (calls, attribute
+            # reads, name refs) — it is the third scope edge-builder and must stay symmetric
+            # with `_module_scope_edges` and the FunctionDef branch, or a use that is edged in
+            # one scope is flagged dead in another (the class-body member call `KEPT = _e.m()`
+            # was edged in module/function scope but not here — oracle cardinal-matrix cell).
+            # `call_funcs` excludes each call's callee from the read/name passes so a call is
+            # not also double-counted as a REFERENCES.
+            cls_call_funcs: set[int] = set()
+            for call in _direct_calls(child):
+                cls_call_funcs.add(id(call.func))
+                _call_edge(proj, rel, cid, qual, {}, call)
             for attr in _direct_attr_reads(child, cls_call_funcs):
                 _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel, attr.lineno,
                            is_method=True)
-            for nm in _direct_names(child, set()):
+            for nm in _direct_names(child, cls_call_funcs):
                 _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)

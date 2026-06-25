@@ -640,18 +640,30 @@ def _row_to_node(row: sqlite3.Row) -> Node | None:
     nid, name = row["id"], row["name"]
     if not isinstance(nid, str) or not isinstance(name, str):
         return None
+    # Coerce EVERY field to its declared dataclass type rather than hand-listing the str
+    # columns (which kept missing one: summary/end_line/arity slipped through rounds 29-31
+    # — panel R32B). Wrong-typed optional columns degrade to the field default; a non-finite
+    # check is unnecessary here (end_line/arity are ints). The `tests/oracles` corrupt-store
+    # chokepoint oracle asserts this for every column, so a new column is covered by type.
     roles = row["roles"] if "roles" in keys else ""
     if not isinstance(roles, str):
         roles = ""
     location = row["location"] if "location" in keys else ""
     if not isinstance(location, str):
         location = ""
+    end_line = row["end_line"] if "end_line" in keys else None
+    if not isinstance(end_line, int):       # bytes / str / float(inf) / None -> drop
+        end_line = None
+    arity = row["arity"] if "arity" in keys else None
+    if not isinstance(arity, int):
+        arity = None
+    summary = row["summary"] if "summary" in keys else None
+    if not isinstance(summary, str):
+        summary = None
     return Node(
         id=nid, kind=kind, name=name, location=location,
-        end_line=row["end_line"] if "end_line" in keys else None,
-        is_stub=bool(row["is_stub"]) if "is_stub" in keys else False,
-        arity=row["arity"] if "arity" in keys else None,
-        summary=row["summary"] if "summary" in keys else None,
+        end_line=end_line, is_stub=bool(row["is_stub"]) if "is_stub" in keys else False,
+        arity=arity, summary=summary,
         roles=frozenset(r for r in roles.split(",") if r),
     )
 
