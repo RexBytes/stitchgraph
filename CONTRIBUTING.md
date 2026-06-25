@@ -316,3 +316,53 @@ layer already has.
   thereafter — that is how the panel cadence trends to zero.
 - **Mutation testing keeps the oracles honest** — it measures whether the suite
   (oracles included) actually pins the contracts, vs merely executing them.
+
+### Keep oracles cheap (or you've just moved the long tail)
+
+An oracle that is getting complicated is a smell: a 500-line "random valid project"
+generator has its own bugs and blind spots, and maintaining it *is* a new long tail.
+A good oracle is cheap because it leans on something that already exists:
+
+- **a strong invariant at a chokepoint** (the row mapper: "every mapped field has its
+  declared dataclass type" — ~40 lines, schema-derived, no generator), or
+- **the real codebase as the corpus** (don't *generate* a project; `src/` is already a
+  large valid multi-file one — apply a *mechanical* edit and diff incremental vs full), or
+- **a small parametrized matrix** (a dozen fixed scope×use-kind cells, not synthesized
+  source).
+
+Reach for Hypothesis/`atheris` generators only when none of those three can cover the
+case. If an oracle creeps past ~50 lines, stop and find the chokepoint invariant instead.
+
+### Oracles are project-specific, and they rot
+
+There is no generic oracle set — each project's oracles are **harvested from its
+architecture** in an explicit design step. The reusable part is the *checklist of
+shapes*, not the oracles:
+
+- **Differential** — anywhere the system computes one answer two independent ways, that
+  pair is a free oracle (here: full vs incremental reindex; GraphBLAS vs pure-Python).
+- **Chokepoint invariant** — a single point all data flows through, with a shape/type
+  contract (the row mappers; the `Result` envelope).
+- **Metamorphic** — a relation that holds regardless of path (edit-order independence,
+  reindex idempotence, add-then-remove == no-op).
+- **Declared contract** — never-raise, precision-over-recall, confidence ∈ [0,1].
+
+Same four questions, different answers per project: *where is the redundancy, the
+chokepoint, the symmetry, the promise?*
+
+Because oracles are derived from the architecture, **they go stale when the architecture
+moves** — budget irregular re-validation:
+
+- **The chokepoint moves.** A new raw query that bypasses the guarded mapper silently
+  voids the corrupt-store oracle's coverage (rounds 30–31 were exactly this). Guard with
+  the **parallel-site lint** ("no raw `row[...]` read outside the mappers").
+- **The oracle passes for the wrong reason** (false-clean — a consumer-level oracle that
+  never hit the path). Guard with **mutation testing as the meta-oracle**: inject a bug;
+  if nothing catches it, an oracle has gone blind.
+- **The invariant itself changes** (a field becomes legitimately optional; a new enum
+  value). Guard by **tying the oracle to the single source of truth** (schema/dataclass)
+  so it tracks the change instead of needing a hand-edit.
+
+Treat oracles as a **small living layer**, re-derived when a change moves a chokepoint or
+alters an invariant — add "did this move a chokepoint / change an invariant? revisit the
+oracle" to the review checklist. Cheap oracles are also cheap to keep valid.
