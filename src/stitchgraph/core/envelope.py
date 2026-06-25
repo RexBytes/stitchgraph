@@ -107,7 +107,10 @@ class Result(Generic[T]):
             "review_reasons": self.review_reasons,
             "urgency": self.urgency.value if self.urgency else None,
             "alternatives": [_plain(a) for a in self.alternatives],
-            "meta": self.meta,
+            "meta": _plain(self.meta),  # honour _plain as the chokepoint for ALL values:
+            # a stray non-finite float in meta would otherwise serialize to Infinity/NaN
+            # (invalid JSON). Latent today — no op puts a non-finite float in meta — but the
+            # envelope must self-protect at the one serialization point (panel R38).
         }
 
 

@@ -5243,3 +5243,27 @@ def test_r37_plain_drops_nonfinite_floats():
     assert _plain(True) is True and _plain(3) == 3
     out = _plain({"a": float("inf"), "b": [float("nan"), 2.0], "c": "x"})
     assert json.dumps(out) and "Infinity" not in json.dumps(out) and "NaN" not in json.dumps(out)
+
+
+# ===========================================================================
+# Round 38 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). FIRST CLEAN
+# PANEL ROUND — zero valid blockers. One latent consistency item closed below;
+# one finding invalid (SUBMITS_TO premise/direction), rest clean.
+# ===========================================================================
+
+
+def test_r38_to_dict_meta_is_sanitized():
+    """R38 (latent envelope consistency): to_dict() routed `result` through _plain but passed
+    `meta` raw, so a non-finite float in meta would serialize to Infinity/NaN (invalid JSON).
+    No current op puts a float in meta, but the envelope must honour _plain as the chokepoint
+    for ALL values, so meta is now sanitized too."""
+    import json
+
+    from stitchgraph.core.envelope import Provenance, Result
+    r = Result(ok=True, result="x", confidence=1.0, provenance=Provenance.EXTRACTED,
+               meta={"inf": float("inf"), "nan": float("nan"), "n": 3, "s": "ok"})
+    d = r.to_dict()
+    assert d["meta"]["inf"] is None and d["meta"]["nan"] is None
+    assert d["meta"]["n"] == 3 and d["meta"]["s"] == "ok"
+    dumped = json.dumps(d)
+    assert "Infinity" not in dumped and "NaN" not in dumped
