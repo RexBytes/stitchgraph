@@ -4742,3 +4742,20 @@ def test_plain_converts_objects_and_preserves_none():
     assert _plain(5) == 5 and _plain("x") == "x"
     out = _plain(Node("a.py::b", NodeKind.FUNCTION, "b"))
     assert isinstance(out, dict) and out.get("id") == "a.py::b"
+
+
+def test_trace_path_returns_complete_node_path():
+    """Mutant (scripts/mutate.py on reach.py best_path): the path-reconstruction loop
+    `while path[-1] != source` -> `==` truncates the result to just [sink]. trace_path must
+    return the COMPLETE source..sink node path. best_path is pure-Python always (no GraphBLAS
+    branch), so this is a genuine unit-testable contract — most other reach.py lines are
+    oracle-owned (see docs/TESTING.md mutation scope)."""
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for n in ("a", "b", "c"):
+            store.add_node(Node(f"m.py::{n}", NodeKind.FUNCTION, n))
+        store.add_edge(Edge("m.py::a", Relation.CALLS, "b", dst_id="m.py::b"))
+        store.add_edge(Edge("m.py::b", Relation.CALLS, "c", dst_id="m.py::c"))
+        store.commit()
+        r = sg.trace_path(store, "a", "c")
+    assert r.result == ["m.py::a", "m.py::b", "m.py::c"]

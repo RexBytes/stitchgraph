@@ -56,10 +56,22 @@ Ordered by leverage. Each names the failure mode it would close.
    test that kills it (this cycle: 4 un-pinned `envelope` contracts found and pinned → 17/17
    killed). Run on demand / at release, not every push (it mutates source in place — never
    concurrently with a review panel).
-   - *Status:* `core/envelope.py` at 100%. **Target set to expand:** `core/store.py` (row
-     mappers + resolution), `core/reach.py`, `core/operations.py`.
+   - *Status:* `core/envelope.py` at 100% (17/17). `core/store.py` row mappers + other
+     pure/contract code: to add.
+   - **Mutation has a sweet spot — not every module belongs in the target set.** It is
+     leverage where contracts are pinned by FAST *unit* tests (pure logic: `envelope`,
+     row mappers, `config`, `best_path`). It is the WRONG tool for modules whose
+     correctness is pinned by an expensive *differential oracle*: `reach.py`'s
+     adjacency/reverse/SCC filters are no-ops on clean graphs and its reachability runs
+     the GraphBLAS fast-path, so the pure-Python branches + the `dst_id in nodes` dangling
+     filter are exercised ONLY by `tests/oracles/` (incremental==full with dangling edges)
+     and gb-off runs — a fast-signal mutation reports them as false survivors. **The
+     differential oracle IS their bite-check.** So: **mutation target set = fast-unit-
+     covered contract modules; `reach`/the incremental pipeline are oracle-owned** (a
+     deeper gb-off + oracle-in-signal mutation run is an optional nightly, not the gate).
    - *Equivalent mutants:* some mutations have no observable effect (redundant defensive
-     code); triage rather than chase 100% blindly.
+     code, e.g. `best_path`'s both-endpoints-missing guard); triage and justify rather than
+     chase a blind 100%.
 
 2. **Performance / resource budgets.** *Failure mode: a change makes reindex go
    quadratic, OOM, or leak file handles on large inputs.* Today only ad-hoc reviewer
