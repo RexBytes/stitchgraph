@@ -184,6 +184,38 @@ def find_holes(store: Store) -> Result:
     return res
 
 
+# Extensions whose translation units run namespace-scope static initializers at program
+# startup once the TU is LINKED — i.e. once any of its symbols is reached (C++). Unlike
+# package-scoped Go (seeded by directory in entrypoints), a C++ TU is linked on use, so its
+# module node's startup-edge liveness is reachability-driven (panel R36A). C files are included
+# harmlessly — C static initializers must be constant expressions, so they carry no call edges.
+_LINK_ON_USE_EXTS = (".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".h", ".c")
+
+
+def _live_set(store: Store, seeds: set[str]) -> set[str]:
+    """`reachable_from(seeds)` extended with C++ translation-unit static-init liveness: a C++
+    file's module node (which carries its namespace-scope static-initializer call edges) is
+    promoted to a root once ANY symbol in that file is reached — the TU is then linked and its
+    initializers run at startup — and reachability is recomputed to a fixpoint (panel R36A:
+    self-registering globals / `static X g;` were flagged dead though they run on link). A
+    no-op (single reachable_from) when no C/C++ module is present, so non-C++ indexes — incl.
+    the Python dogfood — are unaffected."""
+    reachable = reachable_from(store, seeds)
+    tu_modules = {m.id for m in store.nodes_by_kind(NodeKind.MODULE)
+                  if m.id.split("::", 1)[0].endswith(_LINK_ON_USE_EXTS)}
+    if not tu_modules:
+        return reachable
+    extra: set[str] = set()
+    while True:
+        live_files = {nid.split("::", 1)[0] for nid in reachable}
+        newly = {m for m in tu_modules
+                 if m not in reachable and m.split("::", 1)[0] in live_files}
+        if not newly:
+            return reachable
+        extra |= newly
+        reachable = reachable_from(store, seeds | extra)
+
+
 @operation("Code reachable from no entry point (dead/stale candidates).")
 def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Unreachable-from-entry-points nodes (design §6.B).
@@ -195,7 +227,7 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     all_ids = set(store.all_node_ids())
-    reachable = reachable_from(store, seeds)
+    reachable = _live_set(store, seeds)
     candidates = [{"id": nid}
                   for nid in _stale_candidates(store, all_ids - reachable, reachable)]
 
@@ -414,7 +446,8 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     seeds = detector.detect(store)
     # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
     # data loops, god objects) don't — so report what we can even without roots.
-    reachable = reachable_from(store, seeds) if seeds else set()
+    # _live_set adds C++ TU static-init liveness so scan's liveness agrees with find_stale.
+    reachable = _live_set(store, seeds) if seeds else set()
     # A stub only shouts RED when its liveness rests on EXTRACTED edges; if it is
     # reachable only through an INFERRED/AMBIGUOUS hop (a heuristic route, an
     # ambiguous name) the liveness itself is uncertain, so the provenance ceiling

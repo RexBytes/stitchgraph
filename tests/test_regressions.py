@@ -5094,3 +5094,61 @@ def test_r35_coverage_exact_match_blocks_cross_file_suffix(tmp_path):
         sg.ingest_trace(store, str(cov_path))
         runtime = {n.id for n in store.nodes_with_role("runtime")}
     assert runtime == {"b/a.py::other"}, f"cross-file suffix steal: {runtime}"
+
+
+# ===========================================================================
+# Round 36 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). One C++ cardinal
+# + envelope hardening; four reviewers clean, one finding invalid (reverted).
+# ===========================================================================
+
+
+def test_r36_cpp_static_initializer_chain_is_live(tmp_path):
+    """R36A-opus (CARDINAL): a C++ translation unit's namespace-scope static initializer
+    (`static int g = seed();`, or a self-registering global object) runs at startup once the
+    TU is LINKED — i.e. once any of its symbols is reached. The module node wasn't promoted,
+    so the initializer's call chain was flagged dead though it runs on link (panel R36A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.cpp": "int count();\nint main() {\n    return count();\n}\n",
+        "registry.cpp": ("int doRegister();\nstatic int g = doRegister();\n"
+                         "int add() {\n    return 1;\n}\n"
+                         "int doRegister() {\n    return add();\n}\n"
+                         "int count() {\n    return 2;\n}\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("add" in s or "doRegister" in s for s in stale), \
+        f"live C++ static-init chain flagged dead: {stale}"
+
+
+def test_r36_cpp_dead_tu_still_flagged(tmp_path):
+    """Precision companion: the TU-liveness fixpoint must only promote a LINKED TU (one with
+    a reachable symbol). A C++ file with no reached symbol must still surface its dead code,
+    so the fix doesn't blanket-suppress (panel R36A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.cpp": "int main() {\n    return 0;\n}\n",
+        "dead.cpp": "int helper() {\n    return 1;\n}\nint orphan() {\n    return helper();\n}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert any("orphan" in s for s in stale), "dead C++ TU should still surface dead code"
+
+
+def test_r36_envelope_clamps_nonfinite_confidence():
+    """R36B-sonnet (envelope contract): a non-finite / out-of-range confidence must be clamped
+    to a finite [0,1] value at the envelope chokepoint so to_dict() never emits Infinity/NaN
+    (invalid JSON per RFC 8259), and needs_review is set (panel R36B)."""
+    import json
+
+    from stitchgraph.core.envelope import Provenance, Result
+    for bad, expect in [(float("inf"), 0.0), (float("nan"), 0.0), (-5.0, 0.0), (2.0, 1.0)]:
+        r = Result(ok=True, result="x", confidence=bad, provenance=Provenance.EXTRACTED)
+        assert r.confidence == expect
+        assert r.needs_review is True
+        dumped = json.dumps(r.to_dict())  # must be valid JSON
+        assert "Infinity" not in dumped and "NaN" not in dumped

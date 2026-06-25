@@ -10,6 +10,7 @@ This module is stdlib-only by design — importing the core must stay light.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Generic, TypeVar
@@ -69,6 +70,15 @@ class Result(Generic[T]):
                 or self.confidence < REVIEW_THRESHOLD
                 or self.provenance is Provenance.AMBIGUOUS):
             self.needs_review = True
+        # Clamp a non-finite / out-of-range confidence to a finite [0,1] value so to_dict()
+        # can never emit Infinity/NaN (invalid JSON per RFC 8259). needs_review is already set
+        # above; here we also CORRECT the value, not merely flag it — the envelope is the
+        # universal serialization chokepoint and must self-protect even a hand-built Result or
+        # a future op that forwards a user-supplied float without clamping (panel R36B).
+        if not math.isfinite(self.confidence):
+            self.confidence = 0.0
+        else:
+            self.confidence = min(max(self.confidence, 0.0), 1.0)
         # An op may flag review without an explicit reason (low confidence / ambiguous
         # provenance); guarantee the contract `needs_review => review_reasons non-empty`
         # centrally so no single op can reintroduce an unexplained flag (panels R19B/R20B).

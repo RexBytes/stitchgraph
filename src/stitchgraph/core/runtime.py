@@ -119,8 +119,8 @@ def _parse_go(text: str) -> dict[str, set[int]]:
             # with a huge end line would otherwise expand range() into a multi-GB set and
             # OOM-kill the process (panel ZZZ). No real source file spans >1M lines; drop a
             # nonsensical span rather than allocate proportionally to attacker input.
-            if e_line < s_line or e_line - s_line > 1_000_000:
-                continue
+            if e_line < s_line or e_line - s_line >= 1_000_000:
+                continue  # >=: a span materializes (e_line - s_line + 1) ints (panel R36A nit)
             out.setdefault(path, set()).update(range(s_line, e_line + 1))
         except (ValueError, IndexError):
             continue
