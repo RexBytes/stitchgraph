@@ -5279,6 +5279,29 @@ def test_r38_to_dict_meta_is_sanitized():
 # ===========================================================================
 
 
+def test_src_layout_namespace_package_absolute_import_resolves(tmp_path):
+    """R42A (cardinal): a PEP 420 namespace package (no `__init__.py`) under `src/` must still
+    be recognized as a src-layout source root. Otherwise its absolute imports
+    (`from nspkg.handlers import Handler`) stay 'external', the module-load side effect is
+    dropped, and a class instantiated only in a module-level registry is flagged dead."""
+    _mk(tmp_path, {
+        # NOTE: deliberately NO src/nspkg/__init__.py — namespace package is the trigger
+        "pyproject.toml": '[project]\nname="nspkg"\n[project.scripts]\nnscli = "nspkg.cli:main"\n',
+        "src/nspkg/cli.py": "from nspkg import registry\ndef main():\n    return registry.run_all()\n",
+        "src/nspkg/registry.py": (
+            "from nspkg.handlers import Handler\n"
+            "TABLE = {'h': Handler()}\n"
+            "def run_all():\n    return TABLE\n"
+        ),
+        "src/nspkg/handlers.py": "class Handler:\n    def __init__(self):\n        self._x = 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        # Handler is instantiated at registry import, reached from the console-script entry: live
+        assert not any(s.endswith("handlers.py::Handler") for s in stale)
+
+
 def test_setup_cfg_console_script_target_is_live(tmp_path):
     """A `console_scripts` entry in setup.cfg roots its target exactly like a
     pyproject `[project.scripts]` one — else a CLI's `main` is false-flagged dead."""

@@ -1655,10 +1655,13 @@ def _detect_source_prefix(files: list[Path], root: Path) -> str:
     rels = [p.relative_to(root).as_posix() for p in files]
     if "src/__init__.py" in rels:
         return ""  # `src` is a real package, not a source root
-    # a package directly under src: `src/<pkg>/__init__.py`
-    has_pkg_under_src = any(
-        r.startswith("src/") and r.endswith("/__init__.py") and r.count("/") == 2
-        for r in rels)
+    # Any .py nested at least one directory under `src/` (`src/<pkg>/...`) means `<pkg>` is a
+    # package living under the source root. Do NOT require `<pkg>/__init__.py`: a PEP 420
+    # namespace package has none, yet is still imported as `<pkg>` — requiring __init__.py
+    # left namespace-package src-layouts undetected, so their absolute imports stayed external
+    # and module-load-only-live code was flagged dead (panel R42A, cardinal). A loose
+    # `src/m.py` (no package dir, one slash) does NOT trigger it.
+    has_pkg_under_src = any(r.startswith("src/") and r.count("/") >= 2 for r in rels)
     return "src." if has_pkg_under_src else ""
 
 
