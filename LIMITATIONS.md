@@ -191,6 +191,26 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   implicit entry point. Rooting by name only ever *adds* roots (cardinal-safe); over-rooting a
   genuinely-dead hook is the documented precision-over-recall trade-off.
 
+### PHP string callables: array form is covered; bare-string and module-scope are not (yet)
+- **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`
+  / `['Class', 'method']` inside a function/method body — the `usort` / `uasort` /
+  `preg_replace_callback` / `array_map` comparator idiom — emits a REFERENCES edge to the method
+  (Magento dogfood, panel R53). So a protected/private method invoked only this way is no longer
+  flagged dead.
+- **Not yet covered (known recall gaps, panel R57):** (a) a **bare-string function callable**
+  `usort($x, 'topcmp')` / `call_user_func('topcmp')` — a project *global function* used only via a
+  plain string name is still flagged dead; (b) an array callable at **module/file scope** (not
+  inside a def), since the callable scan runs over def bodies (`_direct_refs`), not module-level
+  code (`_module_uses`). In practice (b)'s targets resolve to public/exported symbols, so a
+  false-dead is unlikely; (a) bites only a project global function referenced *exclusively* by a
+  bare-string callback.
+- **Decision / rationale:** ship the array form (the confirmed, high-value idiom) cardinal-safe
+  and precise; defer bare-string function callables (noisier — every string literal matching a
+  function name would over-root) and module-scope callables to a follow-up. Documented here so a
+  flagged-dead function used only via a bare-string callback is a known gap, not a silent error.
+- **Escape hatch:** treat a `find_stale` hit on a function you know is used via `'name'`-string
+  `call_user_func`/`usort` as a false positive until the follow-up lands.
+
 ### Framework annotations/attributes/decorators are rooted (Java/C#/JS/TS)
 - **Concern:** a method/class the framework invokes by *reflection or routing* — marked by an
   annotation (`@PostConstruct`, `@EventListener`, JPA `@PrePersist`, JMH `@Setup`), an

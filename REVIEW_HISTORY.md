@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 1.0.7: R40–R48. **2.0.0: R49–R52** (full diversity opus/sonnet/haiku) on the streaming indexer |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 ✅ · oracles 26 ✅ · no-open-defects ✅ |
-| Tests | 391 passing (full extras) |
+| Multi-model review panels | 2.0.0: R49–R52. **2.0.1: R53–R57** (full diversity opus/sonnet/haiku) on the PHP callable-array fix |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 + 5/5 ✅ · oracles 26 ✅ · no-open-defects ✅ |
+| Tests | 392 passing (full extras) |
 | Coverage | ~86% |
-| Convergence | 1.0.6: R33–R39 → R38–R39 (streak 2). 1.0.7: R40–R46 → **R47✓ R48✓** (streak 2). 2.0.0: R49✓ R50✗ (opus: `precise=True`×streaming `name_based` divergence, MEDIUM — fixed) → **R51✓ R52✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 1.0.7: R40–R46 → R47✓ R48✓ (streak 2). 2.0.0: R49✓ R50✗ (precise×streaming name_based, fixed) → **R51✓ R52✓** (streak 2). 2.0.1: R53✓ R54✗ (doc) R55✗ (incomplete doc fix) R56✓ → **R57✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–1.0.7 RELEASED/releasable** (maintainer tags). **2.0.0** (constant-memory streaming indexer — reindex peak 3.2 GB→269 MB, ~12×, byte-identical; Magento-scale fits in memory) **RELEASABLE** — R50 finding fixed; R51+R52 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.0.0` tag |
+| Verdict | **1.0.0–2.0.0 RELEASED/releasable** (maintainer tags). **2.0.1** (PHP `[$this,'method']` array-callable recognition — Magento dogfood cardinal fix, 39→30 PHP dead-flags) **RELEASABLE** — R54/R55 doc findings fixed; R56+R57 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.0.1` tag |
 
 ## Trajectory
 
@@ -843,6 +843,30 @@ exhaustive reviewer (sonnet, 80 tool calls) and the fastest (haiku) both returne
 same code where opus constructed the one input — `precise=True` with a homonym — that broke
 byte-identity. A bug invisible to two independent thorough reviews fell to a third
 perspective.
+
+## 2.0.1 — PHP array-callable recognition (R53–R57)
+
+Dogfooding v2.0.0's streaming indexer on the **Magento Framework** (3,968 PHP files) surfaced a
+cardinal-class false-positive: methods invoked via PHP's `[$this, 'method']` callable-array
+idiom (`usort`/`uasort`/`preg_replace_callback` comparators) were flagged dead, because the
+method name is a *string*, not a syntactic call. The fix: the tree-sitter PHP extractor emits a
+REFERENCES edge to the method named by a 2-element array callable. Cardinal-safe (only project
+symbols resolve; over-rooting masks dead code, never a false-dead), byte-identity preserved. On
+the Framework, PHP dead-candidates dropped 39 → 30; genuinely-unused private methods still flag.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R53 | 3 | ✓ | full-diversity clean — append-only/cardinal-safe verified, PHP-only gating, byte-identity across all edge fields, edge cases (keyed/3-elem/non-string/nested) over-root-only. |
+| R54 | 3 | ✗ | code unanimously clean at real-Magento scale (opus: `find_stale` only shrank 8→6; sonnet: cross-file inheritance, typo→no hole). **haiku** found a doc inaccuracy: CHANGELOG/RELEASE_NOTES still claimed a `'Class::method'` string branch that the mutation-cleanup had dropped. |
+| R55 | 3 | ✗ | code clean again; the R54 doc fix was **incomplete** (the CHANGELOG *intro* + two in-code comments still claimed string-callable handling). **Fix:** grep-verified purge of every stale claim. |
+| R56 | 3 | ✓ | full-diversity clean — closure confirmed: no remaining "string callable handled" claim anywhere; byte-identity re-verified. |
+| R57 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. opus fresh 41-file PHP repo (every callable position, nested, multibyte, `precise=True`); surfaced two PRE-EXISTING recall gaps (bare-string function callable; module-scope array callable) — not regressions, now documented in LIMITATIONS. |
+
+The 2.0.1 lesson mirrors 1.0.x: **the doc-accuracy invariant catches incomplete fixes.** A
+partial doc correction (R54→R55) was caught twice before a comprehensive grep-driven purge
+closed it — and the final round (R57) turned up two adjacent recall gaps to document rather
+than silently ship. The cardinal fix itself was clean from R53; the iterations were all about
+keeping the docs honest about exactly what is and isn't covered.
 
 ## Standing themes
 

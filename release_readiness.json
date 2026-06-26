@@ -859,6 +859,16 @@
       ],
       "findings": {},
       "theme": "2.0.1 PHP fix \u2014 FULL-DIVERSITY clean round 1 (post doc-purge). All 3 CLEAN. opus: verified NO remaining 'string callable handled' claim anywhere (CHANGELOG intro+body, RELEASE_NOTES, both LangSpec comments, the docstring) + byte-identity re-confirmed (sha-equal full vs streaming). sonnet: array-callback fuzz (protected/private/cross-file/typo) full==streaming, doc audit clean. haiku: closure grep clean, version 2.0.1, regression + oracle green. Code clean since R53; doc nits fully resolved."
+    },
+    {
+      "id": "R57",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.1 PHP fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). All 3 CLEAN. opus fresh 41-file PHP repo (every callable position, nested, multibyte, long array() form, trailing comma, precise=True) \u2014 byte-identical, cardinal-safe; surfaced two PRE-EXISTING recall gaps (bare-string function callable usort($x,'fn'); module-scope array callable) \u2014 not regressions, not overclaimed, now documented in LIMITATIONS. sonnet fresh fuzz (default-arg/property/nested callables) full==streaming. haiku closure audit clean. Mutation 5/5; suite 392."
     }
   ]
 }
