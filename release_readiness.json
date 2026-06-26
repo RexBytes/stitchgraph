@@ -782,6 +782,18 @@
       ],
       "findings": {},
       "theme": "2.0.0 streaming indexer \u2014 FULL-DIVERSITY clean round 1 (first clean run; an earlier R49 attempt was discarded as contaminated \u2014 panels had read operations.py while the mutation tester was rewriting it in place). opus: fuzzed _DefInfo/precompute (Rust trait-impl, C++ out-of-line, iface .type), cache_asts re-parse, 59 non-adjacent same-src runs, double-reindex, mixed-lang stems, 260 polyglot fuzz trials \u2014 all byte-identical incl weight/provenance/name_based. sonnet: 15 adversarial scripts (nested scopes, cross-group dedup, AUTO path, resolver edges, 30-class fanout, mixed C/C++/Py) \u2014 identical. haiku: flush/threshold/:memory:/meta/exception-safety \u2014 CLEAN. name_based first-seen-vs-OR is structural-safe (mixed pairs share src -> sink collapses pre-store; 0 affected rows on self-source) and now pinned by the oracle. Mutation _dedup_edges/_auto_stream 17/17 killed; suite 388; oracles incl weight/provenance/name_based."
+    },
+    {
+      "id": "R50",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "2.0.0 streaming \u2014 full-diversity round 2. opus found a REAL byte-identity break: reindex(precise=True, streaming=True) diverged from streaming=False on name_based (jedi's precise edge + the extractor's name-based edge to the same (src,rel,dst_id) land in different sink groups -> store ORs name_based while in-memory _dedup_edges kept the precise survivor's flag). haiku + sonnet (15min/80 tools: huge-file>_BATCH, many-tiny-files, holes, syntax-errors, symlink loops, reindex-into-same-store, tiebreak) CLEAN. FIX: _dedup_edges now ORs name_based onto the survivor (the store's R23A rule); pure-precise groups keep False (R22A). Pinned by a precise=True jedi oracle case + unit tests; mutation now 20/20. Streak resets -> R51/R52."
     }
   ]
 }
