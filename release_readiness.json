@@ -794,6 +794,16 @@
         "MEDIUM": 1
       },
       "theme": "2.0.0 streaming \u2014 full-diversity round 2. opus found a REAL byte-identity break: reindex(precise=True, streaming=True) diverged from streaming=False on name_based (jedi's precise edge + the extractor's name-based edge to the same (src,rel,dst_id) land in different sink groups -> store ORs name_based while in-memory _dedup_edges kept the precise survivor's flag). haiku + sonnet (15min/80 tools: huge-file>_BATCH, many-tiny-files, holes, syntax-errors, symlink loops, reindex-into-same-store, tiebreak) CLEAN. FIX: _dedup_edges now ORs name_based onto the survivor (the store's R23A rule); pure-precise groups keep False (R22A). Pinned by a precise=True jedi oracle case + unit tests; mutation now 20/20. Streak resets -> R51/R52."
+    },
+    {
+      "id": "R51",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.0 streaming \u2014 FULL-DIVERSITY clean round 1 of the post-R50-fix streak. Verified the name_based-OR fix under precise=True (jedi 0.20): opus 9-field differential on jedi-outside-candidates, 2/4/5-way homonyms, lower-weight precise, REFERENCES-vs-CALLS, declared-type, self/cls + multi-level override, propagate_overrides equal-weight collisions, polyglot, full src/ tree \u2014 byte-identical. sonnet 14 fuzz scripts / 60+ combos incl 10-class max-ambiguity, non-contiguous same-src, last-group jedi join \u2014 identical. haiku scrutinized the OR loop (no shared-object/leak), meta equality \u2014 CLEAN. All 3 CLEAN; mutation 20/20; suite 391."
     }
   ]
 }
