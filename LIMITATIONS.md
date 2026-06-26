@@ -82,6 +82,20 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`, or re-export it
   with an idiomatic form (`module.exports = { Member }`).
 
+### JS/TS functions/classes assigned to a member or variable aren't modeled as defs
+- **Concern:** the tree-sitter extractor models `function`/`method`/class *declarations*,
+  but not a function or class defined by **assignment** — `app.render = function render(){…}`
+  (the CommonJS prototype-augmentation pattern, e.g. Express), `const C = class extends B {…}`,
+  or `obj.method = () => {…}`. Such a body is not walked, so calls *inside* it are invisible
+  and a module-private helper it alone calls (Express's `tryRender`/`logerror`) can surface as
+  a stale candidate; an anonymous `class` expression's `constructor` can too.
+- **Decision / rationale:** modern JS/TS uses `class`/`method` declarations (fully modeled)
+  and ES-module `export`s; the assignment-as-definition form is an older idiom whose general
+  resolution (tracking `this`, arbitrary LHS member chains, re-aliased `module.exports`) is a
+  large feature with its own precision risks. These surface only as `needs_review` advisories
+  at 0.6 confidence on such codebases, never a confident verdict.
+- **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`.
+
 ### A receiver call to a *single* same-named symbol is `INFERRED`, not `EXTRACTED`
 - **Concern:** `obj.save()` resolves to the one project `save` — obviously correct — yet
   its CALLS edge is labelled `INFERRED` (a guess), not `EXTRACTED` (issue #10). Looks like
@@ -160,6 +174,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   the class are used. Tying the edge to the *class* (not rooting the dunder unconditionally)
   keeps a dead class's dunders dead, so this rescues only genuinely-live callees. Dunders are
   already excluded from stale candidates, so this changes only their callees' liveness.
+
+### Language implicit-hook methods are rooted by name (Ruby/Java/PHP/C++)
+- **Concern:** every language has methods the runtime/interpreter invokes *implicitly*, never
+  by name — Ruby's `inherited`/`included`/`extended`/`method_missing`, Java's serialization
+  `writeReplace`/`readObject`/… and `equals`/`hashCode`/`toString`, PHP's `__call`/`__get`/…
+  magic methods, C++ operator overloads/destructors. The name-based call graph can't see the
+  use, so they (and their callees) were flagged dead — `Sinatra::Base.inherited`, arguably
+  sinatra's core mechanism, is the headline example (multi-language false-positive hunt).
+- **Decision:** root these by name per language (role `callback`), the cross-language analogue
+  of skipping Python dunders. Constructors are handled separately (`initialize`/`__construct`/
+  `constructor`).
+- **Rationale:** these names are interpreter/runtime contracts, so a definition is a genuine
+  implicit entry point. Rooting by name only ever *adds* roots (cardinal-safe); over-rooting a
+  genuinely-dead hook is the documented precision-over-recall trade-off. C#'s serialization
+  callbacks are *attribute*-driven with arbitrary names (`[OnDeserialized] void Foo()`) and are
+  **not** yet rooted — pin them in `stitchgraph.toml [entry_points]` if needed.
 
 ## Cost-of-fix exceeds value
 

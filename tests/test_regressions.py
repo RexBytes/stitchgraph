@@ -5450,3 +5450,100 @@ def test_plain_stdlib_exception_subclass_is_not_over_rooted(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "MyError.never_called" in stale   # plain-base subclass: dead method still flagged
+
+
+def test_src_layout_absolute_import_module_load_side_effect_is_live(tmp_path):
+    """src-layout (`src/pkg/...`): a module reached only via an ABSOLUTE first-party import
+    (`from pkg.sub import mod`) must still fire its module-load side effects, so module-level
+    code is live. Before src-root detection, the path-qualname `src.pkg.*` never matched the
+    import `pkg.*`, the import was dropped as external, and `_enable` was flagged dead
+    (the flake8 `_windows_color` cardinal FP)."""
+    _mk(tmp_path, {
+        "src/app/__init__.py": '__all__ = ["Default"]\nfrom app.default import Default\n',
+        "src/app/default.py": (
+            "from app import base\n\n"
+            "class Default(base.BaseFormatter):\n"
+            "    def after_init(self):\n        return 1\n"
+        ),
+        "src/app/base.py": (
+            "from app import _color\n\n"
+            "class BaseFormatter:\n"
+            "    def color(self):\n        return _color.supported\n"
+        ),
+        "src/app/_color.py": "def _enable():\n    return 1\n\nsupported = _enable()\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "_enable" not in stale   # module-level call in a transitively-reached module
+
+
+# ===========================================================================
+# Multi-language false-positive hunt (real repos: sinatra/gson/carbon/...). The
+# runtime/framework invokes certain methods IMPLICITLY (never by name), so the
+# name-based call graph can't see the use and flagged them dead — the cross-language
+# analogue of skipping Python dunders. Rooted as `callback`.
+# ===========================================================================
+
+
+def test_ruby_implicit_hooks_are_live(tmp_path):
+    """Ruby's class/module lifecycle hooks (`inherited`, `included`, `extended`) and
+    `method_missing` are interpreter-invoked, never called by name. `Sinatra::Base.inherited`
+    (sinatra's core subclass hook) was flagged dead — a cardinal FP."""
+    _mk(tmp_path, {
+        "lib/base.rb": (
+            "module App\n"
+            "  class Base\n"
+            "    def self.inherited(subclass)\n      setup(subclass)\n    end\n\n"
+            "    def method_missing(name, *args)\n      handle(name)\n    end\n\n"
+            "    def really_unused\n      1\n    end\n"
+            "  end\n"
+            "end\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "inherited" not in stale        # interpreter subclass hook: live
+        assert "method_missing" not in stale   # interpreter missing-method hook: live
+        assert "really_unused" in stale        # ordinary unused method: still flagged
+
+
+def test_java_serialization_hooks_are_live(tmp_path):
+    """Java serialization magic methods (`writeReplace`/`readObject`/...) are invoked by
+    `ObjectOutputStream`/`ObjectInputStream` via reflection, never by name. `gson`'s
+    `LazilyParsedNumber.writeReplace` was flagged dead — a cardinal FP."""
+    _mk(tmp_path, {
+        "Num.java": (
+            "class Num {\n"
+            "    private Object writeReplace() { return helper(); }\n"
+            "    private Object helper() { return this; }\n"
+            "    private int reallyUnused() { return 7; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "writeReplace" not in stale   # serialization hook: live
+        assert "reallyUnused" in stale       # ordinary unused method: still flagged
+
+
+def test_php_magic_methods_are_live(tmp_path):
+    """PHP magic methods (`__call`, `__get`, ...) are invoked by the engine on missing
+    members, never by name — they must not be flagged dead."""
+    _mk(tmp_path, {
+        "Obj.php": (
+            "<?php\n"
+            "class Obj {\n"
+            "    public function __call($name, $args) { return $this->dispatch($name); }\n"
+            "    private function dispatch($name) { return $name; }\n"
+            "    private function reallyUnused() { return 1; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "__call" not in stale       # engine magic method: live
+        assert "reallyUnused" in stale     # ordinary unused method: still flagged

@@ -73,6 +73,35 @@ _PLAIN_BASES = {
     "Symbol", "BigInt", "Number", "String", "Boolean", "Date", "RegExp",
 }
 
+# Methods a language runtime/framework invokes IMPLICITLY (never called by name in source),
+# so the name-based call graph can't see the use — the cross-language analogue of skipping
+# Python dunders and rooting C++ operator overloads/destructors. Rooting them (role
+# 'callback') keeps the hook AND whatever its body calls live, instead of flagging the most
+# important framework entry points dead (e.g. Ruby's `Sinatra::Base.inherited` — a class
+# subclass hook and arguably sinatra's core mechanism — or Java's serialization `writeReplace`).
+# Constructors are handled separately (`_CTOR_NAMES`) so they are NOT repeated here. Keyed by
+# the raw file language. Only ever adds roots (cardinal-safe; over-rooting a genuinely-dead
+# hook is the documented precision-over-recall trade-off).
+_IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
+    "ruby": frozenset({
+        "method_missing", "respond_to_missing?", "method_added", "method_removed",
+        "method_undefined", "singleton_method_added", "singleton_method_removed",
+        "singleton_method_undefined", "inherited", "included", "extended", "prepended",
+        "append_features", "prepend_features", "extend_object", "initialize_copy",
+        "initialize_clone", "initialize_dup", "coerce",
+    }),
+    "php": frozenset({
+        "__destruct", "__call", "__callStatic", "__get", "__set", "__isset", "__unset",
+        "__sleep", "__wakeup", "__serialize", "__unserialize", "__toString", "__invoke",
+        "__set_state", "__clone", "__debugInfo",
+    }),
+    "java": frozenset({
+        "equals", "hashCode", "toString", "finalize", "clone",
+        "readObject", "writeObject", "readResolve", "writeReplace", "readObjectNoData",
+        "readExternal", "writeExternal",
+    }),
+}
+
 
 @dataclass(frozen=True)
 class LangSpec:
@@ -372,6 +401,15 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         if n.kind in (F, M) and _is_cpp_special_member(n.name) \
                 and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
             n.roles = n.roles | {"callback"}
+
+    # Language implicit hooks (Ruby `method_missing`/`inherited`/…, Java `writeReplace`/…,
+    # PHP `__call`/…) — invoked by the runtime, never by name, so root them like the C++
+    # special members above (panel: multi-language false-positive hunt, sinatra/gson).
+    for n in nodes:
+        if n.kind in (F, M):
+            hooks = _IMPLICIT_HOOKS.get(file_lang.get(n.id.split("::", 1)[0], "") or "")
+            if hooks and n.name in hooks:
+                n.roles = n.roles | {"callback"}
 
     _seed_exported_class_methods(nodes, file_lang)
     # Public members of an exported interface/trait are public API but, unlike class
