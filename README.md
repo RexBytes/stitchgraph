@@ -36,10 +36,19 @@ Prefer the newest grammars fetched on first use? Install `[treesitter-download]`
 instead. Run `stitchgraph doctor` (`--strict` for a CI gate) to see which grammars
 load.
 
-## Status (v1.0.6)
+## Status (v1.0.7)
 
 Working end-to-end and dogfooding on its own source. See
-[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
+[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap, and
+[`docs/RELEASE_NOTES_v1.0.7.md`](docs/RELEASE_NOTES_v1.0.7.md) for the latest release.
+
+**New in v1.0.7 — multi-repo / multi-language precision hardening.** Ground-truthed against
+~47 real-world projects across 9 languages (incl. IOCCC, Linux kernel core, WordPress,
+Magento, NestJS, flake8) with **0 crashes**: many fewer false-deads from newly-modeled
+entry-point/liveness signals — `setup.cfg` entry points, PyPA `src/` layout (incl. PEP 420
+namespace packages), inherited public methods, JS/TS framework decorators, Java/C#
+annotations, C/C++ `EXPORT_SYMBOL`, the CommonJS `exports.X = …` idiom — plus default
+skipping of dependency/vendored dirs. See the release notes for the full list.
 
 - **Polyglot extraction** — Python (deep, stdlib `ast` + optional `jedi`) and 11
   more languages via tree-sitter, in one graph: definitions, call graph, imports,
@@ -64,8 +73,10 @@ Working end-to-end and dogfooding on its own source. See
   (coverage.py JSON / LCOV / Go coverprofile), **semantic** `find_similar`
   (token default; pluggable dense embedder), **data-loop** detection.
 
-**Biggest deferred items:** an LSP backend (type-grade resolution) and
-variable-granularity data flow — see the [roadmap](docs/STATUS.md#roadmap-whats-left).
+**Biggest deferred items:** a streaming / constant-memory indexer (so very large
+monorepos index without holding the whole graph in RAM — see `LIMITATIONS.md`), an LSP
+backend (type-grade resolution), and variable-granularity data flow — see the
+[roadmap](docs/STATUS.md#roadmap-whats-left).
 
 ## Quick look
 
