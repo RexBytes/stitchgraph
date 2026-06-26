@@ -5574,3 +5574,44 @@ def test_c_bodyless_struct_reference_is_not_a_phantom_class(tmp_path):
         classes = {n.name for n in store.nodes_by_kind(NodeKind.CLASS)}
         assert "timeval" not in classes   # bodyless type reference: never a node
         assert "Real" in classes          # real bodied struct: still extracted
+
+
+def test_java_framework_callback_annotation_is_live(tmp_path):
+    """A Java method carrying a framework-callback annotation (`@PostConstruct`,
+    `@BeforeExperiment`, ...) is reflection-invoked, never called by name. gson's
+    `@PostConstruct validate` and Caliper `@BeforeExperiment setUp` were flagged dead."""
+    _mk(tmp_path, {
+        "Svc.java": (
+            "class Svc {\n"
+            "    @PostConstruct void validate() { check(); }\n"
+            "    private void check() { }\n"
+            "    private void reallyUnused() { }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "validate" not in stale     # @PostConstruct callback: live
+        assert "reallyUnused" in stale     # ordinary unused method: still flagged
+
+
+def test_csharp_serialization_callback_attribute_is_live(tmp_path):
+    """A C# method with a serialization-callback attribute (`[OnSerializing]`,
+    `[OnDeserialized]`, ...) is invoked by the serializer via reflection. Newtonsoft's
+    `[OnSerializing] OnSerializingMethod` (free-form name) was flagged dead."""
+    _mk(tmp_path, {
+        "Obj.cs": (
+            "class Obj {\n"
+            "    [OnSerializing]\n"
+            "    internal void OnSerializingMethod(StreamingContext c) { Prep(); }\n"
+            "    void Prep() { }\n"
+            "    void ReallyUnused() { }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "OnSerializingMethod" not in stale   # [OnSerializing] callback: live
+        assert "ReallyUnused" in stale              # ordinary unused method: still flagged

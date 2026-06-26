@@ -796,6 +796,30 @@ _TEST_ANNOTATIONS = {
     "php": frozenset({"Test", "DataProvider", "Before", "After", "BeforeClass", "AfterClass"}),
 }
 
+# Annotation/attribute names that mark a method as a FRAMEWORK CALLBACK — invoked by a
+# runtime/container/serializer via reflection, never by name (the non-test analogue of
+# `_TEST_ANNOTATIONS`). Grounded in the multi-language hunt: gson `@PostConstruct` (a real
+# gson feature) and `@BeforeExperiment` (Caliper), Newtonsoft `[OnSerializing]`/
+# `[OnDeserialized]`. Such a method — and whatever it calls — is a live entry point that the
+# name-based call graph can't see. Marked `callback` (rooted). Only ever adds roots.
+_CALLBACK_ANNOTATIONS = {
+    "java": frozenset({
+        "PostConstruct", "PreDestroy",                        # JSR-250 / CDI lifecycle
+        "PrePersist", "PostPersist", "PreUpdate", "PostUpdate",
+        "PreRemove", "PostRemove", "PostLoad",                # JPA entity lifecycle
+        "EventListener", "Scheduled", "Bean",                 # Spring
+        "Setup", "TearDown", "Benchmark",                     # JMH
+        "BeforeExperiment", "AfterExperiment",                # Caliper
+    }),
+    "csharp": frozenset({
+        "OnSerializing", "OnSerialized", "OnDeserializing",   # serialization callbacks
+        "OnDeserialized", "OnError",
+        "ModuleInitializer",                                  # runtime module init
+        "GlobalSetup", "GlobalCleanup", "IterationSetup",     # BenchmarkDotNet
+        "IterationCleanup", "Benchmark",
+    }),
+}
+
 
 def _annotation_name(anno, src: str) -> str:
     """Last path segment of an annotation/attribute name, with C#'s optional
@@ -832,6 +856,15 @@ def _has_test_annotation(node, lang: str, src: str) -> bool:
     """True when a Java/C#/PHP declaration carries a test annotation/attribute — the
     cross-language analog of the Rust `#[test]` check (issue #8 generalised)."""
     annos = _TEST_ANNOTATIONS.get(lang)
+    if not annos:
+        return False
+    return bool(_annotation_idents(node, src) & annos)
+
+
+def _has_callback_annotation(node, lang: str, src: str) -> bool:
+    """True when a Java/C# declaration carries a framework-callback annotation/attribute
+    (`@PostConstruct`, `[OnSerializing]`, …) — reflection-invoked, never called by name."""
+    annos = _CALLBACK_ANNOTATIONS.get(lang)
     if not annos:
         return False
     return bool(_annotation_idents(node, src) & annos)
@@ -898,6 +931,10 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # stays flagged, consistent with a dead helper in any test file.
             if _is_test_name(name) or attr_test or _has_test_annotation(child, lang, src):
                 roles.add("test")
+            # A method carrying a framework-callback annotation (@PostConstruct,
+            # [OnSerializing], …) is reflection-invoked — root it (multi-language hunt).
+            if _has_callback_annotation(child, lang, src):
+                roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
             nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, child),
