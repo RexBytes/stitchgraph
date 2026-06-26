@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.0.1: R53–R57. **2.1.0: R58–R60** (full diversity opus/sonnet/haiku) on streaming reachability + SQL-prose |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 + 5/5 + 16/16 + 3/3 ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 403 passing (full extras) |
+| Multi-model review panels | 2.1.0: R58–R60. **2.1.1: R61–R63** (full diversity opus/sonnet/haiku) on the Ruby operator-method fix |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 405 passing (full extras) |
 | Coverage | ~86% |
-| Convergence | 2.0.0: R49✓ R50✗ → R51✓ R52✓ (streak 2). 2.0.1: R53✓ R54✗ R55✗ R56✓ → R57✓ (streak 2). 2.1.0: R58✗ (opus corrupt-relation LOW; haiku SQL prose-phantom MEDIUM) R59✓ → **R60✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.0.1: R53–R56 → R57✓ (streak 2). 2.1.0: R58✗ R59✓ → R60✓ (streak 2). 2.1.1: R61 (dogfood discovery — grape `ValueArray#initialize` false-dead) → fix → **R62✓ R63✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.0.1 RELEASED/releasable** (maintainer tags). **2.1.0** (constant-memory *queries* — `find_stale` streams its adjacency, ~16M-edge graph queried in ~2 GB instead of OOM; + SQL-prose precision fix) **RELEASABLE** — R58 findings fixed; R59+R60 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.0` tag |
+| Verdict | **1.0.0–2.1.0 RELEASED/releasable** (maintainer tags). **2.1.1** (Ruby operator-method cardinal fix — `def []`/`[]=`/`<=>` captured + rooted; grape dogfood) **RELEASABLE** — R62+R63 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.1` tag |
 
 ## Trajectory
 
@@ -894,6 +894,34 @@ the start (oracles green), but the first mutation run showed 16/16 survivors —
 GraphBLAS installed the pure-Python sweeps it mutated are *shadowed*; pinning them required a
 test that forces the core-only path. And the SQL fix needed two attempts (signal-gate →
 stop-words) to cut prose phantoms *without* dropping real minimal queries.
+
+## 2.1.1 — Ruby operator-method cardinal fix (R61–R63)
+
+A **Rust / Go / Ruby dogfood hunt** (serde, clap, gorm, cobra, gin, logrus, grape) chasing the
+higher-yield finding the Python hunt didn't produce: a *new* cardinal false-positive. Go (gin:
+`find_stale=0`) and Rust (serde: library fully live, only test-suite/trybuild fixtures flag)
+came back clean — confirming their rooting is mature. **Ruby (grape) produced the bug.** An
+asymmetry pointed straight at it: `ValueArray#initialize` was flagged dead while the
+structurally-identical `ValueHash#initialize` was live (the latter survived only by a
+*coincidental* mis-resolved edge). Root cause: Ruby operator methods (`def []`, `def []=`,
+`def <=>`, …) have a name node of tree-sitter type `operator` that the extractor didn't
+recognize, so the whole method was dropped — making it invisible AND false-flagging anything
+used only inside its body (`ValueArray.new(value)` lives inside `def []=`). Fix: capture the
+`operator` name node + root operator methods as `callback` (syntax-invoked, the Ruby analogue
+of the C++ special-member pass). grape: `ValueArray#initialize` now live, `[]`/`[]=` captured
+(+18 nodes), `find_stale` 23→19.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R61 | — | discovery | dogfood (not a formal panel): grape `ValueArray#initialize` false-dead found + root-caused to the dropped `operator` name node. |
+| R62 | 3 | ✓ | full-diversity clean — opus: shared `operator` capture never reaches a node/edge-minting path in C++/C# (no cross-language regression); sonnet: 24 operator forms + bodies' callees live, dead normals still flag, polyglot full==streaming; haiku: version/docs/no-bogus-nodes. |
+| R63 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Fresh angles: backtick method, unary `-@`/`+@`, `def self.[]`, module-level, nested modules, operator-calls-operator, cross-file homonyms, Ruby+C++ byte-identical streaming. |
+
+The 2.1.1 lesson: **diversity of *targets* finds what diversity of *reviewers* can't.** The
+Python hunt (mature rooting) found a scalability ceiling; pointing the same tool at a
+less-battle-tested language (Ruby) immediately surfaced a real cardinal bug. The
+`ValueArray`/`ValueHash` asymmetry was the tell — when two structurally-identical things get
+opposite verdicts, one of them is a bug.
 
 ## Standing themes
 
