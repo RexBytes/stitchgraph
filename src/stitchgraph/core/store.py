@@ -720,7 +720,6 @@ class Store:
         `resolved_edges()`'s `_row_to_edge` drop so an unfiltered consumer (`best_path`/
         `trace_path` with `relations=None`) can't traverse a garbage edge (panel R58, opus).
         A non-finite `weight` from such an index is coerced to 1.0 (matches the Edge default)."""
-        import math
         valid = {r.value for r in Relation}
         sql = "SELECT src, relation, dst_id, weight FROM edges WHERE dst_id IS NOT NULL"
         params: tuple[str, ...] = ()

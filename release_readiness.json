@@ -882,6 +882,16 @@
         "LOW": 1
       },
       "theme": "2.1.0 streaming-reachability + SQL-prose \u2014 round 1. opus: differential parent-vs-HEAD on 400n/2000e (both GraphBLAS + pure-Python paths) byte-identical for fan_in/fan_out/reachable/reverse/SCC/best_path/find_stale/impact; Relation.value==name so the string membership switch is exact. Found LOW: iter_resolved bypassed _row_to_edge's corrupt-row drop -> a corrupt relation could reach best_path(relations=None). sonnet: CLEAN. haiku: MEDIUM \u2014 SQL structural regex still let prose 'Select items from the list' parse to a phantom db::the. FIXES: iter_resolved skips invalid relations + coerces non-finite weight; SQL resolver drops English function-word table names (_STOP_TABLES). Streak resets -> R59/R60. Mutation reach 16/16 + sql 3/3; suite 403."
+    },
+    {
+      "id": "R59",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.0 \u2014 FULL-DIVERSITY clean round 1 (post-R58-fix). opus: differential on 3 real indexes \u2014 iter_resolved corrupt-skip/weight-coerce are strict no-ops on normal indexes (byte-identical find_stale/fan_in/impact), _STOP_TABLES drops no plausible real table. sonnet: corrupt-row + real-SQL-vs-prose verified. haiku: confirmed db::the phantom gone, orders resolves; empty/:memory:/corrupt edge cases clean. All 3 CLEAN. Tidied 2 NITs (stale test docstring, redundant import math)."
     }
   ]
 }

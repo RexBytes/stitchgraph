@@ -108,10 +108,10 @@ def test_sql_literals_rejects_prose_keeps_real_sql():
 
 
 def test_prose_with_companion_keyword_makes_no_phantom_table(tmp_path):
-    """R58 (haiku): prose that *reads* like a clause — 'Select items from the list', 'Update the
-    user set to active' — has SQL structure, so structure alone let it through and sqlglot minted
-    a phantom `db::the` table. The second 'signal' gate (real SQL carries (/,/=/*/clause) rejects
-    it. A genuine query in the same file still resolves."""
+    """R58 (haiku): prose that *reads* like a clause — 'Select items from the list' — has SQL
+    structure, so the structural regex alone let it through and sqlglot minted a phantom `db::the`
+    table. `_STOP_TABLES` drops table names that are English function-words (the/a/of/…), which is
+    all such prose ever produces. A genuine query in the same file still resolves."""
     pytest.importorskip("sqlglot")
     from stitchgraph.core.model import NodeKind
     (tmp_path / "svc.py").write_text(
