@@ -82,19 +82,21 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`, or re-export it
   with an idiomatic form (`module.exports = { Member }`).
 
-### JS/TS functions/classes assigned to a member or variable aren't modeled as defs
-- **Concern:** the tree-sitter extractor models `function`/`method`/class *declarations*,
-  but not a function or class defined by **assignment** — `app.render = function render(){…}`
-  (the CommonJS prototype-augmentation pattern, e.g. Express), `const C = class extends B {…}`,
-  or `obj.method = () => {…}`. Such a body is not walked, so calls *inside* it are invisible
-  and a module-private helper it alone calls (Express's `tryRender`/`logerror`) can surface as
-  a stale candidate; an anonymous `class` expression's `constructor` can too.
-- **Decision / rationale:** modern JS/TS uses `class`/`method` declarations (fully modeled)
-  and ES-module `export`s; the assignment-as-definition form is an older idiom whose general
-  resolution (tracking `this`, arbitrary LHS member chains, re-aliased `module.exports`) is a
-  large feature with its own precision risks. These surface only as `needs_review` advisories
-  at 0.6 confidence on such codebases, never a confident verdict.
-- **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`.
+### JS/TS member-assigned functions are rooted, not dead-code-eligible
+- **Concern:** a function/class defined by **assignment to an object member** —
+  `app.render = function(){…}` (CommonJS prototype augmentation, e.g. Express),
+  `Foo.prototype.m = () => {…}`, `module.exports.x = function(){…}`, `this.h = function(){…}`
+  — is now modeled (its body is walked, so calls inside it are visible — closing the old gap
+  where Express's `tryRender`/`logerror` were flagged dead). But because there is no static
+  caller for such a member (it is invoked externally, dynamically, or by a framework), a
+  non-underscore one is **rooted** rather than treated as a dead-code candidate.
+- **Decision / rationale:** rooting is the cardinal-safe direction — the same stance as
+  "every public method of an exported class is public API." The cost is that a *genuinely*
+  dead member-assigned method is not reported (an underscore-prefixed one still is). A bare
+  `const f = function(){}` / `const f = () => {}` declaration is fully modeled and remains
+  dead-code-eligible. Still not modeled: a computed member (`obj['x'] = …`) and re-aliased
+  receivers (`var a = module.exports; a.x = …`) for the *export* signal specifically.
+- **Escape hatch:** pin or exclude via `stitchgraph.toml`.
 
 ### A receiver call to a *single* same-named symbol is `INFERRED`, not `EXTRACTED`
 - **Concern:** `obj.save()` resolves to the one project `save` — obviously correct — yet

@@ -5664,3 +5664,26 @@ def test_dependency_directories_are_not_indexed(tmp_path):
         assert "vendoredJs" not in names    # node_modules: skipped
         assert "vendored_py" not in names   # vendor/: skipped
         assert "Vendored" not in names      # third_party/: skipped
+
+
+def test_js_member_assigned_function_body_is_walked(tmp_path):
+    """A function assigned to an object member (`app.render = function(){...}`, the Express/
+    CommonJS prototype-augmentation idiom) must become a node whose BODY is walked — else
+    calls inside it are invisible and a module-private helper it alone calls (`tryRender`)
+    is flagged dead. The assigned method itself is rooted (external/dynamic-invoked)."""
+    _mk(tmp_path, {
+        "app.js": (
+            "function tryRender(v) { return v; }\n"
+            "function trulyDead() { return 0; }\n\n"
+            "var app = {};\n"
+            "app.render = function render(name) { return tryRender(name); };\n"
+            "Obj.prototype.handle = function() { return this.helper(); };\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tryRender" not in stale   # called from the (now-walked) app.render body: live
+        assert "render" not in stale      # member-assigned handler: rooted
+        assert "handle" not in stale      # prototype method: rooted
+        assert "trulyDead" in stale       # genuinely uncalled module function: still flagged

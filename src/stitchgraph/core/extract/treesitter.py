@@ -1035,6 +1035,49 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # regular-def branch above already does this; this is its arrow twin).
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=cid)
+        elif spec.arrow_decls and t == "assignment_expression":
+            # A function/class assigned to an object MEMBER — `app.render = function(){…}`
+            # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
+            # `module.exports.x = function(){…}`, `this.handler = function(){…}`. Unlike a
+            # `const f = function(){}` declaration (handled above), this never became a node,
+            # so its BODY was never walked and the calls inside it were invisible — a
+            # module-private helper it alone calls (Express `tryRender`/`logerror`, jQuery
+            # internals) was then flagged dead. Model it and walk the body.
+            left = child.child_by_field_name("left")
+            val = child.child_by_field_name("right")
+            prop = left.child_by_field_name("property") if left is not None \
+                and left.type == "member_expression" else None
+            name = _text(prop, src) if prop is not None else None
+            if name and val is not None and val.type in (
+                    "arrow_function", "function", "function_expression",
+                    "class", "class_expression"):
+                qual = _join(parent, _text(left, src))   # full LHS keeps ids distinct
+                kind = C if val.type in ("class", "class_expression") else M
+                roles = {"exported"} if exported else set()
+                if _is_test_name(name):
+                    roles.add("test")
+                # A member-assigned function/class is a method/handler/export invoked
+                # externally or dynamically (a prototype method, a route handler, an export),
+                # never by a plain local name — root it (callback) unless underscore-private.
+                # The cardinal-safe direction, matching "public methods of an exported class
+                # are public API"; only ever adds roots.
+                if not name.startswith("_"):
+                    roles.add("callback")
+                cid = f"{rel}::{qual}"
+                nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, val),
+                                  end_line=val.end_point[0] + 1, roles=frozenset(roles)))
+                defs.append((rel, cid, val, lang))
+                if kind is C:
+                    for base in _bases(val, src, spec):
+                        inherits.append((cid, base, lang))
+                if enclosing_func is not None:
+                    contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                         False, is_test, contains=contains,
+                         enclosing_func=(cid if kind is M else None))
+            else:
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         exported, is_test, contains=contains, enclosing_func=enclosing_func)
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)
