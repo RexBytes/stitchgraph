@@ -128,3 +128,42 @@ def test_polyglot_incremental_equals_full(tmp_path):
     inflated = {k: (i_fi[k], f_fi.get(k, 0)) for k in i_fi if i_fi[k] > f_fi.get(k, 0)}
     assert not inflated, f"polyglot fan_in inflated (incremental > full): {inflated}"
     assert i_stale == f_stale, f"polyglot stale diverged: {i_stale ^ f_stale}"
+
+
+def test_src_layout_incremental_equals_full(tmp_path):
+    """src-layout differential: a PyPA `src/` project gains project-level state — the
+    `source_prefix` and the src-stripped `module_by_qual` aliases that let absolute imports
+    (`from app import util`) resolve. The standing oracle corpus (`src/` indexed AT src) never
+    triggers src-layout, so this pins that the incremental replace_file path converges with a
+    full reindex when that state is in play — else live module-load-only code (reached only via
+    an absolute-import side effect) could diverge live->dead on one path (the cardinal)."""
+    files = {
+        "src/app/__init__.py": '__all__ = ["main"]\nfrom app.cli import main\n',
+        "src/app/cli.py": "from app import util\ndef main():\n    return util.helper()\n",
+        "src/app/util.py": (
+            "def helper():\n    return _internal()\n"
+            "def _internal():\n    return 1\n"
+            "def truly_dead():\n    return 99\n"
+        ),
+    }
+    for rel, content in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(content)
+    root = str(tmp_path)
+    nodes, edges = extract_project(root)
+    nbf, ebf = _by_file(nodes, lambda n: n.id), _by_file(edges, lambda e: e.src)
+    order = sorted(set(nbf) | set(ebf))
+    exported_ids = {n.id for fn in nbf.values() for n in fn if "exported" in n.roles}
+    with sg.Store(":memory:") as full, sg.Store(":memory:") as inc:
+        sg.reindex(full, root)
+        for f in order:
+            inc.replace_file(f, nbf.get(f, []), ebf.get(f, []), exported_ids=exported_ids)
+        f_stale = {c["id"] for c in (sg.find_stale(full).result or [])}
+        i_stale = {c["id"] for c in (sg.find_stale(inc).result or [])}
+        f_fi = {k: v for k, v in fan_in(full).items() if full.get_node(k) is not None}
+        i_fi = {k: v for k, v in fan_in(inc).items() if inc.get_node(k) is not None}
+    assert i_stale == f_stale, f"src-layout stale diverged: {i_stale ^ f_stale}"
+    inflated = {k for k in i_fi if i_fi[k] > f_fi.get(k, 0)}
+    assert not inflated, f"src-layout fan_in inflated (incremental > full): {inflated}"
+    # the genuinely-dead helper must still be flagged on BOTH paths (not masked by the fix)
+    assert any(s.endswith("util.py::truly_dead") for s in f_stale)
