@@ -499,7 +499,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     # grape: `def []=` constructs `ValueArray.new`). Root them as callback — the Ruby analogue of
     # the C++ special-member pass. An operator name never starts with a letter/underscore.
     for n in nodes:
-        if n.kind in (F, M) and n.name and not (n.name[0].isalpha() or n.name[0] == "_") \
+        if n.kind in (F, M) and _is_ruby_operator_method(n.name) \
                 and file_lang.get(n.id.split("::", 1)[0], "") == "ruby":
             n.roles = n.roles | {"callback"}
 
@@ -1646,6 +1646,14 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS,
 
 
 # -- helpers ---------------------------------------------------------------
+def _is_ruby_operator_method(name: str) -> bool:
+    """True if `name` is a Ruby operator method name (`[]`, `[]=`, `<=>`, `==`, `<<`, `+`, …) —
+    i.e. it does not start with a letter or underscore. Such methods are invoked via operator/
+    index syntax, not a by-name call, so they're rooted (panel R61). A normal method, predicate
+    (`valid?`) or bang (`save!`) starts with a letter and is excluded (it IS called by name)."""
+    return bool(name) and not (name[0].isalpha() or name[0] == "_")
+
+
 def _name_of(node, src):
     nm = node.child_by_field_name("name")
     if nm is not None:

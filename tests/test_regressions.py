@@ -5952,3 +5952,15 @@ def test_ruby_operator_method_captured_and_rooted(tmp_path):
     # Entry is constructed only inside `[]=`; its constructor is now reached, not false-dead:
     assert not any(i.endswith("Entry.initialize") for i in stale_full)
     assert any(i.endswith("Unused.initialize") for i in stale_full)  # genuinely unused: flagged
+
+
+def test_is_ruby_operator_method_helper():
+    """Pin _is_ruby_operator_method directly (R61): operator names (no leading letter/_) are
+    rooted; normal/predicate/bang/setter-by-name methods are not over-rooted."""
+    from stitchgraph.core.extract.treesitter import _is_ruby_operator_method
+    for op in ("[]", "[]=", "<=>", "==", "===", "<<", ">>", "+", "-", "*", "/", "%", "&", "|",
+               "^", "~", "!", "<", ">", "<=", ">=", "=~", "+@", "-@"):
+        assert _is_ruby_operator_method(op), op
+    for normal in ("evaluate", "initialize", "_private", "valid?", "save!", "to_s", "call"):
+        assert not _is_ruby_operator_method(normal), normal
+    assert not _is_ruby_operator_method("")
