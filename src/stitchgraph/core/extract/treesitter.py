@@ -288,11 +288,19 @@ def _precompute_def(body, src, lang) -> _DefInfo:
 
 
 def extract(root: str | Path, ignore: list[str] | None = None, *,
-            cache_trees: bool = True) -> tuple[list[Node], list[Edge]]:
+            cache_trees: bool = True, edge_sink: Any = None) -> tuple[list[Node], list[Edge]]:
     # `cache_trees=False` is the streaming (lower-peak-memory) mode: each file's parse tree
     # and source are dropped after pass 1 (its defs' body refs are swapped for precomputed
     # `_DefInfo` records), so peak memory tracks symbol count, not total parse-tree size.
     # The result is byte-identical to the default path (test_streaming_differential.py).
+    #
+    # `edge_sink` (Phase 2b): an append-only object that consumes edges as they're produced
+    # (streaming them straight to SQLite) instead of accumulating a Python list. Within this
+    # function `edges` is WRITE-ONLY — no pass reads it back (override propagation is
+    # Python-only, dedup happens in the store) — so a sink is a transparent drop-in. On a
+    # Magento-scale PHP repo the edge list is the dominant hog (~15.5M edges); the sink
+    # removes it from Python memory entirely. When a sink is given, the returned edge list is
+    # empty (the edges already live in the sink/store).
     if not HAS_TREE_SITTER:
         return [], []
     root = Path(root)
@@ -514,7 +522,8 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
         if _fl:
             by_lang.setdefault(_canon_lang(_fl), {}).setdefault(n.name, []).append(n.id)
 
-    edges: list[Edge] = []
+    # Write-only accumulator: a real list, or the streaming sink (same append API).
+    edges: Any = [] if edge_sink is None else edge_sink
     for rel, def_id, body, lang in defs:
         by_name = by_lang.get(_canon_lang(lang), {})
         # In streaming mode the body is a `_DefInfo` with the call/ref/scope tuples already
@@ -614,7 +623,9 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
         if _shadowed:
             nodes = [n for n in nodes
                      if not (n.kind is NodeKind.MODULE and n.id in _shadowed)]
-    return nodes, edges
+    # When streaming, the edges already live in the sink/store — return an empty list so the
+    # combined extractor's `edges += je` is a no-op (the bulk edge list never materialises).
+    return nodes, ([] if edge_sink is not None else edges)
 
 
 # Languages where a method's visibility is inherited from its class (no per-method

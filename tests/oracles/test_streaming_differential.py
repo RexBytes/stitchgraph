@@ -121,3 +121,28 @@ def test_streaming_equals_full_polyglot(tmp_path):
     for rel, content in files.items():
         (tmp_path / rel).write_text(content)
     _assert_identical(str(tmp_path))
+
+
+def test_streaming_equals_full_heavy_fanout_and_cross_group(tmp_path):
+    """Stress the Phase 2b per-source dedup sink: many same-named methods (so a bare call
+    fans out to N AMBIGUOUS candidates — the Magento blow-up in miniature), repeated call
+    sites (exact-duplicate edges to collapse), and classes whose INHERITS / constructor
+    seed edges are emitted in DIFFERENT extractor loops than their method-call edges (so the
+    same `src` appears in non-adjacent groups — only the final global store dedup can
+    reconcile those). The streamed graph must still equal the in-memory one byte-for-byte."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # 6 classes each with a `handle()` method → a bare `handle()` call is 6-way ambiguous.
+    php = ["<?php"]
+    for i in range(6):
+        php.append(
+            f"class Svc{i} extends Base {{\n"
+            f"  public function handle() {{ return $this->run(); }}\n"
+            f"  public function run() {{ return helper(); }}\n}}\n")
+    php.append("class Base { public function boot() { return 1; } }\n")
+    # A driver that calls the ambiguous name repeatedly (duplicate + fan-out edges).
+    php.append("function helper() { return 1; }\n")
+    php.append("function drive($s) { $s->handle(); $s->handle(); return helper(); }\n")
+    php.append("drive(new Svc0());\n")
+    (tmp_path / "svc.php").write_text("\n".join(php))
+    _assert_identical(str(tmp_path))

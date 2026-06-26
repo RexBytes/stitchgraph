@@ -24,6 +24,22 @@ phase below ships only when that stays green on the dogfood + the hunt corpora.
   ref in `defs`). This removes the double-pin (`src_by` + tree refs) that was Magento's actual
   hog. Identical output, gated by the polyglot streaming oracle (now incl. PHP, Rust trait
   impl, C++ out-of-line, TS interface).
+- **Phase 2b/3 — stream edges to SQLite (the v2.0.0 core).** Profiling a Magento module
+  (`lib/`, 4304 files) showed the real hog: the tree-sitter extractor produced **15.5M edges**
+  for 30k nodes (~500:1, name-based ambiguous fan-out across PHP's many homonyms) — ~4 GB of
+  Python edge objects, the bulk of `reindex`'s peak. Three facts make streaming them out
+  safe: (1) within extraction `edges` is *write-only* — override propagation is Python-only
+  (small Python edge set) and dedup is deferred; (2) resolvers read only the node list +
+  source, never the edges; (3) every dedup key is scoped to the edge's `src`. So `reindex`
+  keeps the (far smaller) node list resident, and an append-only `_StoreEdgeSink` consumes
+  edges as they're produced. Because the pass-2 loop emits a definition's edges consecutively,
+  the sink dedups each source group on the fly (reusing `_dedup_edges`) and writes only the
+  ~3.9M survivors in committed `executemany` batches — never the 15.5M raw rows (which would
+  also blow the DB to ~9 GB). A final `_dedup_resolved_edges` in the store is the authoritative
+  global pass (cross-group same-src + resolver edges). **Result: `reindex` peak 3183 MB → 269
+  MB (~12×, GB→MB), byte-identical** (3,926,345 edges / 30,412 nodes verified row-for-row vs
+  the in-memory path), ~40% slower. Resolvers stay in memory over the node list — that's
+  already constant w.r.t. the edge explosion, so Phase 3 needs no separate store rewrite.
 
 ## The remaining refactor (the v2.0.0 core)
 
@@ -61,10 +77,10 @@ done only if O(symbols) is still too big.
 
 ### The hard part / open problems
 
-- **Resolvers.** `run_resolvers` (routes/SQL/ORM/cross-language) currently iterates the full
-  in-memory `(nodes, edges)` and *adds* edges. It must move to operate over the store (or a
-  streamed view) — the largest single sub-task. For a pure-Python repo it adds little, but the
-  design isn't constant-memory until resolvers stream too.
+- ~~**Resolvers.**~~ *Resolved.* `run_resolvers` reads only the node list + source (never the
+  edge list — verified), so it stays in memory over the resident nodes; its few extra edges
+  stream through the same sink. The node list is already small relative to the edge explosion,
+  so this is constant-memory without a store rewrite.
 - ~~**tree-sitter extractor.**~~ *Done (Phase 4).* Resolved by precomputing each def's pass-2
   inputs while its tree is alive, rather than re-parsing in pass 2: a re-parse can't recover
   the same body node refs, so instead the call/ref/scope tuples (which are all pass 2 needs)
@@ -74,10 +90,9 @@ done only if O(symbols) is still too big.
 
 ### Phased rollout (each gated by the oracle)
 
-- **Phase 2b** — stream Python nodes+edges to the store; lean seeds over (lean nodes +
-  INHERITS); reuse store `_propagate_overrides`/dedup. (Python path constant-ish.)
-- **Phase 3** — resolvers over the store.
+- ~~**Phase 2b** — stream nodes+edges to the store.~~ **Shipped** (see above): edges stream
+  through `_StoreEdgeSink` with on-the-fly per-source dedup; nodes stay resident.
+- ~~**Phase 3** — resolvers over the store.~~ **Shipped** (resolvers need only nodes+source).
 - ~~**Phase 4** — tree-sitter re-parse streaming (Magento/PHP).~~ **Shipped** (see above).
 - **Phase 5** — validate on Magento end-to-end; make streaming the default (or auto above a
-  file-count threshold); evolve the public API (`extract_project`'s `(nodes, edges)` return is
-  incompatible with streaming → the semver-major trigger). → **v2.0.0**.
+  file-count threshold). → **v2.0.0**.
