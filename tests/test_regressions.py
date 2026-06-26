@@ -5513,6 +5513,8 @@ def test_ruby_implicit_hooks_are_live(tmp_path):
     """Ruby's class/module lifecycle hooks (`inherited`, `included`, `extended`) and
     `method_missing` are interpreter-invoked, never called by name. `Sinatra::Base.inherited`
     (sinatra's core subclass hook) was flagged dead — a cardinal FP."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib/base.rb": (
             "module App\n"
@@ -5536,6 +5538,8 @@ def test_java_serialization_hooks_are_live(tmp_path):
     """Java serialization magic methods (`writeReplace`/`readObject`/...) are invoked by
     `ObjectOutputStream`/`ObjectInputStream` via reflection, never by name. `gson`'s
     `LazilyParsedNumber.writeReplace` was flagged dead — a cardinal FP."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Num.java": (
             "class Num {\n"
@@ -5555,6 +5559,8 @@ def test_java_serialization_hooks_are_live(tmp_path):
 def test_php_magic_methods_are_live(tmp_path):
     """PHP magic methods (`__call`, `__get`, ...) are invoked by the engine on missing
     members, never by name — they must not be flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Obj.php": (
             "<?php\n"
@@ -5577,6 +5583,8 @@ def test_c_bodyless_struct_reference_is_not_a_phantom_class(tmp_path):
     `struct X;` — is a TYPE REFERENCE, not a definition. Extracting it as a CLASS minted a
     phantom node that was then flagged dead (hiredis: dozens of `struct timeval`/`event_base`
     references became dead 'classes'). Only a specifier WITH a body defines a type."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.h": (
             "struct timeval;\n"                       # forward decl (bodyless)
@@ -5603,6 +5611,8 @@ def test_java_framework_callback_annotation_is_live(tmp_path):
     """A Java method carrying a framework-callback annotation (`@PostConstruct`,
     `@BeforeExperiment`, ...) is reflection-invoked, never called by name. gson's
     `@PostConstruct validate` and Caliper `@BeforeExperiment setUp` were flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Svc.java": (
             "class Svc {\n"
@@ -5623,6 +5633,8 @@ def test_csharp_serialization_callback_attribute_is_live(tmp_path):
     """A C# method with a serialization-callback attribute (`[OnSerializing]`,
     `[OnDeserialized]`, ...) is invoked by the serializer via reflection. Newtonsoft's
     `[OnSerializing] OnSerializingMethod` (free-form name) was flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Obj.cs": (
             "class Obj {\n"
@@ -5645,6 +5657,8 @@ def test_ts_framework_decorator_handler_is_live(tmp_path):
     `@Entity`) is framework-instantiated/-invoked, never called by name. NestJS controller
     route handlers were flagged dead. (Method decorators precede the method as siblings; class
     decorators are children — both must be detected.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     # No `export` — otherwise every public method is rooted as public API and the test
     # can't isolate the decorator's effect. Here the ONLY roots are the decorators.
     _mk(tmp_path, {
@@ -5694,6 +5708,8 @@ def test_js_member_assigned_function_body_is_walked(tmp_path):
     CommonJS prototype-augmentation idiom) must become a node whose BODY is walked — else
     calls inside it are invisible and a module-private helper it alone calls (`tryRender`)
     is flagged dead. The assigned method itself is rooted (external/dynamic-invoked)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "app.js": (
             "function tryRender(v) { return v; }\n"
@@ -5717,6 +5733,8 @@ def test_c_export_symbol_is_public_abi(tmp_path):
     kernel/module ABI — called by code outside the tree, so never dead for lack of an
     in-tree caller (the C analogue of __all__/module.exports). The Linux hunt flagged 543
     such functions. Scoped to the file the macro appears in."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lz4.c": (
             "int LZ4_compress_default(const char *s, char *d) { return 0; }\n"
@@ -5760,6 +5778,8 @@ def test_comment_between_decorator_and_method_keeps_callback(tmp_path):
     """A `comment` between a JS/TS `@decorator` and the method it annotates must not flush the
     pending decorators — else the framework-callback rooting never fires and the live handler
     (and its callees) is flagged dead. Panel R40B (also protects Rust `#[test]` + comment)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "svc.ts": (
             "@Controller()\n"
@@ -5786,6 +5806,8 @@ def test_member_assigned_function_inside_dead_function_is_not_rooted(tmp_path):
     a function body (`function init(){ obj.x = fn }`) must stay reachability-gated: if the
     enclosing function is dead, the assignment isn't externally visible and must be flagged.
     Panel R40C — the unconditional callback role masked dead code inside dead code."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "m.js": (
             "function deadInit() {\n"
@@ -5810,6 +5832,8 @@ def test_member_assigned_class_public_methods_are_live(tmp_path):
     must be rescued by _seed_exported_class_methods. Otherwise the class is live via the root
     while its methods (and their private callees) are flagged dead — the inverse-cardinal
     'class live, methods dead' shape."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "plugin.js": (
             "exports.Parser = class {\n"
@@ -5837,6 +5861,8 @@ def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
     """R41A: the R40B comment-skip must cover Rust comment node types (`line_comment`/
     `block_comment`, NOT `comment`) — else a `#[test]` + comment + fn drops the test marker
     and the test fn (plus helpers it alone reaches) is confidently flagged dead (cardinal)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.rs": (
             "#[cfg(test)]\n"
