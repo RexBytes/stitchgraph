@@ -14,14 +14,16 @@ method name is a *string*, not a syntactic call, so the call scan never saw it.
 
 ### Fixed
 
-- **PHP string callables are now recognized** (tree-sitter extractor). A 2-element callable
-  array `[$this|self::class|static::class|'Class'|$obj, 'method']` emits a REFERENCES edge to
-  `method`; a `'Class::method'` string emits REFERENCES to both the class and the method.
-  Cardinal-safe — only project symbols resolve, so a non-callable string that happens to match
-  a name merely over-roots (masking dead code), never causing a false-dead. On the Magento
-  Framework this removed 9 false-positive dead-flags (39 → 30 PHP candidates) while still
-  flagging genuinely-unused private methods. Byte-identity (streaming == full) is preserved —
-  the new edges flow through the shared extractor path. Owned by a regression test.
+- **PHP array callables are now recognized** (tree-sitter extractor). A 2-element callable
+  array `[$this|self::class|static::class|'Class'|$obj, 'method']` — the `usort` / `uasort` /
+  `preg_replace_callback` / `array_map` comparator idiom — emits a REFERENCES edge to `method`.
+  Cardinal-safe — only project symbols resolve, so a non-callable 2-element array that happens
+  to name a method merely over-roots (masking dead code), never causing a false-dead. On the
+  Magento Framework this removed 9 false-positive dead-flags (39 → 30 PHP candidates) while
+  still flagging genuinely-unused private methods. Byte-identity (streaming == full) is
+  preserved — the new edges flow through the shared extractor path. Owned by a regression test.
+  (A `'Class::method'` *string* callable needs no handling: a string static call requires a
+  PUBLIC target, which is already rooted as exported.)
 
 ## [2.0.0] — 2026-06-26
 

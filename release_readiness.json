@@ -824,6 +824,18 @@
       ],
       "findings": {},
       "theme": "2.0.1 PHP callable-array fix \u2014 FULL-DIVERSITY clean round 1. The fix recognizes [$this,'method'] array callables (usort/preg_replace_callback) -> REFERENCES. opus: append-only/cardinal-safe verified, PHP-only gating, byte-identity across 9 edge fields, edge cases (keyed/3-elem/non-string/nested) all over-root-only. sonnet: 263 non-PHP regressions + edge-case probes, full vs streaming identical. haiku: crash-safety on malformed arrays, quote-stripping, PHP-only flag. All 3 CLEAN. mutation _php_callable_names 5/5 killed; suite 392; Magento Framework 39->30 PHP dead."
+    },
+    {
+      "id": "R54",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "2.0.1 PHP fix \u2014 round 2. CODE unanimously clean at real-Magento scale: opus (full==streaming 2104n/17618e, find_stale 8->6 shrank only, attribution correct, precise clean), sonnet (cross-file inheritance target live, typo->0 holes, monotonic, 21586n/1.5Me byte-identical). haiku found 1 MEDIUM: stale DOC \u2014 CHANGELOG + RELEASE_NOTES_v2.0.1 still claimed 'Class::method' string callables are handled, but that branch was dropped in the mutation-cleanup simplification (redundant: string-static targets are public/exported). FIX: corrected both docs to array callables only. Streak resets -> R55/R56."
     }
   ]
 }

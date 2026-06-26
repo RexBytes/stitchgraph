@@ -9,19 +9,19 @@ scan couldn't see.
 usort($rows, [$this, 'compareRows']);                 // compareRows was flagged dead
 uasort($this->routers, [$this, 'compareRoutersSortOrder']);
 preg_replace_callback($p, [$this, '_convertEntities'], $s);
-call_user_func('SomeClass::staticHelper', $x);
 ```
 
 ## What changed
 
-- **The tree-sitter PHP extractor now recognizes string callables** and emits REFERENCES edges
-  for them, so the target isn't false-flagged dead:
-  - a 2-element callable array `[$this, 'method']` / `[self::class, 'method']` /
-    `[static::class, 'method']` / `['Class', 'method']` / `[$obj, 'method']` → the **method**;
-  - a `'Class::method'` string callable → the **class** and the **method**.
+- **The tree-sitter PHP extractor now recognizes array callables** and emits a REFERENCES edge
+  to the named method, so the target isn't false-flagged dead: a 2-element callable array
+  `[$this, 'method']` / `[self::class, 'method']` / `[static::class, 'method']` /
+  `['Class', 'method']` / `[$obj, 'method']` → the **method**.
 - **Cardinal-safe by construction.** Only project symbols resolve (via the same `_ref` path as
-  every other by-name reference), so a non-callable string that merely happens to match a name
-  over-roots — masking dead code — and can *never* produce a false-dead.
+  every other by-name reference), so a non-callable 2-element array that merely happens to name
+  a method over-roots — masking dead code — and can *never* produce a false-dead.
+- **`'Class::method'` string callables need no special handling** — a string static call
+  requires a `public` target, which is already rooted as exported.
 - **Byte-identity preserved.** The new edges flow through the shared extractor path, so
   `reindex(streaming=True)` stays byte-identical to `streaming=False` (the differential oracle
   is green).
