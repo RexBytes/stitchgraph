@@ -804,6 +804,16 @@
       ],
       "findings": {},
       "theme": "2.0.0 streaming \u2014 FULL-DIVERSITY clean round 1 of the post-R50-fix streak. Verified the name_based-OR fix under precise=True (jedi 0.20): opus 9-field differential on jedi-outside-candidates, 2/4/5-way homonyms, lower-weight precise, REFERENCES-vs-CALLS, declared-type, self/cls + multi-level override, propagate_overrides equal-weight collisions, polyglot, full src/ tree \u2014 byte-identical. sonnet 14 fuzz scripts / 60+ combos incl 10-class max-ambiguity, non-contiguous same-src, last-group jedi join \u2014 identical. haiku scrutinized the OR loop (no shared-object/leak), meta equality \u2014 CLEAN. All 3 CLEAN; mutation 20/20; suite 391."
+    },
+    {
+      "id": "R52",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.0 streaming \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met). Release confirmation. opus: AUTO threshold boundary (streaming=None == forced), store residue (stream->full->stream == fresh full), CLI/MCP tri-state round-trip, resolver-only + protocol-dunder/override + jedi-homonym non-adjacent overlap, ignore-globs \u2014 all byte-identical incl location/source/name_based + find_stale/holes/meta. sonnet: resolver-heavy (Flask/ORM/fetch) + precise=True + reindex-twice fuzzing \u2014 identical. haiku: CLI/MCP surface + docs-accuracy audit (12x, threshold 2000, on-disk caveat) + meta equality \u2014 CLEAN. All 3 CLEAN. Mutation _dedup_edges/_auto_stream 20/20; suite 391; oracles incl streaming==full (weight/provenance/name_based) + precise=True jedi."
     }
   ]
 }

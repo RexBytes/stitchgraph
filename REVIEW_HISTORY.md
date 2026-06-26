@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 1.0.6: R33–R39. **1.0.7: R40–R42 fix-panels over 6 review rounds** (full diversity opus/sonnet/haiku) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 17/17 ✅ · oracles 23 ✅ · no-open-defects ✅ |
-| Tests | 373 passing, 0 skipped (full extras) |
+| Multi-model review panels | 1.0.7: R40–R48. **2.0.0: R49–R52** (full diversity opus/sonnet/haiku) on the streaming indexer |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 ✅ · oracles 26 ✅ · no-open-defects ✅ |
+| Tests | 391 passing (full extras) |
 | Coverage | ~86% |
-| Convergence | 1.0.4: KK→LL→MM (streak 2). 1.0.5: NN–TT → UU→VV (streak 2). 1.0.6: R33–R39 → **R38–R39 3-layer-clean (streak 2)**. 1.0.7: R40✗ R41✗ R42✓ R43✗(R42A) R44✓ R45✓ R46✗(R46A, first full-diversity) → **R47✓ R48✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 1.0.6: R33–R39 → R38–R39 (streak 2). 1.0.7: R40–R46 → **R47✓ R48✓** (streak 2). 2.0.0: R49✓ R50✗ (opus: `precise=True`×streaming `name_based` divergence, MEDIUM — fixed) → **R51✓ R52✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–1.0.6 RELEASED/releasable** (maintainer tags). **1.0.7** (multi-repo/multi-language precision hunt — ~47 real repos, 9 languages, 0 crashes) **RELEASABLE** — R40–R46 findings fixed; R47+R48 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v1.0.7` tag |
+| Verdict | **1.0.0–1.0.7 RELEASED/releasable** (maintainer tags). **2.0.0** (constant-memory streaming indexer — reindex peak 3.2 GB→269 MB, ~12×, byte-identical; Magento-scale fits in memory) **RELEASABLE** — R50 finding fixed; R51+R52 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.0.0` tag |
 
 ## Trajectory
 
@@ -812,6 +812,37 @@ Every fix only *adds* roots (cardinal-safe). The src-layout incremental defect c
 owned by the differential oracle (a new `src/`-layout incremental==full fixture); the
 scalability ceiling (in-memory whole-graph reindex; Magento-scale exceeds ~12 GB) is
 documented in LIMITATIONS as the next architectural item (streaming/constant-memory indexer).
+
+## 2.0.0 — constant-memory streaming indexer (R49–R52)
+
+The v2.0.0 change: `reindex(streaming=...)` streams the graph to SQLite instead of building it
+all in Python first. Profiling found the real hog wasn't parse trees but the **edge list** —
+name-based ambiguous fan-out yields ~15.5M edges for 30k nodes on a single Magento module
+(~4 GB). The streaming path drops each file's AST/parse-tree + source after pass 1 and
+deduplicates edges per-source on the fly, writing only the survivors in committed batches:
+**reindex peak 3,183 MB → 269 MB (~12×) on the Magento Framework core, byte-identical output**
+(3,926,345 edges / 30,412 nodes verified row-for-row). Made the default for large on-disk
+repos (AUTO ≥ 2,000 files). The non-negotiable invariant is `streaming == full` byte-for-byte;
+the gate is a new differential oracle (`tests/oracles/test_streaming_differential.py`,
+polyglot incl. PHP/Rust/C++/TS + heavy-fan-out + cross-group + `precise=True` jedi cases).
+
+The mutation meta-oracle gained a `--only <names>` scope filter so the streaming-critical
+functions (`_dedup_edges`, `_auto_stream`) are pinned by a fast, targeted kill-signal
+(**20/20 killed**). The streaming differential oracle compares every load-bearing edge field,
+including `weight`, `provenance`, and the internal `name_based` flag.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R49 | 3 | ✓ | full-diversity clean — opus fuzzed _DefInfo/precompute + 59 non-adjacent same-src runs + 260 polyglot trials; sonnet 15 scripts; haiku robustness. (An earlier R49 attempt was discarded — panels had read `operations.py` mid-mutation-run; re-run clean.) |
+| R50 | 3 | ✗ | **opus** found a real byte-identity break: `reindex(precise=True, streaming=True)` diverged on `name_based` (jedi's precise arm + the extractor's name-based arm to the same target land in different sink groups → store ORs while in-memory `_dedup_edges` kept the precise survivor's flag). haiku + sonnet (15 min / 80 tools) CLEAN — they didn't exercise the jedi path. **Fix:** `_dedup_edges` now ORs `name_based` onto the survivor (the store's R23A rule); pure-precise groups keep False (R22A). Pinned by a `precise=True` jedi oracle case + unit tests. |
+| R51 | 3 | ✓ | full-diversity clean — verified the R50 fix under precise=True across jedi-outside-candidates, multi-homonyms, lower-weight precise, REFERENCES-vs-CALLS, declared-type, override dispatch, polyglot, full `src/` tree. |
+| R52 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. AUTO threshold boundary, store residue (stream→full→stream == fresh full), CLI/MCP tri-state round-trip, resolver-heavy + ORM/route, docs-accuracy audit. |
+
+R50 is the headline lesson: **model diversity finds what breadth misses.** The slowest, most
+exhaustive reviewer (sonnet, 80 tool calls) and the fastest (haiku) both returned CLEAN on the
+same code where opus constructed the one input — `precise=True` with a homonym — that broke
+byte-identity. A bug invisible to two independent thorough reviews fell to a third
+perspective.
 
 ## Standing themes
 
