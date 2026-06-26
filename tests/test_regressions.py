@@ -5513,6 +5513,8 @@ def test_ruby_implicit_hooks_are_live(tmp_path):
     """Ruby's class/module lifecycle hooks (`inherited`, `included`, `extended`) and
     `method_missing` are interpreter-invoked, never called by name. `Sinatra::Base.inherited`
     (sinatra's core subclass hook) was flagged dead — a cardinal FP."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib/base.rb": (
             "module App\n"
@@ -5536,6 +5538,8 @@ def test_java_serialization_hooks_are_live(tmp_path):
     """Java serialization magic methods (`writeReplace`/`readObject`/...) are invoked by
     `ObjectOutputStream`/`ObjectInputStream` via reflection, never by name. `gson`'s
     `LazilyParsedNumber.writeReplace` was flagged dead — a cardinal FP."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Num.java": (
             "class Num {\n"
@@ -5555,6 +5559,8 @@ def test_java_serialization_hooks_are_live(tmp_path):
 def test_php_magic_methods_are_live(tmp_path):
     """PHP magic methods (`__call`, `__get`, ...) are invoked by the engine on missing
     members, never by name — they must not be flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Obj.php": (
             "<?php\n"
@@ -5577,6 +5583,8 @@ def test_c_bodyless_struct_reference_is_not_a_phantom_class(tmp_path):
     `struct X;` — is a TYPE REFERENCE, not a definition. Extracting it as a CLASS minted a
     phantom node that was then flagged dead (hiredis: dozens of `struct timeval`/`event_base`
     references became dead 'classes'). Only a specifier WITH a body defines a type."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.h": (
             "struct timeval;\n"                       # forward decl (bodyless)
@@ -5603,6 +5611,8 @@ def test_java_framework_callback_annotation_is_live(tmp_path):
     """A Java method carrying a framework-callback annotation (`@PostConstruct`,
     `@BeforeExperiment`, ...) is reflection-invoked, never called by name. gson's
     `@PostConstruct validate` and Caliper `@BeforeExperiment setUp` were flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Svc.java": (
             "class Svc {\n"
@@ -5623,6 +5633,8 @@ def test_csharp_serialization_callback_attribute_is_live(tmp_path):
     """A C# method with a serialization-callback attribute (`[OnSerializing]`,
     `[OnDeserialized]`, ...) is invoked by the serializer via reflection. Newtonsoft's
     `[OnSerializing] OnSerializingMethod` (free-form name) was flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Obj.cs": (
             "class Obj {\n"
