@@ -27,7 +27,8 @@ cycles" — it is a **measurable, auditable release decision**.
 
 ## Hard gates (any failure caps RRS at 40 = NOT releasable)
 
-- all tests pass (`pytest`)
+- all tests pass (`pytest`) — **including the oracle suite `tests/oracles/`** (differential /
+  chokepoint-invariant / cardinal-matrix; these run every push as part of `pytest`)
 - lint clean (`ruff check src tests`)
 - type-check clean (`mypy`)
 - zero **known-open** defects (anything not-fixed lives in `LIMITATIONS.md` as a
@@ -60,9 +61,28 @@ Weight each panel's **new, confirmed** defects by severity
 
 ## Release rule
 
-Ship when **all gates green AND RRS ≥ 90 AND clean streak ≥ 2 at full
-diversity**. The streak requirement is the real safeguard: two independent,
-fully-briefed panels in a row finding nothing above LOW.
+Ship when **all gates green AND RRS ≥ 90 AND a 2-round 3-layer clean streak at full
+diversity**. The streak requirement is the real safeguard: two independent rounds in a
+row that are clean across **all three** verification layers.
+
+**A round is "clean" only when all three hold (the 3-layer gate, adopted after rounds
+28–32 showed a single panel layer left a long tail):**
+
+1. **Panel** — a full-diversity adversarial panel finds nothing above LOW (the
+   convergence signal; panels hunt *novel* classes).
+2. **Oracle suite** — `tests/oracles/` green (differential incremental==full,
+   chokepoint corrupt-store invariant, cardinal scope×use-kind matrix). These own the
+   *known* classes so panels don't re-spend budget on them; green by construction since
+   they're part of `pytest`.
+3. **Mutation** — `scripts/mutate.py` reports no *unjustified* survivors on the
+   **configured target set** (the meta-oracle: proves the suite/oracles actually bite).
+   The target set grows each cycle; record it and the per-module score below. Equivalent
+   mutants are triaged and justified, not chased to a blind 100%.
+
+The streak resets if **any** layer surfaces a blocking finding in a round. The three
+layers do distinct jobs: oracles + mutation are cheap/deterministic and own the tail of
+*known* classes; the panel is the expensive layer that finds *new* classes (and each new
+class then extends an oracle/mutation target, so the panel cadence trends to zero).
 
 > **Diversity definition (adapted 2026-06-23).** "Full diversity" means every
 > model in `available_models` participated. sonnet's API became unreliable for

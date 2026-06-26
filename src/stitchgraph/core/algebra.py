@@ -113,9 +113,12 @@ def transitive_fan_in(store: Store,
         if combined.nvals == reach.nvals:
             break
         reach = combined
-    # column j count = number of sources that reach j. Cast bool->int first, else
-    # `plus` on BOOL is OR (always 1) rather than a count.
-    counts = reach.dup(dtype="INT64").reduce_columnwise(gb.monoid.plus).new()
+    # Drop the diagonal first: a node on a cycle (or a self-loop) reaches itself in the
+    # closure, which would count the node as its own depender — inconsistent with
+    # reverse_reachable_from/impact_of, which exclude self (panel R16B). We want distinct
+    # *other* sources. Then cast bool->int (else `plus` on BOOL is OR, always 1) and count.
+    counts = (gb.select.offdiag(reach).new(dtype="INT64")
+              .reduce_columnwise(gb.monoid.plus).new())
     coo = counts.to_coo()
     return {adj.ids[i]: int(v) for i, v in zip(coo[0].tolist(), coo[1].tolist(), strict=False)}
 

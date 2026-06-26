@@ -51,7 +51,8 @@ def _tarjan(adj: dict[str, list[str]]) -> list[list[str]]:
     nodes = list(adj.keys()) + [d for ds in adj.values() for d in ds]
 
     import sys
-    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))
+    _old_limit = sys.getrecursionlimit()  # restore in finally (panel QQQ LOW: don't leak
+    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))  # a raised limit to the host)
 
     def strongconnect(v: str) -> None:
         index[v] = low[v] = counter[0]
@@ -74,7 +75,10 @@ def _tarjan(adj: dict[str, list[str]]) -> list[list[str]]:
                     break
             out.append(comp)
 
-    for v in list(adj.keys()):
-        if v not in index:
-            strongconnect(v)
+    try:
+        for v in list(adj.keys()):
+            if v not in index:
+                strongconnect(v)
+    finally:
+        sys.setrecursionlimit(_old_limit)
     return out

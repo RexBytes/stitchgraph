@@ -49,6 +49,8 @@ class _Project:
     main_calls: set[str] = field(default_factory=set)
     module_consts: set[str] = field(default_factory=set)  # module-level assigned names
     external_base_classes: set[str] = field(default_factory=set)  # subclass framework bases
+    module_by_qual: dict[str, str] = field(default_factory=dict)  # module qualname -> node id
+    module_ids: set[str] = field(default_factory=set)  # all MODULE node ids
 
 # Ordinary bases whose subclasses are NOT framework callbacks — their methods
 # should still be eligible for dead-code. Anything else external (HTMLParser,
@@ -68,26 +70,44 @@ def extract_project(root: str | Path,
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
     """
     proj = _Project(root=Path(root))
-    files = sorted(p for p in proj.root.rglob("*.py")
-                   if _wanted(p, proj.root) and not _ignored(p, proj.root, ignore))
+    try:
+        files = sorted(p for p in proj.root.rglob("*.py")
+                       if p.is_file() and _wanted(p, proj.root)
+                       and not _ignored(p, proj.root, ignore))
+    except OSError:
+        files = []  # unwalkable root (over-long path / permission) -> empty extraction,
+                    # not a crash; reindex degrades to 0 nodes like a missing path (panel YYY)
     proj.packages = _project_packages(files, proj.root)
 
     parsed: dict[str, ast.Module] = {}
     for path in files:
+        rel = path.relative_to(proj.root).as_posix()
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
+            _collect_defs(proj, rel, path, tree)
+        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+            # Skip the one file, never abort the whole reindex (panel DDD/OOO).
+            # OSError: a broken symlink / unreadable file (submodules, races).
+            # RecursionError: a pathologically deep AST — a huge flat expression
+            # (generated SQL/HTML/string builders) overflows ast.parse or the walk;
+            # one bad file must not leave the entire DB empty.
+            parsed.pop(rel, None)
             continue
-        rel = path.relative_to(proj.root).as_posix()
         parsed[rel] = tree
-        _collect_defs(proj, rel, path, tree)
 
     _index(proj)
     _apply_entrypoint_roles(proj)
+    _apply_script_roles(proj)
+    _seed_entrypoint_classes(proj)
     for rel, tree in parsed.items():
-        _collect_edges(proj, rel, tree)
+        try:
+            _collect_edges(proj, rel, tree)
+        except RecursionError:
+            continue  # same pathological-depth guard for the edge pass (panel OOO)
     _apply_callback_roles(proj)
     _seed_test_classes(proj)
+    _seed_protocol_dunders(proj)
+    _propagate_overrides(proj)
     return proj.nodes, proj.edges
 
 
@@ -164,6 +184,95 @@ def _apply_callback_roles(proj: _Project) -> None:
             node.roles = node.roles | {"callback"}
 
 
+def _seed_protocol_dunders(proj: _Project) -> None:
+    """Tie each dunder method's liveness to its class. A dunder is invoked implicitly by
+    the interpreter (`instance()` -> `__call__`; attribute access on a descriptor ->
+    `__get__`/`__set__`; `obj[k]` -> `__getitem__`; `with obj` -> `__enter__`; etc.), so it
+    has no explicit call site — a helper it alone calls is orphaned and confidently flagged
+    dead once the class is in use (panel R20A, cardinal). Add a REFERENCES edge class ->
+    dunder so that when the class is reachable, its dunders (and their callees) are too.
+
+    Scoped to the class: a dead class's dunders stay dead (no over-rooting). Dunders are
+    already excluded from stale candidates, so this only rescues their *callees*."""
+    class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
+    for node in proj.nodes:
+        name = node.name
+        if (node.kind is NodeKind.METHOD and "." in node.id
+                and len(name) > 4 and name.startswith("__") and name.endswith("__")):
+            class_id = node.id.rsplit(".", 1)[0]
+            if class_id in class_ids:
+                proj.edges.append(Edge(
+                    src=class_id, relation=Relation.REFERENCES, dst_symbol=name,
+                    dst_id=node.id, weight=1.0, provenance=Provenance.INFERRED,
+                    location=node.location, source="ast"))
+
+
+def _propagate_overrides(proj: _Project) -> None:
+    """Polymorphic dispatch: a CALLS or REFERENCES edge bound to a base-class member must
+    also reach overriding members in subclasses, or a live override gets no inbound edge
+    and is flagged dead (CARDINAL). The precision paths bind `self.m()` / `self.prop` to
+    the *enclosing* class and `var.m()` / `var.prop` (var annotated `Base`/`Protocol`/`ABC`)
+    to the *declared* class — neither widens to the concrete subclass that runs at runtime.
+    Mirror the unknown-receiver widening by adding AMBIGUOUS edges (same relation) from the
+    same source to every subclass override of the bound member. REFERENCES is included so a
+    property/attribute read on `self` whose subclass overrides it is not flagged dead (the
+    read-side twin of the call case, panel R21A).
+
+    Adding edges can only make more nodes reachable, never fewer, so this is cardinal-
+    safe by construction; the cost is mild over-approximation (a genuinely-dead override
+    of a used base member stays live), which is the documented lower-severity trade-off.
+    """
+    _WIDENED = (Relation.CALLS, Relation.REFERENCES)
+    class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
+    if not class_ids:
+        return
+    # direct subclass map: base_class_id -> {subclass_id, ...} (project classes only).
+    subclasses: dict[str, set[str]] = {}
+    for e in proj.edges:
+        if (e.relation is Relation.INHERITS and e.src in class_ids
+                and e.dst_id in class_ids and e.src != e.dst_id):
+            subclasses.setdefault(e.dst_id, set()).add(e.src)
+    if not subclasses:
+        return
+    cache: dict[str, set[str]] = {}
+
+    def descendants(base_id: str) -> set[str]:
+        if base_id in cache:
+            return cache[base_id]
+        out: set[str] = set()
+        stack = list(subclasses.get(base_id, ()))
+        while stack:
+            s = stack.pop()
+            if s in out:
+                continue
+            out.add(s)
+            stack.extend(subclasses.get(s, ()))
+        cache[base_id] = out
+        return out
+
+    # Never duplicate a (source, relation, target) edge we already emitted.
+    seen = {(e.src, e.relation, e.dst_id) for e in proj.edges if e.relation in _WIDENED}
+    new_edges: list[Edge] = []
+    for e in list(proj.edges):
+        if e.relation not in _WIDENED or not e.dst_id:
+            continue
+        base_id, sep, method = e.dst_id.rpartition(".")
+        if not sep or base_id not in class_ids:
+            continue
+        for sub_id in descendants(base_id):
+            override = f"{sub_id}.{method}"
+            if override == e.dst_id or override not in proj.ids:
+                continue
+            if (e.src, e.relation, override) in seen:
+                continue
+            seen.add((e.src, e.relation, override))
+            new_edges.append(Edge(
+                src=e.src, relation=e.relation, dst_symbol=method,
+                dst_id=override, weight=1.0, provenance=Provenance.AMBIGUOUS,
+                location=e.location, source="ast"))
+    proj.edges.extend(new_edges)
+
+
 # -- pass 1: definitions ----------------------------------------------------
 def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> None:
     is_init = path.name == "__init__.py"
@@ -191,7 +300,12 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     ))
     # Public names of a package __init__ are part of the export surface.
     if is_init:
-        for node in ast.iter_child_nodes(tree):
+        # Look THROUGH control-flow blocks (`try/except ImportError` for optional deps,
+        # `if sys.version_info` backport branches), which don't create a scope — a re-export
+        # nested there is still public API. Only top-level was scanned before, so a
+        # conditional re-export's target was flagged dead (panel R26A, cardinal). Mirror
+        # `_scope_defs`: recurse through control flow, never into a def/class body.
+        for node in _module_export_nodes(tree):
             nm = getattr(node, "name", None)
             if nm and not nm.startswith("_"):
                 proj.exported_names.add(nm)
@@ -209,6 +323,28 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                         bound = alias.asname or alias.name
                     if bound != "*" and not bound.startswith("_"):
                         proj.exported_names.add(bound)
+                        # Under a RENAMED re-export (`from .core import Engine as Public`),
+                        # the bound public name (`Public`) differs from the actually-defined
+                        # symbol's name (`Engine`). `_apply_entrypoint_roles` matches nodes by
+                        # their defined name, so also register the original leaf — gated on
+                        # the *bound* name being public — or the renamed re-export's target
+                        # (and its methods) is flagged dead (panel R25A, cardinal). A private
+                        # bound name (`import _hidden`) is skipped above, staying dead.
+                        if isinstance(node, ast.ImportFrom):
+                            proj.exported_names.add(alias.name)
+            # Alias re-export by assignment: `Public = impl.Thing` / `Public = _Internal`
+            # in a package __init__ exposes the RHS symbol as public API under `Public`.
+            # The scan above only sees defs/imports, so the aliased target was flagged dead
+            # (panel R26B). Gated on the assigned (public) name; root the RHS's referenced
+            # symbol (a bare Name or the leaf of an attribute like `impl.Thing`).
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (node.targets if isinstance(node, ast.Assign)
+                           else [node.target])
+                if any(isinstance(t, ast.Name) and not t.id.startswith("_")
+                       for t in targets):
+                    ref = _assign_rhs_name(node.value)
+                    if ref:
+                        proj.exported_names.add(ref)
 
     for node in _scope_defs(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
@@ -236,6 +372,36 @@ def _scope_defs(scope: ast.AST) -> list[ast.AST]:
 
     rec(scope)
     return out
+
+
+def _module_export_nodes(tree: ast.Module) -> list[ast.AST]:
+    """Module-scope defs/classes AND imports of a package `__init__`, looking *through*
+    control-flow blocks (`try/except`, `if/else`) but never into a def/class body. Used to
+    scan the export surface so a re-export nested in an optional-dependency `try/except` or
+    a version-backport `if` is still recognized as public API (panel R26A)."""
+    out: list[ast.AST] = []
+
+    # Distinct name (not the shared `rec` of the other walkers) so this helper doesn't join
+    # the same-named inner-helper cluster that the documented fan_in-fallback note covers.
+    def _descend(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                                  ast.ImportFrom, ast.Import, ast.Assign, ast.AnnAssign)):
+                out.append(child)   # module-scope def/class/import/alias; don't descend
+            else:
+                _descend(child)     # look through control flow
+    _descend(tree)
+    return out
+
+
+def _assign_rhs_name(value: ast.AST | None) -> str | None:
+    """The project symbol an alias assignment's RHS refers to: `Public = Thing` -> "Thing";
+    `Public = impl.Thing` -> "Thing" (attribute leaf). None for calls/constants/other."""
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    return None
 
 
 def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
@@ -282,14 +448,25 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
 
 
 def _index(proj: _Project) -> None:
+    nonmodule_ids: set[str] = set()
     for n in proj.nodes:
         proj.by_name.setdefault(n.name, []).append(n.id)
         proj.ids.add(n.id)
         if n.kind == NodeKind.CLASS:
             proj.class_by_name.setdefault(n.name, []).append(n.id)
         # Alias modules by their short name so `from pkg import submodule` resolves.
-        if n.kind == NodeKind.MODULE and "." in n.name:
-            proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
+        if n.kind == NodeKind.MODULE:
+            proj.module_by_qual[n.name] = n.id  # exact qualname -> module node (panel R13)
+            proj.module_ids.add(n.id)
+            if "." in n.name:
+                proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
+        else:
+            nonmodule_ids.add(n.id)
+    # A root-level `utils.py` defining `def utils()` gives the MODULE node and the FUNCTION
+    # node the SAME id (`utils.py::utils`). Keep such a shared id OUT of module_ids so the
+    # call-resolution filter in _ref_edges doesn't drop a real function call (the near-
+    # universal `main.py` + `def main()` pattern) — panel R14A, cardinal.
+    proj.module_ids -= nonmodule_ids
 
 
 def _apply_entrypoint_roles(proj: _Project) -> None:
@@ -310,10 +487,126 @@ def _apply_entrypoint_roles(proj: _Project) -> None:
                 and not node.name.startswith("_") \
                 and node.id.rsplit(".", 1)[0] in exported_class_ids:
             extra.add("exported")
-        if node.name in proj.main_calls and node.kind == NodeKind.FUNCTION:
+        # A class instantiated in a `__main__` block (`Worker().run()`) is a live entry
+        # root just like a called function — include CLASS, else the class (and its
+        # methods, rescued below) is false-flagged dead (panel DDD, cardinal).
+        if node.name in proj.main_calls and node.kind in (NodeKind.FUNCTION, NodeKind.CLASS):
             extra.add("main")
         if extra:
             node.roles = node.roles | extra
+
+
+def _seed_entrypoint_classes(proj: _Project) -> None:
+    """Keep a class live when an entry point targets one of its methods (the 'method
+    live, class dead' cardinal shape — panel DDD). Runs after all role assignment.
+
+    (1) A **`script`** root on a method (a console-script `Class.method` target, which is
+        module-path-matched and so collision-resistant) keeps its enclosing class chain
+        live (`App.run` -> `App`; `Widget.Inner.go` -> `Widget.Inner` and `Widget`).
+    (2) A class instantiated in a `__main__` block (it carries the `main` role from
+        `_apply_entrypoint_roles`) keeps the methods it *invokes* live — those whose name
+        appears in the same `main_calls` set (e.g. `Worker().run()` -> `run`).
+
+    Deliberately narrow (panel EEE): step (1) is restricted to the `script` role, and
+    step (2) to invoked method names — NOT every public method of every root-bearing
+    class — so a global bare-name collision (`exported`/`main` match by name across
+    modules) can't drag a whole unrelated class + its full method surface live. Only
+    ever adds roots (precision-safe — never flags live code dead)."""
+    by_id = {n.id: n for n in proj.nodes}
+    # (1) class(es) enclosing a `script`-rooted method (module-precise).
+    for n in proj.nodes:
+        if n.kind not in (NodeKind.METHOD, NodeKind.FUNCTION) or "script" not in n.roles:
+            continue
+        cid = n.id
+        while "::" in cid and "." in cid.split("::", 1)[1]:
+            cid = cid.rsplit(".", 1)[0]
+            owner = by_id.get(cid)
+            if owner is not None and owner.kind is NodeKind.CLASS:
+                owner.roles = owner.roles | {"script"}
+    # (2) invoked methods of a class instantiated in a `__main__` block.
+    main_class_ids = {n.id for n in proj.nodes
+                      if n.kind is NodeKind.CLASS and "main" in n.roles}
+    if main_class_ids:
+        for n in proj.nodes:
+            if n.kind is NodeKind.METHOD and not n.name.startswith("_") \
+                    and n.name in proj.main_calls \
+                    and n.id.rsplit(".", 1)[0] in main_class_ids:
+                n.roles = n.roles | {"main"}
+
+
+def _console_script_targets(root: Path) -> list[tuple[str, str]]:
+    """Parse pyproject.toml for console/GUI/plugin entry points (design §4, issue #21).
+
+    Returns (module_path_suffix, object_name) pairs from `[project.scripts]`,
+    `[project.gui-scripts]`, and every `[project.entry-points.*]` group. A spec is
+    `"pkg.mod:func"` (optionally `"pkg.mod:func [extra]"`); the module becomes a path
+    suffix (`pkg/mod.py`) and the object's leaf name is what we tag."""
+    pp = root / "pyproject.toml"
+    if not pp.is_file():
+        return []  # is_file() (not exists()) so a FIFO/dir named pyproject.toml is
+                   # skipped: read_text() would open a FIFO and block forever, and the
+                   # OSError guard below never fires on a blocking open (panel JJJ)
+    import tomllib
+    try:
+        data = tomllib.loads(pp.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+        return []  # malformed pyproject -> no roots, never a crash
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return []
+    tables: list[dict] = []
+    for key in ("scripts", "gui-scripts"):
+        tbl = project.get(key)
+        if isinstance(tbl, dict):
+            tables.append(tbl)
+    eps = project.get("entry-points")
+    if isinstance(eps, dict):
+        tables.extend(g for g in eps.values() if isinstance(g, dict))
+    out: list[tuple[str, str]] = []
+    for tbl in tables:
+        for spec in tbl.values():
+            if not isinstance(spec, str) or ":" not in spec:
+                continue
+            module, _, obj = spec.partition(":")
+            module = module.strip()
+            obj = obj.split("[", 1)[0].strip()  # drop any "[extra]" suffix
+            if module and obj:
+                base = module.replace(".", "/")
+                # The module may be a plain module (`pkg/mod.py`) OR a package whose
+                # target lives in its `__init__.py` (`pkg:main` -> `pkg/__init__.py`) —
+                # emit both candidates so a package-level entry point is rooted too
+                # (panel ZZ, cardinal-class). The extra candidate is harmless: it only
+                # matches a node that actually exists at that path.
+                out.append((base + ".py", obj))
+                out.append((base + "/__init__.py", obj))
+    return out
+
+
+def _apply_script_roles(proj: _Project) -> None:
+    """Tag console-script / entry-point targets with role `script` so a CLI's `main`
+    (the product, not dead code) isn't flagged stale for lack of an internal caller
+    (issue #21). Matched by object leaf-name AND module path suffix, so a same-named
+    function in an unrelated module isn't mis-rooted (precision over recall)."""
+    targets = _console_script_targets(proj.root)
+    if not targets:
+        return
+    by_name: dict[str, list[Node]] = {}
+    for n in proj.nodes:
+        if n.kind in (NodeKind.FUNCTION, NodeKind.METHOD):
+            by_name.setdefault(n.name, []).append(n)
+    for mod_suffix, obj in targets:
+        leaf = obj.split(".")[-1]  # "Class.method"/"func" -> the node's own name
+        for n in by_name.get(leaf, []):
+            filepart, _, qual = n.id.partition("::")
+            if not (filepart == mod_suffix or filepart.endswith("/" + mod_suffix)):
+                continue
+            # A `Class.method` target names a specific method — require the node's full
+            # qualified name to match, so a same-named method on a *different* class in
+            # the same file isn't also rooted (panel WW). Bare `func` targets match by
+            # leaf as before.
+            if "." in obj and qual != obj:
+                continue
+            n.roles = n.roles | {"script"}
 
 
 # -- pass 2: edges ----------------------------------------------------------
@@ -325,14 +618,90 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 _import_edge(proj, mod_id, rel, alias.name, node.lineno)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            internal = (node.level > 0) or node.module.split(".")[0] in proj.packages
+                _module_load_edge(proj, mod_id, rel, alias.name, node.lineno)
+        elif isinstance(node, ast.ImportFrom):
+            # `node.module` is None for a bare relative import (`from . import sib`,
+            # `from .. import x`) — a ubiquitous sibling/subpackage idiom. It is internal
+            # whenever it is relative; resolve the package base from the level so its
+            # module-load edge still fires (panel R14A, cardinal — else a class used only
+            # at the imported sibling's module scope is flagged dead).
+            internal = (node.level > 0) or bool(
+                node.module and node.module.split(".")[0] in proj.packages)
+            if not internal:
+                continue
+            base = _resolve_import_base(rel, node)
+            if base and node.module:
+                # `from X import y` loads module X (runs its top-level). Resolve X by its
+                # EXACT qualname so a same-basename module in another package is never
+                # falsely linked (panel R13). `y` may itself be a submodule X.y — try that
+                # too. This is what keeps a class used only at X's module scope live.
+                _module_load_edge_qual(proj, mod_id, rel, base, node.lineno)
             for alias in node.names:
-                _import_edge(proj, mod_id, rel, f"{node.module}.{alias.name}",
-                             node.lineno, leaf=alias.name, internal=internal)
+                if node.module:
+                    _import_edge(proj, mod_id, rel, f"{node.module}.{alias.name}",
+                                 node.lineno, leaf=alias.name, internal=internal,
+                                 pkg_base=base)
+                if base:
+                    # `from . import sib` imports the submodule `<base>.sib` — load it.
+                    _module_load_edge_qual(proj, mod_id, rel, f"{base}.{alias.name}",
+                                           node.lineno)
 
     _walk_scope(proj, rel, tree, parent="", class_qual=None)
+    _module_scope_edges(proj, rel, tree, mod_id)
     _global_state(proj, rel, tree)
+
+
+def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str) -> None:
+    """Calls and by-name references made by module-level *executable* code, attributed to
+    the module node. Top-level statements run when the module is loaded, so a class/function
+    used only here — a registry value, a dispatch-table entry, or a module-level
+    instantiation (`REGISTRY = Builder()`, `_JS = LangSpec(...)`) — is live whenever the
+    module loads. Without this the symbol has no incoming edge and live code is flagged dead
+    (panel R12, cardinal); the module node propagates this only when it is itself a load
+    root (the detector seeds a module that owns any root). Module-level *defs* are NOT
+    auto-reached (finding dead ones is dead-code's job) and imports are modelled by
+    `_import_edge`; this mirrors the class-body pass that attributes class-level uses to the
+    class node."""
+    call_funcs: set[int] = set()
+    for call in _direct_calls(tree):
+        call_funcs.add(id(call.func))
+        _call_edge(proj, rel, mod_id, None, {}, call)
+    # Module-level attribute reads (`RESULT = _E.compute`) on an unknown receiver need the
+    # same name-based REFERENCES fallback as the function-body pass, or a live member read at
+    # import is flagged dead — the read-side scope twin of the round-30 fix (panel R31A,
+    # cardinal). Module scope has no typed locals, so every receiver is unknown -> fallback.
+    for attr in _direct_attr_reads(tree, call_funcs):
+        _ref_edges(proj, mod_id, attr.attr, Relation.REFERENCES, rel, attr.lineno,
+                   is_method=True)
+    for nm in _direct_names(tree, call_funcs):
+        _ref_edges(proj, mod_id, nm.id, Relation.REFERENCES, rel, nm.lineno)
+    # A module-level *decorated* def runs its decorator(s) at import, which receive/register
+    # the def (the plugin/dispatch idiom `@register("x") def x`, or any wrapping decorator).
+    # So both the def and each decorator name are used at load — edge them from the module
+    # node, or a registry handler and the decorator itself are flagged dead while the
+    # equivalent dict-literal registry (`REGISTRY = {"x": x}`) is rescued (panel R15B). The
+    # plain `_direct_names` pass misses these: it skips def statements, and a bare-name
+    # decorator (`@memo`, no call) has no Name node it collects.
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) \
+                and stmt.decorator_list:
+            did = Node.make_id(rel, stmt.name)  # module-level def: qual is just its name
+            if did in proj.ids:
+                # INFERRED, not EXTRACTED: the decorator certainly *runs* at load, but
+                # whether it makes the def live (register) or just wraps it is heuristic —
+                # so a decorated stub stays ORANGE under the provenance ceiling, not RED
+                # (matches the route-resolver's INFERRED registration). Liveness still flows.
+                proj.edges.append(Edge(
+                    src=mod_id, relation=Relation.REFERENCES, dst_symbol=stmt.name,
+                    dst_id=did, weight=0.8, provenance=Provenance.INFERRED,
+                    location=f"{rel}:{stmt.lineno}:0", source="ast"))
+                # Attribute the decorator reference to the DEF (like _decorator_edges does in
+                # function scope), not the module node: a `@memo def f` is a use of `memo` by
+                # `f`. Edging it from the module instead would add a per-importer edge to the
+                # decorator's fan_in and could push a shared decorator over the god_object
+                # threshold (panel R16B). The def is reachable via the module->def edge above,
+                # so the decorator stays live.
+                _decorator_edges(proj, did, stmt, rel)
 
 
 def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
@@ -480,7 +849,21 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # Python ast walks only FunctionDef bodies below; without this the class
             # body's symbols are never edged -> live code flagged dead (matches the
             # tree-sitter extractor, which walks the whole class node).
-            for nm in _direct_names(child, set()):
+            # The class body runs the SAME three passes as a function body (calls, attribute
+            # reads, name refs) — it is the third scope edge-builder and must stay symmetric
+            # with `_module_scope_edges` and the FunctionDef branch, or a use that is edged in
+            # one scope is flagged dead in another (the class-body member call `KEPT = _e.m()`
+            # was edged in module/function scope but not here — oracle cardinal-matrix cell).
+            # `call_funcs` excludes each call's callee from the read/name passes so a call is
+            # not also double-counted as a REFERENCES.
+            cls_call_funcs: set[int] = set()
+            for call in _direct_calls(child):
+                cls_call_funcs.add(id(call.func))
+                _call_edge(proj, rel, cid, qual, {}, call)
+            for attr in _direct_attr_reads(child, cls_call_funcs):
+                _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel, attr.lineno,
+                           is_method=True)
+            for nm in _direct_names(child, cls_call_funcs):
                 _ref_edges(proj, cid, nm.id, Relation.REFERENCES, rel, nm.lineno)
             _walk_scope(proj, rel, child, parent=qual, class_qual=qual)
             _decorator_edges(proj, cid, child, rel)
@@ -506,10 +889,29 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # Attribute *reads* (e.g. a property `x.resolved`) -> REFERENCES, so a
             # used property/method isn't wrongly flagged dead.
             for attr in _direct_attr_reads(child, call_funcs):
-                tid = _resolve_member(proj, rel, class_qual, local_types,
-                                      attr.attr, attr.value)
+                tid, exact = _resolve_member(proj, rel, class_qual, local_types,
+                                             attr.attr, attr.value)
                 if tid:
                     _add_ref(proj, cid, attr.attr, tid, rel, attr.lineno)
+                    if not exact:
+                        # A property/attribute read through a declared (annotation) type is
+                        # the read-side twin of the call-site widening: the runtime object
+                        # may be a subclass / structural Protocol impl / duck-typed class,
+                        # so widen REFERENCES to all same-named members or the live override
+                        # (and its private helpers) is flagged dead (panel R21A, cardinal).
+                        _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel,
+                                   attr.lineno)
+                else:
+                    # Receiver type unknown (a constructor result `Config().threshold`, or an
+                    # unannotated parameter `def f(cfg): return cfg.threshold`): emit the
+                    # name-based REFERENCES fallback — the read-side twin of `_call_edge`'s
+                    # unknown-receiver CALLS fallback. Without it a live property/attribute read
+                    # on an unknown receiver (and its private helpers) is flagged dead — and an
+                    # unannotated-parameter attribute read is an everyday shape (panel R30A,
+                    # cardinal). Over-approximated through `_ref_edges` (only project symbols
+                    # resolve, INFERRED), exactly as the call path does.
+                    _ref_edges(proj, cid, attr.attr, Relation.REFERENCES, rel,
+                               attr.lineno, is_method=True)
             # Bare-name *value* references (not the callee of a call): a function or
             # class passed by name (`register(handler)`, `fn = worker`), or a class
             # accessed as `Color.RED` / `Widget.create()` (the receiver is a bare
@@ -552,10 +954,19 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
     line = call.lineno
 
     if isinstance(func, ast.Attribute):
-        tid = _resolve_member(proj, rel, class_qual, local_types, func.attr, func.value)
+        tid, exact = _resolve_member(proj, rel, class_qual, local_types, func.attr,
+                                     func.value)
         if tid:
-            return _add_call(proj, src_id, func.attr, tid, rel, line, weight=1.0,
-                             prov=Provenance.EXTRACTED)
+            _add_call(proj, src_id, func.attr, tid, rel, line, weight=1.0,
+                      prov=Provenance.EXTRACTED)
+            if not exact:
+                # Declared type is a hint (subclass / structural Protocol / duck typing):
+                # widen to every same-named method so a live override/implementation is
+                # never flagged dead (panel R20A, cardinal). The precise edge above stays
+                # EXTRACTED — `_dedup_edges` keeps the higher weight; the rest go AMBIGUOUS.
+                _ref_edges(proj, src_id, func.attr, Relation.CALLS, rel, line,
+                           is_method=True)
+            return
         # Receiver type unknown (not self/cls, not a locally-typed var): the name-only
         # bind to a lone same-named method is a guess, not an extraction (issue #10) —
         # `recv` may be a stdlib/third-party type. Mark it INFERRED. Weight stays 1.0
@@ -570,21 +981,29 @@ def _call_edge(proj: _Project, rel: str, src_id: str, class_qual: str | None,
 
 
 def _resolve_member(proj: _Project, rel: str, class_qual: str | None,
-                    local_types: dict[str, str], attr: str, recv: ast.AST) -> str | None:
-    """Resolve `recv.attr` to a member node id, scope-aware (self / local type)."""
+                    local_types: dict[str, str], attr: str,
+                    recv: ast.AST) -> tuple[str | None, bool]:
+    """Resolve `recv.attr` to a member node id, scope-aware (self / local type).
+
+    Returns (node_id, exact). `exact` is True only for a `self`/`cls` receiver, whose
+    runtime type IS the enclosing class (or a subclass, handled by `_propagate_overrides`).
+    A binding via a declared local/parameter TYPE is `exact=False`: the annotation is only
+    a hint — the runtime object may be a subclass, a structural `Protocol` implementer, or
+    an unrelated duck-typed class with the same method (panel R20A), so the caller must
+    widen to all same-named methods to stay cardinal-safe."""
     if not isinstance(recv, ast.Name):
-        return None
+        return None, False
     if recv.id in ("self", "cls") and class_qual:
         tid = Node.make_id(rel, f"{class_qual}.{attr}")
         if tid in proj.ids:
-            return tid
+            return tid, True
     cls = local_types.get(recv.id)
     if cls:
         for class_id in proj.class_by_name.get(cls, []):
             mid = f"{class_id}.{attr}"
             if mid in proj.ids:
-                return mid
-    return None
+                return mid, False
+    return None, False
 
 
 def _add_call(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,
@@ -798,35 +1217,104 @@ def _direct_calls(func: ast.AST) -> list[ast.Call]:
 def _ref_edges(proj: _Project, src_id: str, name: str, relation: Relation,
                rel: str, line: int, is_method: bool = False) -> None:
     cands = proj.by_name.get(name, [])
+    # A call/by-name reference must not bind to a MODULE node: `_index` aliases module
+    # nodes by their short name (for `from pkg import submodule` import resolution), but a
+    # `helper()` call or a value reference to `helper` is never a module — binding it to a
+    # same-basename module in another package falsely linked that module live, masking its
+    # dead code and inflating impact_of (panel R13B). Imports keep module resolution
+    # (`_import_edge` / module-load edges), which don't go through here.
+    if cands:
+        # Drop module candidates AND collapse duplicate ids: a function named like its own
+        # module (`def compute()` in `compute.py`) makes the MODULE and FUNCTION nodes share
+        # one id, which `_index` lists twice in by_name — without dedup `_ref_edges` sees two
+        # candidates and wrongly emits an AMBIGUOUS 0.5 edge for a single real target
+        # (panel R15B). dict.fromkeys keeps first-seen order.
+        cands = list(dict.fromkeys(c for c in cands if c not in proj.module_ids))
     loc = f"{rel}:{line}:0"
     if not cands:
         return  # external / builtin / unknown -> drop (call holes are unreliable)
     if len(cands) == 1:
-        # A receiver-based call (`recv.m()`) whose receiver type we couldn't resolve
-        # is a name-only guess even with one candidate (issue #10): INFERRED, not
-        # EXTRACTED. Weight unchanged, so it never under-counts liveness (cardinal-safe).
-        prov = (Provenance.INFERRED if is_method and relation is Relation.CALLS
-                else Provenance.EXTRACTED)
+        # A receiver-based member resolution (`recv.m()` OR a read `recv.attr`) whose receiver
+        # type we couldn't resolve is a name-only guess even with one candidate (issue #10):
+        # INFERRED, not EXTRACTED. Gated on `is_method` ALONE, not the relation — a name-based
+        # attribute READ (REFERENCES) is exactly as uncertain as a name-based CALL, and gating
+        # on CALLS left the read EXTRACTED, so a stub reached only via it shouted RED instead
+        # of ORANGE (panel R31B, inflation). Weight unchanged -> never under-counts (cardinal-
+        # safe); a bare-name reference (is_method=False) stays EXTRACTED (the name is exact).
+        prov = Provenance.INFERRED if is_method else Provenance.EXTRACTED
         proj.edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                                dst_id=cands[0], weight=1.0,
-                               provenance=prov, location=loc, source="ast"))
+                               provenance=prov, location=loc, source="ast",
+                               name_based=True))
         return
     # Several candidates: over-approximate so a live symbol is never called dead.
     w = round(1.0 / len(cands), 3)
     for cid in cands:
         proj.edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                                dst_id=cid, weight=w, provenance=Provenance.AMBIGUOUS,
-                               location=loc, source="ast"))
+                               location=loc, source="ast", name_based=True))
+
+
+def _resolve_import_base(rel: str, node: ast.ImportFrom) -> str | None:
+    """Absolute module qualname of a `from <module> import ...` target, resolving the
+    relative level against the importer's package. `from .conf import x` in `pkg/api.py`
+    -> `pkg.conf`; `from pkg2 import y` -> `pkg2`. Returns None if it can't be resolved."""
+    if node.level == 0:
+        return node.module
+    pkg = _module_qualname(rel).split(".")
+    # The importer's containing package: a package __init__ IS its package; a module file
+    # drops its own trailing name. Each level beyond the first drops one more component.
+    container = pkg if rel.endswith("__init__.py") else pkg[:-1]
+    keep = len(container) - (node.level - 1)
+    if keep < 0:
+        return None
+    base = container[:keep]
+    if node.module:
+        return ".".join([*base, node.module])
+    return ".".join(base) if base else None
+
+
+def _module_load_edge_qual(proj: _Project, src_id: str, rel: str, qualname: str,
+                           line: int) -> None:
+    """Link the importer to the EXACT module node named `qualname` (its top-level runs on
+    import). Resolved by exact qualname, so a same-basename module elsewhere is not linked
+    (panel R13). Module nodes are never dead-code candidates, so this only confers
+    liveness — a class used only at the imported module's top level stays live (panel R12)."""
+    m_id = proj.module_by_qual.get(qualname)
+    if m_id and m_id != src_id:
+        proj.edges.append(Edge(src=src_id, relation=Relation.IMPORTS, dst_symbol=qualname,
+                               dst_id=m_id, weight=1.0, provenance=Provenance.EXTRACTED,
+                               location=f"{rel}:{line}:0", source="ast"))
+
+
+def _module_load_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int) -> None:
+    """`import a.b.c` loads a.b.c (and its parent packages). Link to each that resolves to
+    a known module node, by exact qualname (panel R13)."""
+    parts = dotted.split(".")
+    for i in range(1, len(parts) + 1):
+        _module_load_edge_qual(proj, src_id, rel, ".".join(parts[:i]), line)
 
 
 def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
-                 leaf: str | None = None, internal: bool | None = None) -> None:
+                 leaf: str | None = None, internal: bool | None = None,
+                 pkg_base: str | None = None) -> None:
     root = dotted.split(".")[0]
     is_internal = internal if internal is not None else (root in proj.packages)
     if not is_internal:
         return  # external dependency, not a hole
     symbol = leaf or dotted.split(".")[-1]
-    cands = proj.by_name.get(symbol, [])
+    cands = list(dict.fromkeys(proj.by_name.get(symbol, [])))  # collapse duplicate ids (R15B)
+    if pkg_base and len(cands) > 1:
+        # Disambiguate by the import's package: `from pkg1 import helper` must not bind to a
+        # `helper` (function OR same-basename module, which `_index` aliases globally) in an
+        # unrelated pkg2 — keep only candidates whose owning module is the imported package
+        # or under it. Avoids a false cross-package link that masks dead code and inflates
+        # impact_of (panel R13B). Fall back to all candidates if none match (cardinal-safe).
+        scoped = [c for c in cands
+                  if (mq := _module_qualname(c.split("::", 1)[0])) == pkg_base
+                  or mq.startswith(pkg_base + ".")]
+        if scoped:
+            cands = scoped
     loc = f"{rel}:{line}:0"
     if not cands:
         if symbol in proj.module_consts:
@@ -916,15 +1404,50 @@ def _arity(func: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
     return len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs)
 
 
+def _str_elts(value: ast.AST | None) -> set[str]:
+    """String literals reachable in an `__all__` RHS, looking *through* concatenation so
+    `["a"] + ["b"]` and `("a",) + OTHER` both yield their literal names (non-literal
+    operands contribute nothing). A List/Tuple yields its string constants directly."""
+    if isinstance(value, (ast.List, ast.Tuple)):
+        return {e.value for e in value.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+        return _str_elts(value.left) | _str_elts(value.right)
+    return set()
+
+
 def _dunder_all(tree: ast.Module) -> set[str] | None:
+    """Names a module declares public via `__all__`. Recognizes every idiomatic build form,
+    not just a single list literal: `__all__ = [...]`, `__all__ = [...] + [...]`,
+    `__all__ += [...]` (AugAssign), and `__all__.extend([...])` / `.append("x")` calls.
+    Missing any of these dropped genuinely-exported symbols' `exported` role, so they were
+    flagged dead — live public API as dead, the cardinal sin (panel R28A). Returns None only
+    when no `__all__` is present at all (so the caller falls back to other export signals)."""
+    found = False
+    names: set[str] = set()
     for node in tree.body:
-        if isinstance(node, ast.Assign):
-            for t in node.targets:
-                if isinstance(t, ast.Name) and t.id == "__all__" \
-                        and isinstance(node.value, (ast.List, ast.Tuple)):
-                    return {e.value for e in node.value.elts
-                            if isinstance(e, ast.Constant) and isinstance(e.value, str)}
-    return None
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets):
+            found = True
+            names |= _str_elts(node.value)
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id == "__all__" and isinstance(node.op, ast.Add):
+            found = True
+            names |= _str_elts(node.value)
+        elif isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
+            call = node.value
+            func = call.func
+            # `__all__.extend([...])` / `__all__.append("x")`
+            if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) \
+                    and func.value.id == "__all__" and func.attr in ("extend", "append"):
+                found = True
+                for arg in call.args:
+                    if func.attr == "append" and isinstance(arg, ast.Constant) \
+                            and isinstance(arg.value, str):
+                        names.add(arg.value)
+                    elif func.attr == "extend":
+                        names |= _str_elts(arg)
+    return names if found else None
 
 
 def _main_block(tree: ast.Module) -> ast.If | None:
@@ -977,4 +1500,7 @@ def _ignored(path: Path, root: Path, ignore: list[str] | None) -> bool:
     if not ignore:
         return False
     rel = path.relative_to(root)
-    return any(rel.match(pattern) for pattern in ignore)
+    # Skip empty patterns: PurePath.match("") raises ValueError("empty pattern"), so a
+    # hand-edited stitchgraph.toml with `ignore = [""]` (or a direct extract_project call)
+    # would crash reindex with a raw traceback instead of returning a Result (panel R33B).
+    return any(rel.match(pattern) for pattern in ignore if pattern)

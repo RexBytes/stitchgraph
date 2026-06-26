@@ -156,3 +156,267 @@ The maintainer tags/releases manually; the version reads `1.0.0` only at that po
    re-litigate and agents don't "fix" intended behaviour.
 10. **Be honest in the bookkeeping** — dismiss false positives with a reason;
     keep the tree committed and `HEAD` verified.
+
+---
+
+## White-box symmetry closure (do this *before* the panel, not after)
+
+The multi-model panel is **black-box**: it samples a structured space and keeps
+hitting *different instances of the same gap*. That produces a long tail — you fix
+the reported instance, the next panel finds a sibling. The cure is to stop fixing
+*instances* and start closing *classes*, white-box, up front.
+
+**The recurring defect is a symmetry gap** (Lesson 5): a guard/behaviour present
+in one path but missing in its parallel siblings. The sibling set is almost always
+**small, finite, and enumerable by `grep`** — so enumerate it, fix every member in
+one pass, and pin the matrix with a test so the panel can never re-discover it.
+
+**Worked example (panels R30–R31).** A round-30 fix added an unknown-receiver
+name-based fallback to the *attribute-read* pass — but only in **one** of the three
+scope edge-builders. Two later panels then re-found the same class twice:
+
+| Scope edge-builder | `_direct_calls` | `_direct_names` | `_direct_attr_reads` |
+|---|---|---|---|
+| `_module_scope_edges` (module level) | ✅ | ✅ | ❌ → R31A cardinal |
+| `_walk_scope` ClassDef (class body)  | (names) | ✅ | ❌ → R31A cardinal |
+| `_walk_scope` FunctionDef (fn body)  | ✅ | ✅ | ✅ (round 30) |
+
+The same round-30 fix also (a) set the **wrong provenance** on its new edge
+(`_ref_edges` granted `INFERRED` only for `relation is CALLS`, so the new
+`REFERENCES` edge stayed `EXTRACTED` → a heuristic path shouted RED — R31B
+inflation) and (b) the parallel **corrupt-value** fix guarded the raw
+`all_node_ids` projection but **not** the two row mappers or `get_meta` (R31B
+crash). One fix, three follow-on blockers — all sibling sites the author didn't
+enumerate.
+
+**The method:**
+
+1. **Name the axes.** For any fix, write down what varies around it:
+   *scope* {module, class-body, function}; *expression kind* {call, attr-read,
+   name-ref}; *language extractor* {python, tree-sitter ×N}; *column × reader*
+   (every str-typed DB column × every site that reads it); *edge producer ×
+   provenance*. These axes ARE the matrix Lesson 5 names.
+2. **Enumerate the cells with `grep`, not memory.** e.g. `grep -n
+   '_direct_calls\|_direct_names\|_direct_attr_reads'` finds *all three* scope
+   builders at once; `grep -n 'row\["' src/.../store.py` plus "which reads bypass
+   the mappers" finds every corrupt-value site. The set is finite — list it.
+3. **Fix the whole column in one pass**, and trace each new artifact through the
+   *next* stage (a new `Edge`'s provenance → urgency; a new node id → every string
+   op that consumes it). Most R30–R31 fallout was an un-traced second-order effect.
+4. **Pin the matrix as an executable test**, so adding a new scope/language/column
+   without the guard fails CI instead of waiting for a panel:
+   - a **parametrized cardinal test** over `{module, class-body, function} ×
+     {call, attr-read, name-ref}` asserting live code is never flagged dead in any
+     cell;
+   - a **BLOB-in-every-str-column** test asserting no op raises on a corrupt index;
+   - a **provenance test**: a name-based member resolution (call *or* read) is
+     `INFERRED` → never RED.
+   A matrix test is worth more than N point regressions: it fails for the *cell you
+   haven't written yet*.
+
+**Rule of thumb:** when a panel finds a symmetry gap, the deliverable is not "patch
+that cell" — it's "enumerate the row/column, fix all of it, and add the matrix test
+that would have caught every cell." Treat a single-cell fix as incomplete by
+default.
+
+## Methods to adopt next (beyond panels + matrices)
+
+Ranked by expected leverage on stitchgraph's remaining tail:
+
+1. **Mutation testing** (`mutmut` / `cosmic-ray`) — measures *test strength*, not
+   coverage %. Surviving mutants name the contracts the suite doesn't actually
+   pin (e.g. a flipped `>=`/`>` in a confidence gate). Highest signal for "is the
+   suite real?"
+2. **Metamorphic / differential properties as standing Hypothesis tests** — the
+   ad-hoc "incremental == full reindex on find_stale AND fan_in across edit
+   orderings" harness should be a permanent property over *random* multi-file
+   projects and *random* edit sequences (add / delete / re-add / rename / move).
+   Metamorphic relation: final graph is independent of edit order.
+3. **Grammar-corpus tests per language** — for each tree-sitter grammar, a corpus
+   exercising *every node kind it emits*, asserting extraction maps it (directly
+   targets Lesson 7 "reach for the dependency's exact behaviour"; catches the
+   `name`/`csharp` class of surprises structurally).
+4. **AST-fuzzing the extractors** — Hypothesis strategies that generate random
+   *valid* source (or coverage JSON / config) into `reindex`/`ingest_trace`,
+   asserting two invariants only: never raise, never flag a reachable seed dead.
+   Coverage-guided (`atheris`) on the parse/ingest boundary for the crash class.
+5. **Edge-provenance audit** — enumerate every `Edge(...)` construction site and
+   assert its provenance is set deliberately (the R31B EXTRACTED-vs-INFERRED bug
+   was an un-audited producer). Pair with a "no RED on non-EXTRACTED" property.
+6. **Parallel-site lint** — a cheap repo test that asserts structural symmetry
+   directly: the scope edge-builders call the same pass set; no raw `row["id"]`
+   string-typed read exists outside the guarded mappers. Fails the moment a new
+   sibling diverges.
+
+These convert "stochastic panel rediscovery" into "structural guarantee," which is
+where the long tail actually ends.
+
+## The differential-oracle harness (the tail-killer)
+
+A review panel is **expensive black-box sampling** (several agents × minutes ×
+tokens) of a structured space. A **differential oracle** is **cheap deterministic
+sampling of the same space** (seconds, free, every CI run): generate an input,
+compute the answer two independent ways, assert they agree. Move tail-hunting from
+panels to oracles; reserve panels for discovering *novel classes* no oracle covers.
+
+### The layer insight (why panels kept finding what property tests missed)
+
+stitchgraph is a pipeline: **source → (extract) → graph → (mutate incrementally) →
+graph → (algebra) → answer.** Oracles must be installed at *each* layer; a green
+oracle one layer down says nothing about the layer above.
+
+| Layer | Oracle that exists today | Status |
+|---|---|---|
+| **algebra** (graph → answer) | `test_properties.py`: GraphBLAS == pure-Python; `find_stale` never flags a reachable node; reverse-reachable is the inverse — over *random adjacency graphs* | **covered & converged** — no graph-level defect in rounds 28–31 |
+| **incremental** (graph → graph) | only fixed-case tests (`test_incremental_*`, the function-move differential) | **partial** — needs a generator |
+| **extract** (source → graph) | only fixed-case per-language tests + the scope×attr matrix | **partial** — needs a generator |
+| **boundary** (corrupt/hostile input) | fixed BLOB-every-column + safety tests | **partial** — needs a fuzzer |
+
+This is the whole story of rounds 28–31: the property tests stayed green because
+the graph layer is solid, while **every real defect lived in the extract and
+incremental layers** — which have fixed-case tests but **no generators**. The
+tail ends when those two layers get the same generator-backed oracle the graph
+layer already has.
+
+### The three oracles to build (Hypothesis, in `tests/test_properties.py`)
+
+1. **Incremental differential** (highest leverage — the richest defect vein, rounds
+   22/24/29/31).
+   - *Generator:* a random small multi-file project, then a random *edit sequence*
+     — add / delete / re-add / rename-symbol / move-symbol-between-files / empty-a-file
+     / introduce-a-homonym, applied via `Store.replace_file`.
+   - *Oracle:* a full `sg.reindex` of the final on-disk state.
+   - *Assert:* incremental == full on `find_stale`, `fan_in`, and `find_holes`.
+     (Metamorphic corollary: the final graph is independent of edit order.)
+   - Hypothesis *shrinks* a failure to the minimal project+sequence — the repro the
+     panel would have spent an agent to construct. Would have auto-caught R29A and
+     R31A's fan_in inflations.
+2. **Cardinal source-matrix** (rounds 28/30/31).
+   - *Generator:* random *valid* source placing a defined-and-used symbol across the
+     axes — scope {module, class-body, function} × use-kind {call, attribute-read,
+     name-ref, subscript, decorator, annotation} × indirection {direct, via-unannotated-
+     param, via-constructor-result, via-subclass}.
+   - *Oracle:* the symbol is reachable from a seeded entry point by construction.
+   - *Assert:* reachable-by-construction ⟹ never in `find_stale` at confidence ≥ 0.5.
+3. **Corrupt-store / hostile-input fuzz** (rounds 29/30/31).
+   - *Generator:* take a valid index and mutate it — set a random column to a BLOB /
+     NaN / inf / bad-enum string, truncate, drop a column; OR feed random bytes as
+     source / coverage / config.
+   - *Assert:* every op returns a `Result` (never raises) and emits no `Infinity`/`NaN`
+     in `--json`. (`atheris` coverage-guided fuzzing is the heavier upgrade.)
+
+### Economics and division of labour
+
+- **Oracles own the tail.** They re-run every CI push in seconds for $0 and fail on
+  the *cell you haven't written yet*. A bug a full panel took ~20 min and 6 agents to
+  surface, a generator surfaces (and shrinks) in seconds, repeatably.
+- **Panels own novelty.** Their value is finding a *new class* an oracle's generators
+  don't yet reach (a new language quirk, a new envelope contract). Once a panel finds
+  a class, the deliverable includes *extending the generator* so the oracle owns it
+  thereafter — that is how the panel cadence trends to zero.
+- **Mutation testing keeps the oracles honest** — it measures whether the suite
+  (oracles included) actually pins the contracts, vs merely executing them.
+
+### Keep oracles cheap (or you've just moved the long tail)
+
+An oracle that is getting complicated is a smell: a 500-line "random valid project"
+generator has its own bugs and blind spots, and maintaining it *is* a new long tail.
+A good oracle is cheap because it leans on something that already exists:
+
+- **a strong invariant at a chokepoint** (the row mapper: "every mapped field has its
+  declared dataclass type" — ~40 lines, schema-derived, no generator), or
+- **the real codebase as the corpus** (don't *generate* a project; `src/` is already a
+  large valid multi-file one — apply a *mechanical* edit and diff incremental vs full), or
+- **a small parametrized matrix** (a dozen fixed scope×use-kind cells, not synthesized
+  source).
+
+Reach for Hypothesis/`atheris` generators only when none of those three can cover the
+case. If an oracle creeps past ~50 lines, stop and find the chokepoint invariant instead.
+
+### Oracles are project-specific, and they rot
+
+There is no generic oracle set — each project's oracles are **harvested from its
+architecture** in an explicit design step. The reusable part is the *checklist of
+shapes*, not the oracles:
+
+- **Differential** — anywhere the system computes one answer two independent ways, that
+  pair is a free oracle (here: full vs incremental reindex; GraphBLAS vs pure-Python).
+- **Chokepoint invariant** — a single point all data flows through, with a shape/type
+  contract (the row mappers; the `Result` envelope).
+- **Metamorphic** — a relation that holds regardless of path (edit-order independence,
+  reindex idempotence, add-then-remove == no-op).
+- **Declared contract** — never-raise, precision-over-recall, confidence ∈ [0,1].
+
+Same four questions, different answers per project: *where is the redundancy, the
+chokepoint, the symmetry, the promise?*
+
+Because oracles are derived from the architecture, **they go stale when the architecture
+moves** — budget irregular re-validation:
+
+- **The chokepoint moves.** A new raw query that bypasses the guarded mapper silently
+  voids the corrupt-store oracle's coverage (rounds 30–31 were exactly this). Guard with
+  the **parallel-site lint** ("no raw `row[...]` read outside the mappers").
+- **The oracle passes for the wrong reason** (false-clean — a consumer-level oracle that
+  never hit the path). Guard with **mutation testing as the meta-oracle**: inject a bug;
+  if nothing catches it, an oracle has gone blind.
+- **The invariant itself changes** (a field becomes legitimately optional; a new enum
+  value). Guard by **tying the oracle to the single source of truth** (schema/dataclass)
+  so it tracks the change instead of needing a hand-edit.
+
+Treat oracles as a **small living layer**, re-derived when a change moves a chokepoint or
+alters an invariant — add "did this move a chokepoint / change an invariant? revisit the
+oracle" to the review checklist. Cheap oracles are also cheap to keep valid.
+
+## Partition ownership of defect classes (discover → assign → audit)
+
+The strategy that ends the tail: **every defect class has exactly ONE owning verification
+layer, and the other layers explicitly disown it.** The win is not "more layers" — it's
+that no class is left in a *seam* (half-covered by two layers that both report green) or
+left ownerless (rediscovered by panels round after round). One owner per class, the way
+the codebase keeps one producer per fact.
+
+The layers and what each is structurally best at owning:
+
+| Layer | Owns the class of… | Cost / cadence |
+|---|---|---|
+| **Oracle** (`tests/oracles/`) | differential properties (two computations must agree) + chokepoint/metamorphic invariants | cheap, every push |
+| **Mutation** (`scripts/mutate.py`) | "do the tests/oracles actually bite?" (test-strength) | medium, on demand / release |
+| **Panel** (multi-model) | *novelty* — a class no cheap layer covers yet | expensive, per round |
+| **Static** (ruff/mypy) | type/lint defects | cheap, every push |
+
+### How to partition — you DISCOVER it, you don't design it
+
+You cannot enumerate a system's defect classes up front (the spec is discovered through
+review — Rice's theorem). So:
+
+1. **Wait and watch first.** Run panels. A class that *recurs across rounds* is the
+   signal — it's a class with no owner (it was being "covered" by luck, not construction).
+   Don't pre-build oracles for imagined classes; build them for classes the panel proves
+   are real and recurring.
+2. **Assign by shape.** For the recurring class, ask the four-shape question (differential
+   / chokepoint-invariant / metamorphic / declared-contract). The shape that fits names
+   the cheap owner. If none fits cheaply, it stays **panel-owned** until a shape emerges.
+3. **Verify the owner is EXHAUSTIVE, then disown elsewhere.** A false owner is worse than
+   none: a consumer-level "corrupt-store" check that only hits one path *looks* like an
+   owner but false-cleans. Make the owner total (schema-derived, chokepoint-located), then
+   *write down* that the other layers don't own it (e.g. "reach.py filters are
+   oracle-owned; mutation cannot reach them").
+4. **Convergence signal.** The panel cadence trending toward zero new classes IS the proof
+   the partition is (currently) complete — not "no bugs", but "no *unowned* classes left".
+
+### Occasional retest — ownership rots, so audit the boundaries
+
+A partition is only valid for the architecture it was drawn on. Re-validate on a schedule
+(release / nightly / on any structural change), NOT every push:
+
+- **Chokepoint moved?** A new code path that bypasses the owning chokepoint silently voids
+  ownership (rounds 30–31: a raw query bypassed the guarded mapper). → **parallel-site lint.**
+- **Owner gone blind?** An oracle that passes for the wrong reason. → **mutation as the
+  meta-oracle.**
+- **Class boundary shifted?** A new sub-case the owner's generator/matrix doesn't reach. →
+  re-derive the owner from the single source of truth (schema/dataclass), and when a panel
+  *does* surface a new instance, the fix includes *extending the owner* so it stays total.
+
+The discipline in one line: **discover classes by watching panels; give each recurring
+class one exhaustive owner; disown it everywhere else; re-audit the boundaries when the
+architecture moves.**

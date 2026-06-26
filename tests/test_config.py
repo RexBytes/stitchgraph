@@ -45,3 +45,19 @@ def test_ignore_glob_skips_files(tmp_path, monkeypatch):
     sg.reindex(store, str(tmp_path))
     assert store.nodes_by_name("boom") == []  # skipped by the ignore glob
     store.close()
+
+
+def test_include_tests_defaults_true_and_respects_override(tmp_path):
+    """Mutation (scripts/mutate.py on config.py): the `include_tests` default flips
+    True->False unnoticed — no test pinned it. Absent key must default True; an explicit
+    false must be honoured."""
+    from stitchgraph.core.config import load_config
+    # load_config(start) searches `start` (a directory) upward for stitchgraph.toml.
+    no_key = tmp_path / "nokey"
+    no_key.mkdir()
+    (no_key / "stitchgraph.toml").write_text("[entry_points]\ninclude = []\n")
+    assert load_config(no_key).include_tests is True
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    (explicit / "stitchgraph.toml").write_text("[entry_points]\ninclude_tests = false\n")
+    assert load_config(explicit).include_tests is False

@@ -594,6 +594,88 @@
       ],
       "findings": {},
       "theme": "CLEAN (all three FINDINGS: none) \u2014 second consecutive clean full-3-model panel on e5785fa; 1.0.5 gate met (streak 2). Independent sweep: envelope contract across 15 ops, MCP end-to-end (risk path-omitted schema valid), multi-language cardinal repos (metaclass/class-body/nested-def/arrow-in-arrow/forward-ref/cross-language route+fetch \u2014 none false-dead), adversarial risk/report (worktree/submodule/spaces/relative-db/deleted-root) all clean. Dogfood 3 advisory / 0 holes."
+    },
+    {
+      "id": "R33",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2,
+        "HIGH": 3
+      },
+      "theme": "1.0.6 full-diversity (opus\u00d72\u00b7sonnet\u00d72\u00b7haiku\u00d72). 5 blockers fixed at root: Ruby/PHP module-level script rooting (CARDINAL), replace_file erasing runtime role + has_runtime inflation (CARDINAL), empty-string ignore glob crash, impact_of provenance/confidence inflation, get_matrix/summarize_subsystem scope-prefix bleed. Each owned by a regression test."
+    },
+    {
+      "id": "R34",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 3
+      },
+      "theme": "1.0.6. 3 blockers: trace_path provenance inflation (provenance-demotion column missed this sibling), cross-language bare-name widening on incremental path (same_lang SQL filter + polyglot oracle), runtime _by_suffix path-boundary inflation. Plus broken-config-test fix + mutation green-baseline guard."
+    },
+    {
+      "id": "R35",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2,
+        "HIGH": 2
+      },
+      "theme": "1.0.6. 2 cardinals (Go package-directory var-initializer rooting; Express method-reference route handler) + 2 inflations (coverage bool-as-int line; cross-root coverage suffix exact-match-first). Each owned."
+    },
+    {
+      "id": "R36",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "1.0.6. 1 cardinal: C++ translation-unit static-init liveness (reachability-driven _live_set fixpoint). Envelope non-finite clamp hardening (latent). 4/6 reviewers clean, 1 invalid."
+    },
+    {
+      "id": "R37",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2
+      },
+      "theme": "1.0.6. 2 cardinals: module/symbol id-collision module-load rooting (JS+Python); cross-file re-export on incremental replace_file (exported_ids exact-convergence protocol + oracle). _plain non-finite drop. 3/6 clean, 1 invalid, 1 non-blocking."
+    },
+    {
+      "id": "R38",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "1.0.6 CLEAN \u2014 first 3-layer-clean round. Zero valid blockers across all 6 reviewers (extraction/resolution, operations/metrics, GraphBLAS parity, incremental+trace, hostile inputs, full CLI). 1 finding invalid (SUBMITS_TO premise/direction), 1 latent non-blocking meta/_plain consistency item closed. Panel clean + oracle suite green (348 tests) + mutation clean (envelope 17/17, config 4/4). Streak 1 of 2."
+    },
+    {
+      "id": "R39",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "1.0.6 CLEAN \u2014 SECOND consecutive 3-layer-clean round (gate met, streak 2). All 6 reviewers FINDINGS:0 across extraction/resolution (deep multi-language syntax, cross-language isolation), operations/metrics/GraphBLAS parity, incremental+trace long sequences, hostile inputs/adapters/corrupt-DB, full CLI sweeps. Panel clean + oracle suite green (348 tests) + mutation clean (envelope 17/17, config 4/4). Dogfood exact."
     }
   ]
 }

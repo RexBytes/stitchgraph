@@ -25,6 +25,13 @@ except ModuleNotFoundError:  # pragma: no cover
 _EXT = {".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
         ".ts": "typescript", ".tsx": "tsx"}
 _VERBS = {"get", "post", "put", "delete", "patch", "all", "use"}
+# Receivers that are HTTP *clients*, not Express apps/routers: `axios.post("/x")`,
+# `http.get("/x")` are client calls (the js-fetch resolver models them as SUBMITS_TO), not
+# server route registrations — skip them so they don't become phantom ROUTE nodes (panel
+# R16B). Deny-list only (not an app/router allow-list): mislabelling a real route would drop
+# its handler's only root and risk a false-dead, so keep every non-client receiver.
+_CLIENT_RECEIVERS = {"axios", "http", "https", "fetch", "got", "ky", "superagent",
+                     "request", "xhr", "needle", "phin"}
 
 
 class ExpressRouteResolver:
@@ -41,6 +48,9 @@ class ExpressRouteResolver:
                     p in {"node_modules", ".git", "dist", "build"}
                     for p in path.relative_to(ctx.root).parts):
                 continue
+            if not path.is_file():
+                continue  # skip FIFOs/special files: read_bytes() opens a FIFO
+                          # and blocks forever; the OSError guard never fires (panel GGG)
             lang = _EXT[path.suffix]
             if lang not in parsers:
                 try:
@@ -98,6 +108,15 @@ def _express_call(call, src):
     verb = src[prop.start_byte:prop.end_byte].decode() if prop else ""
     if verb not in _VERBS:
         return None
+    obj = fn.child_by_field_name("object")
+    recv = ""
+    if obj is not None and obj.type == "identifier":
+        recv = src[obj.start_byte:obj.end_byte].decode()
+    elif obj is not None and obj.type == "member_expression":
+        p = obj.child_by_field_name("property")  # `this.http.get` -> trailing `http`
+        recv = src[p.start_byte:p.end_byte].decode() if p else ""
+    if recv.lower() in _CLIENT_RECEIVERS:
+        return None  # client HTTP call, not a server route
     args = call.child_by_field_name("arguments")
     if args is None:
         return None
@@ -107,10 +126,19 @@ def _express_call(call, src):
     path = src[string_args[0].start_byte:string_args[0].end_byte].decode().strip("`'\"")
     if not path.startswith("/"):
         return None
-    # last identifier argument is the handler reference
+    # The handler is the last reference argument. It may be a bare identifier
+    # (`handleRequest`) OR a method reference (`ctrl.handleRequest` / `this.handleRequest`)
+    # — a member_expression. Resolve the latter by its property (method) name: omitting it
+    # left a live route handler method with no ROUTES_TO edge, flagged dead (panel R35B,
+    # cardinal — the bare-function case worked, the method case didn't: a symmetry gap).
     handler = None
     for a in reversed(args.children):
         if a.type == "identifier":
             handler = src[a.start_byte:a.end_byte].decode()
             break
+        if a.type == "member_expression":
+            prop = a.child_by_field_name("property")
+            if prop is not None:
+                handler = src[prop.start_byte:prop.end_byte].decode()
+                break
     return verb.upper() if verb not in ("all", "use") else "ANY", path, handler

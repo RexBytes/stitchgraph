@@ -4,6 +4,190 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.6] — 2026-06-25
+
+**Field-fix patch — entry-point coverage (#20/#21/#22) that grew into a robustness +
+cross-language cardinal-hardening release.** Under sustained multi-model adversarial-panel
+review, the entry-point work surfaced a family of cardinal-class false-deads (live code
+flagged dead) across the tree-sitter languages — Python↔tree-sitter rooting asymmetries and
+grammar/extension edge cases — plus crash/hang hardening (FIFO/special files, malformed
+coverage JSON and `stitchgraph.toml`, deep-AST `RecursionError`) and a documentation
+correction. The cardinal fixes only ever *add* roots (precision-safe). Confirmed by full
+three-model panels.
+
+**Final hardening rounds (R33–R39).** A deeper full-diversity panel campaign (opus×2 ·
+sonnet×2 · haiku×2 per round) plus a three-layer release gate — adversarial panel +
+deterministic oracle suite (`tests/oracles/`) + in-house mutation meta-oracle
+(`scripts/mutate.py`) — drove the last veins of the cardinal/inflation classes to closure,
+each owned by a regression test or oracle so future panels don't re-spend budget:
+
+- More language execution-model rooting: Ruby/PHP module-level scripts, Go package-directory
+  `var`/`init` initializers, C++ translation-unit static initializers (reachability-driven),
+  and the module/symbol id-collision case (`Service.js` + `class Service`).
+- `replace_file` incremental convergence: runtime-role preservation, language-aware name
+  resolution (no cross-language bind), and exact cross-file `exported`-role convergence via a
+  new `exported_ids` parameter.
+- Provenance-demotion completed across the column (`trace_path` joined
+  `impact_of`/`get_callers`); `get_matrix`/`summarize_subsystem` id-boundary scoping;
+  coverage path-suffix and bool-as-int fixes; envelope non-finite clamp + `_plain` covering
+  all result/meta values.
+
+Released on a **two-consecutive-3-layer-clean** gate (rounds R38–R39: panel clean + oracle
+suite green + mutation clean), RRS 93.3/100. The maintainer applies the version tag.
+
+### Fixed
+
+- **CARDINAL: a tree-sitter framework-subclass is no longer flagged dead while its methods
+  are live.** `_seed_callback_roles` (tree-sitter) marked callback *methods* with the
+  `callback` role but never marked the enclosing *class* — the Python extractor's
+  `_apply_callback_roles` has a `classes_with_callbacks` second pass that the tree-sitter
+  side was missing (a Python↔tree-sitter symmetry gap). So a framework subclass in any
+  tree-sitter language (a Rails `ApplicationController`, a React `Component`, …) that wasn't
+  otherwise exported or constructed had its **class** surface as dead code while its hook
+  methods stayed live — the only release-blocking class of bug (live code flagged dead). The
+  class-rooting pass is now mirrored. Tie is to *having* callback methods, so a bare unused
+  subclass with no overrides still flags.
+- **CARDINAL: C/C++ in-class member functions now root their class.** C/C++ map every
+  `function_definition` to FUNCTION (there is no separate method node), so the five
+  method-based class-rooting passes (exported / test / callback / main / constructor), which
+  key on METHOD, silently skipped every C++ method — a live Qt/framework subclass and its
+  methods were flagged dead. In-class member functions are now normalized to METHOD, so all
+  five passes work for every language.
+- **CARDINAL: a C# `internal` entry-point class is no longer flagged dead.** Idiomatic C#
+  (`internal class Program { static void Main }`) has a non-public `Main`, so the class never
+  gets the `exported` role, and the tree-sitter extractor had no pass to root the enclosing
+  class of a `main`-role method (the Python extractor does). A new `_seed_main_classes` pass
+  mirrors the Python rescue.
+- **CARDINAL: public interface/trait members are no longer flagged dead.** Members of an
+  exported interface/trait are public API but, being implicitly public (no visibility token),
+  never got a per-method `exported` role, and the down-propagation pass was gated to JS/TS —
+  so a `pub trait` (Rust), `public interface` (Java/C#), or interface/trait (PHP) member,
+  including body-bearing `default` methods, was flagged dead. A new
+  `_seed_exported_interface_methods` pass down-propagates `exported` from the container.
+- **CARDINAL: a C++ class in a `.h` header is no longer flagged dead.** `.h` was mapped to
+  the C grammar, which has no class/namespace/template — so a C++ class in a `.h` header
+  (the dominant C++ header extension; header-only and split header/source layouts are
+  ubiquitous) mis-parsed and surfaced as dead code. `.h` is now resolved to C or C++ by
+  content.
+- **CARDINAL: a module node colliding with a same-named symbol no longer loses its role.**
+  A bash `run.sh` defining `run()`, or a JS test file `tests/Service.js` defining
+  `class Service`, produced two nodes with the same id; the store's `INSERT OR REPLACE`
+  dropped the MODULE node and with it its module-only role (`script`/`test`, which has no
+  redundant assignment), flagging the whole file's code dead. A shadowed module node's roles
+  are now merged into the surviving symbol node.
+- **CARDINAL: a C++ class/struct in a `.h` header used from a `.cpp` is no longer flagged
+  dead.** C and C++ were separate name-resolution buckets, but real projects reference symbols
+  freely across `.h`/`.c`/`.cpp` (and a `.h` may be parsed under either grammar), so a header
+  type used by the other dialect never resolved. C and C++ now share one resolution bucket
+  (precision-safe — it only adds edges). The `.h`→C/C++ content sniff was also broadened
+  (access specifiers, `virtual`/`operator`/`nullptr`) so struct-with-methods headers route to
+  C++ and their members are extracted.
+- **CARDINAL: Rust trait-impl methods are no longer flagged dead.** A method in an
+  `impl Trait for X` block can't carry `pub` and is invoked via language sugar
+  (`Display::fmt` via `{}`, `Iterator::next` via `for`, operator overloads) with no call node,
+  so it got no `exported` role and no inbound edge. A new `_seed_trait_impl_methods` pass roots
+  trait-impl methods (a bare inherent `impl X` still flags).
+- **A JS/TS `export { X }` no longer roots a same-named symbol in another language**
+  (a dead Ruby/Go/… `X` was hidden by an unrelated JS re-export). The reexport pass is now
+  language-guarded — a precision (false-negative) fix, not cardinal.
+- **CARDINAL: a class with any reachable member is never flagged dead.** General invariant
+  (a live method implies a live class — the class must exist for the method to run) added to
+  `find_stale`'s candidate filter, as the backstop for the whole "class dead while a member
+  is live" family across every language/idiom (callback/main/exported/interface/trait, and
+  C# `partial class` parts split across files). A class is flagged only when it AND all its
+  members are unreached. (Side effect: stitchgraph's own `ConfigOnlyDetector` is now kept live
+  — its `detect` is reachable via the `EntryPointDetector` protocol call — so dogfood is now
+  2 advisory, was 3.)
+- **CARDINAL: C# top-level statements root their local functions.** A `.cs` file using the
+  default .NET 6+ top-level-program form (`Program.cs` with no explicit `Main`) is the
+  program's entry point, like bash's top-level body and Python's `__main__`; its local
+  functions were flagged dead. Such files are now rooted as a `script`.
+- **`find_symbol`/`impact_of`/`trace_path`/`get_callers`/`get_callees` no longer crash on a
+  non-UTF-8 symbol name.** A lone surrogate (invalid-UTF-8 argv decoded via `surrogateescape`)
+  or embedded NUL bound into SQLite raised `UnicodeEncodeError`/`ValueError`; the store lookups
+  now refuse (no match) so the op returns a `Result` instead of a traceback.
+- **A resolver can no longer abort `reindex`.** Resolvers are heuristic enrichment, but a
+  `DELETE TABLE …` SQL string in analyzed source made sqlglot hand the SQL resolver a `bool`
+  `.this`, raising `AttributeError` and crashing the whole reindex. `run_resolvers` now skips
+  a resolver that raises (the base graph + other resolvers are unaffected), and the SQL
+  resolver guards on `Expression` before walking. A repo with stray SQL no longer fails to
+  index.
+- **`ingest_trace` no longer OOMs on a corrupt Go coverprofile.** A line with a huge end-line
+  expanded `range()` into a multi-GB set; the span is now bounded (>1M lines dropped),
+  matching the JSON/LCOV "empty on any problem" hardening.
+- **Path-taking ops refuse instead of crashing on a hostile path.** An over-long path,
+  embedded NUL, or lone surrogate passed to `reindex`/`ingest_trace`/`risk` (or read by
+  `find_config`/`load_coverage`) raised `OSError`/`ValueError`/`UnicodeError` from a
+  `stat()`/`resolve()`/bind. `reindex` now degrades to an empty index (like a missing path);
+  the others refuse cleanly.
+- **A malformed `[review] threshold` no longer silently disables review.** `threshold = "nan"`
+  (or out-of-range) made `confidence < nan` always False; it now clamps to the default.
+- **`reindex` no longer aborts on a pathologically deep source file.** A huge flat
+  expression (`X = a + b + c + …`, realistic in generated SQL/HTML/string-builder code)
+  overflows the recursive AST walk with `RecursionError`, which was not in the per-file
+  `except (SyntaxError, UnicodeDecodeError, OSError)` and ran outside the `try` — so a single
+  bad file aborted the **entire** reindex and left an empty DB. `RecursionError` is now
+  caught per file in both extractors and the resolver `parse()` helper, honouring the
+  "skip the one file, never abort the whole reindex" contract. The route resolvers
+  (express/jsfetch/spring) run their **own** recursive descent over a tree-sitter tree,
+  bypassing that helper, so `run_resolvers` now also guards each resolver — a deep `.js`
+  expression degrades to "no extra edges" instead of aborting the reindex. (Library hygiene:
+  the SCC passes that raise `sys.setrecursionlimit` now restore it; the tree-sitter
+  RecursionError skip no longer leaves an orphan module node.)
+- **`[project.scripts]` / `[project.entry-points]` console entry points are detected as
+  roots** (issue #21). `design.md` §4 lists them as roots and `PythonLibraryDetector`
+  already collected a `script` role, but nothing parsed `pyproject.toml` to set it — so a
+  CLI's `main` with no internal caller was false-flagged dead (the common case, including
+  stitchgraph's own `stitchgraph = "...cli:main"`). The Python extractor now reads
+  `[project.scripts]`, `[project.gui-scripts]`, and `[project.entry-points.*]` and tags the
+  target with role `script`, matched by object name **and** module path so a same-named
+  function elsewhere isn't mis-rooted.
+- **A bash script's top-level body is a root** (issue #22 — the bash analogue of #8). A
+  script that runs its work as bare top-level statements (no `main()`) had zero entry-point
+  seed and zero inbound edges to its functions, so `find_stale` flagged all of them. Each
+  bash script's module node is now seeded as a root (bash's `__main__`) and its top-level
+  calls are rooted — direct, via `$(...)` command substitution, and via `trap NAME` — so
+  those functions are correctly live. A function reached by nothing (including its own top
+  level) still flags, exactly as intended.
+- **`reindex` no longer hangs on a FIFO / special file.** `open()` on a named pipe with no
+  writer blocks forever, and the `except OSError` guards never fire (the open doesn't
+  error, it blocks). Every file walk that reads bytes/text now skips non-regular files via
+  `path.is_file()`: the Python and tree-sitter extractors, the resolver `parse()` helper,
+  and the four route/template resolvers that do their own `rglob` walk
+  (`express`, `jsfetch`, `spring`, `html`) — the last of which run on every `reindex`, so a
+  FIFO named `*.js`/`*.java`/`*.html` would otherwise hang the primary entry point. The
+  fixed-path `pyproject.toml` read in `_console_script_targets` (the #21 path, run on every
+  reindex) was also guarded with `exists()` — which is `True` for a FIFO — and is now
+  guarded with `is_file()`, so a FIFO named `pyproject.toml` no longer hangs reindex.
+  `load_coverage` (reached via `ingest_trace`) was hardened the same way: a FIFO trace path
+  now returns empty (its documented "empty on any problem" contract) instead of blocking.
+- **`ingest_trace` no longer crashes on a structurally-malformed coverage.py JSON report.**
+  `_parse_json` guarded `executed_lines` *values* but assumed the `files` object — and each
+  per-file entry — was a dict, so valid JSON of the wrong *shape* (`files` a list, an entry a
+  string/null, `executed_lines` a dict) raised an uncaught `AttributeError` through the public
+  `ingest_trace` op/CLI. It now isinstance-gates the shape and degrades to empty, matching the
+  "empty on any problem" contract and the already-tolerant LCOV/Go parsers.
+- **A malformed `stitchgraph.toml` no longer crashes every CLI command.** `_load` chained
+  `.get().get()` over the config's sections, so a hand-edited file with a section that is not
+  a table (`entry_points = "oops"`), a non-numeric `threshold`, or a non-list `include` raised
+  `AttributeError`/`ValueError` — and config is read on every command. Each section/value is
+  now shape-guarded and falls back to its default (the same robustness sweep that covered the
+  coverage-JSON and FIFO cases).
+- **`risk` no longer silently drops unicode-named source files.** `gitrisk._commits` parsed
+  `git log --name-only`, but git octal-escapes and double-quotes non-ASCII paths under the
+  default `core.quotepath=true` (`"caf\303\251.py"`), so the trailing quote defeated the
+  source-extension filter and unicode-named files vanished from churn / co-change / `risk`
+  hotspots. It now runs git with `-c core.quotepath=false` (and strips any residual quoting),
+  so those files are counted.
+
+### Documentation
+
+- **`find_holes` scope documented** (issue #20). `find_holes` reports references orphaned
+  by edits (delete/rename), not first-index calls to undefined/stdlib names — the
+  extractors deliberately drop unresolved calls (precision over noise). `LIMITATIONS.md`
+  and `AGENTS.md` now say so and point to `scan`, which **does** deliver the
+  `is_stub ∧ reachable` "landmine" (design §6.D) as its `live_stub` finding.
+
 ## [1.0.5] — 2026-06-24
 
 **Field-fix patch — CLI/UX papercuts (issues #18, #19).** Three small fixes found while

@@ -36,11 +36,15 @@ class ResolveContext:
             if any(p in {".venv", "venv", "build", "dist", "__pycache__", ".git"}
                    for p in parts):
                 continue
+            if not path.is_file():
+                continue  # skip FIFOs/dirs/dead symlinks: open() on a FIFO blocks
+                          # forever (panel FFF) and never raises the OSError caught below
             try:
                 yield path.relative_to(self.root).as_posix(), ast.parse(
                     path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):
-                continue
+            except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+                continue  # broken symlink / unreadable file, or a pathologically deep AST
+                          # (panel OOO) — skip the one file, don't abort the run (panel DDD)
 
 
 class Resolver(Protocol):
@@ -59,7 +63,15 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
         by_name=_name_index(nodes), ids={n.id for n in nodes},
     )
     for resolver in resolvers:
-        new_nodes, new_edges = resolver.resolve(ctx)
+        try:
+            new_nodes, new_edges = resolver.resolve(ctx)
+        except Exception:  # noqa: BLE001
+            # Resolvers are heuristic enrichment that must NEVER abort the core reindex.
+            # A pathologically deep tree (RecursionError, panels QQQ/RRR) or an unexpected
+            # parser shape (e.g. sqlglot returning a bool `.this` for `DELETE TABLE`, panel
+            # crash-sweep) should drop this resolver's extra edges, not crash the run. The
+            # base graph + other resolvers are unaffected.
+            continue
         for n in new_nodes:
             if n.id not in ctx.ids:
                 ctx.nodes.append(n)

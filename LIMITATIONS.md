@@ -117,34 +117,209 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   reachability on its own (issue #15). That's deliberate: pruning the losing siblings
   would let a single jedi mis-resolution drop a live symbol's only caller and flag it
   dead — the cardinal sin — so the safe additive design is kept.
+- **Side effect — direct-degree inflation on dense homonym clusters (`fan_in` fallback
+  only):** several same-named inner helpers (e.g. a `rec` recursion helper repeated in
+  many modules) cross-link into a dense `AMBIGUOUS` sub-graph, so each one's *direct*
+  in-degree (`fan_in`) counts every sibling's call site, not just its real caller (panel
+  R19B). This is purely a **direct-degree** artifact: the GraphBLAS `transitive_fan_in`
+  used by `orient` counts distinct reachable *sources* and is unaffected, so the standard
+  install ranks hubs correctly; only the no-GraphBLAS `fan_in` fallback can let such a
+  cluster crowd the hub list. `scan` surfaces the cluster as `GREEN`/`needs_review`
+  `god_object`/`cycle` artifacts (confident edges = 0) — never a false `RED`/`ORANGE`, so
+  no cardinal or urgency impact. Tightening this needs lexical-scope name resolution
+  (binding a bare call to the enclosing-scope definition), which is a broad change kept
+  out of the 1.0.x line; install `python-graphblas` for accurate hub ranking meanwhile.
+
+### A method call through a declared type keeps *all* same-named methods live (Python)
+- **Concern:** a call bound to a declared type (`def go(b: Base): b.run()`, or a method's
+  own `self.step()`) marks **every** same-named `run`/`step` in the project live — including
+  one on a class that is never instantiated — so a genuinely-dead method of that name is not
+  flagged.
+- **Decision:** the scope-aware resolver still emits a precise `EXTRACTED` edge to the
+  declared type's method, but a binding via an *annotation* type (parameter/variable) is
+  additionally widened with `AMBIGUOUS` edges to all same-named methods; a `self`/`cls`
+  binding is widened to the enclosing class's subclasses (transitive `INHERITS`).
+- **Rationale:** a type annotation is only a hint — the runtime object behind `b: Base` may
+  be a subclass, a **structural** `typing.Protocol` implementer (no `INHERITS` edge), or an
+  unrelated **duck-typed** class that merely provides the method (panels R19A, R20A). Any of
+  them is what actually executes, so without widening the live implementation gets **no**
+  inbound edge and is confidently flagged dead — the cardinal sin. Without type inference we
+  cannot know which class the object is, so all same-named methods must be kept live.
+  Over-keeping an unused same-named method live only under-reports dead code (the safe
+  direction); the precise `EXTRACTED` edge still records the statically-declared target.
+- **Escape hatch:** trust the per-edge `provenance` — the concrete-dispatch candidates are
+  `AMBIGUOUS`; the `EXTRACTED`/`--precise` edge identifies the declared target.
+
+### Implicitly-invoked dunder methods are rooted to their class (Python)
+- **Concern:** a class's dunder (`__call__`, `__get__`/`__set__`/`__delete__`,
+  `__getitem__`, `__enter__`, operators, …) is invoked by the interpreter with no explicit
+  call site, so a helper it alone calls would be orphaned and flagged dead (panel R20A).
+- **Decision:** seed a `REFERENCES` edge from each class to its dunder methods, so that when
+  the class is reachable its dunders — and their callees — are reachable too.
+- **Rationale:** dunders are real, implicitly-reachable entry points whenever instances of
+  the class are used. Tying the edge to the *class* (not rooting the dunder unconditionally)
+  keeps a dead class's dunders dead, so this rescues only genuinely-live callees. Dunders are
+  already excluded from stale candidates, so this changes only their callees' liveness.
 
 ## Cost-of-fix exceeds value
 
-### Module-level uses aren't attributed
-- **Concern:** a decorator or constructor applied at import (e.g. `@operation(...)`,
-  a `SPECS = {... LangSpec(...) ...}` table) isn't a call inside any function, so a
-  symbol used only that way can surface as a stale candidate.
-- **Decision:** attribute call/reference edges only within function/method bodies.
-- **Rationale:** modelling module-level execution order fully is disproportionate
-  to the value; these cases surface as `needs_review`, not confident verdicts.
+### A console-script target maps to its module by path suffix (a shadow copy is over-rooted)
+- **Concern:** a `[project.scripts]` target `pkg.mod:main` (issue #21) is matched to the
+  node by module-path **suffix** (`…/pkg/mod.py`), so a *second* copy of that module —
+  `vendor/pkg/mod.py`, a `tests/pkg/mod.py` fixture — also gets the `script` root, hiding a
+  genuinely-dead `main` in the copy.
+- **Decision:** match by suffix and tag **all** files that match (over-mark), rather than
+  resolving the true import path.
+- **Rationale:** distinguishing the real module from a vendored/test copy needs full
+  import-path resolution (which dir is on `sys.path`), which is disproportionate. Crucially,
+  tightening toward picking *one* file risks **failing to root the real entry point** when
+  the layout is unusual (`src/`, namespace packages) — which re-introduces the exact #21
+  false-dead (a live CLI `main` flagged dead). Over-rooting a shadow copy is the
+  precision-safe direction; under-rooting the real one is not. A `Class.method` target *is*
+  matched exactly (by qualified name), and a same-named function in an unrelated module is
+  not matched — only same-suffix path copies are.
+- **Escape hatch:** pin the real target in `stitchgraph.toml [entry_points]`; the
+  over-marked copy surfaces only as *not flagged*, never as a confident verdict.
+- **Related (same precision-safe class):** a class instantiated in an `if __name__ ==
+  "__main__"` block is rooted by **bare name** (it is rooted as a `main` entry, then
+  resolved by name), so a same-named class in another module is
+  also kept live. Name-based is required here (a `__main__` block legitimately instantiates
+  classes imported from other modules), so this is deliberate over-marking, not tightened.
+  The rescue is bounded — it roots the class and the methods it *invokes* (names in the
+  `__main__` block), not every public method — so an unrelated class's uninvoked methods
+  still flag.
+- **Related (a `[project.scripts]` target that is a bare callable class):** a spec of the
+  form `cmd = "pkg.mod:MyClass"` (a class whose `__call__` is the entry point, no
+  `.method`) does **not** get a `script` role — `_apply_script_roles` builds its lookup
+  from `FUNCTION`/`METHOD` nodes only. If `MyClass` is neither exported (`__all__`) nor
+  instantiated in `__main__`, its methods surface as **advisory** stale candidates
+  (confidence 0.6, `needs_review=True`) — never a confident dead verdict, so the cardinal
+  invariant holds. This pattern is rare (virtually all console-script targets are
+  functions). **Escape hatch:** export the class, or pin it in
+  `stitchgraph.toml [entry_points]`.
+- **Related (an `__all__` export name shared across modules):** `exported_names` is a
+  project-wide name set, so if `api.py` declares `__all__ = ["process"]`, a same-named
+  `process` in an unrelated module also receives the `exported` role and is treated as a
+  root. The effect is a **false negative** (a genuinely-dead `process` elsewhere isn't
+  flagged), never a false-dead — the same precision-safe over-rooting class as the `__main__`
+  and console-script cases above. Scoping `exported_names` per-file is deferred because the
+  package `__init__.py` re-export pattern (`from .sub import X` then `__all__ = ["X"]`)
+  legitimately needs the cross-module match. **Escape hatch:** rely on the advisory's
+  `needs_review`, or pin the real roots in `stitchgraph.toml [entry_points]`.
+
+### `find_holes` reports edit-orphaned references, not first-index dangling calls
+- **Concern:** `find_holes` returns empty on a freshly-indexed project even when there's
+  a textbook call to an undefined function — so "0 holes" can read as "no broken wiring"
+  when the dangling-call detector simply didn't fire (issue #20).
+- **Decision:** both extractors **drop** a call whose name resolves to no project symbol
+  (no `dst_id=NULL` edge is recorded), so the hole substrate `find_holes` reads
+  (`unresolved_edges()`) is only populated by the incremental updater orphaning an edge on
+  a later delete/rename. `find_holes` is therefore an *edit-orphaned-reference* detector,
+  not a first-index "call to an undefined/stdlib name" detector.
+- **Rationale:** recording every unresolved call would emit a hole for every
+  `len()` / `os.path.join()` / third-party call — overwhelming noise in the
+  precision-unsafe direction. The dangling-call cost isn't worth that. Crucially, the
+  *reachable-stub* "landmine" from design §6.D **is** delivered — by `scan`, which flags a
+  reachable `NotImplementedError`/`pass` body as a `live_stub` (🔴 when its liveness rests
+  on confident edges, 🟠 via an inferred path). So the headline `is_stub ∧ reachable`
+  signal is available today; it just lives in `scan`, not `find_holes`.
+- **Escape hatch:** use `scan` for reachable stubs and structural issues; pin expected
+  roots in `stitchgraph.toml [entry_points]`; `find_holes` after edits surfaces references
+  a delete/rename orphaned.
+
+### Module-level uses are attributed; only purely-runtime binding isn't
+- **Now attributed (kept live):** every statically-visible module-level use — a
+  dispatch/registry literal (`HANDLERS = {"a": handle_a}`), a table of constructed
+  objects (`SPECS = {... LangSpec(...) ...}`), a top-level instantiation
+  (`REGISTRY = Builder()`), a subscript assignment (`REGISTRY["a"] = handle_a`), any
+  top-level call, AND a **module-level decorated def** (`@register("a") def handle_a`,
+  `@app.get(...) def view`) plus the decorator name itself — is edged to the module node
+  and propagates liveness when the module is loaded. The decorated-def edge is INFERRED
+  (the decorator certainly runs, but whether it registers vs merely wraps is heuristic),
+  so a decorated *stub* stays ORANGE under the provenance ceiling, not RED.
+- **Still not traced (rare):** a symbol bound into a registry *purely at runtime* with no
+  syntactic module-level use — e.g. `register(handler)` called from inside another
+  function that runs later, or attribute reassignment (`obj.method = patched`). Same class
+  as dynamic dispatch / monkeypatching; surfaces as `needs_review`, not a confident verdict.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
 
-### Incremental `replace_file` resolves holes against the nodes present *now*
-- **Concern:** `Store.replace_file` (the experimental single-file incremental
-  updater) over-approximates an ambiguous hole to *all* candidates that exist when
-  it runs — but if a *later* single-file update introduces a new same-named
-  definition, an edge already uniquely resolved by an earlier update is not
-  retroactively widened to include it.
-- **Decision:** the worklist over-approximates at resolution time; it does not
-  re-open already-resolved edges when a homonym appears in a subsequent update.
-- **Rationale:** `replace_file` is not wired into any product path — `watch` does a
-  full `reindex`, which always sees the complete symbol table and links to all
-  candidates. Tracking enough provenance to retroactively re-expand individual
-  resolved edges across updates is disproportionate for an experimental method
-  whose wired alternative is already exact.
-- **Escape hatch:** run a full `reindex` (the supported path) — it is authoritative
-  for ambiguity; or call `replace_file` for the affected files once all definitions
-  exist.
+### A coverage trace from an unrelated tree sharing a path tail can mis-attribute
+- **Concern:** `ingest_trace` matches a coverage file's paths to indexed nodes by exact
+  root-relative path first, then — only when *no* file matched exactly (the coverage was
+  recorded under a different root, e.g. CI vs local absolute paths) — by path **suffix**.
+  A single coverage file from an *unrelated* project that has zero exact matches but shares
+  a trailing path (`.../subdir/a.py` vs the indexed `subdir/a.py`) is, from paths alone,
+  indistinguishable from a legitimate cross-root ingest, so its lines can be attributed to
+  the look-alike file (marking it `runtime`, raising `find_stale` confidence to 0.78).
+- **Bounded:** the common case — coverage generated *for this project* (paths align with the
+  index root) — is fully precise: any exact match disables the suffix fallback, so a
+  non-matching node is treated as genuinely uncovered (panel R35A). The residual requires a
+  trace whose paths align with *no* indexed file yet coincidentally tail-match one.
+- **Direction:** the mis-attribution marks code *live* (suppresses dead-code findings — the
+  precision-over-recall direction), never flags live code dead.
+- **Escape hatch:** ingest a coverage report generated for the indexed tree (its paths then
+  match exactly); don't point `ingest_trace` at another project's report.
+
+### A function named identically to its own module can spawn a spurious within-file edge
+- **Concern:** when `compute.py` defines `def compute()`, the MODULE node and the FUNCTION
+  node share one id (`compute.py::compute`). Module-level executable code (e.g. a
+  `__main__` block) is attributed to the module node, so a call made there is mis-attributed
+  to the same-named function — which, combined with a real call back, can show a spurious
+  `cycle` in `scan` (ORANGE). Call resolution itself is deduped, so this no longer mislabels
+  call provenance or demotes a stub's urgency; only the structural-cycle artifact remains.
+- **Decision:** accept the narrow artifact rather than rework the module-id scheme.
+- **Rationale:** cardinal-safe (no live code flagged dead; it only *adds* an edge), and it
+  needs the exact coincidence of a function named like its file plus a within-file
+  `__main__` call chain. The `main.py` + `def main()` case produces only a harmless
+  self-loop (single-node SCCs aren't reported).
+
+### Incremental `replace_file` matches a full reindex (homonyms, dispatch, dunders)
+- **Was:** the incremental updater could not reconstruct the extractor's resolution
+  semantics, so an `(src, relation, dst_symbol)` group drifted from what a full `reindex`
+  produces — a later homonym left a new definition dead (false dead), or a precise
+  import/`self`-dispatch edge was widened across unrelated same-named members (inflation),
+  or an incrementally-added subclass override of a dispatched member was orphaned (false
+  dead) — panels R18–R22.
+- **Now:** each edge records whether it was resolved **by name** (`name_based`) or
+  **precisely** (by import path, scope, declared type, or structural seeding). On
+  `replace_file`, `_rewiden_resolved` re-normalizes only the name-based edges (rebuilding
+  them AMBIGUOUS over all current candidates, or to a single edge when one remains), while
+  precise edges are kept bound to their target exactly as a full reindex would; and
+  `Store._propagate_overrides` re-derives inheritance-aware override edges from the store's
+  INHERITS graph, mirroring the extractor. An incremental sequence therefore converges to a
+  full reindex: `find_stale` is identical, and metrics (fan_in/fan_out/edges) match.
+- **Forward references (handled):** a *precise* import/call to a file indexed *after* the
+  importer is a forward reference, not a deletion. `_invalidate_dangling` keeps such a
+  precise edge bound to its target id (which resolves once that file is indexed) instead of
+  nullifying it and re-resolving by name — the latter would bind it to an unrelated
+  same-named symbol and inflate that symbol's `fan_in` (panel R24A). Only genuine deletions
+  (the target lived in the file being replaced) and name-based edges revert to holes, so an
+  incremental sequence converges to a full reindex on `find_stale` AND on degree metrics,
+  in any file order.
+- **Residual — deleting an imported module (non-blocking, library-only):** when a file
+  whose symbol was imported elsewhere (`from util import helper`) is *deleted* via
+  `Store.replace_file(file, [], [])`, the now-dangling precise import is reverted to a hole
+  and `_resolve_worklist` may re-bind it by name to an unrelated same-named symbol in
+  another module, over-approximating that symbol's `fan_in` by one. It is **non-cardinal**
+  (over-approximation — never flags live code dead), affects only the incremental
+  `replace_file` deletion path (the shipped CLI/MCP always full-reindex), and self-corrects
+  on the next full reindex. It is left as-is because the precise-import module context is
+  not recoverable once the target is gone, and the candidate fixes (suppressing the
+  re-bind) would break legitimate forward-reference import resolution — risking a far worse
+  *false-dead* (cardinal). Trust the per-edge `provenance` (the phantom is `ambiguous`/
+  name-based) and prefer a full reindex when exact deletion-time metrics matter.
+- **Residual — `find_holes` count after an incremental delete (non-blocking, library-only):**
+  deleting a file via `Store.replace_file(file, [], [])` leaves the *precise* (import-by-path)
+  edges that targeted it dangling at their exact id (kept, by design, so they auto-revalidate
+  if the file is re-added — panels R24A/R29A). `find_holes` counts each such dangling edge, so
+  after a delete it can report MORE holes than a full reindex of the same end state, which
+  re-resolves the importing file's references and dedups them to one unresolved symbol (panel
+  R37A). This is **non-cardinal** and arguably more complete — the deleted target's importers
+  genuinely contain broken references — but it diverges from full-reindex `find_holes` count.
+  Same root and trade-off as the `fan_in`-on-delete residual above (nullifying precise edges
+  to converge the count would lose the precise re-add revalidation and risk a false-dead).
+  Affects only the incremental `replace_file` delete path; the shipped CLI/MCP full-reindex,
+  and it self-corrects on the next full reindex.
 
 ### Cross-language resolvers are heuristic
 - **Concern:** route / HTML-form / JS-fetch / SQL / ORM / event edges are

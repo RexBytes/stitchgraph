@@ -28,8 +28,15 @@ def load_coverage(trace_path: str | Path) -> tuple[dict[str, set[int]], str]:
     relative; resolution is by suffix in `hit_node_ids`. Empty on any problem."""
     p = Path(trace_path)
     try:
+        # is_file() (not a bare read) so a FIFO/dir trace path returns empty instead of
+        # blocking forever (read_text on a FIFO hangs; the OSError guard never fires on a
+        # blocking open) — panel-FIFO class. is_file()/read_text themselves raise OSError on
+        # an over-long path and ValueError on an embedded NUL, so guard both: "Empty on any
+        # problem" (panels YYY/ZZZ).
+        if not p.is_file():
+            return {}, ""
         text = p.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except (OSError, ValueError):
         return {}, ""
     base = str(p.resolve().parent)
     stripped = text.lstrip()
@@ -45,16 +52,32 @@ def load_coverage(trace_path: str | Path) -> tuple[dict[str, set[int]], str]:
 def _parse_json(text: str, base: str) -> dict[str, set[int]]:
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # JSONDecodeError (a ValueError) for malformed JSON; RecursionError for a deeply
+        # nested object/array depth-bomb (json recurses per nesting level). Either way the
+        # docstring contract holds: "empty on any problem", never raise (panel R28A).
         return {}
     out: dict[str, set[int]] = {}
-    for rel, info in (data.get("files") or {}).items():
+    # Defend the SHAPE, not just the values: a valid-JSON-but-wrong-shape report
+    # (`files` a list, an entry a string/null, `executed_lines` a dict) must not crash
+    # — the docstring promises "empty on any problem", and the LCOV/Go parsers already
+    # tolerate garbage. `files`-not-a-dict -> empty; a bad per-file entry is skipped (panel LLL).
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, dict):
+        return {}
+    for rel, info in files.items():
+        if not isinstance(info, dict):
+            continue
         lines = info.get("executed_lines") or []
+        if not isinstance(lines, list):
+            continue
         # Coerce to ints and drop anything non-integer: a malformed/hand-crafted
-        # report must not crash the later `lo <= ln <= end` range test (the LCOV and
-        # Go parsers already cast defensively; JSON was the lone gap).
+        # report must not crash the later `lo <= ln <= end` range test. `bool` is an
+        # `int` subclass, so a JSON `true`/`false` in executed_lines would coerce to 1/0
+        # and plant a phantom line (panel R35B, inflation) — exclude it explicitly.
         out[os.path.normpath(os.path.join(base, rel))] = {
-            int(ln) for ln in lines if isinstance(ln, int)
+            int(ln) for ln in lines
+            if (isinstance(ln, int) and not isinstance(ln, bool))
             or (isinstance(ln, str) and ln.strip().lstrip("-").isdigit())
         }
     return out
@@ -92,6 +115,12 @@ def _parse_go(text: str) -> dict[str, set[int]]:
             start, end = span.split(",")
             s_line = int(start.split(".")[0])
             e_line = int(end.split(".")[0])
+            # Bound the span before materializing it: a corrupt/concatenated coverprofile
+            # with a huge end line would otherwise expand range() into a multi-GB set and
+            # OOM-kill the process (panel ZZZ). No real source file spans >1M lines; drop a
+            # nonsensical span rather than allocate proportionally to attacker input.
+            if e_line < s_line or e_line - s_line >= 1_000_000:
+                continue  # >=: a span materializes (e_line - s_line + 1) ints (panel R36A nit)
             out.setdefault(path, set()).update(range(s_line, e_line + 1))
         except (ValueError, IndexError):
             continue
@@ -99,18 +128,36 @@ def _parse_go(text: str) -> dict[str, set[int]]:
 
 
 def hit_node_ids(store: Store, covmap: dict[str, set[int]], root: str) -> set[str]:
-    """Node ids whose bodies executed. Matches a node's file to a coverage path
-    by absolute path, then by suffix (robust to module-prefixed / absolute paths)."""
+    """Node ids whose bodies executed. Matches a node's file to a coverage path by exact
+    root-relative path, falling back to suffix only when NO file matched exactly (coverage
+    recorded under a different root — CI vs local)."""
     norm = {os.path.normpath(k): v for k, v in covmap.items()}
-    hits: set[str] = set()
-    for node in store.all_nodes_full():
-        start = _start_line(node.location)
-        if start is None or node.end_line is None:
-            continue
+    nodes = [n for n in store.all_nodes_full()
+             if _start_line(n.location) is not None and n.end_line is not None]
+    # Exact root-relative match is unambiguous. Suffix matching is a fallback for coverage
+    # recorded under a DIFFERENT root; but if ANY node matched exactly the root aligns, so a
+    # non-matching node is genuinely uncovered — suffix-falling-back there would only risk a
+    # cross-root path-tail false match (`subdir/a.py` matching an unrelated project's
+    # `.../subdir/a.py`), inflating executed_nodes (panel R35A). So only fall back to suffix
+    # when NO node matched exactly (true root mismatch — suffix is the sole hope). The
+    # irreducible residual (a trace from an unrelated project that shares a path tail and has
+    # zero exact matches) is path-indistinguishable from a legit cross-root ingest; see
+    # LIMITATIONS.md.
+    exact: dict[str, set[int]] = {}
+    for node in nodes:
         rel = node.location.split(":", 1)[0]
-        lines = norm.get(os.path.normpath(os.path.join(root, rel))) or _by_suffix(norm, rel)
+        v = norm.get(os.path.normpath(os.path.join(root, rel)))
+        if v is not None:
+            exact[node.id] = v
+    use_suffix = not exact
+    hits: set[str] = set()
+    for node in nodes:
+        rel = node.location.split(":", 1)[0]
+        lines = exact.get(node.id) or (_by_suffix(norm, rel) if use_suffix else None)
         if not lines:
             continue
+        start = _start_line(node.location)
+        assert start is not None and node.end_line is not None  # filtered above; for mypy
         # Body lines: exclude the def line for multi-line defs (Python marks it at
         # import time), but for a one-line def the body IS the def line.
         lo = start if start == node.end_line else start + 1
@@ -120,8 +167,20 @@ def hit_node_ids(store: Store, covmap: dict[str, set[int]], root: str) -> set[st
 
 
 def _by_suffix(norm: dict[str, set[int]], rel: str) -> set[int] | None:
+    """Fallback match for coverage paths recorded under a different root (absolute or
+    module-prefixed) when the exact root-join match missed. Suffix matching is inherently
+    ambiguous for a BARE top-level filename — `a.py` is a path-suffix of an unrelated
+    `b/a.py` — and a false match would mark an unexecuted node runtime, inflating
+    executed_nodes (panel R34A). So only attempt it for a rel WITH a directory component
+    (specific enough); a bare rel relies solely on the exact match, and a miss there
+    deflates (cardinal-safe) rather than stealing another file's coverage."""
     for k, v in norm.items():
-        if k.endswith(os.sep + rel) or k.endswith("/" + rel) or k.endswith(rel):
+        if k == rel:               # exact (relative coverage key == relative rel): unambiguous
+            return v
+    if "/" not in rel and os.sep not in rel:
+        return None                # bare filename: suffix matching would over-match (see above)
+    for k, v in norm.items():
+        if k.endswith(os.sep + rel) or k.endswith("/" + rel):
             return v
     return None
 

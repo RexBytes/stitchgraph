@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import inspect
 import json as _json
+import sqlite3
 from typing import Any
 
+from ..core.envelope import refuse
 from ..core.operations import Operation, registry
 from ..core.store import Store
 from .render import render_text
@@ -77,7 +79,12 @@ def build_app():
         from ..core.store import Store
         from ..core.watch import changed, snapshot
 
-        with Store(db) as store:
+        try:
+            store = Store(db)
+        except (sqlite3.Error, OSError) as exc:
+            typer.echo(f"cannot open index database {db!r}: {exc}")
+            raise typer.Exit(1) from exc
+        with store:
             typer.echo(ops.reindex(store, path).meta)
             state = snapshot(path)
             typer.echo(f"watching {path} (every {interval}s)…")
@@ -134,8 +141,16 @@ def _make_command(typer, op: Operation):
     def command(**kwargs: Any) -> None:
         db = kwargs.pop("db")
         as_json = kwargs.pop("json")
-        with Store(db) as store:
-            result = op.func(store, **kwargs)
+        try:
+            store = Store(db)
+        except (sqlite3.Error, OSError) as exc:
+            # A --db that can't back a database (a directory, FIFO, device, or
+            # unwritable location) made sqlite raise an OperationalError that escaped
+            # as a traceback. The CLI contract is a Result, so refuse cleanly (panel R12).
+            result = refuse(f"cannot open index database {db!r}: {exc}")
+        else:
+            with store:
+                result = op.func(store, **kwargs)
         if as_json:
             typer.echo(_json.dumps(result.to_dict(), indent=2))
         else:

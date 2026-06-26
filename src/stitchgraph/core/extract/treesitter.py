@@ -181,6 +181,33 @@ def supported_languages() -> list[str]:
     return sorted(set(EXT_LANG.values()))
 
 
+def _canon_lang(lang: str) -> str:
+    """Canonical resolution bucket for a language. C and C++ share one symbol namespace:
+    real projects freely reference symbols across `.h`/`.c`/`.cpp`, and a `.h` may be parsed
+    under either grammar — so binding *within* a single dialect leaves a header symbol used
+    by the other dialect unresolved and flagged dead (panel UUU, cardinal). Merging C/C++ for
+    name resolution only ever adds edges (precision-safe), never removes them."""
+    return "cpp" if lang in ("c", "cpp") else lang
+
+
+def _header_lang(path: Path) -> str:
+    """Resolve an ambiguous `.h` header to C or C++ by content. The C grammar has no
+    class/namespace/template node types, so a C++ header parsed as C mis-structures its
+    classes and flags them dead (panel TTT, cardinal). Sniff for C++ markers and default to
+    C, so pure-C headers are unaffected; over-accepting toward C++ is the precision-safe
+    direction for the cardinal invariant."""
+    try:
+        head = path.read_bytes()[:16384]
+    except OSError:
+        return "c"
+    # C++-only markers. Broad set (panel UUU): also catch access specifiers, virtual/operator/
+    # nullptr and `extern "C++"`, so a struct-with-methods header routes to C++ and its member
+    # functions are extracted. The C/C++ resolution buckets are unified, so a miss here is a
+    # recall gap (methods not extracted), never a cardinal false-dead.
+    markers = rb"\b(class|namespace|template|virtual|operator|nullptr|public|private|protected)\b|::"
+    return "cpp" if re.search(markers, head) else "c"
+
+
 def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
     if not HAS_TREE_SITTER:
         return [], []
@@ -196,11 +223,16 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
-    files = [p for p in sorted(root.rglob("*"))
-             if p.suffix in EXT_LANG and _wanted(p, root, ignore)]
+    try:
+        files = [p for p in sorted(root.rglob("*"))
+                 if p.suffix in EXT_LANG and p.is_file() and _wanted(p, root, ignore)]
+    except OSError:
+        files = []  # unwalkable root (over-long path / permission) -> empty, not a crash
     grammar_failed: dict[str, int] = {}  # lang -> files skipped (grammar unavailable)
     for path in files:
         lang = EXT_LANG[path.suffix]
+        if path.suffix == ".h":
+            lang = _header_lang(path)  # .h is C or C++; the C grammar mis-parses C++ classes
         if lang not in SPECS:
             continue
         if lang in grammar_failed:  # already known-unavailable; don't retry, just count
@@ -230,18 +262,65 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # module-level calls (incl. those inside anonymous `test()`/`it()` callbacks)
         # are rooted from it (Bug B) — so call-based suites that define no named test
         # functions don't leave their helpers flagged dead.
-        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
-                          location=f"{rel}:1:0",
-                          roles=frozenset({"test"}) if is_test else frozenset()))
+        # A bash script's top-level body is its entry point (bash's __main__): seed the
+        # module node as a root and root its top-level calls so a run-directly script
+        # with no main() doesn't leave every function flagged dead (issue #22). A
+        # function reached by nothing (incl. its own top level) still flags — intended.
+        is_bash_script = lang == "bash"
+        # C# top-level statements (the default `Program.cs` template since .NET 6) ARE the
+        # program's Main entry point — like bash's top-level body and Python's __main__. A
+        # `compilation_unit` with `global_statement` children is a top-level program; root it
+        # as a script so its top-level calls / local functions aren't flagged dead (panel WWW).
+        is_cs_toplevel = lang == "csharp" and any(
+            c.type == "global_statement" for c in tree.root_node.children)
+        # Ruby and PHP execute a file's top-level body every time it is required/loaded
+        # (like bash's top-level body and C#'s top-level statements) — there is no
+        # "definitions only, nothing runs" load mode the way an imported Python/JS module
+        # has. So a module-level call in `app.rb` / `app.php` roots the function it
+        # invokes; without this, top-level-only-used helpers in Ruby/PHP are flagged dead
+        # — live code as dead, the cardinal sin (panel R33A, same class as bash #22 / C# WWW).
+        is_exec_toplevel_lang = lang in ("ruby", "php")
+        is_script = is_bash_script or is_cs_toplevel or is_exec_toplevel_lang
+        mod_roles: set[str] = set()
         if is_test:
+            mod_roles.add("test")
+        if is_script:
+            mod_roles.add("script")
+        # Snapshot the mutable accumulators so a RecursionError mid-walk rolls the file
+        # back cleanly — no orphan MODULE node / partial defs left behind (panel QQQ LOW;
+        # mirrors the Python extractor's parsed-dict skip).
+        _n0, _d0, _i0, _c0, _mt0, _im0 = (
+            len(nodes), len(defs), len(inherits), len(contains),
+            len(module_tests), len(imports))
+        nodes.append(Node(id=mod_id, kind=NodeKind.MODULE, name=path.stem,
+                          location=f"{rel}:1:0", roles=frozenset(mod_roles)))
+        try:
+            # Module-level calls/refs are captured for EVERY file, not just test/script
+            # ones: top-level code runs when a module is loaded, so a symbol used only at
+            # module scope (a registry value, dispatch-table entry, or instantiation) is
+            # live whenever the module loads. The module node propagates this only when it
+            # is itself a load root — the detector seeds a module that owns any root — so an
+            # ordinary library module's edges don't over-root, but a class used only at the
+            # top level of an exported module isn't flagged dead (panel R12, cardinal).
             calls, refs = _module_uses(tree.root_node, src, spec)
+            if is_bash_script:
+                # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
+                # scan would miss the function arg of; root those too.
+                calls = calls + _bash_trap_handlers(tree.root_node, src)
             module_tests.append((mod_id, rel, lang, calls, refs))
-        _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
-                 defs=defs, inherits=inherits, exported=False, is_test=is_test,
-                 contains=contains, enclosing_func=None)
-        for name in _import_names(tree.root_node, src, spec):
-            imports.append((mod_id, name, lang))
-        reexports |= _reexport_names(tree.root_node, src)
+            _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
+                     defs=defs, inherits=inherits, exported=False, is_test=is_test,
+                     contains=contains, enclosing_func=None)
+            for name in _import_names(tree.root_node, src, spec):
+                imports.append((mod_id, name, lang))
+            reexports |= _reexport_names(tree.root_node, src)
+        except RecursionError:
+            # A pathologically deep tree (a huge flat expression in generated code)
+            # overflows the recursive walk; skip the one file, never abort the whole
+            # reindex (panel OOO, the tree-sitter analogue of the Python ast guard).
+            del nodes[_n0:], defs[_d0:], inherits[_i0:]
+            del contains[_c0:], module_tests[_mt0:], imports[_im0:]
+            continue
 
     # Surface grammar-load failures instead of returning a silent empty graph (issue
     # #7): without this, a non-Python repo looks like "ran fine, found almost nothing".
@@ -261,23 +340,65 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     # paths). Over-marking by name is the safe direction.
     if reexports:
         for n in nodes:
-            if n.kind in (C, F, M) and n.name in reexports:
+            # Guard by language: `export { X }` is JS/TS-only, so a same-named symbol in
+            # an unrelated language (a dead Ruby `class Widget`) must not be marked exported
+            # by a JS file's re-export (panel TTT LOW — cross-language false-negative).
+            if n.kind in (C, F, M) and n.name in reexports \
+                    and file_lang.get(n.id.split("::", 1)[0]) in _CLASS_VISIBILITY_LANGS:
                 n.roles = n.roles | {"exported"}
 
+    # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
+    # to FUNCTION even for methods defined inside a class body (there is no separate
+    # `method_declaration` node), so the method-based class-rooting passes below
+    # (exported/test/callback/main/constructor) — which all key on kind METHOD — would skip
+    # C++ methods and leave a live framework/entry class flagged dead (panels QQQ/RRR,
+    # cardinal). A FUNCTION whose immediate parent is a class IS a method; reclassify it so
+    # every rooting pass works for every language. The `.` + class-parent guard means a
+    # free function (no dot) or a function nested in a method (parent is a method) is left
+    # alone — only direct class members are promoted.
+    _class_ids = {n.id for n in nodes if n.kind is C}
+    if _class_ids:
+        for n in nodes:
+            if n.kind is F and "." in n.id and n.id.rsplit(".", 1)[0] in _class_ids:
+                n.kind = M
+
+    # C++ operator overloads (`operator+`, `operator[]`, conversion `operator bool`) and
+    # destructors (`~Class`) are invoked IMPLICITLY — via operator syntax (`a + b`), scope
+    # exit, or a conversion the call graph can't see without type inference. Root them (and
+    # thus whatever their bodies call) rather than flag live code dead (panel R13A, cardinal);
+    # the analogue of skipping Python dunders. Out-of-line operator defs are bare functions
+    # (no class parent in the id), so cover both F and M.
+    for n in nodes:
+        if n.kind in (F, M) and _is_cpp_special_member(n.name) \
+                and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+            n.roles = n.roles | {"callback"}
+
     _seed_exported_class_methods(nodes, file_lang)
+    # Public members of an exported interface/trait are public API but, unlike class
+    # members, are implicitly public (no visibility token) so `_roles` never marks them
+    # `exported` and the JS/TS-gated class pass above skips them — leaving a `pub trait` /
+    # `public interface` default/abstract method flagged dead (panel SSS, cardinal). The
+    # `defs` list keeps each def's AST node, so identify interface/trait containers by node
+    # type and down-propagate `exported` to their non-private members.
+    _iface_ids = {cid for _r, cid, body, _l in defs
+                  if cast(Any, body).type in _INTERFACE_TYPES}
+    _seed_exported_interface_methods(nodes, _iface_ids)
     _seed_classes_from_exported_methods(nodes)
     _seed_test_classes(nodes, inherits, file_lang)
+    _seed_main_classes(nodes)
+    _seed_trait_impl_methods(nodes, defs)
 
-    # Resolve names *within a language* — a JS call must not bind to a Rust fn.
+    # Resolve names *within a language* — a JS call must not bind to a Rust fn. C and C++
+    # share one bucket (`_canon_lang`) so a header symbol resolves across the .h/.c/.cpp split.
     by_lang: dict[str, dict[str, list[str]]] = {}
     for n in nodes:
-        flang = file_lang.get(n.id.split("::", 1)[0])
-        if flang:
-            by_lang.setdefault(flang, {}).setdefault(n.name, []).append(n.id)
+        _fl = file_lang.get(n.id.split("::", 1)[0])
+        if _fl:
+            by_lang.setdefault(_canon_lang(_fl), {}).setdefault(n.name, []).append(n.id)
 
     edges: list[Edge] = []
     for rel, def_id, body, lang in defs:
-        by_name = by_lang.get(lang, {})
+        by_name = by_lang.get(_canon_lang(lang), {})
         called: set[str] = set()
         for name, line, is_method in _direct_calls(body, src_by[rel], SPECS[lang]):
             _ref(edges, def_id, name, by_name, rel, line, is_method=is_method)
@@ -291,6 +412,16 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
             if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
                 _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
+        # C/C++ out-of-line member definition `RetT Scope::method(...) {...}`: the method
+        # body lives in a .cpp but its class is declared in a header, so the def is a bare
+        # FUNCTION with no link to its class. Edge it -> REFERENCES its class (resolved by
+        # name across the .h/.c/.cpp bucket) so a class whose members are all defined
+        # out-of-line isn't flagged dead while a member is reached (panel R12B, cardinal).
+        if lang in ("c", "cpp"):
+            scope = _cpp_method_scope(body, src_by[rel])
+            if scope:
+                _ref(edges, def_id, scope, by_name, rel,
+                     cast(Any, body).start_point[0] + 1, relation=Relation.REFERENCES)
 
     # Root module-level calls AND name-references of each test file from its module
     # node (Bug B): the `test()`->helper chain in call-based suites (Jest/Mocha/RSpec)
@@ -298,7 +429,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     # name as a call receiver (`Service.run` in an RSpec block) so the class isn't
     # flagged dead while its method is live (Panel FF). Mirrors the per-def loop above.
     for mod_id, rel, lang, calls, refs in module_tests:
-        by_name = by_lang.get(lang, {})
+        by_name = by_lang.get(_canon_lang(lang), {})
         called = set()
         for name, line in calls:
             _ref(edges, mod_id, name, by_name, rel, line)
@@ -335,12 +466,28 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     _seed_callback_roles(nodes, external_base_classes)
 
     for class_id, base, lang in inherits:
-        _ref(edges, class_id, base, by_lang.get(lang, {}),
+        _ref(edges, class_id, base, by_lang.get(_canon_lang(lang), {}),
              class_id.split("::", 1)[0], 0, relation=Relation.INHERITS)
     for mod_id, name, lang in imports:
-        _ref(edges, mod_id, name, by_lang.get(lang, {}),
+        _ref(edges, mod_id, name, by_lang.get(_canon_lang(lang), {}),
              mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
     _seed_constructors(nodes, edges, file_lang)
+    # A module node shares the id-space with same-named symbols: `run.sh::run` for a bash
+    # script defining `run()`, `tests/Service.js::Service` for a test file defining class
+    # Service. The store's INSERT OR REPLACE then drops the MODULE node — and with it the
+    # module-only roles (`script`/`test`) that have no redundant assignment on the symbol
+    # node — flagging the whole file's code dead (panels SSS/TTT, cardinal). Merge a
+    # shadowed module node's roles into the surviving symbol node and drop the duplicate.
+    _mod_by_id = {n.id: n for n in nodes if n.kind is NodeKind.MODULE}
+    if _mod_by_id:
+        _shadowed: set[str] = set()
+        for n in nodes:
+            if n.kind is not NodeKind.MODULE and n.id in _mod_by_id:
+                n.roles = n.roles | _mod_by_id[n.id].roles
+                _shadowed.add(n.id)
+        if _shadowed:
+            nodes = [n for n in nodes
+                     if not (n.kind is NodeKind.MODULE and n.id in _shadowed)]
     return nodes, edges
 
 
@@ -472,6 +619,78 @@ def _grow_test_classes(test_classes: set, class_ids: set, inherits: list,
                 changed = True
 
 
+# Interface/trait container node types whose members are implicitly public API.
+_INTERFACE_TYPES = frozenset({
+    "trait_item",            # rust
+    "interface_declaration",  # java / c# / php
+    "trait_declaration",      # php
+})
+
+
+def _seed_exported_interface_methods(nodes, interface_ids: set[str]) -> None:
+    """Down-propagate `exported` from an exported interface/trait container to its
+    non-private member methods. Interface/trait members are implicitly public (no visibility
+    token), so `_roles`/`_has_public` never mark them exported, and `_seed_exported_class_methods`
+    is gated to JS/TS — leaving Java/C#/Rust public interface members (incl. body-bearing
+    default methods) flagged dead (panel SSS, cardinal). Over-rooting a rare explicitly-private
+    interface member is the precision-safe direction."""
+    exported_ifaces = {n.id for n in nodes
+                       if n.kind is C and n.id in interface_ids and "exported" in n.roles}
+    if not exported_ifaces:
+        return
+    for n in nodes:
+        if n.kind is M and not n.name.startswith(("_", "#")) \
+                and n.id.rsplit(".", 1)[0] in exported_ifaces:
+            n.roles = n.roles | {"exported"}
+
+
+def _seed_trait_impl_methods(nodes, defs) -> None:
+    """Methods inside a Rust `impl Trait for X` block are public-by-contract API invoked via
+    language sugar (operators, `Display::fmt` through `{}`, `Iterator::next` through `for`,
+    `Drop::drop`) — no call node — and cannot carry `pub`, so `_roles` never marks them
+    exported and they're flagged dead (panel UUU, cardinal). Root them as `callback`
+    (framework/contract-invoked). A bare inherent `impl X` (no trait) is NOT rooted — only
+    *trait* impls are public-by-contract."""
+    impl_method_ids: set[str] = set()
+    for _rel, cid, body, lang in defs:
+        if lang != "rust":
+            continue
+        node = cast(Any, body)
+        if node.type != "function_item":
+            continue
+        p = node.parent
+        while p is not None:
+            if p.type == "impl_item":
+                if p.child_by_field_name("trait") is not None:
+                    impl_method_ids.add(cid)
+                break
+            p = p.parent
+    if not impl_method_ids:
+        return
+    for n in nodes:
+        if n.id in impl_method_ids:
+            n.roles = n.roles | {"callback"}
+
+
+def _seed_main_classes(nodes) -> None:
+    """An entry method (`main`/`Main` role) roots its enclosing class — otherwise an
+    entry-point class whose only role-bearing member is the main method is flagged dead
+    while its method is live. This bites idiomatic C# (`internal class Program { static
+    void Main }`): `Main` isn't public so the class never gets the `exported` role, and no
+    other pass roots it. The Python extractor has this rescue (`_seed_entrypoint_classes`);
+    the tree-sitter side was missing it (panel RRR, cardinal). Precision-safe: only adds
+    roots, only for classes that actually contain a `main`-role method."""
+    main_classes = {
+        n.id.rsplit(".", 1)[0] for n in nodes
+        if n.kind is M and "main" in n.roles and "." in n.id
+    }
+    if not main_classes:
+        return
+    for n in nodes:
+        if n.kind is C and n.id in main_classes:
+            n.roles = n.roles | {"main"}
+
+
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
     """Methods of a class with a framework base are framework-invoked overrides
     (e.g. React.Component.render, Express middleware). Mark them 'callback' so
@@ -479,11 +698,22 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
     over recall). Mirrors the Python extractor's `_apply_callback_roles`."""
     if not external_base_classes:
         return
+    classes_with_callbacks: set[str] = set()
     for n in nodes:
         if n.kind is M and "." in n.id:
             class_id = n.id.rsplit(".", 1)[0]
             if class_id in external_base_classes:
                 n.roles = n.roles | {"callback"}
+                classes_with_callbacks.add(class_id)
+    # A framework subclass that overrides hook methods is framework-instantiated, so
+    # mark the class a root too — otherwise the methods are live but the *class* is
+    # flagged dead (the 'method live, class dead' cardinal false-dead; panel PPP, the
+    # tree-sitter analogue of the Python `classes_with_callbacks` pass). Tie this to
+    # *having* callback methods, not merely the base, so a bare unused subclass with no
+    # overrides still flags.
+    for n in nodes:
+        if n.kind is C and n.id in classes_with_callbacks:
+            n.roles = n.roles | {"callback"}
 
 
 def _is_rust_test_attr(attr_text: str) -> bool:
@@ -589,6 +819,16 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                      enclosing_func=enclosing_func)
         elif t in spec.container_only:
             qual = _join(parent, _name_of(child, src))
+            # A Rust `impl Trait for Type` block means `Type` satisfies `Trait` — emit an
+            # INHERITS Type -> Trait edge (resolved by name) so a private trait whose method
+            # is reached but whose name never appears in a reachable body isn't flagged dead
+            # (panel R16A, cardinal; the analogue of Ruby `include Module`). `impl Type` with
+            # no trait is inherent (no edge).
+            if t == "impl_item" and qual:
+                _tr = child.child_by_field_name("trait")
+                _trn = _trailing_id(_tr, src) if _tr is not None else None
+                if _trn:
+                    inherits.append((f"{rel}::{qual}", _trn, lang))
             _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
                      exported=False, is_test=is_test, contains=contains,
                      enclosing_func=enclosing_func)
@@ -818,6 +1058,66 @@ def _module_uses(root, src, spec):
     return calls, refs
 
 
+def _bash_trap_handlers(root, src):
+    """`trap cleanup EXIT` registers `cleanup` to run on a signal — a real use the
+    generic command scan misses (it sees the `trap` command, not its function argument).
+    Yield the **handler** of each top-level trap as (name, line) so `_ref` roots it if it
+    names a project function. Issue #22. Only the handler (the first non-option argument)
+    is rooted — never a trailing signal word — so a function sharing a signal's name isn't
+    spuriously kept live (panels XX/YY/ZZ). Top-level scope only (skips function bodies),
+    matching `_module_uses`."""
+    out: list[tuple[str, int]] = []
+
+    def rec(n):
+        for c in n.children:
+            if c.type == "function_definition":
+                continue  # top-level body only
+            if c.type == "command":
+                cn = next((k for k in c.children if k.type == "command_name"), None)
+                head = _text(cn.children[0] if cn and cn.children else cn, src) if cn else ""
+                if head == "trap":
+                    _trap_handler(c, cn, src, out)
+            rec(c)
+
+    rec(root)
+    return out
+
+
+def _trap_handler(call, cn, src, out):
+    """Parse `trap` per its grammar `trap [-lp] [[--] ARG] SIGNAL…` and root ONLY the
+    handler ARG when it's statically a project-function name — never a trailing signal
+    word (panels XX/YY/ZZ). `-l` (list signals) and `-p` (print traps) are query modes
+    with NO handler at all; `--` ends options; `-` resets the trap (no handler)."""
+    opts_done = False
+    for arg in call.children:
+        if arg is cn:
+            continue
+        if arg.type == "word":
+            w = _text(arg, src)
+            if not opts_done:
+                if w in ("-l", "-p"):
+                    return  # query/list mode: no handler, remaining words are signals
+                if w == "--":
+                    opts_done = True
+                    continue
+            # First non-option word is the handler ARG. `-` resets the trap (no handler);
+            # any other bare word is the handler; remaining words are signals.
+            if w != "-":
+                out.append((w, arg.start_point[0] + 1))
+            return
+        if arg.type in ("string", "raw_string"):
+            # A quoted handler: root it only if it's a single bare identifier (a quoted
+            # function name); an inline command string / empty string roots nothing.
+            # Either way the handler slot is consumed — don't fall through to the signal.
+            text = _text(arg, src).strip().strip("\"'`")
+            if text.isidentifier():
+                out.append((text, arg.start_point[0] + 1))
+            return
+        # Any other handler-slot shape ($(...) substitution, $var expansion,
+        # concatenation) is dynamic — not statically resolvable; consume the slot.
+        return
+
+
 def _is_bare_call(parent, ident):
     """Ruby: a paren-less, receiver-less method call (`validate`) parses as a bare
     `identifier`, indistinguishable from a local-variable read. Treat one as a call
@@ -922,6 +1222,13 @@ def _trailing_id(node, src):
     if node.type in ("identifier", "type_identifier", "field_identifier",
                      "property_identifier", "word", "name", "constant"):
         return _text(node, src)
+    # C++ operator/destructor/conversion names (`operator+`, `~Class`, `operator bool`) are
+    # leaf-ish multi-token nodes; take their literal text so an out-of-line def gets a real
+    # node name instead of None. `operator_cast` (conversion ops) has a `type` field that the
+    # generic walk below would follow to the target type (`bool`) and lose the name, so it
+    # must be handled here too (panels R13A/R14A).
+    if node.type in ("operator_name", "destructor_name", "operator_cast"):
+        return _text(node, src)
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:
         return _trailing_id(prop, src)
@@ -967,13 +1274,13 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS,
                 else Provenance.EXTRACTED)
         edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                           dst_id=cands[0], weight=1.0, provenance=prov,
-                          location=loc, source="tree-sitter"))
+                          location=loc, source="tree-sitter", name_based=True))
     else:
         w = round(1.0 / len(cands), 3)
         for cid in cands:
             edges.append(Edge(src=src_id, relation=relation, dst_symbol=name,
                               dst_id=cid, weight=w, provenance=Provenance.AMBIGUOUS,
-                              location=loc, source="tree-sitter"))
+                              location=loc, source="tree-sitter", name_based=True))
 
 
 # -- helpers ---------------------------------------------------------------
@@ -989,11 +1296,30 @@ def _name_of(node, src):
     while decl is not None:
         if decl.type in ("identifier", "field_identifier"):
             return _text(decl, src)
+        # An out-of-line member def names the function with a `qualified_identifier`
+        # (`Class::m`, `Outer::Inner::m`) or an `operator_name`/`destructor_name`
+        # (`Class::operator+`, `Class::~Class`); the trailing name is nested, so use
+        # _trailing_id. Without this _name_of returned None and the WHOLE
+        # function_definition was silently dropped, so a helper called only from a
+        # nested-class or operator body was flagged dead (panel R13A, cardinal).
+        if decl.type in ("qualified_identifier", "operator_name", "destructor_name",
+                         "operator_cast"):
+            return _trailing_id(decl, src)
         nxt = decl.child_by_field_name("declarator")
         if nxt is None:
             ident = next((c for c in decl.children
-                          if c.type in ("identifier", "field_identifier")), None)
-            return _text(ident, src) if ident else None
+                          if c.type in ("identifier", "field_identifier",
+                                        "qualified_identifier", "operator_name",
+                                        "destructor_name", "operator_cast")), None)
+            if ident is not None:
+                return _trailing_id(ident, src)
+            # `reference_declarator` (`T&`/`T&&`) exposes its inner function_declarator as an
+            # UNNAMED child (no `declarator` field), unlike pointer_declarator — descend into
+            # any declarator-wrapper child so a reference-returning fn/method isn't dropped
+            # (panel R15A, cardinal). Robust to the whole declarator-wrapper family.
+            nxt = next((c for c in decl.children if c.type in _DECLARATOR_WRAPPERS), None)
+            if nxt is None:
+                return None
         decl = nxt
     # Rust `impl Container { ... }` names its target via the `type` field.
     ty = node.child_by_field_name("type")
@@ -1007,11 +1333,69 @@ def _name_of(node, src):
     return None
 
 
+def _is_cpp_special_member(name: str) -> bool:
+    """A C++ operator overload (`operator+`, `operator[]`, `operator bool`) or destructor
+    (`~Class`) — invoked implicitly, so the name-based call graph can't see the use. Used to
+    root them so live code reached only through one isn't flagged dead (panel R13A). `operator`
+    is a reserved word, so the prefix can't be an ordinary identifier."""
+    if name.startswith("~"):
+        return True
+    return (name.startswith("operator") and len(name) > 8
+            and not (name[8].isalnum() or name[8] == "_"))
+
+
+def _cpp_method_scope(node, src):
+    """For a C/C++ out-of-line member definition `RetT Scope::method(...)`, return the
+    enclosing class/struct name `Scope` so the method can be linked back to its class
+    (panel R12B). A free function (`int helper(...)`) has a plain identifier declarator
+    and yields None. The class name lives in the `scope` field of the `qualified_identifier`
+    that names the function inside the declarator chain (`pointer_declarator` for `T*`)."""
+    def _scope_of(qi):
+        # `scope` is a `namespace_identifier` leaf for `Class::m` (which _trailing_id
+        # doesn't recognise), or a nested `qualified_identifier` for `A::B::m` (take the
+        # immediate enclosing name). Fall back to the raw text for the leaf case.
+        scope = qi.child_by_field_name("scope")
+        if scope is None:
+            return None
+        return _trailing_id(scope, src) or _text(scope, src) or None
+
+    decl = node.child_by_field_name("declarator")
+    while decl is not None:
+        if decl.type == "qualified_identifier":
+            return _scope_of(decl)
+        nxt = decl.child_by_field_name("declarator")
+        if nxt is None:
+            qi = next((c for c in decl.children if c.type == "qualified_identifier"), None)
+            if qi is not None:
+                return _scope_of(qi)
+            # descend through an unnamed declarator wrapper (`reference_declarator` for a
+            # reference-returning out-of-line method) so its class link is still found (R15A)
+            nxt = next((c for c in decl.children if c.type in _DECLARATOR_WRAPPERS), None)
+            if nxt is None:
+                return None
+        decl = nxt
+    return None
+
+
+# C/C++ declarator wrappers that nest an inner declarator; some (reference_declarator)
+# expose it as an unnamed child rather than a `declarator` field, so the name/scope walks
+# must descend into them explicitly or a def is silently dropped (panel R15A).
+_DECLARATOR_WRAPPERS = ("function_declarator", "pointer_declarator", "reference_declarator",
+                        "array_declarator", "parenthesized_declarator", "init_declarator")
+
+
 def _roles(node, src, name, lang, exported):
     roles = set()
     if exported:
         roles.add("exported")
     if name in ("main", "Main"):
+        roles.add("main")
+    # Go `init()` is a runtime entry point: the Go runtime calls it automatically at package
+    # initialization (driver/handler registration, etc.), never from source — so it (and its
+    # callees) must be rooted like main, or it's flagged dead (panel R18A, cardinal). Go-gated
+    # so a plain `init` in another language isn't spuriously rooted; cardinal-safe for a (rare)
+    # method named init too.
+    if lang == "go" and name == "init":
         roles.add("main")
     if lang == "rust" and any(c.type == "visibility_modifier" for c in node.children):
         roles.add("exported")
@@ -1053,7 +1437,8 @@ def _wanted(path, root, ignore):
     rel = path.relative_to(root)
     if any(p in _SKIP for p in rel.parts):
         return False
-    return not (ignore and any(rel.match(pat) for pat in ignore))
+    # Skip empty patterns: rel.match("") raises ValueError("empty pattern") (panel R33B).
+    return not (ignore and any(rel.match(pat) for pat in ignore if pat))
 
 
 def grammar_status() -> tuple[bool, list[tuple[str, bool, str]]]:

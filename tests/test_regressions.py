@@ -290,6 +290,33 @@ def test_risk_uses_non_python_git_history(tmp_path):
     assert gitrisk.churn(str(tmp_path)).get("app.js") == 1  # .js counted, not skipped
 
 
+def test_risk_counts_unicode_filenames(tmp_path):
+    """git octal-escapes AND double-quotes non-ASCII paths under the default
+    core.quotepath=true (`"caf\\303\\251.py"`), so the trailing quote defeated the
+    `.endswith(_SRC_EXTS)` filter and unicode-named source files silently vanished from
+    churn/cochange/risk (panel NNN). `-c core.quotepath=false` prints them literally."""
+    import os
+    import subprocess
+
+    from stitchgraph.core import gitrisk
+
+    (tmp_path / "café.py").write_text("def a():\n    return 1\n")
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       capture_output=True, env=env, check=True)
+
+    git("init")
+    git("add", "-A")
+    git("commit", "-m", "c1")
+    (tmp_path / "café.py").write_text("def a():\n    return 2\n")
+    git("commit", "-am", "c2")
+    assert gitrisk.churn(str(tmp_path)).get("café.py") == 2  # unicode name counted, not dropped
+
+
 # -- Panel C (HIGH): tree-sitter callback role symmetry gap ---------------------
 def test_tree_sitter_methods_of_external_base_classes_get_callback_role(tmp_path):
     """Methods of a class that inherits from an external (framework) base class
@@ -318,6 +345,351 @@ def test_tree_sitter_methods_of_external_base_classes_get_callback_role(tmp_path
         # internally (React/framework invokes them).
         assert "MyButton.handleClick" not in stale
         assert "MyButton.render" not in stale
+        # CARDINAL (panel PPP): the class itself must also stay live — a framework
+        # subclass is framework-instantiated. The tree-sitter callback-role pass marked
+        # the methods but not the enclosing class, so the class was a false-dead.
+        assert "MyButton" not in stale
+
+
+def test_tree_sitter_callback_class_itself_is_live_across_languages(tmp_path):
+    """The 'method live, class dead' cardinal false-dead (panel PPP): tree-sitter
+    `_seed_callback_roles` marked callback *methods* but not the enclosing *class*, so a
+    framework subclass not otherwise rooted (Rails controller, etc.) had its class flagged
+    dead while its methods were live. Mirror the Python extractor's class-rooting pass."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "handler.rb": (
+            "class MyController < ApplicationController\n"
+            "  def index\n    1\n  end\n"
+            "  def get_data\n    2\n  end\nend\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "MyController" not in stale          # class live (was false-dead)
+        assert "MyController.index" not in stale     # methods live
+        assert "MyController.get_data" not in stale
+
+
+def test_cpp_framework_subclass_class_and_methods_are_live(tmp_path):
+    """CARDINAL (panel QQQ/RRR): C/C++ map every `function_definition` to FUNCTION, even
+    for methods in a class body — so the method-based class-rooting passes (which key on
+    METHOD) skipped C++ members, leaving a live framework subclass (a Qt widget) and its
+    framework-invoked methods flagged dead. In-class member functions are now normalized to
+    METHOD so every rooting pass works for every language."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "widget.cpp": (
+            "class MyWidget : public QWidget {\n"
+            "    void paintEvent() { return; }\n"
+            "    void show() { return; }\n};\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "MyWidget" not in stale            # class live (was false-dead)
+        assert "MyWidget.paintEvent" not in stale  # framework-invoked methods live
+        assert "MyWidget.show" not in stale
+
+
+def test_csharp_internal_main_class_is_live(tmp_path):
+    """CARDINAL (panel RRR): idiomatic C# `internal class Program { static void Main }` —
+    `Main` isn't public so the class never gets the `exported` role, and (unlike the Python
+    extractor) no tree-sitter pass rooted the enclosing class of a `main`-role method, so
+    the live entry-point class was flagged dead. `_seed_main_classes` now mirrors the
+    Python rescue."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Program.cs": (
+            "internal class Program {\n"
+            "    private static void Main(string[] args) { var s = new Service(); s.Start(); }\n"
+            "}\n"
+            "internal class Service { public void Start() { } }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Program" not in stale            # entry-point class live (was false-dead)
+
+
+def test_exported_interface_trait_members_are_live(tmp_path):
+    """CARDINAL (panel SSS): members of an exported interface/trait are public API but are
+    implicitly public (no visibility token), so `_roles` never marks them exported and the
+    JS/TS-gated class pass skips them — leaving a `pub trait`/`public interface` member
+    (incl. body-bearing default methods) flagged dead. `_seed_exported_interface_methods`
+    down-propagates `exported` from the exported container."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": "pub trait Summary {\n    fn summarize(&self) -> String { String::from(\"d\") }\n}\n",
+        "Greeter.java": ("public interface Greeter {\n"
+                         "    String greet();\n"
+                         "    default String greetLoud() { return greet() + \"!\"; }\n}\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Summary.summarize" not in stale       # Rust trait default method live
+        assert "Greeter.greet" not in stale            # Java abstract interface method live
+        assert "Greeter.greetLoud" not in stale        # Java default interface method live
+
+
+def test_cpp_class_in_h_header_is_live(tmp_path):
+    """CARDINAL (panel TTT): `.h` was mapped to the C grammar, which has no class/namespace/
+    template, so a C++ class in a `.h` header mis-parsed and was flagged dead (`.h` is the
+    dominant C++ header extension). `.h` is now resolved to C or C++ by content."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "engine.h": "class Engine {\n    void start() { ignite(); }\n    void ignite() { return; }\n};\n",
+        "main.cpp": "int main(){ Engine e; e.start(); return 0; }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Engine" not in stale                   # C++ class in .h header live
+        assert "Engine.ignite" not in stale
+
+
+def test_bash_script_function_named_like_file_stem_stays_live(tmp_path):
+    """CARDINAL (panel SSS): a bash `run.sh` defining `function run()` collides ids
+    (`run.sh::run` for both the MODULE node and the function), and the store's
+    INSERT OR REPLACE dropped the MODULE node — and with it the `script` role (which lives
+    ONLY on the module for bash), flagging every function dead. A shadowed module's roles
+    are now merged into the surviving symbol node."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "run.sh": "#!/usr/bin/env bash\nfunction run() { helper; }\nfunction helper() { echo done; }\nrun\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "run" not in stale and "helper" not in stale  # script role survives collision
+
+
+def test_js_test_file_class_named_like_stem_stays_live(tmp_path):
+    """CARDINAL (panel TTT): a JS test file `tests/Service.js` defining `class Service`
+    collides ids with the MODULE node, dropping the `test` role (the test variant of the
+    bash collision). The module's roles are now merged into the surviving class node."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "tests/Service.js": ("class Service { run() { this.doWork(); } doWork() { return 1; } }\n"
+                             "const svc = new Service();\nsvc.run();\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "tests/Service.js::Service" not in stale_ids   # test role survives collision
+
+
+def test_js_reexport_does_not_root_same_named_symbol_in_other_language(tmp_path):
+    """Precision (panel TTT LOW): `export { Widget }` is JS/TS-only, so a same-named dead
+    class in another language must NOT be marked exported by it (cross-language false
+    negative). The reexport pass is now language-guarded."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "widget.ts": "class Widget { render() { return 1; } }\nexport { Widget };\n",
+        "rb_widget.rb": "class Widget\n  def render\n    1\n  end\nend\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "rb_widget.rb::Widget" in stale_ids     # genuinely-dead Ruby class flags
+
+
+def test_cpp_struct_with_methods_in_h_used_cross_file_is_live(tmp_path):
+    """CARDINAL (panel UUU): a C++ `struct` with member functions in a `.h` header (no
+    class/namespace/template marker) was sniffed as C and bucketed in language 'c', while the
+    `.cpp` using it is 'cpp' — and resolution binds within a language, so the cross-file use
+    never resolved and the struct flagged dead. C and C++ now share one resolution bucket."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "v.h": "#pragma once\nstruct V3 { double x,y,z; double len() const; };\n",
+        "m.cpp": ("#include \"v.h\"\ndouble V3::len() const { return x*x+y*y+z*z; }\n"
+                  "int main(){ V3 v{1,2,2}; return (int)v.len(); }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "v.h::V3" not in stale_ids             # struct used cross-file is live
+
+
+def test_c_header_decl_used_from_c_file_stays_live(tmp_path):
+    """Regression guard for the C/C++ resolution-bucket unification: a pure-C header decl
+    called from a `.c` file must still bind (the unification must not regress pure-C)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "util.h": "int add(int a, int b);\n",
+        "prog.c": "#include \"util.h\"\nint add(int a, int b){ return a+b; }\nint main(){ return add(1,2); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        assert "util.h::add" not in stale_ids         # header decl bound to .c use
+
+
+def test_rust_trait_impl_method_invoked_via_sugar_is_live(tmp_path):
+    """CARDINAL (panel UUU): a method in a Rust `impl Trait for X` block can't carry `pub`
+    and is invoked via language sugar (`Display::fmt` through `{}`), so it got no `exported`
+    role and no call node — flagged dead. `_seed_trait_impl_methods` roots trait-impl methods
+    as callback (framework/contract-invoked); a bare inherent `impl X` is NOT rooted."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": ("use std::fmt;\nstruct Point { x: i32, y: i32 }\n"
+                   "impl fmt::Display for Point {\n"
+                   "    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { write!(f, \"{}\", self.x) }\n"
+                   "}\nfn main() { let p = Point{x:1,y:2}; println!(\"{}\", p); }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Point.fmt" not in stale               # trait-impl method live
+
+
+def test_csharp_top_level_statements_root_local_functions(tmp_path):
+    """CARDINAL (panel WWW): C# top-level statements (the default .NET 6+ `Program.cs`) ARE
+    the program's Main entry point (like bash's top-level body / Python `__main__`), but local
+    functions in a top-level program had no root and were flagged dead. A `.cs` with
+    `global_statement` children is now rooted as a script."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Program.cs": ("int x = Compute(5);\nSystem.Console.WriteLine(x);\n"
+                       "int Compute(int n) { return Square(n) + 1; }\n"
+                       "int Square(int n) { return n * n; }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Compute" not in stale and "Square" not in stale
+
+
+def test_class_with_any_reachable_member_is_not_flagged_dead(tmp_path):
+    """CARDINAL (panel XXX): a live method implies a live class — a class must never be
+    flagged dead while any of its members is reachable. This is the general backstop for the
+    class-vs-member family (covers C# partial classes split across files: a non-public part
+    whose member is reached via the public part). A class with ALL members dead still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Service.cs": "public partial class Service { public string Process(string i){ return Normalize(i); } }\n",
+        "Service.Helpers.cs": "partial class Service { string Normalize(string s){ return s.Trim(); } }\n",
+        "Dead.cs": "class Dead { void unused() { } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale_ids = {c["id"] for c in sg.find_stale(store).result}
+        # the partial part whose member is reachable from the public part must stay live
+        assert "Service.Helpers.cs::Service" not in stale_ids
+        # but a class with no reachable member is still correctly flagged
+        assert "Dead.cs::Dead" in stale_ids
+
+
+def test_lookup_by_non_utf8_name_refuses_without_crashing():
+    """CRASH/envelope (panel XXX): a symbol name with a lone surrogate (invalid-UTF-8 argv
+    via surrogateescape) or an embedded NUL is bound into SQLite, which raises on encode. The
+    store lookups must refuse (empty/None) so the op returns a Result, not a traceback."""
+    from stitchgraph.core import operations as ops
+    from stitchgraph.core.model import Node, NodeKind
+    with sg.Store(":memory:") as store:
+        store.add_node(Node(id="m.py::f", kind=NodeKind.FUNCTION, name="f"), file="m.py")
+        assert store.nodes_by_name("\udcff\udcfe") == []      # lone surrogate -> no match
+        assert store.nodes_by_name("a\x00b") == []            # embedded NUL -> no match
+        assert store.get_node("\udcff") is None
+        r = ops.impact_of(store, "\udcff\udcfe")              # public op must not raise
+        assert r.ok is False
+
+
+def test_reindex_survives_delete_table_sql_in_source(tmp_path):
+    """CRASH (panel crash-sweep): a `DELETE TABLE ...` SQL string in analyzed source made
+    sqlglot return a Delete whose `.this` is a bool, so the SQL resolver's `.find_all` raised
+    AttributeError and aborted the whole reindex. Resolvers are heuristic enrichment and must
+    never abort reindex — `run_resolvers` now skips a crashing resolver, and the SQL guard
+    requires an Expression."""
+    _mk(tmp_path, {"m.py": 'def wipe(db):\n    db.execute("DELETE TABLE archived WHERE 1=1")\n'})
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        assert "m.py::wipe" in set(store.all_node_ids())
+
+
+def test_ingest_trace_bounds_go_coverprofile_span(tmp_path):
+    """DoS (panel ZZZ): a corrupt Go coverprofile with a huge end-line made `_parse_go`
+    materialize `range()` into a multi-GB set (OOM). The span is now bounded; a nonsensical
+    line is dropped, honouring the 'empty on any problem' contract — no OOM, no crash."""
+    from stitchgraph.core.runtime import load_coverage
+    bad = tmp_path / "corrupt.go.cov"
+    bad.write_text("mode: set\nfoo.go:1.1,999999999.1 1 1\n")
+    cov, _ = load_coverage(str(bad))               # must return fast without OOM
+    assert all(len(lines) <= 1_000_001 for lines in cov.values())
+
+
+def test_path_ops_refuse_on_hostile_path_without_crashing(tmp_path):
+    """CRASH/envelope (panels YYY/ZZZ): an over-long path, embedded NUL, or lone surrogate
+    passed to a path-taking op raised OSError/ValueError/UnicodeError from a stat()/bind
+    instead of returning a Result. reindex degrades to an empty index (like a missing path);
+    ingest_trace/risk refuse cleanly."""
+    long_p, nul_p, sur_p = "x" * 5000, "a\x00b", "\udc80"
+    with sg.Store(":memory:") as store:
+        for p in (long_p, nul_p, sur_p):
+            r = sg.reindex(store, p)                 # must not raise
+            assert r.ok and r.result["nodes"] == 0   # empty index, not a crash
+            assert hasattr(sg.ingest_trace(store, p), "ok")  # refuse, not crash
+            assert hasattr(sg.risk(store, p), "ok")
+
+
+def test_malformed_threshold_does_not_disable_review(tmp_path):
+    """Robustness (panel ZZZ): a `stitchgraph.toml` with `[review] threshold = "nan"` (or
+    out-of-range) would make `confidence < nan` always False and silently disable
+    needs_review. The threshold now clamps to the default on a non-[0,1] value."""
+    from stitchgraph.core import config as cfg
+    (tmp_path / "stitchgraph.toml").write_text('[review]\nthreshold = "nan"\n')
+    c = cfg.load_config(str(tmp_path))
+    assert c.threshold == 0.80
+
+
+def test_reindex_survives_deep_expression_in_tree_sitter_resolver(tmp_path):
+    """The route resolvers (express/jsfetch/spring) run their OWN recursive descent over a
+    tree-sitter tree, bypassing ResolveContext.parse()'s RecursionError guard — and
+    run_resolvers had no guard, so a deep `.js` expression aborted the whole reindex (panel
+    QQQ/RRR, the resolver-side analogue of the per-file extractor guard). A guard in
+    run_resolvers now degrades to 'no extra edges' instead of aborting."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    deep = "const T = " + " + ".join(['"x"'] * 3000) + ";\n"
+    (tmp_path / "build.js").write_text(deep + "app.post('/save', h);\nfunction h(){ return T; }\n")
+    (tmp_path / "other.py").write_text("def other():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        assert "other.py::other" in set(store.all_node_ids())
+
+
+def test_reindex_survives_pathologically_deep_python_file(tmp_path):
+    """A deep-but-valid AST (a huge flat `a + a + ... ` chain, realistic in generated
+    code) overflows the recursive extractor walk with RecursionError. That wasn't in the
+    per-file `except`, and the walk ran outside the try, so ONE bad file aborted the whole
+    reindex and left an empty DB — defeating the per-file-skip contract (panel OOO)."""
+    deep = "QUERY = (" + " + ".join(['"S "'] * 2000) + ")\n"
+    (tmp_path / "gen.py").write_text(deep)
+    (tmp_path / "other.py").write_text("def other():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        # the good file is still indexed — the pathological one is skipped, not fatal
+        assert "other.py::other" in set(store.all_node_ids())
 
 
 # -- Panel C / opus (MEDIUM): single-arg signal .connect(handler) ---------------
@@ -419,6 +791,57 @@ def test_malformed_executed_lines_do_not_crash_ingest(tmp_path):
         sg.reindex(store, str(tmp_path))
         res = sg.ingest_trace(store, str(bad))  # must not raise
         assert res.ok                            # the valid line still grounds f
+
+
+def test_malformed_coverage_json_shape_does_not_crash_ingest(tmp_path):
+    """Valid JSON of the WRONG SHAPE (not just bad values) must not crash `_parse_json`.
+    Earlier it guarded `executed_lines` values but assumed `files` was a dict and each
+    entry was a dict, so `files` as a list / an entry as a string|null raised an uncaught
+    AttributeError through the public `ingest_trace` (panel LLL — the content-shape twin of
+    the FIFO file-type fixes). Every shape must degrade to empty, honouring the docstring's
+    'empty on any problem' contract."""
+    from stitchgraph.core.runtime import load_coverage
+    for payload in (
+        '[1, 2, 3]',                                   # top-level not a dict
+        '{"files": [1, 2, 3]}',                        # files not a dict
+        '{"files": {"m.py": "nope"}}',                 # entry not a dict
+        '{"files": {"m.py": null}}',                   # entry null
+        '{"files": {"m.py": {"executed_lines": {}}}}',  # executed_lines not a list
+        '"just a string"',                             # scalar
+    ):
+        bad = tmp_path / "cov.json"
+        bad.write_text(payload)
+        cov = load_coverage(str(bad))[0]               # must return, never an exception
+        assert all(not lines for lines in cov.values())  # no real hits from garbage
+    # and end-to-end through the public op
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    bad.write_text('{"files": [1, 2, 3]}')
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.ingest_trace(store, str(bad))         # must not raise (was AttributeError)
+        assert hasattr(res, "ok")                      # a real Result, not a crash
+        # empty/garbage coverage grounds nothing -> honest refuse, never a traceback
+
+
+def test_malformed_stitchgraph_toml_does_not_crash_load_config(tmp_path):
+    """`_load` reads stitchgraph.toml on every CLI command and chained `.get().get()` over
+    its sections. A hand-edited config can put any TOML type under any key (a section as a
+    string, `threshold` non-numeric, `include` an int), which raised AttributeError/
+    ValueError and crashed every command. Each must fall back to its default, never crash
+    (same robustness class as the coverage-JSON shape guard)."""
+    from stitchgraph.core import config as cfg
+    for body in (
+        'entry_points = "oops"\n',                     # section is a string, not a table
+        'index = 42\n',                                # section is an int
+        '[review]\nthreshold = "high"\n',              # non-numeric threshold
+        '[entry_points]\ninclude = 5\n',               # include not a list
+        '[similar]\nembed_model = ["a", "b"]\n',       # embed_model not a string
+        'review = []\norient = "x"\n',                 # multiple bad sections
+    ):
+        (tmp_path / "stitchgraph.toml").write_text(body)
+        c = cfg.load_config(str(tmp_path))             # must not raise
+        assert c.threshold == 0.80 or isinstance(c.threshold, float)
+        assert isinstance(c.include, set) and isinstance(c.ignore, list)
 
 
 # -- Panel E / sonnet (HIGH): C/C++ functions must be extracted -----------------
@@ -1004,6 +1427,85 @@ def test_package_reexport_is_an_export_root(tmp_path):
         assert "live_method" not in stale      # public method of an exported class
         assert "NotExported" in stale          # not re-exported -> genuinely dead
         assert "_hidden" in stale              # underscore re-export stays private
+
+
+def test_renamed_reexport_target_is_an_export_root(tmp_path):
+    """`from .core import Engine as PublicEngine` (with/without __all__) makes the DEFINED
+    symbol `Engine` public API under an alias. The export-role match is by defined name, so
+    the alias-only `exported_names` entry missed `Engine`, flagging the live public class and
+    its methods dead at conf 0.6 (panel R25A, cardinal). Register the original name too,
+    gated on the bound (public) alias; a privately-bound re-export stays dead."""
+    _mk(tmp_path, {
+        "mypkg/__init__.py": (
+            "from .core import Engine as PublicEngine\n"
+            "from .core import secret as _priv\n"
+            "__all__ = [\"PublicEngine\"]\n"
+        ),
+        "mypkg/core.py": (
+            "class Engine:\n    def run(self):\n        return 1\n"
+            "def secret():\n    return 2\n"
+            "def truly_dead():\n    return 3\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Engine" not in stale          # renamed-re-exported public class
+        assert "run" not in stale              # its public method
+        assert "secret" in stale               # bound privately (as _priv) -> stays dead
+        assert "truly_dead" in stale           # never re-exported -> genuinely dead
+
+
+def test_conditional_reexport_is_an_export_root(tmp_path):
+    """A re-export nested in a `try/except ImportError` (optional dep) or `if
+    sys.version_info` (backport) is public API, but the __init__ export scan only walked
+    TOP-LEVEL statements, so the conditionally re-exported symbol was flagged dead at conf
+    0.6 (panel R26A, cardinal). The scan now looks through control-flow blocks. Underscore
+    re-exports nested in control flow stay private."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": (
+            "from .impl import PlainThing\n"
+            "try:\n    from .impl import OptThing\nexcept ImportError:\n    OptThing = None\n"
+            "try:\n    from .impl import _secret\nexcept ImportError:\n    _secret = None\n"
+        ),
+        "pkg/impl.py": (
+            "class PlainThing:\n    def work(self): return 1\n"
+            "class OptThing:\n    def work(self): return 2\n"
+            "def _secret(): return 3\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "OptThing" not in stale         # conditionally re-exported public API
+        assert "work" not in stale              # its method
+        assert "_secret" in stale              # underscore re-export stays private
+
+
+def test_assignment_alias_reexport_is_an_export_root(tmp_path):
+    """An alias re-export by assignment (`Public = impl.Thing` / `Public = _Internal`) in a
+    package __init__ exposes the RHS symbol as public API, but the export scan only saw
+    defs/imports, flagging the aliased class dead (panel R26B). The scan now roots the RHS
+    symbol of a public alias assignment; a private-target alias stays dead."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": (
+            "from . import impl\n"
+            "Public = impl.Thing\n"          # public alias -> roots Thing
+            "_priv = impl.Secret\n"           # private target -> Secret stays dead
+        ),
+        "pkg/impl.py": (
+            "class Thing:\n    def go(self): return 1\n"
+            "class Secret:\n    pass\n"
+            "class Unused:\n    pass\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Thing" not in stale            # public alias target -> live API
+        assert "go" not in stale                # its method
+        assert "Secret" in stale               # private-target alias -> stays dead
+        assert "Unused" in stale               # never aliased -> genuinely dead
 
 
 def test_reexport_root_survives_when_all_is_declared(tmp_path):
@@ -2165,3 +2667,2603 @@ def test_report_risk_section_never_blank_when_no_hotspots(tmp_path):
     risk_section = build_report(db, str(tmp_path)).split("## Risk", 1)[1]
     assert risk_section.strip()                      # not blank
     assert "no risk" in risk_section.lower()         # explicit empty marker
+
+
+# -- Issue #21: [project.scripts] console entry points are roots ---------------
+def test_pyproject_console_script_is_a_root(tmp_path):
+    """A `[project.scripts]` target (a CLI's `main`) is the product, not dead code —
+    design §4 lists it as a root, but the extractor never parsed pyproject.toml, so
+    `find_stale` falsely flagged it. It's now tagged role `script` (issue #21). A
+    genuinely-unused private fn still flags."""
+    _mk(tmp_path, {
+        "pyproject.toml": (
+            '[project]\nname = "mypkg"\nversion = "0.1.0"\n'
+            '[project.scripts]\nmytool = "mypkg.cli:main"\n'
+            '[project.gui-scripts]\nmygui = "mypkg.cli:gui"\n'
+        ),
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "from .core import public_api\n"
+                        "def main():\n    return public_api()\n"
+                        "def gui():\n    return public_api()\n",
+        "mypkg/core.py": "def public_api():\n    return 1\n"
+                         "def _dead_private():\n    return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        main = next(n for n in store.nodes_by_name("main"))
+        assert "script" in main.roles
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "main" not in stale          # console-script entry point = root
+        assert "gui" not in stale           # gui-scripts target too
+        assert "_dead_private" in stale     # genuinely unused, still flagged
+
+
+def test_pyproject_script_role_requires_matching_module(tmp_path):
+    """The script-root match requires BOTH the object name AND the module path, so a
+    same-named function in an UNrelated module isn't mis-rooted (precision)."""
+    _mk(tmp_path, {
+        "pyproject.toml": (
+            '[project]\nname = "mypkg"\nversion = "0.1.0"\n'
+            '[project.scripts]\nmytool = "mypkg.cli:main"\n'
+        ),
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "def main():\n    return 1\n",
+        # a homonym `main` in an unrelated module must NOT get the script role
+        "mypkg/other.py": "def main():\n    return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        roles = {n.id: n.roles for n in store.nodes_by_name("main")}
+        cli_main = next(i for i in roles if i.startswith("mypkg/cli.py::"))
+        other_main = next(i for i in roles if i.startswith("mypkg/other.py::"))
+        assert "script" in roles[cli_main]
+        assert "script" not in roles[other_main]
+
+
+# -- Issue #22: bash run-directly script top-level body is a root --------------
+def test_bash_top_level_script_roots_its_functions(tmp_path):
+    """A bash script that runs its work as bare top-level statements (no main()) is the
+    bash analogue of #8: its module body is the entry point. The script node is now
+    seeded as a root and its top-level calls — direct, via `$(...)`, and `trap NAME` —
+    are rooted, so those functions aren't false-flagged. A function called nowhere
+    still flags (issue #22)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "run.sh": (
+            "#!/usr/bin/env bash\n"
+            "get_versions() { echo v1; }\n"
+            "check_config() { echo ok; }\n"
+            "monitor() { echo go; }\n"
+            "get_indices() { echo 0; }\n"
+            "cleanup() { echo bye; }\n"
+            "orphan() { echo unused; }\n"   # called nowhere -> stays flagged
+            "\n"
+            "trap cleanup EXIT\n"
+            "versions=$(get_versions)\n"
+            "check_config\n"
+            "indices=$(get_indices)\n"
+            "monitor\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        for live in ("get_versions", "check_config", "monitor", "get_indices", "cleanup"):
+            assert live not in stale, f"{live} wrongly flagged stale"
+        assert "orphan" in stale            # genuinely unused -> still flagged
+
+
+def test_pyproject_class_method_target_matches_exact_qualified_name(tmp_path):
+    """A `Class.method` console-script target roots only that method, not a same-named
+    method on a different class in the same file (panel WW — leaf-only over-rooting)."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "m"\nversion = "0.1"\n'
+                          '[project.scripts]\nt = "m.cli:App.run"\n',
+        "m/__init__.py": "",
+        "m/cli.py": "class App:\n    def run(self):\n        return 1\n"
+                    "class Dead:\n    def run(self):\n        return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        roles = {n.id: n.roles for n in store.nodes_by_name("run")}
+        app = next(i for i in roles if i.endswith("App.run"))
+        dead = next(i for i in roles if i.endswith("Dead.run"))
+        assert "script" in roles[app]
+        assert "script" not in roles[dead]   # different class, not the target
+
+
+def test_bash_trap_does_not_root_signal_name_functions(tmp_path):
+    """`trap cleanup EXIT` roots only the handler `cleanup`; the signal word `EXIT` is
+    not rooted, so a function that happens to be named after a signal isn't spuriously
+    kept live (panel XX)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "s.sh": "#!/usr/bin/env bash\n"
+                "EXIT() { echo signal-named; }\n"   # shares a signal name, unused
+                "cleanup() { echo real; }\n"
+                "trap cleanup EXIT\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "cleanup" not in stale       # the handler is rooted
+        assert "EXIT" in stale              # signal name, not a rooted handler
+
+
+def test_pyproject_package_init_entry_point_is_rooted(tmp_path):
+    """A console-script target whose module is a *package* (`pkg:_main`) lives in
+    `pkg/__init__.py`, not `pkg.py`. The suffix matcher must try the `__init__.py`
+    candidate too, or an underscore/non-__all__ entry-point function is false-flagged
+    dead — the #21 bug for the package-init case (panel ZZ, cardinal-class)."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "pkg"\nversion = "0.1"\n'
+                          '[project.scripts]\nmy-tool = "pkg:_main"\n',
+        "pkg/__init__.py": '__all__ = ["public"]\n'
+                           "def public():\n    return 1\n"
+                           "def _main():\n    return public()\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        main = next(n for n in store.nodes_by_name("_main"))
+        assert "script" in main.roles
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "_main" not in stale          # package-level entry point = root
+
+
+def test_bash_trap_handler_parsing_matrix(tmp_path):
+    """The trap handler slot is parsed precisely (panels XX/YY/ZZ): root only the
+    handler ARG, never a trailing signal word, handle the `-` reset, option flags,
+    quoted-identifier handlers, and inline/empty/dynamic strings."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from stitchgraph.core.extract import treesitter as ts
+    parser = Parser(get_language("bash"))
+    cases = {
+        "trap cleanup EXIT": ["cleanup"],
+        "trap - EXIT": [],                       # reset, no handler
+        "trap -- cleanup EXIT": ["cleanup"],     # -- option skipped
+        "trap -p": [],                           # list mode, no handler
+        'trap "" EXIT': [],                      # empty handler, signal not promoted
+        "trap 'cleanup' EXIT": ["cleanup"],      # quoted identifier handler
+        "trap 'rm -f x' EXIT": [],               # inline command, not an identifier
+        "trap cleanup EXIT INT TERM": ["cleanup"],  # multi-signal, handler only
+        "trap -p EXIT": [],                      # print mode: signal arg, not a handler
+        "trap -l EXIT": [],                      # list mode: no handler
+    }
+    for code, expected in cases.items():
+        src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
+        tree = parser.parse(src)
+        got = [n for n, _ in ts._bash_trap_handlers(tree.root_node, src)]
+        assert got == expected, f"{code!r} -> {got}, expected {expected}"
+
+
+def test_class_method_console_script_keeps_class_live(tmp_path):
+    """A `Class.method` console-script target roots the method AND its enclosing class —
+    the class is genuinely live (the entry point can't reach the method without it).
+    The "method live, class dead" cardinal shape (panel DDD)."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "m"\nversion = "0.1"\n'
+                          '[project.scripts]\nt = "m.cli:App.run"\n',
+        "m/__init__.py": "",
+        "m/cli.py": "class App:\n    def run(self):\n        return 1\n"
+                    "class Dead:\n    def run(self):\n        return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "App" not in stale           # enclosing class of the entry method = live
+        assert "App.run" not in stale
+        assert "Dead" in stale              # genuinely unused class still flags
+
+
+def test_class_instantiated_in_main_block_is_live(tmp_path):
+    """A class instantiated in `if __name__ == "__main__":` (`Worker().run()`) is a live
+    entry root, like a called function — the class and the methods it invokes must not be
+    flagged dead (panel DDD, cardinal; a very common Python script idiom)."""
+    _mk(tmp_path, {
+        "app.py": "class Worker:\n    def run(self):\n        return 1\n\n"
+                  'if __name__ == "__main__":\n    Worker().run()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Worker" not in stale
+        assert "Worker.run" not in stale
+
+
+def test_reindex_survives_broken_symlink(tmp_path):
+    """A broken symlink (common with submodules / CI) must not abort the whole reindex —
+    the Python ast extractor and resolve context now skip an unreadable file like the
+    tree-sitter extractor already does (panel DDD)."""
+    (tmp_path / "good.py").write_text("def main():\n    return 1\n")
+    import os
+    os.symlink(str(tmp_path / "nonexistent.py"), str(tmp_path / "broken.py"))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))         # must not raise
+        assert "good.py::main" in set(store.all_node_ids())
+
+
+def test_entrypoint_class_rescue_does_not_root_all_public_methods(tmp_path):
+    """The class-rescue for entry points is narrow: a class instantiated in `__main__`
+    keeps the methods it *invokes* live, NOT every public method. So a same-named class
+    in an unrelated module doesn't get its whole method surface hidden via a global
+    name collision (panel EEE — bounding the over-root blast radius)."""
+    _mk(tmp_path, {
+        "p/__init__.py": "",
+        "p/cli.py": "class Worker:\n    def run(self):\n        return 1\n\n"
+                    'if __name__ == "__main__":\n    Worker().run()\n',
+        # unrelated, never-used Worker; `extra` is not invoked anywhere
+        "p/other.py": "class Worker:\n    def run(self):\n        return 1\n"
+                      "    def extra(self):\n        return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "p/cli.py::Worker" not in stale       # the real entry class stays live
+        # the unrelated class's NON-invoked public method must still be flaggable
+        assert "p/other.py::Worker.extra" in stale
+
+
+def test_reindex_skips_named_pipe_without_hanging(tmp_path):
+    """A FIFO (or other non-regular file) named `*.py` must not hang reindex: `open()`
+    on a FIFO with no writer blocks forever, and the OSError guard never fires because
+    the open succeeds. The file walk now skips non-regular files (panel FFF)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    os.mkfifo(str(tmp_path / "blocker.py"))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "good.py::good" in set(store.all_node_ids())
+
+
+def test_reindex_skips_named_pipe_in_resolver_pipeline(tmp_path):
+    """The FFF FIFO-skip guard must also cover the route/template resolvers, which do
+    their OWN rglob walks + read_bytes()/read_text() (express/jsfetch/spring/html). The
+    Express and Spring resolvers run unconditionally on every reindex, so a FIFO named
+    `*.js`/`*.java`/`*.html` would hang reindex even though the extractors are guarded
+    (panel GGG — two independent opus reviewers, exit 124 before the fix)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    os.mkfifo(str(tmp_path / "blocker.js"))      # express resolver (unconditional)
+    os.mkfifo(str(tmp_path / "Blocker.java"))    # spring resolver (unconditional)
+    os.mkfifo(str(tmp_path / "blocker.html"))    # html template resolver
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "good.py::good" in set(store.all_node_ids())
+
+
+def test_reindex_skips_fifo_pyproject_toml_without_hanging(tmp_path):
+    """`_console_script_targets` reads `<root>/pyproject.toml` on every reindex (the #21
+    console-script path). It must guard with `is_file()`, not `exists()`: `exists()` is True
+    for a FIFO, and the subsequent `read_text()` opens it and blocks forever — the OSError
+    guard never fires on a blocking open (panel JJJ — a second instance of the FIFO hang
+    class, in a fixed-path read rather than an rglob walk)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    os.mkfifo(str(tmp_path / "pyproject.toml"))  # _console_script_targets read site
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "good.py::good" in set(store.all_node_ids())
+
+
+def test_reindex_skips_named_pipe_in_route_gated_resolvers(tmp_path):
+    """The jsfetch/html resolvers only walk when ROUTE nodes already exist, so the
+    unconditional-resolver test above doesn't exercise their guard. Seed a real Python
+    route, then plant FIFO `*.js`/`*.html` siblings: reindex must not hang and the route
+    must still be linked (panel III — route-gated coverage)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    (tmp_path / "app.py").write_text(
+        "import flask\n"
+        "app = flask.Flask(__name__)\n"
+        "@app.route('/api/x')\n"
+        "def handler():\n"
+        "    return 'ok'\n"
+    )
+    os.mkfifo(str(tmp_path / "blocker.js"))      # jsfetch resolver (route-gated)
+    os.mkfifo(str(tmp_path / "blocker.html"))    # html resolver (route-gated)
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must return, not hang
+        assert "app.py::handler" in set(store.all_node_ids())
+
+
+def test_load_coverage_returns_empty_on_fifo_without_hanging(tmp_path):
+    """`load_coverage` (reached via `ingest_trace`) reads a user-named trace path and
+    promises "Empty on any problem", swallowing OSError to return ({}, ""). A FIFO would
+    block forever in read_text() instead — the OSError guard never fires on a blocking
+    open. It must guard with is_file() so a FIFO honours the empty-on-problem contract
+    (FIFO hang class, proactively closed)."""
+    import os
+    if not hasattr(os, "mkfifo"):
+        import pytest as _pytest
+        _pytest.skip("mkfifo not available on this platform")
+    from stitchgraph.core.runtime import load_coverage
+    fifo = tmp_path / "coverage.fifo"
+    os.mkfifo(str(fifo))
+    assert load_coverage(str(fifo)) == ({}, "")      # must return empty, not hang
+
+
+# -- Panel R11A / opus (release-blocking CRASH): non-UTF-8 ids must not abort --
+def test_store_add_node_edge_skip_non_utf8_id_without_crashing(tmp_path):
+    """A source file/dir with a non-UTF-8 name (Latin-1/Shift-JIS bytes on POSIX) is
+    decoded via surrogateescape into a lone-surrogate node id; sqlite can't bind it, so
+    `add_node`/`add_edge`'s INSERT raised UnicodeEncodeError and aborted reindex's bulk
+    insert. The write must skip the unstorable row (read side already refuses it), not
+    crash (panel R11A)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.store import Store
+    bad = "bad\udcffname.py::fn"
+    with Store(":memory:") as store, store.conn:
+        store.add_node(Node(id=bad, kind=NodeKind.FUNCTION, name="fn", location="x:1:0"))
+        store.add_node(Node(id="good.py::g", kind=NodeKind.FUNCTION, name="g", location="g.py:1:0"))
+        store.add_edge(Edge(src=bad, relation=Relation.CALLS, dst_symbol="g", dst_id=None,
+                            weight=1.0, provenance=Provenance.INFERRED, location="x:1:0", source="t"))
+        ids = set(store.all_node_ids())
+        assert "good.py::g" in ids        # the storable node survives
+        assert bad not in ids             # the surrogate node is skipped, not crashed on
+
+
+def test_reindex_survives_non_utf8_source_filename(tmp_path):
+    """End-to-end of the R11A class: a real `*.py` whose filename contains a raw non-UTF-8
+    byte must not abort reindex — the surrogate-id nodes are dropped and the rest of the
+    project still indexes."""
+    import os
+    try:
+        raw = os.fsencode(str(tmp_path)) + b"/bad\xffname.py"
+        with open(raw, "wb") as fh:
+            fh.write(b"def orphan():\n    return 1\n")
+    except OSError:
+        import pytest as _pytest
+        _pytest.skip("filesystem rejects non-UTF-8 names")
+    (tmp_path / "good.py").write_text("def good():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))       # must not raise / abort
+        assert res.ok
+        assert "good.py::good" in set(store.all_node_ids())
+
+
+# -- Panel R11B / sonnet (LOW): replace_file phantom hole ----------------------
+def test_replace_file_drops_phantom_hole_when_ambiguous_target_deleted(tmp_path):
+    """When one arm of an ambiguous fan-out (caller -> [h1, h2] as two AMBIGUOUS edges)
+    is removed by deleting its file, `_invalidate_dangling` turned that edge into a hole
+    even though the reference is still satisfied by the surviving sibling — over-counting
+    find_holes by one. replace_file now drops the redundant hole (panel R11B)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.store import Store
+    h1 = Node(id="h1.py::helper", kind=NodeKind.FUNCTION, name="helper", location="h1.py:1:0")
+    h2 = Node(id="h2.py::helper", kind=NodeKind.FUNCTION, name="helper", location="h2.py:1:0")
+    caller = Node(id="caller.py::call_me", kind=NodeKind.FUNCTION, name="call_me", location="caller.py:1:0")
+
+    def mk(dst):
+        # An ambiguous name-resolved fan-out is name_based (the resolver/`_ref_edges` set it):
+        # only such edges revert to holes on a target's deletion (a PRECISE edge is kept
+        # dangling and surfaced as a missing-target hole instead — panel R29A).
+        return Edge(src="caller.py::call_me", relation=Relation.CALLS, dst_symbol="helper",
+                    dst_id=dst, weight=0.5, provenance=Provenance.AMBIGUOUS,
+                    location="caller.py:2:0", source="test", name_based=True)
+    with Store(":memory:") as store:
+        with store.conn:
+            store.add_node(h1, file="h1.py")
+            store.add_node(h2, file="h2.py")
+            store.add_node(caller, file="caller.py")
+            store.add_edge(mk("h1.py::helper"), file="caller.py")
+            store.add_edge(mk("h2.py::helper"), file="caller.py")
+        store.replace_file("h1.py", [], [])
+        assert len(store.unresolved_edges()) == 0     # no phantom hole
+        # exactly the surviving sibling remains — no duplicate edge inflating fan_in
+        assert [e.dst_id for e in store.resolved_edges()] == ["h2.py::helper"]
+
+
+# -- Panel R11B / sonnet (LOW): phantom db::TABLE from non-standard SQL --------
+def test_sql_delete_update_table_do_not_create_phantom_table_node():
+    """`DELETE TABLE x` / `UPDATE TABLE x` are non-standard (MySQL-isms); sqlglot misparses
+    the `TABLE` keyword itself as the table, creating a phantom `db::TABLE` node while missing
+    the real one. The resolver now skips a bare `table` identifier (panel R11B)."""
+    pytest.importorskip("sqlglot")
+    from stitchgraph.core.resolve.sql import _link
+    for sql in ("DELETE TABLE users", "UPDATE TABLE users SET x = 1"):
+        nodes: dict = {}
+        edges: list = []
+        _link(nodes, edges, "some.py::fn", "some.py", 1, sql)
+        assert "db::TABLE" not in nodes               # no phantom keyword node
+
+
+# -- Panel R11B / opus (LOW): non-UTF-8 template must not disable resolver ------
+def test_html_resolver_survives_non_utf8_template(tmp_path):
+    """A non-UTF-8 HTML template raised UnicodeDecodeError in `read_text(encoding="utf-8")`,
+    swallowed by run_resolvers' broad except — silently disabling the HTML resolver for the
+    whole project. read_text now decodes lossily so other templates' forms still link, and
+    the bad one is scanned for what decodes (panel R11B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    (tmp_path / "app.py").write_text(
+        "import flask\n"
+        "app = flask.Flask(__name__)\n"
+        "@app.route('/submit')\n"
+        "def handler():\n"
+        "    return 'ok'\n"
+    )
+    (tmp_path / "bad.html").write_bytes(
+        b'<form action="/submit" method="post">\xff caf\xe9</form>')   # Latin-1 bytes
+    (tmp_path / "good.html").write_text('<form action="/submit" method="post"></form>')
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must not disable the resolver
+        submits = [e for e in store.resolved_edges(Relation.SUBMITS_TO)]
+        srcs = {e.src for e in submits}
+        # the well-formed template still links despite the bad sibling
+        assert "good.html::template" in srcs
+
+
+# -- Panel R12B / opus (CARDINAL): module-level use keeps a symbol live ---------
+def test_python_class_used_only_at_module_level_is_not_stale(tmp_path):
+    """A class instantiated only by module-level code (a registry value / dispatch table /
+    `REGISTRY = Spec(1)`) runs when the module loads, so it is live whenever the module is
+    loaded. The Python extractor edged only def/class-body scope, never module scope, so
+    such a class had no incoming edge and was flagged dead — reproduced in stitchgraph's own
+    `LangSpec` (panel R12, cardinal). A genuinely-unused class is still flagged."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/conf.py": """
+            class Spec:
+                def __init__(self, n): self.n = n
+            class TrulyDead:
+                def gone(self): return 1
+            REGISTRY = Spec(1)
+            def get_spec():
+                return REGISTRY
+        """,
+        "pkg/api.py": """
+            from .conf import get_spec
+            __all__ = ["run"]
+            def run():
+                return get_spec()
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "pkg/conf.py::Spec" not in stale          # live via module-level REGISTRY
+        assert "pkg/conf.py::TrulyDead" in stale          # genuinely unused, still flagged
+
+
+def test_js_toplevel_call_chain_is_not_stale(tmp_path):
+    """JS/TS/Ruby module top-level code runs on load; a function called only from a
+    top-level statement (`bootstrap()`) is live. The tree-sitter extractor ran the
+    module-scope use scan only for test/script files, so an ordinary exported module's
+    top-level call chain was flagged dead (panel R12, cardinal)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "index.js": """
+            export function publicApi() { return 1; }
+            function bootstrap() { return configure(); }
+            function configure() { return 2; }
+            bootstrap();
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "index.js::bootstrap" not in stale
+        assert "index.js::configure" not in stale
+
+
+def test_cpp_out_of_line_method_keeps_its_class_live(tmp_path):
+    """A C++ class declared in a header with all members defined out-of-line in a .cpp
+    (`int StringUtils::length(...){...}`) had the `StringUtils::` qualifier stripped, so the
+    method became a bare free function with no link to its class — the class was flagged dead
+    though a member is called (panel R12B, cardinal). A genuinely-unused member is still
+    flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "util.h": "class StringUtils { public: static int length(const char* s); "
+                  "static int hash(const char* s); };\n",
+        "util.cpp": '#include "util.h"\n'
+                    "int StringUtils::length(const char* s){ return 1; }\n"
+                    "int StringUtils::hash(const char* s){ return 2; }\n",
+        "main.cpp": '#include "util.h"\nint main(){ return StringUtils::length("hi"); }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "util.h::StringUtils" not in stale         # live: length() is called
+        assert "util.cpp::hash" in stale                  # genuinely unused, still flagged
+
+
+# -- Panel R12A+B / haiku (crash): adapter must refuse on an unusable --db ------
+def test_cli_command_refuses_on_unusable_db_without_traceback(tmp_path):
+    """`--db <a directory>` (or FIFO / device / unwritable path) made `Store()` raise an
+    uncaught sqlite OperationalError that escaped as a traceback. The CLI/MCP/report
+    adapters must return an envelope/clean message, not crash (panel R12)."""
+    pytest.importorskip("typer")
+    from typer.testing import CliRunner
+
+    from stitchgraph.adapters.cli import build_app
+    bad = tmp_path / "is_a_dir"
+    bad.mkdir()
+    res = CliRunner().invoke(build_app(), ["find-symbol", "x", "--db", str(bad)])
+    assert res.exit_code == 0          # clean refusal, not a crash
+    assert "cannot open index database" in res.stdout
+
+
+def test_report_adapter_refuses_on_unusable_db(tmp_path):
+    """The report adapter opens its own Store; an unusable --db must yield a one-line
+    report, not a sqlite traceback (panel R12)."""
+    from stitchgraph.adapters.report import build_report
+    bad = tmp_path / "dir.db"
+    bad.mkdir()
+    out = build_report(db=str(bad))
+    assert "cannot open index database" in out
+
+
+# -- Panel R12B / sonnet (metric): replace_file must not inflate fan_in ---------
+def test_replace_file_dedups_resolved_edges_matching_reindex(tmp_path):
+    """The incremental `replace_file` path bulk-inserts + resolves edges without reindex's
+    `_dedup_edges` pass, so a function named like its module (two collapsed nodes → two
+    edges per call site) and a hole resolved alongside a resolved sibling left duplicate
+    rows that inflated fan_in / pagerank (panel R12B). replace_file now dedups to match
+    reindex."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "hub.py": "def hub(): pass\n",
+        "main.py": "from hub import hub\ndef c1(): hub()\ndef c2(): hub()\ndef c3(): hub()\n",
+    })
+    with sg.Store(":memory:") as ref:
+        sg.reindex(ref, str(tmp_path))
+        expected = fan_in(ref).get("hub.py::hub")
+    nodes, edges = extract_project(str(tmp_path))
+    with sg.Store(":memory:") as store:
+        for n in nodes:
+            store.add_node(n)
+        for e in edges:
+            store.add_edge(e)
+        store.commit()
+        for f in ("hub.py", "main.py"):
+            fn = [n for n in nodes if n.id.split("::", 1)[0] == f]
+            fe = [e for e in edges if e.src.split("::", 1)[0] == f]
+            store.replace_file(f, fn, fe)
+        assert fan_in(store).get("hub.py::hub") == expected   # no inflation vs reindex
+
+
+def test_replace_file_no_duplicate_when_hole_resolves_alongside_sibling(tmp_path):
+    """If the edges handed to replace_file contain both a resolved edge and a hole for the
+    same (src, relation, dst_symbol), resolving the hole must not add a second row to a
+    target that already has a resolved edge (panel R12B finding 2)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+    with sg.Store(":memory:") as store:
+        a = Node(id="main.py::A", kind=NodeKind.FUNCTION, name="A", location="main.py:1:0")
+        foo = Node(id="lib.py::Foo", kind=NodeKind.FUNCTION, name="Foo", location="lib.py:1:0")
+        store.add_node(a, file="main.py")
+        store.add_node(foo, file="lib.py")
+        resolved = Edge(src="main.py::A", relation=Relation.CALLS, dst_symbol="Foo",
+                        dst_id="lib.py::Foo", weight=1.0, provenance=Provenance.EXTRACTED,
+                        location="main.py:2:0", source="ast")
+        store.add_edge(resolved, file="main.py")
+        store.commit()
+        hole = Edge(src="main.py::A", relation=Relation.CALLS, dst_symbol="Foo", dst_id=None,
+                    weight=0.7, provenance=Provenance.INFERRED, location="main.py:3:0",
+                    source="ast")
+        store.replace_file("main.py", [a], [resolved, hole])
+        assert fan_in(store).get("lib.py::Foo") == 1      # one logical caller, not two
+
+
+# -- Panel R13A / opus (CARDINAL): C++ nested-class / operator out-of-line defs --
+def test_cpp_nested_class_out_of_line_method_keeps_helper_live(tmp_path):
+    """An out-of-line method whose declarator is a NESTED qualified_identifier
+    (`Outer::Inner::tick`) or an `operator_name` (`Vec::operator+`) returned None from
+    `_name_of`, so the WHOLE function_definition was silently dropped — a helper called only
+    from such a body was then flagged dead (panel R13A, cardinal). Operators are implicitly
+    invoked, so they (and their callees) are rooted."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.h": "class Outer { public: class Inner { public: int tick(); }; };\n"
+                 "struct Vec { int x; Vec operator+(const Vec& o); };\n"
+                 "int helper();\nint combine();\n",
+        "lib.cpp": '#include "lib.h"\n'
+                   "int helper(){ return 7; }\nint combine(){ return 9; }\n"
+                   "int Outer::Inner::tick(){ return helper(); }\n"
+                   "Vec Vec::operator+(const Vec& o){ combine(); return *this; }\n",
+        "main.cpp": '#include "lib.h"\n'
+                    "int main(){ Outer::Inner i; Vec a; Vec b; (void)(a+b); return i.tick(); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "lib.cpp::helper" not in stale     # live via Outer::Inner::tick
+        assert "lib.cpp::combine" not in stale     # live via Vec::operator+ (rooted)
+
+
+# -- Panel R13A+B / opus (over-suppression): same-basename import disambiguation -
+def test_import_does_not_falsely_link_same_basename_module_in_other_package(tmp_path):
+    """`from pkg1 import helper` must not bind `helper` (function OR the same-basename
+    `pkg2.helper` module, which the index aliases globally) to pkg2 — that falsely made
+    pkg2's module reachable, masking its genuinely-dead class and coupling `main` to pkg2 in
+    impact_of (panel R13B)."""
+    _mk(tmp_path, {
+        "pkg1/__init__.py": "",
+        "pkg2/__init__.py": "",
+        "pkg1/helper.py": "def helper():\n    return 1\n",
+        "pkg2/helper.py": "class DeadHelper:\n    def m(self): return 2\n"
+                          "INST = DeadHelper()\ndef helper():\n    return 3\n",
+        "main.py": 'from pkg1 import helper\n__all__ = ["main"]\ndef main():\n    return helper()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "pkg2/helper.py::DeadHelper" in stale       # never imported -> genuinely dead
+        impact = sg.impact_of(store, "pkg2.helper")
+        assert "main.py::main" not in (impact.result or {}).get("blast_radius", [])
+
+
+# -- Panel R13A / sonnet (metric): orient hubs exclude module pseudo-nodes -------
+def test_orient_hubs_exclude_module_nodes(tmp_path):
+    """Module nodes carry high import-coupling (amplified by the module->module IMPORTS
+    edges that make module-level liveness work), which crowded real functions out of
+    orient()'s "read these first" hub list. Hubs are now code entities only (panel R13A)."""
+    from stitchgraph.core.model import NodeKind
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/hub.py": "def hub_func():\n    return 1\n",
+        **{f"pkg/c{i}.py": "from .hub import hub_func\n"
+           f"def use{i}():\n    return hub_func()\n" for i in range(6)},
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        hubs = sg.orient(store).result["top_hubs"]
+        kinds = {store.get_node(h["id"]).kind for h in hubs}
+        assert NodeKind.MODULE not in kinds               # no module pseudo-nodes in hubs
+
+
+# -- Panel R14A / opus (CARDINAL): C++ conversion operators must not be dropped --
+def test_cpp_conversion_operator_keeps_callee_live(tmp_path):
+    """A C++ conversion operator (`operator bool`, `operator int`) parses as an
+    `operator_cast` node whose `type` field the name-walk followed to the target type,
+    yielding None — so the WHOLE function_definition was dropped and a helper called only
+    from its body was flagged dead (panel R14A, cardinal). operator_cast is now named and
+    rooted like other operators."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "n.h": "struct Wrap { int x; Wrap(int v): x(v) {} operator bool() const; };\n"
+               "int only_from_conv();\n",
+        "n.cpp": '#include "n.h"\n'
+                 "int only_from_conv(){ return 42; }\n"
+                 "Wrap::operator bool() const { return only_from_conv() > 0; }\n",
+        "main.cpp": '#include "n.h"\nint main(){ Wrap w(3); if((bool)w) return 1; return 0; }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "n.cpp::only_from_conv" not in stale     # live via Wrap::operator bool()
+
+
+# -- Panel R14A / opus (CARDINAL): relative `from . import sib` module-load --------
+def test_relative_bare_from_import_keeps_module_scope_code_live(tmp_path):
+    """`from . import sib` / `from .. import x` have node.module=None, so the ImportFrom
+    branch (and the module-load edge that carries module-level liveness) was skipped — a
+    class used only at the imported sibling module's scope was flagged dead (panel R14A,
+    cardinal)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/svc.py": "class Service:\n    def handle(self): return helper_fn()\n"
+                      "def helper_fn(): return 1\nSVC = Service()\nSVC.handle()\n",
+        "pkg/boot.py": "from . import svc\ndef boot(): return svc.SVC\n",
+        "main.py": 'from pkg.boot import boot\n__all__ = ["main"]\ndef main(): return boot()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "pkg/svc.py::Service" not in stale
+        assert "pkg/svc.py::Service.handle" not in stale
+        assert "pkg/svc.py::helper_fn" not in stale
+
+
+# -- Panel R14A / sonnet (CARDINAL regression): function named like its module ----
+def test_root_function_named_like_its_module_is_not_dropped(tmp_path):
+    """A root-level `utils.py` defining `def utils()` gives the MODULE and FUNCTION nodes
+    the SAME id (`utils.py::utils`); the round-13 module-filter in _ref_edges then dropped
+    the call edge, flagging the function dead — the near-universal `main.py`+`def main()`
+    pattern (panel R14A, cardinal). A shared id is kept out of the module filter."""
+    _mk(tmp_path, {
+        "utils.py": "def utils():\n    return 42\n",
+        "app.py": "def run():\n    utils()\n",
+        "pyproject.toml": '[project.scripts]\nrun = "app:run"\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "utils.py::utils" not in stale          # called by run() (a console script)
+
+
+# -- Panel R14A / sonnet (metric): MODULE nodes excluded from scan cycle/god_object
+def test_scan_excludes_module_pseudo_nodes_from_structural_findings(tmp_path):
+    """A module->module import cycle (circular import) and a heavily-imported module that
+    makes many module-level calls are not OOP cycles/god_objects — scan must not surface
+    MODULE pseudo nodes under those code-entity findings (panel R14A)."""
+    from stitchgraph.core.model import NodeKind
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        # circular import: a <-> b at module scope
+        "pkg/a.py": "from pkg import b\nVALUE_A = 1\ndef fa(): return b.VALUE_B\n",
+        "pkg/b.py": "from pkg import a\nVALUE_B = 2\ndef fb(): return a.VALUE_A\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        issues = sg.scan(store).result
+        module_findings = [i for i in issues
+                           if i.get("kind") in ("cycle", "god_object")
+                           and (n := store.get_node(i["node"])) is not None
+                           and n.kind is NodeKind.MODULE]
+        assert module_findings == []
+
+
+# -- Panel R15A / opus (CARDINAL): C/C++ reference-return defs must not be dropped -
+def test_cpp_reference_return_method_keeps_helper_live(tmp_path):
+    """A C/C++ function/method returning a reference (`int& W::refMethod()`, `const T&`)
+    has a `reference_declarator` that exposes its inner function_declarator as an UNNAMED
+    child, so `_name_of` dead-ended and the WHOLE def was dropped — a helper called only
+    from its body was flagged dead (panel R15A, cardinal). The declarator walk now descends
+    through reference (and all) declarator wrappers."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "a.h": "class W { public: int& refMethod(); };\nint helper();\n",
+        "a.cpp": '#include "a.h"\nint helper(){ return 5; }\n'
+                 "int& W::refMethod(){ static int x; helper(); return x; }\n",
+        "main.cpp": '#include "a.h"\nint main(){ W w; return w.refMethod(); }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "a.cpp::helper" not in stale       # live via W::refMethod()
+
+
+# -- Panel R15B / opus (CARDINAL): module-level decorator registry / bare decorator -
+def test_module_level_decorated_defs_and_decorator_are_live(tmp_path):
+    """A module-level decorated def is registered/wrapped when the module loads — a plugin
+    handler (`@register('x') def x`), a `@memo`-wrapped def, and the bare-name decorator
+    `memo` itself were all flagged dead while the equivalent dict-literal registry was
+    rescued (panel R15B). They are now edged from the module node."""
+    _mk(tmp_path, {
+        "app/__init__.py": "",
+        "app/plugins.py": """
+            PLUGINS = {}
+            def plugin(name):
+                def wrap(fn):
+                    PLUGINS[name] = fn
+                    return fn
+                return wrap
+            @plugin('greet')
+            def greet(): return "hi"
+            def memo(fn): return fn
+            @memo
+            def cached_thing(): return 1
+        """,
+        "app/run.py": """
+            from .plugins import PLUGINS
+            __all__ = ["run"]
+            def run(name): return PLUGINS[name]()
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        for nid in ("app/plugins.py::greet", "app/plugins.py::cached_thing",
+                    "app/plugins.py::memo"):
+            assert nid not in stale
+
+
+# -- Panel R15B / sonnet (LOW crash): replace_file on a lone-surrogate filename ----
+def test_replace_file_surrogate_filename_does_not_crash():
+    """`replace_file`'s `DELETE ... WHERE file = ?` binds failed on a lone-surrogate
+    filename (POSIX surrogateescape on a non-UTF-8 path); add_node/add_edge already guard
+    this, so replace_file must too (panel R15B)."""
+    from stitchgraph.core.store import Store
+    with Store(":memory:") as store:
+        store.replace_file("\ud800.py", [], [])   # must not raise
+
+
+# -- Panel R15B / sonnet (metric): function named like its module — call deduped ---
+def test_function_named_like_module_call_is_extracted_not_ambiguous(tmp_path):
+    """A function named like its file (`def compute()` in `compute.py`) makes the MODULE
+    and FUNCTION nodes share one id, listed twice in by_name; without dedup a within-file
+    call resolved AMBIGUOUS (0.5) and a live stub was demoted RED->ORANGE. The candidate
+    list is now deduped, so the stub stays RED (panel R15B)."""
+    _mk(tmp_path, {
+        "compute.py": "def compute(): ...\n"
+                      "def compute_twice(): return compute() * 2\n"
+                      'if __name__ == "__main__":\n    compute_twice()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stubs = [i for i in sg.scan(store).result if i["kind"] == "live_stub"]
+        assert any(i["urgency"] == "red" for i in stubs)   # not demoted by a false AMBIGUOUS
+
+
+# -- Panel R16A2 / opus (CARDINAL): Rust trait impl emits INHERITS Type->Trait ----
+def test_rust_trait_kept_live_via_impl_inherits_edge(tmp_path):
+    """A Rust `impl Trait for Type` means Type satisfies Trait. Without an INHERITS edge
+    Type->Trait, a private trait whose method is reached (but whose name never appears in a
+    reachable body) was flagged dead (panel R16A, cardinal) — the analogue of Ruby
+    `include`. The impl block now emits the edge."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "src/lib.rs": """
+            trait Validator { fn validate(&self, input: &str) -> bool; }
+            struct LengthValidator { min: usize }
+            impl Validator for LengthValidator {
+                fn validate(&self, input: &str) -> bool { input.len() >= self.min }
+            }
+            pub fn check(input: &str) -> bool {
+                let v = LengthValidator { min: 3 };
+                v.validate(input)
+            }
+            fn never_called() -> bool { false }
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "src/lib.rs::Validator" not in stale       # live: LengthValidator impls it
+        assert "src/lib.rs::never_called" in stale          # genuinely unused, still flagged
+
+
+# -- Panel R16B2 / opus (non-blocking): client HTTP calls aren't phantom routes ---
+def test_client_http_call_is_not_a_phantom_express_route(tmp_path):
+    """`http.get("/x")` / `axios.post("/x")` are client HTTP calls, not Express server
+    route registrations — they must not become phantom ROUTE nodes (panel R16B). The
+    express resolver skips known client-library receivers."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "client.js": 'const http = require("http");\nhttp.get("/api/data");\n'
+                     'const axios = require("axios");\naxios.post("/users", data);\n',
+    })
+    from stitchgraph.core.model import NodeKind as _NK
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert store.nodes_by_kind(_NK.ROUTE) == []        # no phantom routes
+
+
+def test_express_real_route_still_detected(tmp_path):
+    """The client-receiver skip must NOT drop a genuine `app.get`/`router.post` route —
+    that would orphan its handler (cardinal risk). Real routes still link (panel R16B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.model import NodeKind as _NK
+    _mk(tmp_path, {
+        "server.js": 'const app = express();\n'
+                     'function handler(req, res) { return res.send("ok"); }\n'
+                     'app.get("/health", handler);\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert store.nodes_by_kind(_NK.ROUTE)              # the real route survives
+
+
+# -- Panel R16B2 / opus (metric): transitive_fan_in excludes self for cyclic nodes -
+def test_transitive_fan_in_excludes_self_for_cycles():
+    """A node on a cycle reaches itself in the boolean closure; counting that made
+    transitive_fan_in report the node as its own depender, inconsistent with
+    reverse_reachable_from/impact_of (panel R16B). The diagonal is now dropped."""
+    pytest.importorskip("graphblas")
+    from stitchgraph.core import algebra
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for nid in ("m.py::a", "m.py::b"):
+            store.add_node(Node(id=nid, kind=NodeKind.FUNCTION, name=nid.split("::")[1]))
+        for s, d in (("m.py::a", "m.py::b"), ("m.py::b", "m.py::a")):
+            store.add_edge(Edge(src=s, relation=Relation.CALLS, dst_symbol=d.split("::")[1],
+                                dst_id=d, weight=1.0, provenance=Provenance.EXTRACTED))
+        store.commit()
+        tfi = algebra.transitive_fan_in(store)
+        assert tfi == {"m.py::a": 1, "m.py::b": 1}          # each other, not self
+
+
+# -- Panel R16B2 / opus (input validation): find_similar negative limit ------------
+def test_find_similar_negative_limit_does_not_return_near_all(tmp_path):
+    """A negative `limit` sliced from the end (`scored[:-5]`), returning nearly all results
+    instead of bounding to none (panel R16B). limit is now clamped to >=0."""
+    _mk(tmp_path, {
+        "m.py": "\n".join(f"def f{i}(): return store_edge()" for i in range(8))
+                + "\ndef store_edge(): return 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        res = sg.find_similar(store, "store edge reachable", limit=-5)
+        # clamped: refuses with no payload rather than returning ~all-but-5
+        assert res.result in (None, [])
+
+
+# -- Panel R17A / haiku (envelope/crash): None string args must return a Result ----
+def test_string_arg_ops_return_result_on_none_not_raise(tmp_path):
+    """A None (wrong-type) path/symbol/scope passed to a library op raised TypeError instead
+    of returning a Result envelope — the CLI is type-safe but the library/MCP surface can
+    hit it, violating "every op returns a Result, never raises" (panel R17A). reindex
+    degrades to an empty index; the rest refuse cleanly."""
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ops = [
+            lambda: sg.reindex(store, None),
+            lambda: sg.find_symbol(store, None),
+            lambda: sg.get_callers(store, None),
+            lambda: sg.get_callees(store, None),
+            lambda: sg.impact_of(store, None),
+            lambda: sg.trace_path(store, None, None),
+            lambda: sg.find_similar(store, None),
+            lambda: sg.summarize_subsystem(store, None),
+            lambda: sg.get_matrix(store, None),
+        ]
+        for call in ops:
+            res = call()                       # must not raise
+            assert hasattr(res, "ok")          # a real Result envelope
+
+
+# -- Panel R17B / sonnet (non-blocking envelope correctness) ----------------------
+def test_find_holes_zero_holes_is_green_not_orange():
+    """find_holes emitted ORANGE unconditionally; zero dangling references is a clean
+    result, so urgency is GREEN when there are no holes (panel R17B). The clean result is
+    also confident — needs_review must be False, not True with an empty review_reasons
+    (an unexplained review flag, panel R19B)."""
+    from stitchgraph.core.envelope import Urgency
+    with sg.Store(":memory:") as store:
+        res = sg.find_holes(store)
+        assert res.result == [] and res.urgency == Urgency.GREEN
+        assert res.needs_review is False and res.review_reasons == []
+
+
+def test_get_callers_reflects_edge_provenance():
+    """get_callers/get_callees reported confidence 1.0 / EXTRACTED / needs_review=False
+    regardless of edge provenance; a caller list resting on INFERRED/AMBIGUOUS edges must
+    reflect that uncertainty (panel R17B)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        store.add_node(Node(id="a.py::f", kind=NodeKind.FUNCTION, name="f"))
+        store.add_node(Node(id="b.py::g", kind=NodeKind.FUNCTION, name="g"))
+        store.add_edge(Edge(src="b.py::g", relation=Relation.CALLS, dst_symbol="f",
+                            dst_id="a.py::f", weight=0.3, provenance=Provenance.INFERRED))
+        store.commit()
+        res = sg.get_callers(store, "a.py::f")
+        assert res.provenance is Provenance.INFERRED and res.needs_review
+        assert res.confidence < 1.0
+        # the EXTRACTED case stays certain
+        store.add_node(Node(id="c.py::h", kind=NodeKind.FUNCTION, name="h"))
+        store.add_edge(Edge(src="c.py::h", relation=Relation.CALLS, dst_symbol="f",
+                            dst_id="a.py::f", weight=1.0, provenance=Provenance.EXTRACTED))
+        store.add_node(Node(id="d.py::k", kind=NodeKind.FUNCTION, name="k"))
+        store.add_edge(Edge(src="d.py::k", relation=Relation.CALLS, dst_symbol="kk",
+                            dst_id="d.py::k2", weight=1.0, provenance=Provenance.EXTRACTED))
+        store.add_node(Node(id="d.py::k2", kind=NodeKind.FUNCTION, name="k2"))
+        store.commit()
+        res2 = sg.get_callers(store, "d.py::k2")
+        assert res2.provenance is Provenance.EXTRACTED and not res2.needs_review
+
+
+# -- Panel R18A / opus (CARDINAL): Go init() is a runtime entry point ------------
+def test_go_init_function_and_its_callees_are_live(tmp_path):
+    """Go's `init()` is invoked automatically by the runtime at package initialization
+    (driver/handler registration) — it and whatever it calls are live, but _roles only
+    rooted main/Main, so init+callees were flagged dead (panel R18A, cardinal)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.go": "package main\nimport \"fmt\"\nvar cfg string\n"
+                   "func main() { fmt.Println(getConfig()) }\n"
+                   "func getConfig() string { return cfg }\n"
+                   "func init() { cfg = loadDefault() }\n"
+                   "func loadDefault() string { return \"default\" }\n"
+                   "func trulyDead() string { return \"x\" }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.go::init" not in stale
+        assert "main.go::loadDefault" not in stale     # reached from init
+        assert "main.go::trulyDead" in stale            # genuinely unused, still flagged
+
+
+# -- Panel R18A+B (envelope/crash): wrong-type args return a Result, never raise --
+def test_ops_return_result_on_wrong_type_args(tmp_path):
+    """Beyond None, ops must not raise on list/dict/int/bytes args (sqlite bind errors,
+    tokeniser TypeErrors, Path()/relation.upper()/abspath crashes) — reachable via the
+    library and MCP surfaces (panels R18A/R18B). reindex degrades to empty; rest refuse."""
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        import stitchgraph.core.similar as _sim
+        _sim._EMBEDDER, _sim._M2V_TRIED = None, True  # force the stdlib token path
+        calls = [
+            lambda: sg.find_symbol(store, []),
+            lambda: sg.find_symbol(store, {}),
+            lambda: sg.find_similar(store, 7),
+            lambda: sg.find_similar(store, []),
+            lambda: sg.find_similar(store, "x", None),
+            lambda: sg.ingest_trace(store, None),
+            lambda: sg.ingest_trace(store, [1]),
+            lambda: sg.get_matrix(store, "m", None),
+            lambda: sg.get_matrix(store, "m", "CALLS", "5"),
+            lambda: sg.reindex(store, b"abc"),
+            lambda: sg.trace_path(store, [1], "x"),
+        ]
+        for call in calls:
+            assert hasattr(call(), "ok")               # a Result, not an exception
+
+
+# -- Panel R15B/R16A/R18A sonnet (CARDINAL): replace_file re-widens homonyms ------
+def test_replace_file_rewidens_resolved_edge_on_new_homonym():
+    """Adding a node whose name matches an already-resolved edge's symbol must re-expand
+    that edge to the new node (matching a full reindex), or the new node is unreachable and
+    find_stale flags it dead (panels R15B/R16A/R18A, cardinal)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+
+    def _n(i):
+        return Node(id=i, kind=NodeKind.FUNCTION, name=i.split("::")[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file("a.py", [_n("a.py::foo")], [])
+        store.replace_file("c.py", [_n("c.py::caller")], [
+            Edge(src="c.py::caller", relation=Relation.CALLS, dst_symbol="foo",
+                 dst_id="a.py::foo", weight=1.0, provenance=Provenance.EXTRACTED,
+                 name_based=True)])
+        store.replace_file("b.py", [_n("b.py::foo")], [])   # new homonym, added later
+        fi = fan_in(store)
+        assert fi.get("a.py::foo", 0) >= 1 and fi.get("b.py::foo", 0) >= 1
+
+
+# -- Panel R19A (cardinal): polymorphic dispatch must keep subclass overrides live --
+def test_override_via_base_typed_param_is_not_stale(tmp_path):
+    """`def go(b: Base): b.run()` dispatches at runtime to the override on the concrete
+    subclass, but the precision path bound the CALLS edge to Base.run only, leaving the
+    live Derived.run with no inbound edge -> flagged dead at conf 0.6 (panel R19A,
+    cardinal). The override must stay live; only genuinely-unused code is flagged."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return 0
+            class Derived(Base):
+                def run(self): return self._extra()
+                def _extra(self): return 1
+            class Unused(Base):
+                def run(self): return 2
+            def go(b: Base): return b.run()
+            def main(): return go(Derived())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Derived.run" not in stale     # the override that runs
+        assert "main.py::Derived._extra" not in stale   # reached only via the override
+
+
+def test_override_via_self_dispatch_is_not_stale(tmp_path):
+    """A base method calling `self.step()` dispatches to the subclass override at runtime;
+    binding the edge to the enclosing (base) class left the override dead (panel R19A,
+    cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return self.step()
+                def step(self): return 0
+            class Derived(Base):
+                def step(self): return 1
+            def main():
+                d = Derived()
+                return d.run()
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Derived.step" not in stale
+
+
+def test_override_via_abc_typed_param_is_not_stale(tmp_path):
+    """Same defect via an `abc.ABC` + `@abstractmethod` declared type — DI/polymorphism
+    through an abstract base is the common idiom (panel R19A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            import abc
+            class Iface(abc.ABC):
+                @abc.abstractmethod
+                def handle(self): ...
+            class Impl(Iface):
+                def handle(self): return self._do()
+                def _do(self): return 1
+            def run(x: Iface): return x.handle()
+            def main(): return run(Impl())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Impl.handle" not in stale
+        assert "main.py::Impl._do" not in stale
+
+
+def test_duck_typed_call_keeps_unrelated_same_named_method_live(tmp_path):
+    """A call bound to a declared (annotation) type is only a hint: the runtime object may
+    be a subclass OR an unrelated duck-typed class with the same method. `go(b: Base)`
+    calling `b.run()` must keep EVERY same-named `run` live — the precise INHERITS subtree
+    is not enough, because the real object can be outside it (panel R20A, cardinal). The
+    over-approximation (an unrelated never-used `run` kept live) is the documented
+    cardinal-safe trade-off."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return 0
+            class Derived(Base):
+                def run(self): return 1
+            class Duck:                       # unrelated, not a Base subclass
+                def run(self): return self._go()
+                def _go(self): return 99
+            def go(b: Base): return b.run()
+            def main():
+                go(Derived())
+                return go(Duck())             # real object is duck-typed, not a Base
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Derived.run" not in stale      # subclass override, live
+        assert "main.py::Duck.run" not in stale         # duck-typed impl, live (cardinal)
+        assert "main.py::Duck._go" not in stale         # reached only via Duck.run
+
+
+def test_structural_protocol_impl_is_not_stale(tmp_path):
+    """A class satisfying a typing.Protocol WITHOUT inheriting it (idiomatic structural
+    typing) has no INHERITS edge, so override-propagation alone can't keep it live; the
+    declared-type call must widen to all same-named methods (panel R20A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            import typing
+            class Renderer(typing.Protocol):
+                def render(self) -> int: ...
+            class HtmlRenderer:
+                def render(self): return self._impl()
+                def _impl(self): return 1
+            def show(r: Renderer): return r.render()
+            def main(): return show(HtmlRenderer())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::HtmlRenderer.render" not in stale
+        assert "main.py::HtmlRenderer._impl" not in stale
+
+
+def test_descriptor_get_helper_is_not_stale(tmp_path):
+    """A descriptor's __get__ is invoked implicitly by attribute access; a helper it alone
+    calls must stay live when the descriptor class is used (panel R20A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Field:
+                def __get__(self, obj, owner): return self._fetch()
+                def _fetch(self): return 42
+            class Model:
+                val = Field()
+            def main():
+                m = Model()
+                return m.val
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Field._fetch" not in stale
+
+
+def test_callable_dunder_helper_is_not_stale(tmp_path):
+    """An instance call `s(...)` invokes __call__ implicitly; a helper reached only via
+    __call__ must stay live when the instance is called (panel R20A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Strategy:
+                def __call__(self, x): return x
+            class Double(Strategy):
+                def __call__(self, x): return self.calc(x)
+                def calc(self, x): return x * 2
+            def run(s: Strategy): return s(5)
+            def main(): return run(Double())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Double.calc" not in stale
+
+
+def test_property_read_through_declared_type_is_not_stale(tmp_path):
+    """A property/attribute READ through a declared type is the read-side twin of the call
+    case: the runtime object may be a subclass, structural Protocol impl, or duck-typed
+    class. Round-20 widened CALLS but left REFERENCES (reads) narrow, so an overriding
+    property and its helpers were confidently flagged dead (panel R21A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            import typing
+            class HasName(typing.Protocol):
+                @property
+                def name(self) -> str: ...
+            class Dog:                          # structural impl, no inheritance
+                @property
+                def name(self): return self._dog_name()
+                def _dog_name(self): return "rex"
+            class Base:
+                @property
+                def label(self): return "b"
+            class Sub(Base):                    # subclass property override
+                @property
+                def label(self): return self._sub_lbl()
+                def _sub_lbl(self): return "s"
+            def greet(h: HasName): return h.name
+            def show(b: Base): return b.label
+            def main(): return greet(Dog()) + show(Sub())
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        for live in ("main.py::Dog.name", "main.py::Dog._dog_name",
+                     "main.py::Sub.label", "main.py::Sub._sub_lbl"):
+            assert live not in stale
+
+
+def test_self_property_override_is_not_stale(tmp_path):
+    """A base method reading `self.title` (a property) dispatches to a subclass override at
+    runtime; _propagate_overrides must widen REFERENCES (not just CALLS) across subclass
+    overrides or the override and its helper are flagged dead (panel R21A, cardinal)."""
+    _mk(tmp_path, {
+        "main.py": """
+            class Base:
+                def run(self): return self.title
+                @property
+                def title(self): return "b"
+            class Sub(Base):
+                @property
+                def title(self): return self._mk()
+                def _mk(self): return "s"
+            def main(): return Sub().run()
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "main.py::Sub.title" not in stale
+        assert "main.py::Sub._mk" not in stale
+
+
+def test_non_utf8_config_does_not_crash(tmp_path):
+    """A non-UTF-8 stitchgraph.toml must degrade to defaults, not raise UnicodeDecodeError
+    out of every CLI command (panel R20A)."""
+    (tmp_path / "m.py").write_text("def foo(): pass\n")
+    (tmp_path / "stitchgraph.toml").write_bytes(b"[tool.stitchgraph]\n# bad: \xe9\n")
+    with sg.Store(":memory:") as store:
+        res = sg.reindex(store, str(tmp_path))
+        assert res.ok
+
+
+def test_out_of_range_int_arg_returns_result_not_overflow(tmp_path):
+    """An int beyond SQLite's signed-64-bit range must return a Result, not raise
+    OverflowError from the store bind (panel R20B). Reaches find_symbol -> nodes_by_name
+    and trace_path -> get_node."""
+    _mk(tmp_path, {"m.py": "def foo(): pass\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert sg.find_symbol(store, 2**63).ok is False
+        assert sg.trace_path(store, 2**63, "x").ok is False
+        assert sg.trace_path(store, "x", 2**63).ok is False
+
+
+def test_needs_review_always_has_a_reason():
+    """The envelope guarantees needs_review => review_reasons non-empty, centrally, so no
+    op can emit an unexplained review flag (panels R19B/R20B). A specific reason added
+    later supersedes the generic fallback."""
+    from stitchgraph.core.envelope import Provenance, Result
+    # Low confidence with no explicit reason -> generic fallback present.
+    r = Result(ok=True, result=[], confidence=0.5, provenance=Provenance.INFERRED)
+    assert r.needs_review and r.review_reasons
+    # Ambiguous provenance likewise.
+    r2 = Result(ok=True, result=[], confidence=1.0, provenance=Provenance.AMBIGUOUS)
+    assert r2.needs_review and r2.review_reasons
+    # A specific reason replaces the generic fallback rather than doubling it.
+    r3 = Result(ok=True, result=[], confidence=0.5, provenance=Provenance.INFERRED)
+    r3.add_reason("specific cause")
+    assert r3.review_reasons == ["specific cause"]
+    # A confident clean result is not flagged and carries no reasons.
+    r4 = Result(ok=True, result=[], confidence=1.0, provenance=Provenance.EXTRACTED)
+    assert r4.needs_review is False and r4.review_reasons == []
+
+
+def test_incremental_replace_does_not_cross_widen_dunder_edges(tmp_path):
+    """The seeded class->dunder REFERENCES edge (round 20) is precise/self-scoped, but
+    many classes share a dunder name. On an incremental replace_file, _rewiden_resolved
+    must not treat it as a name-ambiguous fan-out and cross-link every class's __init__ —
+    that inflated fan_in/impact on UNTOUCHED files (panel R21B). Incremental must converge
+    to the full-reindex graph."""
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "a.py": "class Foo:\n    def __init__(self): self.x = 1\n",
+        "b.py": "class Bar:\n    def __init__(self): self.y = 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert fan_in(store).get("b.py::Bar.__init__") == 1
+        nodes, edges = extract_project(str(tmp_path))
+        an = [n for n in nodes if n.id.startswith("a.py")]
+        ae = [e for e in edges if e.src.startswith("a.py")]
+        store.replace_file("a.py", an, ae)            # touch a.py only
+        # b.py is untouched: its dunder fan_in must stay 1, not gain a phantom from Foo.
+        assert fan_in(store).get("b.py::Bar.__init__") == 1
+
+
+def _incremental_store(root):
+    """Build a store by replace_file'ing each file of `root` independently (incremental
+    path), filtering one shared full extraction per file — the panel differential harness."""
+    from stitchgraph.core.extract.python import extract_project
+    nodes, edges = extract_project(str(root))
+    files = sorted({n.id.split("::", 1)[0] for n in nodes if "::" in n.id})
+    store = sg.Store(":memory:")
+    for f in files:
+        n = [x for x in nodes if x.id.split("::", 1)[0] == f]
+        e = [x for x in edges if x.src.split("::", 1)[0] == f]
+        store.replace_file(f, n, e)
+    return store
+
+
+def test_incremental_drop_redundant_holes_respects_name_based(tmp_path):
+    """_drop_redundant_holes must not treat an unrelated PRECISE edge (to a different
+    class's same-named method) as satisfying a name-based widening hole. Two classes named
+    MyClass in different files, the precise target class indexed last: dropping the hole
+    left the live target method unreferenced and flagged dead (panel R25A, cardinal)."""
+    import itertools
+
+    from stitchgraph.core.extract.python import extract_project
+    _mk(tmp_path, {
+        "target.py": ("class MyClass:\n    def method(self): return self._helper()\n"
+                      "    def _helper(self): return 1\n"),
+        "other.py": "class MyClass:\n    def method(self): return 2\n",
+        "caller.py": "from target import MyClass\ndef use(m: MyClass): return m.method()\n",
+        "main.py": ("from caller import use\nfrom target import MyClass\n"
+                    "def main(): return use(MyClass())\n"
+                    "if __name__ == '__main__': print(main())\n"),
+    })
+    nodes, edges = extract_project(str(tmp_path))
+    nbf, ebf = {}, {}
+    for n in nodes:
+        nbf.setdefault(n.id.split("::", 1)[0], []).append(n)
+    for e in edges:
+        ebf.setdefault(e.src.split("::", 1)[0], []).append(e)
+    for order in itertools.permutations(["target.py", "other.py", "caller.py", "main.py"]):
+        store = sg.Store(":memory:")
+        for f in order:
+            store.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        store.close()
+        assert "target.py::MyClass.method" not in stale, f"order {order}"
+
+
+def test_incremental_self_dispatch_override_not_stale(tmp_path):
+    """A subclass added in a DIFFERENT file via replace_file must have its override of a
+    `self`-dispatched base member kept live — the store's _propagate_overrides re-derives
+    the cross-file widening a full reindex does, or the override is flagged dead (panel
+    R22A, cardinal, incremental path)."""
+    _mk(tmp_path, {
+        "a.py": """
+            class Base:
+                def driver(self): return self.op()
+                def op(self): return 0
+            def run(b): return b.driver()
+            def main(): return run(Sub())
+            if __name__ == "__main__": print(main())
+        """,
+        "sub.py": """
+            from a import Base
+            class Sub(Base):
+                def op(self): return self._special()
+                def _special(self): return 1
+        """,
+    })
+    store = _incremental_store(tmp_path)
+    stale = {c["id"] for c in sg.find_stale(store).result}
+    store.close()
+    assert "sub.py::Sub.op" not in stale
+    assert "sub.py::Sub._special" not in stale
+
+
+def test_incremental_forward_ref_precise_import_not_misresolved(tmp_path):
+    """A precise import (`from right import helper`) to a not-yet-indexed file must NOT be
+    nullified and re-resolved by name to an unrelated same-named symbol in another module —
+    that inflated the homonym's fan_in and diverged from a full reindex (panel R24A).
+    _invalidate_dangling keeps a precise forward-ref edge regardless of file order; only
+    genuine deletions (target in the replaced file) and name-based edges revert to holes."""
+    import itertools
+
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "wrong.py": "def helper(): return 99\n",
+        "right.py": "def helper(): return 1\n",
+        "caller.py": "from right import helper as h\ndef caller(): return h()\n",
+    })
+    nodes, edges = extract_project(str(tmp_path))
+    nbf, ebf = {}, {}
+    for n in nodes:
+        nbf.setdefault(n.id.split("::", 1)[0], []).append(n)
+    for e in edges:
+        ebf.setdefault(e.src.split("::", 1)[0], []).append(e)
+    full = sg.Store(":memory:")
+    sg.reindex(full, str(tmp_path))
+    want = fan_in(full).get("wrong.py::helper", 0)
+    full.close()
+    for order in itertools.permutations(["wrong.py", "right.py", "caller.py"]):
+        store = sg.Store(":memory:")
+        for f in order:
+            store.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        got = fan_in(store).get("wrong.py::helper", 0)
+        store.close()
+        assert got == want, f"order {order}: fan_in(wrong.helper)={got}, full={want}"
+
+
+def test_incremental_deletion_reverts_inbound_edge_to_hole():
+    """Deleting a node (replacing its file with nothing) must still revert another file's
+    edge to it back to a hole — the forward-ref guard must not suppress genuine deletions."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    def _n(i):
+        return Node(id=i, kind=NodeKind.FUNCTION, name=i.split("::")[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file("b.py", [_n("b.py::target")], [])
+        store.replace_file("a.py", [_n("a.py::caller")], [
+            Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="target",
+                 dst_id="b.py::target", weight=1.0, provenance=Provenance.EXTRACTED)])
+        store.replace_file("b.py", [], [])     # delete target
+        holes = {(e.src, e.dst_symbol) for e in store.unresolved_edges()}
+        assert ("a.py::caller", "target") in holes
+
+
+def test_incremental_dedup_preserves_name_based_for_rewiden(tmp_path):
+    """A declared-type call emits a precise (name_based=0) AND a widening (name_based=1)
+    edge to its declared target; _dedup_resolved_edges keeps the precise row and must NOT
+    drop the name_based marker, or the group can never re-widen to a homonym whose file is
+    added later — flagging it dead (panel R23A, cardinal, incremental path)."""
+    _mk(tmp_path, {
+        "a.py": "class A:\n    def do(self): return 1\n",
+        "b.py": "class B:\n    def do(self): return 2\n",
+        "main.py": """
+            from a import A
+            def run():
+                x = A()
+                return x.do()
+            def main(): return run()
+            if __name__ == "__main__": print(main())
+        """,
+    })
+    full = sg.Store(":memory:")
+    sg.reindex(full, str(tmp_path))
+    full_stale = {c["id"] for c in sg.find_stale(full).result}
+    full.close()
+    # Incrementally apply main.py BEFORE b.py exists (the failing order).
+    inc = _incremental_store_in_order(tmp_path, ["a.py", "main.py", "b.py"])
+    inc_stale = {c["id"] for c in sg.find_stale(inc).result}
+    inc.close()
+    assert "b.py::B.do" not in inc_stale       # the homonym must stay live (cardinal)
+    assert inc_stale == full_stale             # incremental converges to full reindex
+
+
+def _incremental_store_in_order(root, order):
+    from stitchgraph.core.extract.python import extract_project
+    nodes, edges = extract_project(str(root))
+    store = sg.Store(":memory:")
+    for f in order:
+        n = [x for x in nodes if x.id.split("::", 1)[0] == f]
+        e = [x for x in edges if x.src.split("::", 1)[0] == f]
+        store.replace_file(f, n, e)
+    return store
+
+
+def test_incremental_precise_import_not_over_widened(tmp_path):
+    """A precise `from a import helper` resolution must stay bound to a's helper on an
+    incremental replace of an UNRELATED file, never name-widened across a homonym in
+    another module (panel R22B, metric inflation)."""
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "a.py": "def helper(): return 1\n",
+        "b.py": "def helper(): return 2\n",
+        "main.py": "from a import helper\ndef go(): return helper()\n",
+        "other.py": "def unrelated(): return 9\n",
+    })
+    full = sg.Store(":memory:")
+    sg.reindex(full, str(tmp_path))
+    inc = _incremental_store(tmp_path)
+    # b.py's helper is a different module's homonym — main's precise import must not link it.
+    assert fan_in(full).get("b.py::helper") == fan_in(inc).get("b.py::helper")
+    full.close()
+    inc.close()
+
+
+def test_incremental_replace_does_not_widen_scope_precise_self_call():
+    """A scope-precise self-call (`Impl.extra -> Impl.process`, EXTRACTED) must NOT be
+    widened to a same-named method of an unrelated class added later via replace_file — a
+    full reindex keeps it bound to Impl.process, so widening inflates fan_in/impact of the
+    unrelated method (panel R21A). Distinct from the class->member dunder case."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+
+    def _c(i):
+        return Node(id=i, kind=NodeKind.CLASS, name=i.split(".")[-1])
+
+    def _m(i):
+        return Node(id=i, kind=NodeKind.METHOD, name=i.rsplit(".", 1)[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file(
+            "impl.py",
+            [_c("impl.py::Impl"), _m("impl.py::Impl.process"), _m("impl.py::Impl.extra")],
+            [Edge(src="impl.py::Impl.extra", relation=Relation.CALLS, dst_symbol="process",
+                  dst_id="impl.py::Impl.process", weight=1.0,
+                  provenance=Provenance.EXTRACTED)])
+        store.replace_file("other.py",          # unrelated class, same method name
+                           [_c("other.py::Other"), _m("other.py::Other.process")], [])
+        fi = fan_in(store)
+        assert fi.get("impl.py::Impl.process") == 1
+        assert fi.get("other.py::Other.process", 0) == 0   # no phantom inbound
+        rows = store.conn.execute(
+            "SELECT provenance, weight FROM edges WHERE src = 'impl.py::Impl.extra' "
+            "AND dst_id IS NOT NULL").fetchall()
+        assert [(r["provenance"], r["weight"]) for r in rows] == [("extracted", 1.0)]
+
+
+def test_rewiden_renormalizes_weight_when_fanout_narrows():
+    """Deleting one arm of an N-way ambiguous fan-out must re-normalize the survivors'
+    weights to match a full reindex (1/N -> 1/(N-1), or 1.0 when one candidate remains),
+    or best_path/trace_path confidence stays deflated (panel R19A, non-blocking)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import best_path
+
+    def _n(i):
+        return Node(id=i, kind=NodeKind.FUNCTION, name=i.split("::")[1])
+
+    with sg.Store(":memory:") as store:
+        store.replace_file("b.py", [_n("b.py::foo")], [])
+        store.replace_file("a.py", [_n("a.py::caller")], [
+            Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="foo",
+                 dst_id="b.py::foo", weight=1.0, provenance=Provenance.EXTRACTED,
+                 name_based=True)])
+        store.replace_file("c.py", [_n("c.py::foo")], [])   # widen -> 0.5 / 0.5
+        store.replace_file("c.py", [], [])                  # narrow back to one
+        bp = best_path(store, "a.py::caller", "b.py::foo")
+        assert bp is not None and bp[1] == 1.0          # confidence restored, not 0.5
+        rows = store.conn.execute(
+            "SELECT weight FROM edges WHERE dst_symbol = 'foo' AND dst_id IS NOT NULL"
+        ).fetchall()
+        assert [r["weight"] for r in rows] == [1.0]
+
+    # 3-way fan-out narrowing to 2 re-normalizes 0.333 -> 0.5.
+    with sg.Store(":memory:") as store:
+        store.replace_file("a.py", [_n("a.py::caller")], [
+            Edge(src="a.py::caller", relation=Relation.CALLS, dst_symbol="m",
+                 dst_id="x.py::m", weight=1.0, provenance=Provenance.EXTRACTED,
+                 name_based=True)])
+        for f in ("x.py", "y.py", "z.py"):
+            store.replace_file(f, [_n(f"{f}::m")], [])
+        store.replace_file("z.py", [], [])              # drop one arm
+        rows = store.conn.execute(
+            "SELECT weight FROM edges WHERE dst_symbol = 'm' AND dst_id IS NOT NULL"
+        ).fetchall()
+        assert sorted(r["weight"] for r in rows) == [0.5, 0.5]
+
+
+def test_old_schema_db_missing_node_columns_does_not_crash(tmp_path):
+    """Opening an index built by an older stitchgraph whose `nodes` table lacks newer
+    columns (arity/summary/...) must not raise IndexError at read time — _row_to_node now
+    tolerates missing optional columns and _migrate backfills them, mirroring the edge-row
+    guard (panel R27A)."""
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0);"   # no arity/summary/roles/end_line
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted');"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('m.py::f', 'Function', 'f')")
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:                 # _migrate backfills missing columns
+        assert sg.orient(store).ok              # reads nodes -> _row_to_node, must not raise
+        assert sg.find_stale(store).ok
+        assert sg.find_symbol(store, "f").ok
+
+
+# -- Panel R28A / opus (CARDINAL): __all__ built by += / concat / extend -------
+def test_dunder_all_augmented_and_computed_forms_are_exported(tmp_path):
+    """A regular (non-__init__) module's public API is declared ONLY via `__all__`.
+    `_dunder_all` recognized just `__all__ = [literal]`, so symbols added with the equally
+    idiomatic `__all__ += [...]`, `__all__ = [...] + [...]`, and `__all__.extend([...])`
+    got no `exported` role and were flagged dead — live public API as dead, the cardinal
+    sin (panel R28A)."""
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0.1"\n',
+        "pkg/__init__.py": "",
+        "pkg/aug.py": '''
+            __all__ = ["First"]
+            __all__ += ["second"]
+
+            class First: ...
+            def second(): return 1
+            def really_private(): return 2
+        ''',
+        "pkg/concat.py": '''
+            __all__ = ["VisibleA"] + ["VisibleB"]
+
+            class VisibleA: ...
+            def VisibleB(): return 1
+        ''',
+        "pkg/ext.py": '''
+            __all__ = ["KeepA"]
+            __all__.extend(["KeepB"])
+            __all__.append("KeepC")
+
+            class KeepA: ...
+            def KeepB(): return 1
+            def KeepC(): return 2
+        ''',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        stale = sg.find_stale(store)
+        ids = {c["id"] for c in (stale.result or [])}
+    # Every __all__-declared name (regardless of build form) must NOT be stale...
+    for exported in ("pkg/aug.py::First", "pkg/aug.py::second",
+                     "pkg/concat.py::VisibleA", "pkg/concat.py::VisibleB",
+                     "pkg/ext.py::KeepA", "pkg/ext.py::KeepB", "pkg/ext.py::KeepC"):
+        assert exported not in ids, f"public API flagged dead: {exported}"
+    # ...while a genuinely-private symbol stays a true positive.
+    assert "pkg/aug.py::really_private" in ids
+
+
+# -- Panel R28B / opus (BLOCKING): _migrate must backfill ALL schema columns ---
+def test_old_schema_db_missing_file_and_location_columns_does_not_crash(tmp_path):
+    """An index whose `nodes` predates `file` crashed `_INDEXES` (idx_nodes_file) at
+    construction; one whose `edges` predates `location` crashed every `_row_to_edge`.
+    `_migrate` now derives its backfill set from `_SCHEMA` itself, so it can never omit a
+    column again (panel R28B)."""
+    import sqlite3
+    db = str(tmp_path / "old.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        # nodes lacks file/is_stub/arity/summary/roles/end_line
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '');"
+        # edges lacks location/source/file/name_based
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted');"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('m.py::f', 'Function', 'f')")
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('m.py::g', 'Function', 'g')")
+    conn.execute("INSERT INTO edges(src, relation, dst_symbol, dst_id) "
+                 "VALUES ('m.py::f', 'CALLS', 'g', 'm.py::g')")  # exercises _row_to_edge
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:                 # must not raise in __init__ (idx_nodes_file)
+        assert sg.orient(store).ok
+        assert sg.find_stale(store).ok          # reads edges -> _row_to_edge, must not raise
+        assert sg.get_callers(store, "g").ok
+
+
+# -- Panel R28A / haiku (BLOCKING): coverage JSON depth-bomb must not crash -----
+def test_ingest_trace_json_depth_bomb_returns_result(tmp_path):
+    """A deeply nested coverage JSON makes `json.loads` exceed the recursion limit;
+    RecursionError is not a JSONDecodeError, so it escaped `_parse_json` and crashed
+    `ingest_trace`. The 'empty on any problem' contract must hold (panel R28A-haiku)."""
+    bomb = tmp_path / "cov.json"
+    bomb.write_text('{"a":' * 6000 + "1" + "}" * 6000)
+    with sg.Store(":memory:") as store:
+        result = sg.ingest_trace(store, str(bomb))   # must return, not raise
+    assert result.ok is False
+
+
+# -- Panel R29A / sonnet (fan_in inflation): delete->re-add must converge -------
+def test_incremental_delete_readd_precise_edge_does_not_widen(tmp_path):
+    """A precise import to reach.py::func, after reach.py is deleted then re-added, must NOT
+    re-widen across a same-named homonym in another file. The old code nullified the precise
+    edge on deletion, re-resolved it by bare name to the homonym, marked it name_based, then
+    `_rewiden_resolved` widened it to BOTH on re-add — inflating the dead homonym's fan_in and
+    masking it from find_stale. `_invalidate_dangling` now keeps a precise edge bound to its
+    exact id (dangling until the file returns), so the result equals a full reindex (panel R29A)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    from stitchgraph.core.reach import fan_in
+
+    def _n(i, k=NodeKind.FUNCTION, **kw):
+        return Node(id=i, kind=k, name=i.split("::")[1], location=f"{i.split('::')[0]}:1:0", **kw)
+    cm = _n("caller.py::caller_module", NodeKind.MODULE)
+    cf = _n("caller.py::caller_func", roles=frozenset({"main"}))
+    rf = _n("reach.py::func")
+    af = _n("algebra.py::func")            # dead homonym, never referenced
+    ce = Edge(src="caller.py::caller_module", relation=Relation.IMPORTS, dst_symbol="func",
+              dst_id="reach.py::func", weight=1.0, provenance=Provenance.EXTRACTED)
+
+    def setup(s):
+        s.replace_file("caller.py", [cm, cf], [ce])
+        s.replace_file("reach.py", [rf], [])
+        s.replace_file("algebra.py", [af], [])
+
+    with sg.Store(":memory:") as full:
+        setup(full)
+        want_fi = fan_in(full).get("algebra.py::func", 0)
+        want_stale = {c["id"] for c in (sg.find_stale(full).result or [])}
+    with sg.Store(":memory:") as inc:
+        setup(inc)
+        inc.replace_file("reach.py", [], [])        # delete
+        inc.replace_file("reach.py", [rf], [])      # re-add same content
+        got_fi = fan_in(inc).get("algebra.py::func", 0)
+        got_stale = {c["id"] for c in (sg.find_stale(inc).result or [])}
+    assert got_fi == want_fi == 0, f"fan_in(algebra.func) inflated: {got_fi} vs {want_fi}"
+    assert got_stale == want_stale, f"stale diverged: {got_stale} vs {want_stale}"
+    assert "algebra.py::func" in got_stale          # dead homonym still correctly flagged
+
+
+# -- Panel R29B / opus (corrupt index): bad enum/weight must not crash an op ----
+def test_corrupt_index_values_do_not_crash_ops(tmp_path):
+    """A corrupt private index — a `kind`/`relation` string no stitchgraph writer emits, or a
+    non-finite edge weight (external tampering / on-disk bit-rot) — must not raise out of an
+    op. The row mappers skip an un-parseable enum row and clamp a non-finite weight, so ops
+    return a Result and JSON never carries `Infinity` (panel R29B)."""
+    import json
+    import sqlite3
+    db = str(tmp_path / "corrupt.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0, arity INTEGER, summary TEXT,"
+        " roles TEXT NOT NULL DEFAULT '', end_line INTEGER);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted',"
+        " location TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'x',"
+        " file TEXT NOT NULL DEFAULT '', name_based INTEGER NOT NULL DEFAULT 0);"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('a.py::z', 'BOGUSKIND', 'z')")
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('a.py::y', 'Function', 'y')")
+    conn.execute("INSERT INTO edges(src, relation, dst_symbol, dst_id, weight) "
+                 "VALUES ('a.py::y', 'BOGUSREL', 'z', 'a.py::z', 1e500)")   # corrupt rel + inf
+    conn.execute("INSERT INTO edges(src, relation, dst_symbol, dst_id, weight) "
+                 "VALUES ('a.py::y', 'CALLS', 'y', 'a.py::y', 1e500)")      # inf weight
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:
+        for op in (sg.find_stale, sg.scan, sg.orient, sg.find_holes):
+            assert op(store).ok in (True, False)        # returns a Result, never raises
+        assert store.get_node("a.py::z") is None         # corrupt-kind row skipped
+        assert store.get_node("a.py::y") is not None
+        assert "Infinity" not in json.dumps(sg.get_matrix(store, "a.py").to_dict())
+
+
+# -- Panel R30A / opus (CARDINAL): attribute read on an unknown receiver --------
+def test_attribute_read_unknown_receiver_not_flagged_dead(tmp_path):
+    """A property/attribute read on a receiver whose type we can't resolve — a constructor
+    result `Config().threshold` or, the everyday shape, an unannotated parameter
+    `def f(cfg): return cfg.threshold` — got NO edge, so the live property (and its private
+    helpers) were flagged dead. The attribute-read pass now has the same name-based fallback
+    as the call path (`_call_edge`), so an unknown-receiver read can't flag live code dead
+    (panel R30A, cardinal)."""
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0.1"\n',
+        "pkg/__init__.py": "from .main import main\n__all__ = ['main']\n",
+        "pkg/lib.py": '''
+            class Config:
+                @property
+                def threshold(self):
+                    return self._compute()
+                def _compute(self):
+                    return 0.5
+        ''',
+        "pkg/main.py": '''
+            from .lib import Config
+            def main():
+                cfg = Config()
+                def use(c):              # unannotated parameter -> unknown receiver
+                    return c.threshold
+                return use(cfg)
+        ''',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        ids = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert "pkg/lib.py::Config.threshold" not in ids   # live property
+    assert "pkg/lib.py::Config._compute" not in ids     # its private helper
+
+
+# -- Panel R30B / opus (BLOCKING): non-str id in a corrupt index must not crash -
+def test_corrupt_index_blob_node_id_does_not_crash_ops(tmp_path):
+    """`all_node_ids()` does a raw projection that bypasses the row mappers, so a BLOB (bytes)
+    `nodes.id` (external tampering / bit-rot) leaked to `get_matrix`/`risk`, which do string
+    ops on it -> TypeError instead of a Result. A non-str id can't be a real node id; it is
+    dropped, so every op returns a Result (panel R30B)."""
+    import sqlite3
+    db = str(tmp_path / "blob.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE nodes (id, kind TEXT NOT NULL, name TEXT NOT NULL,"
+        " location TEXT NOT NULL DEFAULT '', file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0, arity INTEGER, summary TEXT,"
+        " roles TEXT NOT NULL DEFAULT '', end_line INTEGER);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src TEXT NOT NULL,"
+        " relation TEXT NOT NULL, dst_symbol TEXT NOT NULL, dst_id TEXT,"
+        " weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted',"
+        " location TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT 'x',"
+        " file TEXT NOT NULL DEFAULT '', name_based INTEGER NOT NULL DEFAULT 0);"
+    )
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES (?, 'Function', 'z')", (b"\x00\x01blob",))
+    conn.execute("INSERT INTO nodes(id, kind, name) VALUES ('a.py::y', 'Function', 'y')")
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:
+        assert store.all_node_ids() == ["a.py::y"]       # BLOB id dropped
+        assert sg.get_matrix(store, "").ok in (True, False)   # no TypeError
+        assert sg.risk(store, str(tmp_path)).ok in (True, False)
+
+
+# -- Panel R30A / sonnet (non-blocking): synthetic override edge isn't a hole ----
+def test_dangling_synthetic_override_edge_is_not_a_hole():
+    """A `_propagate_overrides` edge (provenance='ambiguous', name_based=0) left dangling by a
+    subclass file's deletion is a derived liveness link, not a source reference, so it must NOT
+    be reported as a hole — only genuine missing-target references are (panel R30A)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    def _n(i, k=NodeKind.FUNCTION):
+        return Node(id=i, kind=k, name=i.split("::")[-1].split(".")[-1],
+                    location=f"{i.split('::')[0]}:1:0")
+    with sg.Store(":memory:") as store:
+        store.replace_file("base.py", [_n("base.py::Base", NodeKind.CLASS)], [])
+        # a synthetic override edge (ambiguous + name_based=0) to a symbol in sub.py
+        store.replace_file("sub.py", [_n("sub.py::Sub.do", NodeKind.METHOD)], [
+            Edge(src="base.py::Base", relation=Relation.REFERENCES, dst_symbol="do",
+                 dst_id="sub.py::Sub.do", weight=1.0, provenance=Provenance.AMBIGUOUS,
+                 name_based=False)])
+        store.replace_file("sub.py", [], [])                      # delete subclass file
+        holes = {(e.src, e.dst_symbol) for e in store.unresolved_edges()}
+        assert ("base.py::Base", "do") not in holes              # synthetic edge != hole
+
+
+# == Panel R31 fixes + bounding-matrix invariant tests ========================
+# These are "matrix" tests: they enumerate the axes where the late-stage symmetry
+# gaps live (scope × expression-kind; every str column; edit-sequence orderings)
+# so a not-yet-written cell fails CI instead of waiting for a panel. See
+# CONTRIBUTING.md "White-box symmetry closure".
+
+@pytest.mark.parametrize("scope", ["module", "class_body", "function"])
+def test_attr_read_unknown_receiver_live_in_every_scope(tmp_path, scope):
+    """CARDINAL matrix (panel R30/R31A): an attribute read on an unknown receiver must keep
+    the live member (and its private helper) alive in ALL three scope edge-builders —
+    `_module_scope_edges`, the `_walk_scope` ClassDef body, and the FunctionDef body. The
+    round-30 fix covered only the function body; this cell-per-scope test pins the column."""
+    site = {
+        "module":     "RESULT = _e.compute\ndef entry():\n    return RESULT\n",
+        "class_body": "class Holder:\n    DEFAULT = _e.compute\ndef entry():\n    return Holder\n",
+        "function":   "def entry():\n    def use(c):\n        return c.compute\n    return use(_e)\n",
+    }[scope]
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "p"\nversion = "0.1"\n',
+        "pkg/__init__.py": "from .api import entry\n__all__ = ['entry']\n",
+        "pkg/api.py": "class Engine:\n    def compute(self):\n        return self._inner()\n"
+                      "    def _inner(self):\n        return 1\n"
+                      "def make():\n    return Engine()\n_e = make()\n" + site,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        ids = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert "pkg/api.py::Engine.compute" not in ids, f"{scope}: live member flagged dead"
+    assert "pkg/api.py::Engine._inner" not in ids, f"{scope}: live helper flagged dead"
+
+
+def test_name_based_attr_read_stub_is_not_red(tmp_path):
+    """INFLATION (panel R31B): a stub reached only via a name-based attribute READ on an
+    unknown receiver must be ORANGE, not RED — `_ref_edges` grants INFERRED on `is_method`
+    regardless of relation, so the REFERENCES read is as low-confidence as the CALLS call."""
+    root = _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname = "c"\nversion = "0.1"\n'
+                          '[project.scripts]\nrun-app = "api:entry"\n',
+        "api.py": "def entry():\n    helper('x')\n"
+                  "def helper(obj):\n    return obj.value\n"
+                  "class Service:\n    def value(self):\n        raise NotImplementedError\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(root))
+        reds = [i for i in sg.scan(store).result if i.get("urgency") == "red"]
+    assert not any("Service.value" in str(i.get("node")) for i in reds)
+
+
+def test_corrupt_index_blob_in_every_str_column_does_not_crash(tmp_path):
+    """CRASH matrix (panel R31B): a BLOB in ANY str-typed column (node id/name/roles/location,
+    edge src/dst_id/dst_symbol/location/source, meta.value) must not crash an op — the row
+    mappers skip un-parseable rows / coerce optional columns, `get_meta` ignores a non-str
+    value. One assertion per column would whack-a-mole; this writes a BLOB into all of them."""
+    import sqlite3
+    db = str(tmp_path / "blob.db")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value);"
+        "CREATE TABLE nodes (id, kind, name, location, file TEXT NOT NULL DEFAULT '',"
+        " is_stub INTEGER NOT NULL DEFAULT 0, arity INTEGER, summary TEXT, roles, end_line INTEGER);"
+        "CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, src, relation, dst_symbol,"
+        " dst_id, weight REAL NOT NULL DEFAULT 1.0, provenance TEXT NOT NULL DEFAULT 'extracted',"
+        " location, source, file TEXT NOT NULL DEFAULT '', name_based INTEGER NOT NULL DEFAULT 0);"
+    )
+    B = b"\x00\x01"
+    conn.execute("INSERT INTO meta VALUES ('root', ?)", (B,))
+    # a fully-valid node/edge so ops have something real to chew on...
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::f','Function','f','a.py:1:0','')")
+    # ...and rows with a BLOB in each str column (each must be skipped/coerced, never crash)
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES (?, 'Function','z','a.py:2:0','')", (B,))
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::z2','Function',?,'a.py:3:0','')", (B,))
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::z3','Function','z3',?,'')", (B,))
+    conn.execute("INSERT INTO nodes(id,kind,name,location,roles) VALUES ('a.py::z4','Function','z4','a.py:4:0',?)", (B,))
+    conn.execute("INSERT INTO edges(src,relation,dst_symbol,dst_id) VALUES (?, 'CALLS','f','a.py::f')", (B,))
+    conn.execute("INSERT INTO edges(src,relation,dst_symbol,dst_id) VALUES ('a.py::f','CALLS',?, 'a.py::f')", (B,))
+    conn.execute("INSERT INTO edges(src,relation,dst_symbol,dst_id) VALUES ('a.py::f','CALLS','f', ?)", (B,))
+    conn.commit()
+    conn.close()
+    with sg.Store(db) as store:
+        for op in (sg.find_stale, sg.scan, sg.orient, sg.find_holes):
+            assert op(store).ok in (True, False)
+        assert sg.get_matrix(store, "a.py").ok in (True, False)
+        assert sg.summarize_subsystem(store, "a.py").ok in (True, False)
+        assert sg.risk(store, str(tmp_path)).ok in (True, False)
+
+
+def test_incremental_function_move_no_module_fan_in_inflation():
+    """INFLATION (panel R31A): moving a function out of a same-named module file
+    (`helper.py` with `def helper()`) in a single batch must not leave a CALLS edge pointing
+    at the surviving MODULE node `helper.py::helper`. Verified order-independent vs full
+    reindex — the differential oracle (incremental == full) is the bounding test for the whole
+    incremental pipeline; see CONTRIBUTING.md 'Methods to adopt next'."""
+    import itertools
+    import tempfile
+
+    from stitchgraph.core.extract.python import extract_project
+    from stitchgraph.core.reach import fan_in
+
+    def _by_file(items, key):
+        out = {}
+        for x in items:
+            out.setdefault(key(x).split("::", 1)[0], []).append(x)
+        return out
+
+    for order in itertools.permutations(["caller.py", "helper.py", "newplace.py"]):
+        root = Path(tempfile.mkdtemp())
+        (root / "caller.py").write_text("from helper import helper\n__all__=['run']\ndef run(): helper()\n")
+        (root / "helper.py").write_text("def helper(): pass\n")
+        (root / "newplace.py").write_text("# empty\n")
+        inc = sg.Store(":memory:")
+        sg.reindex(inc, str(root))                 # index the pre-move state incrementally
+        (root / "caller.py").write_text("from newplace import helper\n__all__=['run']\ndef run(): helper()\n")
+        (root / "helper.py").write_text("# empty\n")
+        (root / "newplace.py").write_text("def helper(): pass\n")
+        nodes, edges = extract_project(str(root))
+        nbf = _by_file(nodes, lambda n: n.id)
+        ebf = _by_file(edges, lambda e: e.src)
+        for f in order:                            # apply the move in the permuted order
+            inc.replace_file(f, nbf.get(f, []), ebf.get(f, []))
+        full = sg.Store(":memory:")
+        sg.reindex(full, str(root))
+        assert fan_in(inc).get("helper.py::helper", 0) == fan_in(full).get("helper.py::helper", 0), \
+            f"order {order}: module fan_in inflated"
+        inc.close()
+        full.close()
+
+
+# == Mutation-testing-found gaps (scripts/mutate.py) ==========================
+# The meta-oracle: each test below kills a mutant that SURVIVED the suite — an envelope
+# contract that was executed but not pinned. See docs/TESTING.md "mutation testing".
+def test_red_urgency_kept_only_for_extracted_provenance():
+    """Mutant: the urgency gate `RED and not EXTRACTED` -> `or` survived. A RED result with
+    EXTRACTED provenance must STAY red; only non-EXTRACTED demotes to ORANGE."""
+    from stitchgraph.core.envelope import Provenance, Result, Urgency
+    assert Result(ok=True, confidence=1.0, provenance=Provenance.EXTRACTED,
+                  urgency=Urgency.RED).urgency is Urgency.RED
+    assert Result(ok=True, confidence=1.0, provenance=Provenance.INFERRED,
+                  urgency=Urgency.RED).urgency is Urgency.ORANGE
+
+
+def test_refuse_always_needs_review_even_high_confidence_extracted():
+    """Mutant: `refuse(... needs_review=False ...)` survived. refuse() is refuse-when-unsure;
+    it must flag review even if a caller passes high-confidence EXTRACTED args."""
+    from stitchgraph.core.envelope import Provenance, refuse
+    r = refuse("unsure", confidence=0.95, provenance=Provenance.EXTRACTED)
+    assert r.needs_review is True
+    assert "unsure" in r.review_reasons
+
+
+def test_plain_converts_objects_and_preserves_none():
+    """Mutants: the `_plain` primitive/None guard flips survived. A dataclass/object must be
+    converted (not returned as-is); None must stay None (not stringified)."""
+    from stitchgraph.core.envelope import _plain
+    from stitchgraph.core.model import Node, NodeKind
+    assert _plain(None) is None
+    assert _plain(5) == 5 and _plain("x") == "x"
+    out = _plain(Node("a.py::b", NodeKind.FUNCTION, "b"))
+    assert isinstance(out, dict) and out.get("id") == "a.py::b"
+
+
+def test_trace_path_returns_complete_node_path():
+    """Mutant (scripts/mutate.py on reach.py best_path): the path-reconstruction loop
+    `while path[-1] != source` -> `==` truncates the result to just [sink]. trace_path must
+    return the COMPLETE source..sink node path. best_path is pure-Python always (no GraphBLAS
+    branch), so this is a genuine unit-testable contract — most other reach.py lines are
+    oracle-owned (see docs/TESTING.md mutation scope)."""
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for n in ("a", "b", "c"):
+            store.add_node(Node(f"m.py::{n}", NodeKind.FUNCTION, n))
+        store.add_edge(Edge("m.py::a", Relation.CALLS, "b", dst_id="m.py::b"))
+        store.add_edge(Edge("m.py::b", Relation.CALLS, "c", dst_id="m.py::c"))
+        store.commit()
+        r = sg.trace_path(store, "a", "c")
+    assert r.result == ["m.py::a", "m.py::b", "m.py::c"]
+
+
+# ===========================================================================
+# Round 33 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Five blockers,
+# all fixed at root cause; each pinned below as its owning verification layer.
+# ===========================================================================
+
+
+def test_r33_ruby_php_module_level_calls_root_functions(tmp_path):
+    """R33A-haiku (CARDINAL): Ruby/PHP execute a file's top-level body on require/load,
+    so a module-level call roots the function it invokes. `is_script` excluded them
+    (only bash + C# top-level), so top-level-only-used helpers were flagged dead — live
+    code as dead. Same class as bash #22 / C# WWW (treesitter.py is_script column)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "svc.rb": "def used_helper\n  42\nend\n\nused_helper\n",
+        "svc.php": "<?php\nfunction foo() {\n  return 1;\n}\nfoo();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("used_helper" in s for s in stale), f"Ruby top-level helper flagged dead: {stale}"
+    assert not any("svc.php::foo" in s for s in stale), f"PHP top-level fn flagged dead: {stale}"
+
+
+def test_r33_replace_file_preserves_runtime_role(tmp_path):
+    """R33A-sonnet (CARDINAL + INFLATION): ingest_trace sets a `runtime` role (a fact
+    about execution); a later replace_file delete+re-insert erased it while `has_runtime`
+    meta lingered, so an executed-but-dynamically-dispatched function was flagged dead at
+    confidence 0.78 (the confident path). replace_file must carry the runtime role across
+    for surviving ids (store.replace_file column)."""
+    import json
+
+    from stitchgraph.core.extract import extract_project
+    _mk(tmp_path, {
+        "main.py": 'def main():\n    return 0\nif __name__ == "__main__":\n    main()\n',
+        "lib.py": "def dynamic_callback():\n    return 42\ndef unused():\n    pass\n",
+    })
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "lib.py"): {"executed_lines": [2], "missing_lines": [4], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        sg.ingest_trace(store, str(cov_path))
+        nodes, edges = extract_project(str(tmp_path))
+        fn = [n for n in nodes if n.id.startswith("lib.py")]
+        fe = [e for e in edges if e.src.startswith("lib.py")]
+        store.replace_file("lib.py", fn, fe)
+        assert {n.id for n in store.nodes_with_role("runtime")} == {"lib.py::dynamic_callback"}
+        fs = sg.find_stale(store)
+        stale = {x["id"] for x in (fs.result or [])}
+    assert "lib.py::dynamic_callback" not in stale, "executed code flagged dead after replace_file"
+    assert "lib.py::unused" in stale  # genuinely unused stays flagged
+
+
+def test_r33_empty_ignore_glob_does_not_crash(tmp_path):
+    """R33B-opus (raises-instead-of-Result): `ignore = [""]` reached PurePath.match(""),
+    which raises ValueError('empty pattern') — reindex crashed with a raw traceback. The
+    glob chokepoints (_ignored / _wanted) must skip empty patterns; the config loader
+    drops them at the source too."""
+    from stitchgraph.core.extract import extract_project
+    _mk(tmp_path, {
+        "m.py": "def f():\n    return 1\n",
+        "stitchgraph.toml": '[index]\nignore = ["", "*.md", ""]\n',
+    })
+    nodes, _ = extract_project(str(tmp_path), ignore=[""])  # direct API must not raise
+    assert any(n.id == "m.py::f" for n in nodes)
+    # And end-to-end through a hand-edited config carrying an empty glob (the panel's
+    # path): reindex must return a Result, not crash with a raw traceback.
+    with sg.Store(":memory:") as store:
+        r = sg.reindex(store, str(tmp_path))
+        assert r.ok
+
+
+def test_r33_config_str_list_drops_empty_entries():
+    """R33B-opus (root producer): config `_str_list` must not pass empty strings into the
+    ignore list — they crash the glob matcher downstream."""
+    from stitchgraph.core.config import load_config
+    cfg_dir = Path(__import__("tempfile").mkdtemp())
+    (cfg_dir / "stitchgraph.toml").write_text('[index]\nignore = ["", "*.md", ""]\n')
+    cfg = load_config(cfg_dir)  # load_config searches the DIR for stitchgraph.toml
+    assert "" not in cfg.ignore and "*.md" in cfg.ignore
+
+
+def test_r33_impact_of_demotes_on_name_based_blast_radius(tmp_path):
+    """R33A-opus (INFLATION + envelope contract): impact_of hardcoded confidence=0.9 /
+    provenance=extracted / needs_review=false regardless of the edges backing the blast
+    radius, while sibling ops (get_callers, trace_path) demote name-based evidence. A
+    blast radius reached only through AMBIGUOUS homonym binds must be advisory, not
+    type-certain fact (operations.py provenance-demotion column)."""
+    _mk(tmp_path, {
+        "cli.py": 'def main():\n    return 0\nif __name__ == "__main__":\n    main()\n',
+        "mcp.py": 'def main():\n    return 1\nif __name__ == "__main__":\n    main()\n',
+        "report.py": 'def main():\n    return 2\nif __name__ == "__main__":\n    main()\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.impact_of(store, "mcp.py::main")
+    assert r.needs_review is True
+    assert r.provenance.value in ("ambiguous", "inferred")
+    assert r.confidence < 0.9
+
+
+def test_r33_scope_matching_respects_id_boundaries(tmp_path):
+    """R33B-sonnet (INFLATION): get_matrix / summarize_subsystem used bare startswith,
+    so scope `Foo` swept in sibling class `FooBar` and file scope `...::Node` pulled in
+    `NodeKind` — inflating cells/density/counts with unrelated nodes. The char after the
+    scope must be a real id separator (operations._under_scope column)."""
+    from stitchgraph.core.operations import _under_scope
+    assert _under_scope("m.py::Foo", "m.py::Foo")
+    assert _under_scope("m.py::Foo.run", "m.py::Foo")
+    assert not _under_scope("m.py::FooBar", "m.py::Foo")
+    assert not _under_scope("m.py::NodeKind", "m.py::Node")
+    assert _under_scope("pkg/a.py::X", "pkg")
+    assert not _under_scope("pkgutil/a.py::X", "pkg")
+    # End-to-end: a class scope must not absorb a prefix-sharing sibling class.
+    _mk(tmp_path, {"model.py": (
+        "class Foo:\n"
+        "    def run(self):\n        self.helper()\n"
+        "    def helper(self):\n        pass\n\n"
+        "class FooBar:\n"
+        "    def execute(self):\n        f = Foo()\n        f.run()\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        m = sg.get_matrix(store, "model.py::Foo", relation="CALLS")
+    assert m.result["n"] == 3, f"scope bled into FooBar: labels={m.result['labels']}"
+    assert all("FooBar" not in lbl for lbl in m.result["labels"])
+
+
+# ===========================================================================
+# Round 34 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Three product
+# blockers + one consistency item; each fixed at root cause and pinned below.
+# ===========================================================================
+
+
+def test_r34_trace_path_demotes_name_based_path():
+    """R34B-opus (INFLATION + envelope contract): trace_path derived provenance from the
+    propagated confidence (conf>=0.99 => extracted), so a name-based AMBIGUOUS edge with
+    weight 1.0 was reported as a type-certain extracted path with needs_review=False. It
+    must demote on the real edges along the path, like impact_of/get_callers (the
+    provenance-demotion column)."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for n in ("a", "b"):
+            store.add_node(Node(f"m.py::{n}", NodeKind.FUNCTION, n))
+        store.add_edge(Edge("m.py::a", Relation.CALLS, "b", dst_id="m.py::b",
+                            weight=1.0, provenance=Provenance.AMBIGUOUS))
+        store.commit()
+        r = sg.trace_path(store, "m.py::a", "m.py::b")
+    assert r.ok and r.confidence == 1.0          # confidence still reflects the weight
+    assert r.provenance is Provenance.AMBIGUOUS   # but provenance reflects the edge
+    assert r.needs_review is True and r.review_reasons
+
+
+def test_r34_trace_path_extracted_path_stays_certain():
+    """Companion to the above: an all-EXTRACTED path must NOT be demoted (no false
+    needs_review), so the demotion only fires on genuine name-based evidence."""
+    from stitchgraph.core.envelope import Provenance
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+    with sg.Store(":memory:") as store:
+        for n in ("a", "b"):
+            store.add_node(Node(f"m.py::{n}", NodeKind.FUNCTION, n))
+        store.add_edge(Edge("m.py::a", Relation.CALLS, "b", dst_id="m.py::b",
+                            weight=1.0, provenance=Provenance.EXTRACTED))
+        store.commit()
+        r = sg.trace_path(store, "m.py::a", "m.py::b")
+    assert r.provenance is Provenance.EXTRACTED
+
+
+def test_r34_runtime_suffix_match_requires_separator_boundary():
+    """R34A-sonnet (INFLATION): _by_suffix had a bare endswith, so coverage for `b/a.py`
+    marked the unrelated top-level `a.py` runtime, inflating executed_nodes. A bare-filename
+    rel must not suffix-match a deeper path; only a rel with a directory component does."""
+    from stitchgraph.core.runtime import _by_suffix
+    assert _by_suffix({"/proj/b/a.py": {2}}, "a.py") is None      # bare rel: no false steal
+    assert _by_suffix({"/proj/a.py": {2}}, "a.py") is None        # bare rel relies on exact match
+    assert _by_suffix({"/abs/pkg/m.py": {2}}, "pkg/m.py") == {2}  # dir component: legit suffix
+
+
+def test_r34_runtime_suffix_inflation_end_to_end(tmp_path):
+    """R34A-sonnet end-to-end: coverage covering only `b/a.py` must not mark `a.py::alive`
+    runtime. executed_nodes must equal the truly-executed count."""
+    import json
+    _mk(tmp_path, {
+        "a.py": "def alive():\n    return 1\ndef dead():\n    return 2\n",
+        "b/a.py": "def other_func():\n    return 3\n",
+    })
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "b" / "a.py"): {"executed_lines": [2], "missing_lines": [], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.ingest_trace(store, str(cov_path))
+        runtime_ids = {n.id for n in store.nodes_with_role("runtime")}
+    assert runtime_ids == {"b/a.py::other_func"}, f"inflated runtime set: {runtime_ids}"
+    assert r.meta.get("executed") == 1
+
+
+def test_r34_incremental_resolution_is_per_language(tmp_path):
+    """R34A-opus (INFLATION): full reindex buckets name resolution per language (by_lang),
+    but the incremental store path was language-blind — a Rust `helper()` bound to a Go
+    `helper`, inflating fan_in/get_callers vs a full reindex. Name resolution must stay
+    within the same language family."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.extract import extract_project
+    from stitchgraph.core.reach import fan_in
+    _mk(tmp_path, {
+        "lib.rs": "pub fn run() {\n    helper();\n}\nfn helper() {}\n",
+        "other.go": "package main\nfunc helper() {}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        nodes, edges = extract_project(str(tmp_path))
+        fn = [n for n in nodes if n.id.startswith("lib.rs")]
+        fe = [e for e in edges if e.src.startswith("lib.rs")]
+        store.replace_file("lib.rs", fn, fe)
+        fi = fan_in(store)
+        callers = {c["src"] for c in (sg.get_callers(store, "other.go::helper").result or [])}
+    assert fi.get("other.go::helper", 0) == 0, "Rust call bled into Go helper fan_in"
+    assert not callers, f"phantom cross-language caller: {callers}"
+
+
+def test_r34_same_lang_is_recall_safe_for_unknown_ids():
+    """The language filter must be recall-safe: an unknown extension / pseudo node (db::,
+    var::) must NOT be filtered out (returning 0 could drop a valid bind and flag live code
+    dead — the cardinal sin). C and C++ share one bucket (panel UUU)."""
+    from stitchgraph.core.store import _same_lang
+    assert _same_lang("a.rs::f", "b.rs::g") == 1       # same language
+    assert _same_lang("a.rs::f", "b.go::g") == 0       # different language
+    assert _same_lang("a.c::f", "b.cpp::g") == 1       # C/C++ share a bucket
+    assert _same_lang("db::table", "a.rs::f") == 1     # pseudo node: don't filter
+    assert _same_lang("a.unknownext::f", "b.go::g") == 1  # unknown ext: don't filter
+
+
+def test_r34_scan_inner_items_have_review_reasons(tmp_path):
+    """R34B-sonnet (consistency): scan cycle/god_object inner items set needs_review but
+    only carried `reason` (singular). Mirror the envelope contract on inner items — a
+    needs_review item must carry a non-empty review_reasons list."""
+    src = ["def hub():\n    pass\n"]
+    src += [f"def caller{i}():\n    hub()\n" for i in range(6)]
+    src += [f"def callee{i}():\n    pass\n" for i in range(6)]
+    _mk(tmp_path, {"m.py": "\n".join(src)})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        items = sg.scan(store).result
+    offenders = [it for it in items if it.get("needs_review") and not it.get("review_reasons")]
+    assert not offenders, f"needs_review item without review_reasons: {offenders}"
+
+
+# ===========================================================================
+# Round 35 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Two cardinals +
+# two inflations; each fixed at root cause and pinned below.
+# ===========================================================================
+
+
+def test_r35_go_package_var_initializer_is_live(tmp_path):
+    """R35A-opus (CARDINAL): Go package files share scope — a package-level `var x = setup()`
+    initializer runs at startup for every file once the package loads. A rootless package
+    file (no main/exported) was never seeded, so its functions were flagged dead though they
+    run at startup. Module-node seeding must widen to the whole package directory (panel R35A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.go": 'package main\nfunc main() {\n    println("hi")\n}\n',
+        "reg.go": ("package main\nvar _registered = setup()\n"
+                   "func setup() int {\n    return configure()\n}\n"
+                   "func configure() int {\n    return 1\n}\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("setup" in s or "configure" in s for s in stale), \
+        f"live Go package-init code flagged dead: {stale}"
+
+
+def test_r35_express_method_reference_handler_is_live(tmp_path):
+    """R35B-haiku (CARDINAL): an Express route handler given as a method reference
+    (`ctrl.handleRequest`, a member_expression) got no ROUTES_TO edge — only bare-identifier
+    handlers were extracted — so the live handler method was flagged dead (panel R35B)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "app.js": ("class Controller {\n  handleRequest(req, res) {}\n}\n"
+                   "const ctrl = new Controller();\n"
+                   "app.get('/api/test', ctrl.handleRequest);\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("handleRequest" in s for s in stale), \
+        f"live Express method handler flagged dead: {stale}"
+
+
+def test_r35_coverage_bool_line_is_not_int(tmp_path):
+    """R35B-sonnet (INFLATION): bool is an int subclass, so a JSON `true` in executed_lines
+    coerced to line 1, spuriously marking a one-liner at line 1 runtime — inflating
+    executed_nodes and find_stale confidence. bool must be excluded (panel R35B)."""
+    import json
+    _mk(tmp_path, {"mod.py": "def oneliner(): return 1\n"})
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "mod.py"): {"executed_lines": [True, False], "missing_lines": [], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.ingest_trace(store, str(cov_path))
+        runtime = {n.id for n in store.nodes_with_role("runtime")}
+    assert not runtime, f"bool coerced to a phantom executed line: {runtime}"
+    assert r.meta.get("executed") == 0
+
+
+def test_r35_coverage_exact_match_blocks_cross_file_suffix(tmp_path):
+    """R35A-sonnet (INFLATION): when the coverage root aligns (an exact root-relative match
+    exists), a non-matching node must NOT suffix-fall-back and steal another file's coverage
+    — coverage for `b/a.py` must not also mark the top-level `a.py` runtime (panel R35A)."""
+    import json
+    _mk(tmp_path, {
+        "a.py": "def alive():\n    return 1\n",
+        "b/a.py": "def other():\n    return 3\n",
+    })
+    cov = {"meta": {}, "totals": {}, "files": {
+        str(tmp_path / "b" / "a.py"): {"executed_lines": [2], "missing_lines": [], "excluded_lines": []}}}
+    cov_path = tmp_path / "cov.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        sg.ingest_trace(store, str(cov_path))
+        runtime = {n.id for n in store.nodes_with_role("runtime")}
+    assert runtime == {"b/a.py::other"}, f"cross-file suffix steal: {runtime}"
+
+
+# ===========================================================================
+# Round 36 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). One C++ cardinal
+# + envelope hardening; four reviewers clean, one finding invalid (reverted).
+# ===========================================================================
+
+
+def test_r36_cpp_static_initializer_chain_is_live(tmp_path):
+    """R36A-opus (CARDINAL): a C++ translation unit's namespace-scope static initializer
+    (`static int g = seed();`, or a self-registering global object) runs at startup once the
+    TU is LINKED — i.e. once any of its symbols is reached. The module node wasn't promoted,
+    so the initializer's call chain was flagged dead though it runs on link (panel R36A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.cpp": "int count();\nint main() {\n    return count();\n}\n",
+        "registry.cpp": ("int doRegister();\nstatic int g = doRegister();\n"
+                         "int add() {\n    return 1;\n}\n"
+                         "int doRegister() {\n    return add();\n}\n"
+                         "int count() {\n    return 2;\n}\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any("add" in s or "doRegister" in s for s in stale), \
+        f"live C++ static-init chain flagged dead: {stale}"
+
+
+def test_r36_cpp_dead_tu_still_flagged(tmp_path):
+    """Precision companion: the TU-liveness fixpoint must only promote a LINKED TU (one with
+    a reachable symbol). A C++ file with no reached symbol must still surface its dead code,
+    so the fix doesn't blanket-suppress (panel R36A)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.cpp": "int main() {\n    return 0;\n}\n",
+        "dead.cpp": "int helper() {\n    return 1;\n}\nint orphan() {\n    return helper();\n}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert any("orphan" in s for s in stale), "dead C++ TU should still surface dead code"
+
+
+def test_r36_envelope_clamps_nonfinite_confidence():
+    """R36B-sonnet (envelope contract): a non-finite / out-of-range confidence must be clamped
+    to a finite [0,1] value at the envelope chokepoint so to_dict() never emits Infinity/NaN
+    (invalid JSON per RFC 8259), and needs_review is set (panel R36B)."""
+    import json
+
+    from stitchgraph.core.envelope import Provenance, Result
+    for bad, expect in [(float("inf"), 0.0), (float("nan"), 0.0), (-5.0, 0.0), (2.0, 1.0)]:
+        r = Result(ok=True, result="x", confidence=bad, provenance=Provenance.EXTRACTED)
+        assert r.confidence == expect
+        assert r.needs_review is True
+        dumped = json.dumps(r.to_dict())  # must be valid JSON
+        assert "Infinity" not in dumped and "NaN" not in dumped
+
+
+# ===========================================================================
+# Round 37 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). Two cardinals +
+# defense-in-depth; one finding documented as a known limitation (find_holes on
+# incremental delete), one non-blocking (Express middleware), one invalid earlier.
+# ===========================================================================
+
+
+def test_r37_module_symbol_collision_keeps_module_load_live_python(tmp_path):
+    """R37A-opus (CARDINAL): when a top-level class/function shares the file stem, the MODULE
+    node id `Service.py::Service` is clobbered into the symbol node, so module-load-root
+    seeding (via nodes_by_kind(MODULE)) misses it and a live module-level call is flagged
+    dead. The detector now seeds the module-load id computed from the file path (panel R37A)."""
+    _mk(tmp_path, {
+        "Service.py": ('__all__ = ["do_it"]\n'
+                       "class Service:\n    def run(self):\n        return 1\n"
+                       "_inst = prep()\n"
+                       "def prep():\n    return Service()\n"
+                       "def do_it():\n    return 42\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    # prep() runs at module load; Service is instantiated by it — both live.
+    assert "Service.py::prep" not in stale
+    assert "Service.py::Service" not in stale
+    # the genuinely-unused method is still flagged (precision preserved)
+    assert "Service.py::Service.run" in stale
+
+
+def test_r37_module_symbol_collision_keeps_module_load_live_js(tmp_path):
+    """R37A-opus (CARDINAL), tree-sitter sibling of the above."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Service.js": ("class Service { run() { return 1; } }\n"
+                       "const _inst = prep();\n"
+                       "function prep() { return new Service(); }\n"
+                       "export function doIt() { return 42; }\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    assert not any(s in stale for s in ("Service.js::prep", "Service.js::Service"))
+
+
+def test_r37_incremental_init_export_change_converges(tmp_path):
+    """R37A-sonnet F1 (CARDINAL): incrementally editing __init__.py to re-export a symbol
+    defined in another file (adding it to __all__) must not leave that symbol flagged dead.
+    replace_file is a single-file update and can't see another file's export change, so the
+    incremental caller passes `exported_ids` from the whole-project extract; replace_file then
+    re-applies the cross-file `exported` role exactly, converging with a full reindex (panel
+    R37A)."""
+    from stitchgraph.core.extract import extract_project
+    _mk(tmp_path, {
+        "app/__init__.py": '__all__ = ["main"]\nfrom .main import main\n',
+        "app/main.py": "def main():\n    return 1\n",
+        "app/other.py": "def public_fn():\n    return 42\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert "app/other.py::public_fn" in {x["id"] for x in (sg.find_stale(store).result or [])}
+        (tmp_path / "app" / "__init__.py").write_text(
+            '__all__ = ["main", "public_fn"]\nfrom .main import main\nfrom .other import public_fn\n')
+        nodes, edges = extract_project(str(tmp_path))
+        exported_ids = {n.id for n in nodes if "exported" in n.roles}
+        fn = [n for n in nodes if n.id.startswith("app/__init__.py")]
+        fe = [e for e in edges if e.src.startswith("app/__init__.py")]
+        store.replace_file("app/__init__.py", fn, fe, exported_ids=exported_ids)
+        inc_stale = {x["id"] for x in (sg.find_stale(store).result or [])}
+    with sg.Store(":memory:") as full:
+        sg.reindex(full, str(tmp_path))
+        full_stale = {x["id"] for x in (sg.find_stale(full).result or [])}
+    assert "app/other.py::public_fn" not in inc_stale, "re-exported symbol flagged dead incrementally"
+    assert inc_stale == full_stale, f"incremental diverged from full: {inc_stale ^ full_stale}"
+
+
+def test_r37_plain_drops_nonfinite_floats():
+    """R37B-sonnet (defense-in-depth): _plain is the serialization chokepoint for every
+    result/meta value; a stray non-finite float must become None, never Infinity/NaN (invalid
+    JSON, RFC 8259) (panel R37B)."""
+    import json
+
+    from stitchgraph.core.envelope import _plain
+    assert _plain(float("inf")) is None
+    assert _plain(float("nan")) is None
+    assert _plain(1.5) == 1.5
+    assert _plain(True) is True and _plain(3) == 3
+    out = _plain({"a": float("inf"), "b": [float("nan"), 2.0], "c": "x"})
+    assert json.dumps(out) and "Infinity" not in json.dumps(out) and "NaN" not in json.dumps(out)
+
+
+# ===========================================================================
+# Round 38 (full-diversity panel: opus×2 · sonnet×2 · haiku×2). FIRST CLEAN
+# PANEL ROUND — zero valid blockers. One latent consistency item closed below;
+# one finding invalid (SUBMITS_TO premise/direction), rest clean.
+# ===========================================================================
+
+
+def test_r38_to_dict_meta_is_sanitized():
+    """R38 (latent envelope consistency): to_dict() routed `result` through _plain but passed
+    `meta` raw, so a non-finite float in meta would serialize to Infinity/NaN (invalid JSON).
+    No current op puts a float in meta, but the envelope must honour _plain as the chokepoint
+    for ALL values, so meta is now sanitized too."""
+    import json
+
+    from stitchgraph.core.envelope import Provenance, Result
+    r = Result(ok=True, result="x", confidence=1.0, provenance=Provenance.EXTRACTED,
+               meta={"inf": float("inf"), "nan": float("nan"), "n": 3, "s": "ok"})
+    d = r.to_dict()
+    assert d["meta"]["inf"] is None and d["meta"]["nan"] is None
+    assert d["meta"]["n"] == 3 and d["meta"]["s"] == "ok"
+    dumped = json.dumps(d)
+    assert "Infinity" not in dumped and "NaN" not in dumped

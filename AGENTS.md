@@ -46,5 +46,9 @@ Every result carries `confidence`, `provenance`, and `needs_review`. Treat
 ## Don't
 - Don't treat `find_stale` / `find_holes` as ground truth — they're suspicion,
   not proof, and stitchgraph never edits code itself.
+- Don't read `find_holes` returning empty as "no broken wiring": it reports references
+  orphaned by edits (delete/rename), not first-index calls to undefined/stdlib names. For
+  reachable unimplemented stubs (the `is_stub ∧ reachable` landmine), use `scan` — they
+  surface there as `live_stub`.
 - Don't dump whole matrices into context; use the bounded `get_matrix` or the
   summaries from `orient`.

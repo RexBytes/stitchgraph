@@ -17,6 +17,30 @@ from typing import Protocol
 from .model import NodeKind
 from .store import Store
 
+# Languages whose files share PACKAGE scope (a directory) and run startup code together,
+# with no per-file import edge to chain liveness — so module-node seeding is widened to the
+# whole directory when any file in it is a root (panel R35A). Go is the clear case; add an
+# extension here if another package-scoped language surfaces the same cardinal.
+_PACKAGE_SCOPED_EXTS = (".go",)
+
+
+def _is_package_scoped(file: str) -> bool:
+    return file.endswith(_PACKAGE_SCOPED_EXTS)
+
+
+def _dir_of(file: str) -> str:
+    return file.rsplit("/", 1)[0] if "/" in file else ""
+
+
+def _module_id_of(file: str) -> str:
+    """The MODULE node id stitchgraph assigns a file: `{file}::{stem}` (stem = the filename
+    without its final extension, matching pathlib.Path.stem). Used to seed the module-load
+    root by id even when a same-stem top-level class/function clobbered the MODULE node."""
+    name = file.rsplit("/", 1)[-1]
+    dot = name.rfind(".")
+    stem = name[:dot] if dot > 0 else name  # dot>0: a leading-dot name has no suffix
+    return f"{file}::{stem}"
+
 
 class EntryPointDetector(Protocol):
     def detect(self, store: Store) -> set[str]: ...
@@ -71,6 +95,37 @@ class PythonLibraryDetector:
         for kind in (NodeKind.ROUTE, NodeKind.ENDPOINT):
             roots.update(n.id for n in store.nodes_by_kind(kind))
         roots.update(nid for nid in self.overrides if store.get_node(nid) is not None)
+        # A module's top-level code runs when the module is loaded, and the module is
+        # loaded whenever any symbol it defines is reached (you can't call an exported
+        # function or import a name without executing the module body). So a module that
+        # owns any root is itself a load root: its module-level uses — registries, dispatch
+        # tables, instantiations — then propagate liveness, instead of live code used only
+        # at module scope being flagged dead (panel R12, cardinal). Module nodes are not
+        # dead-code candidates, so seeding them never introduces a false dead.
+        root_files = {rid.split("::", 1)[0] for rid in roots}
+        # Package-scoped languages (Go): all files in a package (a directory) compile and run
+        # as a unit — package-level `var` initializers and `init()` execute at startup for
+        # EVERY file once the package is loaded, with no per-file import edge to chain
+        # liveness (unlike Python, where an import edge loads a module on demand). So a
+        # rootless package file whose module-level code is live (a registration side effect)
+        # must be seeded when any SIBLING file in its directory is a root, or its functions
+        # are flagged dead (panel R35A, cardinal). Gated to package-scoped extensions so
+        # ordinary per-file-import languages aren't over-rooted.
+        root_dirs = {_dir_of(f) for f in root_files if _is_package_scoped(f)}
+        for m in store.nodes_by_kind(NodeKind.MODULE):
+            mf = m.id.split("::", 1)[0]
+            if mf in root_files or (_is_package_scoped(mf) and _dir_of(mf) in root_dirs):
+                roots.add(m.id)  # existing MODULE node (handles __init__ package-name ids, Go)
+        # Collision case: a top-level class/function sharing the file stem clobbers the MODULE
+        # node `{file}::{stem}` into a symbol node, so nodes_by_kind(MODULE) misses it and the
+        # module-level use edges (src = that id) lose their load-root — live module-load code is
+        # flagged dead (panel R37A, cardinal). Seed that id directly for any root-owning file;
+        # it's a no-op when the MODULE node survived (already seeded above) or when the computed
+        # id doesn't exist (e.g. an __init__ whose module id is the package name, not the stem).
+        for f in root_files:
+            mid = _module_id_of(f)
+            if store.get_node(mid) is not None:
+                roots.add(mid)
         return roots
 
 

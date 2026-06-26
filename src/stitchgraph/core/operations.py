@@ -120,7 +120,7 @@ def get_callers(store: Store, name: str) -> Result:
         return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
     edges = store.callers_of(target.id)
     callers = [{"src": e.src, "weight": round(e.weight, 3)} for e in edges]
-    return ok(callers, symbol=target.id, count=len(callers))
+    return _callgraph_result(callers, edges, symbol=target.id)
 
 
 @operation("Direct callees of a symbol.")
@@ -131,7 +131,24 @@ def get_callees(store: Store, name: str) -> Result:
         return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
     edges = store.callees_of(target.id)
     callees = [{"dst": e.dst_id, "weight": round(e.weight, 3)} for e in edges]
-    return ok(callees, symbol=target.id, count=len(callees))
+    return _callgraph_result(callees, edges, symbol=target.id)
+
+
+def _callgraph_result(payload: list, edges: list, **meta) -> Result:
+    """Envelope for get_callers/get_callees whose confidence/provenance reflect the edges
+    backing the answer: certain only when all are EXTRACTED, else INFERRED/AMBIGUOUS +
+    needs_review — a caller list resting on name-based (heuristic) edges must not report
+    confidence 1.0 / EXTRACTED (panel R17B)."""
+    if not edges or all(e.provenance is Provenance.EXTRACTED for e in edges):
+        return ok(payload, count=len(payload), **meta)
+    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in edges)
+            else Provenance.INFERRED)
+    n_conf = sum(1 for e in edges if e.provenance is Provenance.EXTRACTED)
+    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(edges)), 2),
+             provenance=prov, count=len(payload), **meta)
+    res.needs_review = True
+    res.add_reason("some edges are name-based (inferred/ambiguous) — verify before relying")
+    return res
 
 
 # --------------------------------------------------------------------------
@@ -152,11 +169,51 @@ def find_holes(store: Store) -> Result:
          "location": e.location}
         for e in store.unresolved_edges()
     ]
-    res = ok(holes, confidence=0.7, provenance=Provenance.INFERRED,
-             count=len(holes))
-    res.urgency = Urgency.ORANGE
-    res.add_reason("liveness of holes not yet ranked (entry-point detector pending)")
+    if holes:
+        # Liveness of holes can't be ranked confidently until the entry-point detector
+        # lands, so flag them orange + needs_review with an explicit reason.
+        res = ok(holes, confidence=0.7, provenance=Provenance.INFERRED, count=len(holes))
+        res.urgency = Urgency.ORANGE
+        res.add_reason("liveness of holes not yet ranked (entry-point detector pending)")
+    else:
+        # Zero holes is a clean, factual result (every reference resolved), not a low-
+        # confidence anomaly — return it confident so needs_review stays False instead of
+        # firing with no review_reasons to explain it (panels R17B, R19B).
+        res = ok(holes, confidence=1.0, provenance=Provenance.INFERRED, count=0)
+        res.urgency = Urgency.GREEN
     return res
+
+
+# Extensions whose translation units run namespace-scope static initializers at program
+# startup once the TU is LINKED — i.e. once any of its symbols is reached (C++). Unlike
+# package-scoped Go (seeded by directory in entrypoints), a C++ TU is linked on use, so its
+# module node's startup-edge liveness is reachability-driven (panel R36A). C files are included
+# harmlessly — C static initializers must be constant expressions, so they carry no call edges.
+_LINK_ON_USE_EXTS = (".cpp", ".cc", ".cxx", ".hpp", ".hxx", ".h", ".c")
+
+
+def _live_set(store: Store, seeds: set[str]) -> set[str]:
+    """`reachable_from(seeds)` extended with C++ translation-unit static-init liveness: a C++
+    file's module node (which carries its namespace-scope static-initializer call edges) is
+    promoted to a root once ANY symbol in that file is reached — the TU is then linked and its
+    initializers run at startup — and reachability is recomputed to a fixpoint (panel R36A:
+    self-registering globals / `static X g;` were flagged dead though they run on link). A
+    no-op (single reachable_from) when no C/C++ module is present, so non-C++ indexes — incl.
+    the Python dogfood — are unaffected."""
+    reachable = reachable_from(store, seeds)
+    tu_modules = {m.id for m in store.nodes_by_kind(NodeKind.MODULE)
+                  if m.id.split("::", 1)[0].endswith(_LINK_ON_USE_EXTS)}
+    if not tu_modules:
+        return reachable
+    extra: set[str] = set()
+    while True:
+        live_files = {nid.split("::", 1)[0] for nid in reachable}
+        newly = {m for m in tu_modules
+                 if m not in reachable and m.split("::", 1)[0] in live_files}
+        if not newly:
+            return reachable
+        extra |= newly
+        reachable = reachable_from(store, seeds | extra)
 
 
 @operation("Code reachable from no entry point (dead/stale candidates).")
@@ -170,8 +227,9 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     all_ids = set(store.all_node_ids())
-    reachable = reachable_from(store, seeds)
-    candidates = [{"id": nid} for nid in _stale_candidates(store, all_ids - reachable)]
+    reachable = _live_set(store, seeds)
+    candidates = [{"id": nid}
+                  for nid in _stale_candidates(store, all_ids - reachable, reachable)]
 
     auto_detection = not getattr(detector, "not_implemented", False)
     if not seeds:
@@ -195,7 +253,11 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     # Grounding in a runtime trace raises confidence: these were neither reached
     # statically nor observed executing (design §2c). Otherwise resolution is
     # name-based, so present as review candidates (design §5: LSP raises this).
-    if store.get_meta("has_runtime") == "1":
+    if store.get_meta("has_runtime") == "1" and store.nodes_with_role("runtime"):
+        # Require *actual* runtime-role nodes, not just the meta flag: an incremental
+        # replace_file could in principle drop the last runtime node while the flag
+        # lingers, which would inflate confidence to 0.78 with no grounding left (panel
+        # R33A). With grounding genuinely present, the trace earns the higher confidence.
         res = ok(candidates, confidence=0.78, provenance=Provenance.INFERRED,
                  count=len(candidates))
         res.add_reason("not reached statically AND not executed in the ingested "
@@ -220,7 +282,14 @@ def orient(store: Store) -> Result:
     # Transitive importance (PageRank over the whole graph) when GraphBLAS is
     # available; direct fan-in otherwise (design §6.A).
     ranking, metric = _hub_ranking(store)
-    hubs = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)[:10]
+    # "Read these first" hubs are code entities (functions/classes/methods). Module and
+    # other container/pseudo nodes carry high import-coupling — amplified by the module->module
+    # IMPORTS edges that make module-level liveness work — so they would crowd out the actual
+    # functions a reader should open first; exclude them from the hub list (module COUNT is
+    # still reported in node_counts). Liveness is unaffected (panel R13A metric).
+    ranked = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)
+    hubs = [(nid, score) for nid, score in ranked
+            if (hub := store.get_node(nid)) is not None and hub.kind in _CODE_KINDS][:10]
     payload = {
         "node_counts": counts,
         "top_hubs": [{"id": nid, metric: round(score, 4)} for nid, score in hubs],
@@ -278,8 +347,29 @@ def impact_of(store: Store, name: str) -> Result:
         "count": len(dependents),
         "tests_to_run": tests,
     }
-    return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
-              count=len(dependents), tests=len(tests))
+    # Confidence/provenance must reflect the edges the blast radius rests on, exactly as
+    # get_callers/_callgraph_result and trace_path do: a dependent reached only through
+    # name-based (AMBIGUOUS/INFERRED) edges is a heuristic guess, not a certain
+    # dependency — asserting provenance=extracted/0.9/no-review over it both inflates the
+    # over-approximation into type-certain fact and presents genuinely false dependents
+    # (homonym name-binds) as certain (panel R33A). The backing edges are the liveness
+    # edges induced on the blast radius (every dependent reaches the target through them).
+    radius = dependents | {target.id}
+    liveness = set(LIVENESS_RELATIONS)
+    backing = [e for e in store.resolved_edges()
+               if e.relation in liveness and e.src in dependents and e.dst_id in radius]
+    if not backing or all(e.provenance is Provenance.EXTRACTED for e in backing):
+        return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
+                  count=len(dependents), tests=len(tests))
+    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in backing)
+            else Provenance.INFERRED)
+    n_conf = sum(1 for e in backing if e.provenance is Provenance.EXTRACTED)
+    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(backing)), 2),
+             provenance=prov, count=len(dependents), tests=len(tests))
+    res.needs_review = True
+    res.add_reason("some dependents are reached only through name-based "
+                   "(inferred/ambiguous) edges — verify before relying")
+    return res
 
 
 @operation("Full-stack path between a source and a sink, with confidence.")
@@ -299,8 +389,38 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
         return refuse(f"no path from {src.id} to {dst.id} in the graph",
                       confidence=0.0)
     path, conf = found
-    prov = Provenance.EXTRACTED if conf >= 0.99 else Provenance.INFERRED
-    return ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
+    # Provenance must reflect the edges actually on the path, not just the propagated
+    # confidence: a name-based AMBIGUOUS/INFERRED edge can carry weight 1.0 (e.g. a
+    # synthetic override edge from _propagate_overrides), giving conf 1.0 that the old
+    # conf>=0.99 proxy mislabelled EXTRACTED/no-review. Mirror impact_of/get_callers —
+    # the provenance-demotion column (panel R34B).
+    hop_edges = _path_edges(store, path)
+    if not hop_edges or all(e.provenance is Provenance.EXTRACTED for e in hop_edges):
+        return ok(path, confidence=conf, provenance=Provenance.EXTRACTED, hops=len(path) - 1)
+    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in hop_edges)
+            else Provenance.INFERRED)
+    res = ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
+    res.needs_review = True
+    res.add_reason("the path includes name-based (inferred/ambiguous) edges — "
+                   "verify before relying")
+    return res
+
+
+def _path_edges(store: Store, path: list[str]) -> list[Edge]:
+    """The resolved edges actually traversed on `path` — for each hop, the max-weight edge
+    between consecutive nodes (matching best_path's (max, x) choice). Lets trace_path derive
+    provenance from real edge evidence rather than the propagated confidence alone."""
+    if len(path) < 2:
+        return []
+    wanted = set(zip(path, path[1:], strict=False))
+    by_pair: dict[tuple[str, str], Edge] = {}
+    for e in store.resolved_edges():
+        if e.dst_id is None:
+            continue
+        key = (e.src, e.dst_id)
+        if key in wanted and (key not in by_pair or e.weight > by_pair[key].weight):
+            by_pair[key] = e
+    return [by_pair[p] for p in wanted if p in by_pair]
 
 
 _SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
@@ -326,7 +446,8 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     seeds = detector.detect(store)
     # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
     # data loops, god objects) don't — so report what we can even without roots.
-    reachable = reachable_from(store, seeds) if seeds else set()
+    # _live_set adds C++ TU static-init liveness so scan's liveness agrees with find_stale.
+    reachable = _live_set(store, seeds) if seeds else set()
     # A stub only shouts RED when its liveness rests on EXTRACTED edges; if it is
     # reachable only through an INFERRED/AMBIGUOUS hop (a heuristic route, an
     # ambiguous name) the liveness itself is uncertain, so the provenance ceiling
@@ -378,12 +499,23 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     for comp in strongly_connected_components(store):
         if len(comp) < 2:
             continue
+        # A symbol cycle is a code-entity smell (mutual recursion / tangled calls). The
+        # module->module IMPORTS edges (which carry module-level liveness) let MODULE nodes
+        # form import cycles too; a circular *import* is a different analysis, so don't
+        # surface it here as a "circular dependency among symbols" — skip components that
+        # include any pseudo node (panel R14A, consistent with god_object/orient).
+        if any((cn := store.get_node(m)) is None or cn.kind not in _CODE_KINDS
+               for m in comp):
+            continue
         members = set(comp)
         internal = [e for e in all_edges
                     if e.src in members and e.dst_id in members
                     and e.relation in _SCC_RELATIONS]
         frac, conf_n, total = _confident_share(internal)
         artifact = frac < 0.5  # majority of the linking edges are guesses
+        reason = (f"circular dependency among {len(comp)} symbols"
+                  + ("; rests mostly on name-ambiguous/heuristic edges "
+                     f"({conf_n}/{total} confident) — verify before acting" if artifact else ""))
         issues.append({
             "kind": "cycle", "node": comp[0], "members": comp,
             # An artifact cycle is capped below ORANGE so it sinks in the ranking and
@@ -392,9 +524,11 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             "confidence": round(0.3 + 0.6 * frac, 2),
             "needs_review": artifact,
             "confident_edges": conf_n, "edges": total,
-            "reason": f"circular dependency among {len(comp)} symbols"
-            + ("; rests mostly on name-ambiguous/heuristic edges "
-               f"({conf_n}/{total} confident) — verify before acting" if artifact else ""),
+            "reason": reason,
+            # Mirror the envelope's needs_review => review_reasons contract on the inner item
+            # so a consumer keying on review_reasons isn't left empty when needs_review is set
+            # (panel R34B).
+            "review_reasons": [reason] if artifact else [],
         })
 
     # Data loops: feedback through mutable global state (design §6.F).
@@ -412,6 +546,13 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     fi, fo = fan_in(store), fan_out(store)
     for nid in set(fi) & set(fo):
         if fi[nid] >= 5 and fo[nid] >= 5:
+            # "God object" is a code-entity smell; a MODULE node with many importers
+            # (fan-in) plus many module-level calls (fan-out, from _module_scope_edges) is
+            # not an OOP god object — skip pseudo nodes so the label isn't mis-applied
+            # (panel R14A). Liveness/holes are unaffected.
+            gnode = store.get_node(nid)
+            if gnode is None or gnode.kind not in _CODE_KINDS:
+                continue
             # Confident-only degree: fan-in over liveness relations, fan-out over CALLS
             # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
             # coupling is mostly ambiguous/heuristic edges (homonym `new`/`build` calls
@@ -426,15 +567,17 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # really there once the guesses are removed.
             artifact = c_in < 5 or c_out < 5
             frac = (in_frac + out_frac) / 2
+            reason = (f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
+                      + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
+                         f"fan-out {c_out}) — verify before acting" if artifact else ""))
             issues.append({
                 "kind": "god_object", "node": nid,
                 "urgency": Urgency.GREEN.value if artifact else Urgency.ORANGE.value,
                 "confidence": round(0.3 + 0.6 * frac, 2),
                 "needs_review": artifact,
                 "confident_fan_in": c_in, "confident_fan_out": c_out,
-                "reason": f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
-                + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
-                   f"fan-out {c_out}) — verify before acting" if artifact else ""),
+                "reason": reason,
+                "review_reasons": [reason] if artifact else [],  # inner-item contract (panel R34B)
             })
 
     rank = {Urgency.RED.value: 0, Urgency.ORANGE.value: 1, Urgency.GREEN.value: 2}
@@ -457,6 +600,14 @@ def find_similar(store: Store, snippet: str, limit: int = 10) -> Result:
     classes by token similarity (name + docstring + callees) to the snippet."""
     from . import similar
 
+    # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
+    # raise (re.findall on a non-str; `max(0, limit)` / slice on a non-int) instead of
+    # returning a Result (panel R18B). The dense-embedder path masks the snippet case, so
+    # the stdlib-only default install is what crashes — guard here, at the op boundary.
+    if not isinstance(snippet, str):
+        return refuse("snippet must be a string", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return refuse("limit must be an integer", confidence=0.0)
     matches = similar.find_similar(store, snippet, limit)
     if not matches:
         return refuse("no similar code found (or snippet had no usable tokens)",
@@ -475,6 +626,10 @@ def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
     """
     from . import runtime
 
+    if not isinstance(trace, str):
+        # load_coverage does Path(trace) before its own guard; a non-str trace would raise
+        # instead of honouring the "empty on any problem" contract (panel R18B).
+        return refuse("trace path must be a string", confidence=0.0)
     covmap, _ = runtime.load_coverage(trace)
     if not covmap:
         return refuse(f"no usable coverage data in '{trace}' (supported: coverage.py "
@@ -593,11 +748,31 @@ def _git_path_mapper(store: Store, path: str):
     return lambda f: f"{prefix}/{f}".replace(os.sep, "/")
 
 
+def _under_scope(nid: str, scope: str) -> bool:
+    """True if node id `nid` is `scope` itself or a genuine child/member of it.
+
+    A bare `nid.startswith(scope)` bleeds across id boundaries: scope `Foo` wrongly
+    swept in the sibling class `FooBar`, and file scope `model.py::Node` pulled in
+    `NodeKind` — inflating get_matrix cells/density and summarize_subsystem counts with
+    unrelated nodes (panel R33B). The char(s) right after the scope must be a real id
+    separator: `/` (dir→file), `::` (file→symbol), or `.` (class→member). A scope that
+    already ends in a separator matches by plain prefix.
+    """
+    if not nid.startswith(scope):
+        return False
+    if nid == scope or scope.endswith(("/", "::", ".")):
+        return True
+    rest = nid[len(scope):]
+    return rest[:2] == "::" or rest[:1] in ("/", ".")
+
+
 @operation("Compact structural summary of a subsystem (path prefix), for an LLM.")
 def summarize_subsystem(store: Store, path: str) -> Result:
     """A terse map of one subsystem (design §8): node counts, the hubs to read
     first, its public surface (who calls in), and what it depends on (calls out)."""
-    members = [n for n in store.all_nodes_full() if n.id.startswith(path)]
+    if not isinstance(path, str):
+        return refuse("path must be a string", confidence=0.0)  # None/wrong type (panel R17A)
+    members = [n for n in store.all_nodes_full() if _under_scope(n.id, path)]
     if not members:
         return refuse(f"no nodes under '{path}'", confidence=0.0)
     mids = {n.id for n in members}
@@ -637,12 +812,20 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     Refuses when the scope exceeds `limit` so the result stays small enough for an
     LLM to actually reason over.
     """
+    # Validate arg types BEFORE using them — relation.upper()/startswith()/`> limit` would
+    # otherwise raise on None/wrong-type from a library or MCP call (panel R18B).
+    if not isinstance(scope, str):
+        return refuse("scope must be a string", confidence=0.0)
+    if not isinstance(relation, str):
+        return refuse("relation must be a string", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return refuse("limit must be an integer", confidence=0.0)
     try:
         rel = Relation(relation.upper())
     except ValueError:
         return refuse(f"unknown relation '{relation}'", confidence=0.0)
 
-    members = sorted(nid for nid in store.all_node_ids() if nid.startswith(scope))
+    members = sorted(nid for nid in store.all_node_ids() if _under_scope(nid, scope))
     if not members:
         return refuse(f"no nodes under scope '{scope}'", confidence=0.0)
     if len(members) > limit:
@@ -685,9 +868,32 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
     """
+    import os
+
     from .config import load_config
     from .extract import extract_project
     from .resolve import default_resolvers, run_resolvers
+
+    # A hostile or non-directory root (over-long path, embedded NUL, lone surrogate, or a
+    # missing path) must degrade to an empty index like a missing path — NOT crash mid-extract
+    # on a stat()/is_file()/meta-bind (panels YYY/ZZZ/crash-sweep). Probe once up front;
+    # every downstream Path op on the root is then known-safe.
+    try:
+        usable = isinstance(path, str) and os.path.isdir(path)
+        abs_root = os.path.abspath(path) if isinstance(path, str) else ""
+        abs_root.encode("utf-8")  # a surrogate/NUL root can't be stored as meta
+    except (OSError, ValueError, UnicodeError, TypeError):
+        # A non-str path (None / bytes / wrong type from a library or MCP call) or an
+        # unusable string root degrades to an empty index, never raises (panels R17A/R18B).
+        # `bytes` is excluded up front: abspath(bytes) returns bytes, whose .encode is an
+        # AttributeError the probe wouldn't otherwise catch.
+        usable, abs_root = False, ""
+    if not usable:
+        with store.conn:
+            store.conn.execute("DELETE FROM nodes")
+            store.conn.execute("DELETE FROM edges")
+        store.set_meta("root", abs_root)
+        return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
 
     nodes, edges = extract_project(path, ignore=load_config(path).ignore)
     # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
@@ -711,8 +917,7 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         for e in edges:
             store.add_edge(e)
 
-    import os
-    store.set_meta("root", os.path.abspath(path))
+    store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
               files=len(files), nodes=store.node_count())
@@ -762,6 +967,11 @@ def _resolve_target(store: Store, name: str):
     scoped from the CLI/MCP instead of just refused (issue #9). Returns
     `(node | None, candidates)`; on an ambiguous bare name `node` is None and
     `candidates` lists every match."""
+    if not isinstance(name, str):
+        # A non-str symbol (None / wrong type from a library or malformed MCP call) can't
+        # name a node — refuse with no match rather than raise, honouring the "every op
+        # returns a Result, never raises" contract (panel R17A).
+        return None, []
     if "::" in name:  # a full node id pins exactly one
         n = store.get_node(name)
         return n, ([n] if n else [])
@@ -790,13 +1000,30 @@ def _default_detector(store: Store) -> PythonLibraryDetector:
 _CODE_KINDS = {NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS}
 
 
-def _stale_candidates(store: Store, unreached: set[str]) -> list[str]:
+def _stale_candidates(store: Store, unreached: set[str],
+                      reachable: set[str]) -> list[str]:
     """Filter the unreachable set down to real dead-code candidates.
 
     Dead *code* means an unreached function/method/class. Modules/packages
     (liveness is per-symbol), data/route nodes (DBTable, Route, ...), and dunder
     methods (`__init__`, `__enter__`, ... are framework-invoked) are not candidates.
+
+    A CLASS with any *reachable* member is itself live — a live method implies a live
+    class (the class must exist for the method to run). This general invariant is the
+    backstop for the whole "class dead while a member is live" family across every
+    language/idiom (callback/main/exported/interface/trait/partial), so a class is flagged
+    only when it AND all its members are unreached (panel XXX — C# partial classes).
     """
+    # qual-prefix of every reachable member -> its owning class/function id(s). Split only
+    # the qual (after `::`); the rel path may itself contain dots (`f.py`).
+    live_owners: set[str] = set()
+    for rid in reachable:
+        pre, sep, qual = rid.partition("::")
+        if not sep or "." not in qual:
+            continue
+        parts = qual.split(".")
+        for i in range(1, len(parts)):
+            live_owners.add(f"{pre}::{'.'.join(parts[:i])}")
     out: list[str] = []
     for nid in unreached:
         node = store.get_node(nid)
@@ -804,5 +1031,7 @@ def _stale_candidates(store: Store, unreached: set[str]) -> list[str]:
             continue
         if node.name.startswith("__") and node.name.endswith("__"):
             continue
+        if node.kind is NodeKind.CLASS and nid in live_owners:
+            continue  # a reachable member keeps its class live
         out.append(nid)
     return sorted(out)

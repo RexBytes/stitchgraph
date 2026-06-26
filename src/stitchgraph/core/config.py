@@ -32,11 +32,17 @@ class Config:
 
 
 def find_config(start: str | Path | None = None) -> Path | None:
-    here = Path(start or Path.cwd()).resolve()
-    for d in (here, *here.parents):
-        candidate = d / "stitchgraph.toml"
-        if candidate.is_file():
-            return candidate
+    try:
+        here = Path(start or Path.cwd()).resolve()
+        for d in (here, *here.parents):
+            candidate = d / "stitchgraph.toml"
+            if candidate.is_file():
+                return candidate
+    except (OSError, ValueError):
+        # resolve()/is_file() raise on an over-long path or an embedded NUL; a bad start
+        # path simply has no config — return None so the caller falls back to defaults
+        # rather than crashing (panels YYY/ZZZ — same class as the store-lookup guard).
+        return None
     return None
 
 
@@ -55,18 +61,44 @@ def _load(start: str | Path | None) -> Config:
         return Config()
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+        # A non-UTF-8 stitchgraph.toml (hand-edited in a legacy encoding) must degrade to
+        # defaults, not crash every CLI command — same robustness class as malformed TOML
+        # and the non-UTF-8 source-file guard in the extractor (panel R20A).
         return Config()
-    ep = data.get("entry_points", {})
-    idx = data.get("index", {})
-    rev = data.get("review", {})
-    orient = data.get("orient", {})
+    # A hand-edited stitchgraph.toml can put any TOML type under any key, and config is
+    # loaded on every CLI command — so guard every access by shape: a malformed section or
+    # value falls back to its default instead of crashing. Same robustness class as the
+    # coverage-JSON shape guard (panel LLL); `exists()`-style assumptions bite here too.
+    if not isinstance(data, dict):
+        return Config(source=path)
+
+    def _table(key: str) -> dict:
+        v = data.get(key)
+        return v if isinstance(v, dict) else {}
+
+    def _str_list(v: object) -> list[str]:
+        # Drop empty entries: an empty glob in `ignore` reaches PurePath.match() and
+        # raises "empty pattern" (panel R33B); a blank entry is never a useful value.
+        return [s for x in v if (s := str(x))] if isinstance(v, list) else []
+
+    ep, idx, rev = _table("entry_points"), _table("index"), _table("review")
+    orient, sim = _table("orient"), _table("similar")
+    try:
+        threshold = float(rev.get("threshold", 0.80))
+    except (TypeError, ValueError):
+        threshold = 0.80
+    if not (0.0 <= threshold <= 1.0):
+        # NaN (`float("nan")` doesn't raise) or out-of-range would silently disable
+        # needs_review (`conf < nan` is always False); fall back to the default (panel ZZZ).
+        threshold = 0.80
+    embed = sim.get("embed_model")
     return Config(
-        include=set(ep.get("include", []) or []),
+        include=set(_str_list(ep.get("include"))),
         include_tests=bool(ep.get("include_tests", True)),
-        ignore=list(idx.get("ignore", []) or []),
-        threshold=float(rev.get("threshold", 0.80)),
+        ignore=_str_list(idx.get("ignore")),
+        threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
-        embed_model=(data.get("similar", {}) or {}).get("embed_model"),
+        embed_model=embed if isinstance(embed, str) else None,
         source=path,
     )
