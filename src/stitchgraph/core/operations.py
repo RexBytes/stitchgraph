@@ -1067,37 +1067,42 @@ class _StoreEdgeSink:
 
 def _reindex_streaming(store: Store, path: str, abs_root: str,
                        ignore: list[str], resolvers: list) -> Result:
-    """Constant(-ish)-memory reindex: stream nodes/edges to SQLite, dedup in the store.
+    """Constant(-ish)-memory reindex: stream nodes/edges to SQLite; dedup as we go + once more
+    globally in the store.
 
-    Byte-identical to the in-memory full path (the streaming differential oracle is the
-    gate). The key facts that make this safe without re-deriving any graph logic in the
-    store: (1) within extraction `edges` is write-only — override propagation is Python-only
-    (it runs inside python.extract_project over the small Python edge set) and dedup is
-    deferred; (2) resolvers read only nodes + source, never the edge list; (3) the store's
-    `_dedup_resolved_edges` is the proven twin of `_dedup_edges`. So we keep the (far
-    smaller) node list in memory for the seeds/resolvers, stream all edges to the store in
-    the in-memory path's order, then dedup in SQL.
+    Byte-identical to the in-memory full path (the streaming differential oracle is the gate).
+    The facts that make this safe without re-deriving graph logic: (1) within extraction
+    `edges` is write-only — override propagation is Python-only (it runs inside
+    python.extract_project over the small Python edge set) and the bulk dedup is deferred;
+    (2) resolvers read only nodes + source, never the edge list; (3) every dedup key is scoped
+    to the edge's `src`, so the sink can collapse each source's fan-out with the exact
+    in-memory `_dedup_edges` on the fly, and the store's `_dedup_resolved_edges` (the proven
+    twin) is the authoritative GLOBAL pass for the rare cross-group / resolver overlap. We keep
+    the (far smaller) node list resident for the seeds/resolvers; only deduped edges hit disk.
     """
     from .extract import extract_project
     from .resolve import run_resolvers
 
-    # NOT one transaction: the sink commits each edge batch so the ~15.5M raw edges never sit
-    # in a single open transaction (that pins every dirty page and balloons RSS — the very
+    # NOT one transaction: the sink commits each edge batch so the deduped edge stream never
+    # sits in a single open transaction (that pins every dirty page and balloons RSS — the very
     # thing streaming exists to avoid). The trade-off is that a crash mid-rebuild leaves a
-    # partial index; a re-run rebuilds cleanly. The clear, the node write, and the dedup are
-    # each their own transaction.
+    # partial index; a re-run rebuilds cleanly (it clears first). The default in-memory path
+    # stays crash-atomic; AUTO only picks streaming for large on-disk repos, where the
+    # in-memory alternative is an OOM. The clear, node write, and dedup are each a transaction.
     with store.conn:
         store.conn.execute("DELETE FROM nodes")
         store.conn.execute("DELETE FROM edges")
     sink = _StoreEdgeSink(store)
-    # Pass 1/2: nodes resident, edges streamed (and committed in batches) to the store.
-    nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink)
-    # Resolvers enrich from the node list + source only; their (few) extra edges stream to the
-    # store after the extractor's, preserving the full path's append order.
-    nodes, res_edges = run_resolvers(path, nodes, [], resolvers)
-    for e in res_edges:
-        sink.append(e)
-    sink.flush()
+    try:
+        # Pass 1/2: nodes resident, edges streamed (deduped per-source, committed in batches).
+        nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink)
+        # Resolvers enrich from the node list + source only; their (few) extra edges stream to
+        # the store after the extractor's, preserving the full path's append order.
+        nodes, res_edges = run_resolvers(path, nodes, [], resolvers)
+        for e in res_edges:
+            sink.append(e)
+    finally:
+        sink.flush()  # never drop the buffered tail — even if extraction/resolvers raise
     with store.conn:
         for n in nodes:
             store.add_node(n)

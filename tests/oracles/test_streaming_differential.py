@@ -28,10 +28,19 @@ def _node_rows(store):
 
 
 def _edge_rows(store):
+    # Compare EVERY load-bearing edge field — including weight, provenance, and the internal
+    # `name_based` flag. The last is deliberate: panel R49 (sonnet) raised that the store's
+    # dedup ORs `name_based` onto a group's survivor while the in-memory `_dedup_edges` keeps
+    # first-seen, so the streaming survivor's flag *could* differ. Pinning it here proves it
+    # does NOT diverge on real corpora (the default extractors never emit a precise + a
+    # name-based edge for the same (src,relation,dst_id)); if a future change ever introduces
+    # that, this oracle catches it instead of letting a re-widening difference slip through.
     return sorted(
-        (r["src"], r["relation"], r["dst_symbol"] or "", r["dst_id"] or "")
+        (r["src"], r["relation"], r["dst_symbol"] or "", r["dst_id"] or "",
+         round(r["weight"], 6), r["provenance"], r["name_based"])
         for r in store.conn.execute(
-            "SELECT src, relation, dst_symbol, dst_id FROM edges")
+            "SELECT src, relation, dst_symbol, dst_id, weight, provenance, name_based "
+            "FROM edges")
     )
 
 
