@@ -772,6 +772,16 @@
       ],
       "findings": {},
       "theme": "1.0.7 FULL-DIVERSITY clean round 2 (gate met, streak 2). opus high-distrust boundary sweep; sonnet 14 real-world apps (Flask/Django/NestJS/Ruby/C-EXPORT_SYMBOL/monorepo); haiku 11 robustness incl all-features-combined + 1000-file repo. No cardinal/crash. Suite 374, oracles 23, mutation 17/17, dogfood find_stale=1."
+    },
+    {
+      "id": "R49",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.0 streaming indexer \u2014 FULL-DIVERSITY clean round 1 (first clean run; an earlier R49 attempt was discarded as contaminated \u2014 panels had read operations.py while the mutation tester was rewriting it in place). opus: fuzzed _DefInfo/precompute (Rust trait-impl, C++ out-of-line, iface .type), cache_asts re-parse, 59 non-adjacent same-src runs, double-reindex, mixed-lang stems, 260 polyglot fuzz trials \u2014 all byte-identical incl weight/provenance/name_based. sonnet: 15 adversarial scripts (nested scopes, cross-group dedup, AUTO path, resolver edges, 30-class fanout, mixed C/C++/Py) \u2014 identical. haiku: flush/threshold/:memory:/meta/exception-safety \u2014 CLEAN. name_based first-seen-vs-OR is structural-safe (mixed pairs share src -> sink collapses pre-store; 0 affected rows on self-source) and now pinned by the oracle. Mutation _dedup_edges/_auto_stream 17/17 killed; suite 388; oracles incl weight/provenance/name_based."
     }
   ]
 }

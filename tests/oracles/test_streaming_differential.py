@@ -29,12 +29,16 @@ def _node_rows(store):
 
 def _edge_rows(store):
     # Compare EVERY load-bearing edge field — including weight, provenance, and the internal
-    # `name_based` flag. The last is deliberate: panel R49 (sonnet) raised that the store's
-    # dedup ORs `name_based` onto a group's survivor while the in-memory `_dedup_edges` keeps
-    # first-seen, so the streaming survivor's flag *could* differ. Pinning it here proves it
-    # does NOT diverge on real corpora (the default extractors never emit a precise + a
-    # name-based edge for the same (src,relation,dst_id)); if a future change ever introduces
-    # that, this oracle catches it instead of letting a re-widening difference slip through.
+    # `name_based` flag. The last is deliberate (panel R49): the store's `_dedup_resolved_edges`
+    # ORs `name_based` across a (src,relation,dst_id) group's survivor, while the in-memory
+    # `_dedup_edges` keeps first-seen — so on a *mixed* group the survivors' flags could differ.
+    # The reason they don't diverge in `reindex` output is structural, not luck: a precise +
+    # name-based pair to the same (src,relation,dst_id) only ever arises within ONE source's
+    # edges (same enclosing def), and the per-source sink dedup collapses that group BEFORE it
+    # reaches the store — so the store's OR never sees a mixed group (verified: 0 affected rows
+    # on the self-source). Pinning the flag here means that if any future change ever lets a
+    # mixed group survive to the store, this oracle catches the divergence instead of letting a
+    # re-widening difference slip through silently.
     return sorted(
         (r["src"], r["relation"], r["dst_symbol"] or "", r["dst_id"] or "",
          round(r["weight"], 6), r["provenance"], r["name_based"])
