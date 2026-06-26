@@ -82,6 +82,31 @@ def test_prose_starting_with_sql_verb_is_not_parsed_as_sql(tmp_path):
     assert not ({"list", "cache", "entry", "prepopulated"} & tables)  # prose -> no phantom tables
 
 
+def test_sql_literals_rejects_prose_keeps_real_sql():
+    """Pin `_sql_literals` directly: prose strings whose first word is a SQL verb are NOT
+    collected (so sqlglot never sees them — no warning flood), while real statements are.
+    This pins the `and`/length guards the end-to-end table test can't distinguish (R58)."""
+    pytest.importorskip("sqlglot")
+    import ast as _ast
+
+    from stitchgraph.core.resolve.sql import _sql_literals
+    src = (
+        'def f():\n'
+        '    a = "Create a list of prepopulated fields to render"\n'   # prose
+        '    b = "Update the cache for the current request object"\n'  # prose
+        '    c = "Delete a stale entry from the mapping object now"\n' # prose
+        '    d = "SELECT id FROM accounts WHERE active = 1"\n'         # real
+        '    e = "CREATE TABLE widgets (id integer primary key)"\n'    # real
+        '    g = "INSERT INTO audit (who) VALUES (1)"\n'               # real
+        '    return a, b, c, d, e, g\n'
+    )
+    func = _ast.parse(src).body[0]
+    found = _sql_literals(func)
+    assert all(s.split()[0].upper() in ("SELECT", "CREATE", "INSERT") for s in found)
+    assert len(found) == 3                                  # only the 3 real statements
+    assert not any(s.startswith(("Create a", "Update the", "Delete a")) for s in found)
+
+
 def test_full_stack_trace_route_to_table(tmp_path):
     pytest.importorskip("sqlglot")
     """The headline 'gem': a path from an HTTP route down to a DB table."""
