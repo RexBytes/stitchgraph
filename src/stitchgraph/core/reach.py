@@ -30,11 +30,21 @@ LIVENESS_RELATIONS = (Relation.CALLS, Relation.IMPORTS, Relation.INHERITS,
 def _adjacency(store: Store, relations: Iterable[Relation],
                edge_filter: Callable[[Edge], bool] | None = None) -> dict[str, list[str]]:
     adj: dict[str, list[str]] = defaultdict(list)
-    rels = set(relations)
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (a precise
-    for edge in store.resolved_edges():  # edge dangling after its file's deletion) — matches
-        if edge.relation in rels and edge.dst_id in nodes:  # GraphBLAS (algebra.py), panel R29A
-            if edge_filter is None or edge_filter(edge):
+    # edge dangling after its file's deletion) — matches GraphBLAS (algebra.py), panel R29A.
+    if edge_filter is None:
+        # Hot path: stream lean tuples, never materialising the full Edge list (the 16M-edge
+        # find_stale OOM on Home Assistant, v2.1).
+        rels = {r.value for r in relations}
+        for src, rel, dst, _w in store.iter_resolved():
+            if rel in rels and dst in nodes:
+                adj[src].append(dst)
+    else:
+        # edge_filter inspects fields beyond (src,rel,dst) (e.g. provenance), so it needs the
+        # full Edge; this is the rarer EXTRACTED-only path.
+        rels = set(relations)
+        for edge in store.resolved_edges():
+            if edge.relation in rels and edge.dst_id in nodes and edge_filter(edge):
                 adj[edge.src].append(edge.dst_id)
     return adj
 
@@ -78,11 +88,11 @@ def reachable_from(store: Store, seeds: Iterable[str],
 
 def _reverse_adjacency(store: Store, relations: Iterable[Relation]) -> dict[str, list[str]]:
     radj: dict[str, list[str]] = defaultdict(list)
-    rels = set(relations)
+    rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
-    for edge in store.resolved_edges():
-        if edge.relation in rels and edge.dst_id in nodes:
-            radj[edge.dst_id].append(edge.src)
+    for src, rel, dst, _w in store.iter_resolved():
+        if rel in rels and dst in nodes:
+            radj[dst].append(src)
     return radj
 
 
@@ -155,8 +165,9 @@ def strongly_connected_components(
     finally:
         sys.setrecursionlimit(_old_limit)
     # Keep only genuine cycles: multi-node components or self-loops.
-    self_loops = {e.src for e in store.resolved_edges()
-                  if e.dst_id == e.src and e.relation in set(relations)}
+    _rels = {r.value for r in relations}
+    self_loops = {src for src, rel, dst, _w in store.iter_resolved()
+                  if dst == src and rel in _rels}
     return [c for c in out if len(c) > 1 or (c and c[0] in self_loops)]
 
 
@@ -171,16 +182,16 @@ def best_path(store: Store, source: str, sink: str,
     import heapq
     import math
 
-    rels = set(relations) if relations is not None else None
+    rels = {r.value for r in relations} if relations is not None else None
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
     adj: dict[str, list[tuple[str, float]]] = defaultdict(list)
-    for edge in store.resolved_edges():
-        if edge.dst_id not in nodes:
+    for src, rel, dst, weight in store.iter_resolved():
+        if dst not in nodes:
             continue
-        if rels is not None and edge.relation not in rels:
+        if rels is not None and rel not in rels:
             continue
-        w = min(max(edge.weight, 1e-9), 1.0)
-        adj[edge.src].append((edge.dst_id, w))
+        w = min(max(weight, 1e-9), 1.0)
+        adj[src].append((dst, w))
 
     if store.get_node(source) is None or store.get_node(sink) is None:
         return None
@@ -213,20 +224,20 @@ def fan_in(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS) -> 
     (Transitive fan-in / PageRank is the GraphBLAS upgrade, design §6.A.)
     """
     counts: dict[str, int] = defaultdict(int)
-    rels = set(relations)
+    rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
-    for edge in store.resolved_edges():
-        if edge.relation in rels and edge.dst_id in nodes:
-            counts[edge.dst_id] += 1
+    for _src, rel, dst, _w in store.iter_resolved():
+        if rel in rels and dst in nodes:
+            counts[dst] += 1
     return counts
 
 
 def fan_out(store: Store, relations: Iterable[Relation] = (Relation.CALLS,)) -> dict[str, int]:
     """Direct out-degree per node (callees) — half of the god-object signal."""
     counts: dict[str, int] = defaultdict(int)
-    rels = set(relations)
+    rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
-    for edge in store.resolved_edges():
-        if edge.relation in rels and edge.dst_id in nodes:
-            counts[edge.src] += 1
+    for src, rel, dst, _w in store.iter_resolved():
+        if rel in rels and dst in nodes:
+            counts[src] += 1
     return counts

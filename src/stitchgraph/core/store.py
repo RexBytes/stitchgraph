@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from contextlib import closing
 from pathlib import Path
 
@@ -703,6 +703,29 @@ class Store:
                 (relation.value,),
             ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
+
+    def iter_resolved(
+        self, relation: Relation | None = None,
+    ) -> Iterator[tuple[str, str, str, float]]:
+        """Stream resolved edges as lean `(src, relation, dst_id, weight)` tuples, cursor-
+        iterated (no `fetchall`, no `Edge` construction). The reachability / centrality sweeps
+        only read those four columns, so this is what they build their adjacency from — a
+        16M-edge graph (Home Assistant) then materialises ~3 int columns, not 16M `Edge`
+        objects, keeping the *query* peak bounded the way the *index* peak already is.
+        `relation` is returned as its raw stored string; compare against a set of
+        `Relation.value` (see callers), not the enum, to avoid per-row enum coercion."""
+        sql = "SELECT src, relation, dst_id, weight FROM edges WHERE dst_id IS NOT NULL"
+        params: tuple[str, ...] = ()
+        if relation is not None:
+            sql += " AND relation = ?"
+            params = (relation.value,)
+        cur = self.conn.execute(sql, params)
+        while True:
+            rows = cur.fetchmany(20000)
+            if not rows:
+                break
+            for r in rows:
+                yield r["src"], r["relation"], r["dst_id"], r["weight"]
 
     def node_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"]

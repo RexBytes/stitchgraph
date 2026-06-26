@@ -12,6 +12,7 @@ unaffected (design §2a: add only the stacks you use).
 from __future__ import annotations
 
 import ast
+import re
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
@@ -24,7 +25,28 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     _HAVE_SQLGLOT = False
 
-_SQL_START = ("select", "insert", "update", "delete", "with", "create", "replace")
+# A string is treated as SQL only if it has real statement *structure*, not merely a leading
+# verb. The old "first word in {select,insert,...,create,...}" test misfired on ordinary English
+# docstrings — "Create a list of…", "Update the…", "Delete a…", "With this…" — flooding sqlglot
+# with prose to parse (hundreds per file on Django/Salt) and occasionally minting phantom tables
+# (multi-repo Python hunt, panel R58). Requiring the companion keyword (FROM/INTO/SET/the CREATE
+# object type/…) keeps real queries while rejecting prose. Recall cost: a SELECT with no FROM or
+# a `CREATE %sINDEX`-style format template won't match — neither yields a real table edge anyway.
+_SQL_RE = re.compile(
+    r"""^\s*(
+        select\b[\s\S]*?\bfrom\b
+      | insert\s+(or\s+\w+\s+)?into\b
+      | update\b[\s\S]*?\bset\b
+      | delete\s+from\b
+      | replace\s+into\b
+      | with\b[\s\S]*?\bas\b[\s\S]*?\bselect\b
+      | create\s+(or\s+replace\s+)?
+          (?:(?:temp(?:orary)?|global|local|unique|materialized|unlogged)\s+)*
+          (?:table|view|index|database|schema|sequence|trigger|function|procedure|
+             extension|collation|role|user|tablespace|aggregate|type|domain|operator)\b
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 class SqlResolver:
@@ -99,6 +121,6 @@ def _sql_literals(func: ast.AST) -> list[str]:
     for node in ast.walk(func):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             s = node.value.strip()
-            if len(s) > 10 and s.split(None, 1)[0].lower() in _SQL_START:
+            if len(s) > 10 and _SQL_RE.match(s):
                 out.append(s)
     return out

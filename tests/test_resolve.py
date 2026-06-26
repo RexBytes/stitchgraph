@@ -59,6 +59,29 @@ def test_sql_tables_extracted(tmp_path):
         assert "users" in tables
 
 
+def test_prose_starting_with_sql_verb_is_not_parsed_as_sql(tmp_path):
+    """R58 (multi-repo Python hunt — Django/Salt): the SQL resolver must require real SQL
+    *structure*, not just a leading verb, or ordinary English docstrings ('Create a list…',
+    'Update the…', 'Delete a…') get fed to sqlglot — a warning flood and the odd phantom table.
+    Prose yields no DB tables; a genuine query alongside it still does."""
+    pytest.importorskip("sqlglot")
+    from stitchgraph.core.model import NodeKind
+    (tmp_path / "svc.py").write_text(
+        'def helper():\n'
+        '    """Create a list of prepopulated fields that should render JavaScript."""\n'
+        '    x = "Update the cache when the value changes for the current request"\n'
+        '    y = "Delete a stale entry from the in-memory mapping if present"\n'
+        '    return x, y\n'
+        'def real():\n'
+        '    return run("SELECT id, name FROM customers WHERE active = 1")\n'
+    )
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
+    assert "customers" in tables                                   # real SQL still resolves
+    assert not ({"list", "cache", "entry", "prepopulated"} & tables)  # prose -> no phantom tables
+
+
 def test_full_stack_trace_route_to_table(tmp_path):
     pytest.importorskip("sqlglot")
     """The headline 'gem': a path from an HTTP route down to a DB table."""

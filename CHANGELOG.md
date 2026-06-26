@@ -4,6 +4,42 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.0] — 2026-06-26
+
+**Constant-memory *queries*, from dogfooding v2.0.1 across a multi-repo Python hunt** (Django,
+Salt, Ansible, CPython stdlib, Home Assistant). v2.0.0 made *indexing* memory-bounded; this
+release extends that to the *reachability* sweeps so `find_stale` / `impact_of` scale to the
+graphs the indexer can now build.
+
+### Changed
+
+- **Reachability streams its adjacency (the find_stale scalability ceiling).** Home Assistant
+  indexed fine — 6,728 files, **~16M edges**, ~4 GB — but `find_stale` then OOM'd: every
+  reachability/centrality sweep funnelled through `Store.resolved_edges()`, which does
+  `SELECT * … fetchall()` and builds **all 16M `Edge` objects at once**. A new lean
+  `Store.iter_resolved()` streams `(src, relation, dst_id, weight)` tuples cursor-by-cursor;
+  `algebra._Adjacency` and the `reach.py` sweeps (`reachable_from`, `reverse_reachable_from`,
+  `fan_in`/`fan_out`, `best_path`, SCC) build directly from it. Byte-identical results (the
+  GraphBLAS==pure-Python and incremental/streaming oracles stay green); peak on a 6M-edge graph
+  dropped to ~840 MB (was multi-GB), so a 16M-edge graph now queries in ~2 GB instead of OOM.
+
+### Fixed
+
+- **SQL resolver no longer treats prose as SQL.** `_sql_literals` matched any string whose
+  *first word* was a SQL verb, so English docstrings — `"Create a list…"`, `"Update the…"`,
+  `"Delete a…"`, `"With this…"` — were handed to sqlglot, flooding output with parse warnings
+  (hundreds per file on Django/Salt) and occasionally minting phantom tables. It now requires
+  real statement structure (`SELECT … FROM`, `INSERT INTO`, `UPDATE … SET`, `DELETE FROM`,
+  `CREATE <table|index|view|…>`, `WITH … AS … SELECT`). Real queries still resolve; prose
+  doesn't. Owned by a regression test.
+
+### Docs
+
+- **LIMITATIONS:** documented plugin-loader / string-name dynamic dispatch (Salt's loader,
+  pluggy, entry-point registries) as a static-analysis blind spot — on Salt 3008, `find_stale`
+  flags 3,907 loader-dispatched functions that are live at runtime. Escape hatch: pin the public
+  surface via `[entry_points]` globs or `ingest_trace`.
+
 ## [2.0.1] — 2026-06-26
 
 **PHP precision fix from dogfooding v2.0.0 on Magento.** Running `find_stale` on the Magento

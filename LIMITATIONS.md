@@ -324,6 +324,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   as dynamic dispatch / monkeypatching; surfaces as `needs_review`, not a confident verdict.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
 
+### Plugin-loader frameworks that dispatch by string name (Salt, pluggy, entry-point registries)
+- **Concern:** some frameworks invoke functions purely by **string name through a loader** —
+  Salt's loader resolves `state.apply` / `pkg.install` to module functions by name at runtime;
+  pluggy/`importlib.metadata` entry-point systems do the same. There is no syntactic call site
+  for the loader to follow, so nearly every public function of such a project looks dead to a
+  static call graph. The multi-repo Python hunt measured this directly: `find_stale` on Salt
+  3008 flagged **3,907** functions — overwhelmingly real, loader-dispatched execution-module
+  functions, not dead code.
+- **Decision:** do **not** special-case individual frameworks' loaders (Salt's `__virtualname__`,
+  pluggy's hookspecs, …) in the core — that is unbounded and brittle. The static graph reports
+  what it can see; the loader edge is genuinely invisible without modeling each framework.
+- **Escape hatch:** pin the public surface as roots — `stitchgraph.toml [entry_points]` globs
+  (e.g. every `salt/modules/*` function), or feed a runtime `ingest_trace` from a test run so the
+  loader-invoked functions are marked `runtime`-live. Treat a bare `find_stale` on a
+  loader-driven project as "internal-only candidates" rather than a dead-code verdict.
+
 ### A coverage trace from an unrelated tree sharing a path tail can mis-attribute
 - **Concern:** `ingest_trace` matches a coverage file's paths to indexed nodes by exact
   root-relative path first, then — only when *no* file matched exactly (the coverage was
