@@ -5687,3 +5687,25 @@ def test_js_member_assigned_function_body_is_walked(tmp_path):
         assert "render" not in stale      # member-assigned handler: rooted
         assert "handle" not in stale      # prototype method: rooted
         assert "trulyDead" in stale       # genuinely uncalled module function: still flagged
+
+
+def test_c_export_symbol_is_public_abi(tmp_path):
+    """A C function marked `EXPORT_SYMBOL(foo)` / `EXPORT_SYMBOL_GPL(foo)` is public
+    kernel/module ABI — called by code outside the tree, so never dead for lack of an
+    in-tree caller (the C analogue of __all__/module.exports). The Linux hunt flagged 543
+    such functions. Scoped to the file the macro appears in."""
+    _mk(tmp_path, {
+        "lz4.c": (
+            "int LZ4_compress_default(const char *s, char *d) { return 0; }\n"
+            "EXPORT_SYMBOL(LZ4_compress_default);\n\n"
+            "static int helper_gpl(void) { return 1; }\n"
+            "EXPORT_SYMBOL_GPL(helper_gpl);\n\n"
+            "static int really_internal(void) { return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "LZ4_compress_default" not in stale   # EXPORT_SYMBOL: public ABI, live
+        assert "helper_gpl" not in stale             # EXPORT_SYMBOL_GPL: public ABI, live
+        assert "really_internal" in stale            # not exported, uncalled: still flagged

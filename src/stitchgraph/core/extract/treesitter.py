@@ -251,6 +251,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     src_by: dict[str, bytes] = {}
     file_lang: dict[str, str] = {}
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
+    c_exports: dict[str, set[str]] = {}  # rel -> EXPORT_SYMBOL'd C function names (per file)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -344,6 +345,10 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             for name in _import_names(tree.root_node, src, spec):
                 imports.append((mod_id, name, lang))
             reexports |= _reexport_names(tree.root_node, src)
+            if _canon_lang(lang) == "cpp":  # C/C++: EXPORT_SYMBOL'd functions are public ABI
+                names = _export_symbol_names(src)
+                if names:
+                    c_exports[rel] = names
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -376,6 +381,17 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             if n.kind in (C, F, M) and n.name in reexports \
                     and file_lang.get(n.id.split("::", 1)[0]) in _CLASS_VISIBILITY_LANGS:
                 n.roles = n.roles | {"exported"}
+
+    # C/C++ `EXPORT_SYMBOL(foo)` marks `foo` as public kernel/module ABI — called by code
+    # outside this tree, so never dead for lack of an in-tree caller (the C analogue of
+    # __all__ / module.exports; Linux hunt: 543 EXPORT_SYMBOL'd fns were flagged). Scoped to
+    # the SAME file the macro appears in so a same-named static fn elsewhere isn't mis-rooted.
+    if c_exports:
+        for n in nodes:
+            if n.kind in (F, M):
+                rel = n.id.split("::", 1)[0]
+                if n.name in c_exports.get(rel, ()):
+                    n.roles = n.roles | {"exported"}
 
     # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
     # to FUNCTION even for methods defined inside a class body (there is no separate
@@ -1104,6 +1120,18 @@ def _identifiers(node, src):
     for c in node.children:
         out += _identifiers(c, src)
     return out
+
+
+_EXPORT_SYMBOL_RE = re.compile(rb"\bEXPORT_SYMBOL\w*\s*\(\s*([A-Za-z_]\w*)")
+
+
+def _export_symbol_names(src: bytes) -> set[str]:
+    """Function names a Linux/driver `EXPORT_SYMBOL(foo)` / `EXPORT_SYMBOL_GPL(foo)` /
+    `EXPORT_SYMBOL_NS(foo, ns)` macro marks as public kernel/module ABI — invoked by code
+    outside this tree, so never dead for lack of an in-tree caller (the C analogue of
+    `__all__` / `module.exports`). Text-scanned: the macro doesn't parse as a call expression
+    in the grammar, and a byte regex is robust to the surrounding declaration context."""
+    return {m.decode("ascii", "ignore") for m in _EXPORT_SYMBOL_RE.findall(src)}
 
 
 def _reexport_names(root, src):
