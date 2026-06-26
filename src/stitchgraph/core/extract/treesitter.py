@@ -871,6 +871,17 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                      exported=False, is_test=is_test, contains=contains,
                      enclosing_func=enclosing_func)
         elif t in spec.defs:
+            # A bodyless C/C++ struct/union/enum/class specifier is a TYPE REFERENCE, not a
+            # definition: `struct timeval tv` (a param/field/local), a forward decl
+            # `struct X;`, an `enum E` used as a type. It has no `body` field. Extracting it
+            # as a CLASS mints a phantom node that is then flagged dead (hiredis: `struct
+            # timeval`/`struct event_base` references became dozens of dead "classes"). Only a
+            # specifier WITH a body defines a type; descend so any real nested defs still get
+            # collected (a bodyless ref has none — keeps the traversal uniform).
+            if t.endswith("_specifier") and child.child_by_field_name("body") is None:
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         False, is_test, contains=contains, enclosing_func=enclosing_func)
+                continue
             name = _name_of(child, src)
             if not name:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,

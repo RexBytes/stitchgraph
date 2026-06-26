@@ -5547,3 +5547,30 @@ def test_php_magic_methods_are_live(tmp_path):
         stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
         assert "__call" not in stale       # engine magic method: live
         assert "reallyUnused" in stale     # ordinary unused method: still flagged
+
+
+def test_c_bodyless_struct_reference_is_not_a_phantom_class(tmp_path):
+    """A bodyless C struct specifier — `struct timeval tv` as a param/field, a forward decl
+    `struct X;` — is a TYPE REFERENCE, not a definition. Extracting it as a CLASS minted a
+    phantom node that was then flagged dead (hiredis: dozens of `struct timeval`/`event_base`
+    references became dead 'classes'). Only a specifier WITH a body defines a type."""
+    _mk(tmp_path, {
+        "lib.h": (
+            "struct timeval;\n"                       # forward decl (bodyless)
+            "struct Real { int x; };\n"               # real definition (has a body)
+            "void use(struct timeval tv);\n"          # bodyless ref in a param
+        ),
+        "lib.c": (
+            "#include \"lib.h\"\n"
+            "struct Real make(void) {\n"
+            "    struct timeval local;\n"              # bodyless ref as a local
+            "    struct Real r; r.x = 1; return r;\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import NodeKind
+        classes = {n.name for n in store.nodes_by_kind(NodeKind.CLASS)}
+        assert "timeval" not in classes   # bodyless type reference: never a node
+        assert "Real" in classes          # real bodied struct: still extracted
