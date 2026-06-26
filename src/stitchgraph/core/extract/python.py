@@ -596,6 +596,13 @@ def _seed_entrypoint_classes(proj: _Project) -> None:
     modules) can't drag a whole unrelated class + its full method surface live. Only
     ever adds roots (precision-safe — never flags live code dead)."""
     by_id = {n.id: n for n in proj.nodes}
+    # Snapshot classes that are DIRECT entry-point targets (`pkg:SomeClass`) BEFORE step (1)
+    # runs — at this point only `_apply_script_roles` has applied the `script` role, so a
+    # CLASS carrying it is a direct target. Step (1) below also adds `script` to classes that
+    # merely *enclose* a `Class.method` target, so step (3) must NOT key off the post-step-(1)
+    # set or it would root the whole public surface of every CLI's command class (panel R40A).
+    direct_script_class_ids = {n.id for n in proj.nodes
+                               if n.kind is NodeKind.CLASS and "script" in n.roles}
     # (1) class(es) enclosing a `script`-rooted method (module-precise).
     for n in proj.nodes:
         if n.kind not in (NodeKind.METHOD, NodeKind.FUNCTION) or "script" not in n.roles:
@@ -615,19 +622,19 @@ def _seed_entrypoint_classes(proj: _Project) -> None:
                     and n.name in proj.main_calls \
                     and n.id.rsplit(".", 1)[0] in main_class_ids:
                 n.roles = n.roles | {"main"}
-    # (3) public methods of a class that is itself a `script`-rooted entry-point target
+    # (3) public methods of a class that is itself a DIRECT `script`-rooted entry-point target
     # (a plugin class, e.g. `flake8.report = default = ...:Default`). The framework
     # instantiates it and calls its protocol methods, none of which has an internal caller —
-    # so they are live API exactly like the public methods of an exported class. The class
-    # target is module-path-precise (matched in _apply_script_roles), so this can't drag an
-    # unrelated same-named class live. Only ever adds roots (cardinal-safe). Underscore
-    # methods stay private — reached only if something internal calls them.
-    script_class_ids = {n.id for n in proj.nodes
-                        if n.kind is NodeKind.CLASS and "script" in n.roles}
-    if script_class_ids:
+    # so they are live API exactly like the public methods of an exported class. Keyed off the
+    # PRE-step-(1) snapshot of *direct* targets, never the enclosing classes step (1) added, so
+    # a plain `Class.method` CLI entry point doesn't root its class's whole public surface
+    # (panel R40A). The class target is module-path-precise (matched in _apply_script_roles),
+    # so this can't drag an unrelated same-named class live. Only ever adds roots
+    # (cardinal-safe). Underscore methods stay private — reached only if something calls them.
+    if direct_script_class_ids:
         for n in proj.nodes:
             if n.kind is NodeKind.METHOD and not n.name.startswith("_") \
-                    and n.id.rsplit(".", 1)[0] in script_class_ids:
+                    and n.id.rsplit(".", 1)[0] in direct_script_class_ids:
                 n.roles = n.roles | {"script"}
 
 

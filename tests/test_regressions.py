@@ -5709,3 +5709,73 @@ def test_c_export_symbol_is_public_abi(tmp_path):
         assert "LZ4_compress_default" not in stale   # EXPORT_SYMBOL: public ABI, live
         assert "helper_gpl" not in stale             # EXPORT_SYMBOL_GPL: public ABI, live
         assert "really_internal" in stale            # not exported, uncalled: still flagged
+
+
+def test_classmethod_console_script_does_not_over_root_sibling_methods(tmp_path):
+    """A `Class.method` console-script target (`demo = pkg.cli:App.run`) must root ONLY the
+    targeted method (and keep its class live), NOT the class's whole public surface. Panel
+    R40A: the plugin-class rescue keyed off the post-enclosing-rescue `script` set, so a CLI's
+    command class had every public method rooted, masking genuine dead methods."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname="demo"\n[project.scripts]\ndemo = "pkg.cli:App.run"\n',
+        "pkg/__init__.py": "",
+        "pkg/cli.py": (
+            "class App:\n"
+            "    def run(self):\n        return self._helper()\n"
+            "    def _helper(self):\n        return 1\n"
+            "    def genuinely_dead(self):\n        return 99\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "App.run" not in stale              # the entry-point target: live
+        assert "App.genuinely_dead" in stale       # sibling public method, uncalled: flagged
+
+
+def test_comment_between_decorator_and_method_keeps_callback(tmp_path):
+    """A `comment` between a JS/TS `@decorator` and the method it annotates must not flush the
+    pending decorators — else the framework-callback rooting never fires and the live handler
+    (and its callees) is flagged dead. Panel R40B (also protects Rust `#[test]` + comment)."""
+    _mk(tmp_path, {
+        "svc.ts": (
+            "@Controller()\n"
+            "class Svc {\n"
+            "  @Get()\n"
+            "  // a comment between decorator and method\n"
+            "  findAll() { return this.helper(); }\n"
+            "  helper() { return usedByDecorated(); }\n"
+            "  reallyUnused() { return 0; }\n"
+            "}\n"
+            "function usedByDecorated() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "findAll" not in stale          # @Get handler (comment notwithstanding): live
+        assert "usedByDecorated" not in stale   # reached from the live handler
+        assert "reallyUnused" in stale          # undecorated, uncalled: still flagged
+
+
+def test_member_assigned_function_inside_dead_function_is_not_rooted(tmp_path):
+    """A member-assigned function is auto-rooted only at MODULE/class scope. One nested inside
+    a function body (`function init(){ obj.x = fn }`) must stay reachability-gated: if the
+    enclosing function is dead, the assignment isn't externally visible and must be flagged.
+    Panel R40C — the unconditional callback role masked dead code inside dead code."""
+    _mk(tmp_path, {
+        "m.js": (
+            "function deadInit() {\n"
+            "  utils.formatDate = function() { return 1; };\n"
+            "}\n"
+            "app.render = function() { return moduleHelper(); };\n"
+            "function moduleHelper() { return 3; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadInit" in stale          # uncalled module function: dead
+        assert "formatDate" in stale        # assigned inside a dead function: NOT auto-rooted
+        assert "render" not in stale        # module-scope member assignment: rooted
+        assert "moduleHelper" not in stale  # called by the live module-scope handler

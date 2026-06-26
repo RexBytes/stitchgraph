@@ -946,6 +946,12 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         if t == "decorator":
             pending_decos.append(_decorator_name(child, src))
             continue
+        # A comment between a decorator/attribute and the def it annotates must NOT flush the
+        # pending accumulators — `@Get()\n// note\nfindAll()` and `#[test]\n// note\nfn` are
+        # common; resetting here drops the marker so the framework-callback/test rooting never
+        # fires and the live handler (and its callees) is flagged dead (panel R40B).
+        if t == "comment":
+            continue
         attrs, pending_attrs = pending_attrs, []
         decos, pending_decos = pending_decos, []
         attr_test = any(_is_rust_test_attr(a) for a in attrs)
@@ -1072,12 +1078,16 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 roles = {"exported"} if exported else set()
                 if _is_test_name(name):
                     roles.add("test")
-                # A member-assigned function/class is a method/handler/export invoked
-                # externally or dynamically (a prototype method, a route handler, an export),
-                # never by a plain local name — root it (callback) unless underscore-private.
-                # The cardinal-safe direction, matching "public methods of an exported class
-                # are public API"; only ever adds roots.
-                if not name.startswith("_"):
+                # A member-assigned function/class at MODULE/class scope is a method/handler/
+                # export invoked externally or dynamically (a prototype method, a route
+                # handler, an export), never by a plain local name — root it (callback) unless
+                # underscore-private. Gated to `enclosing_func is None`: an assignment nested
+                # inside a function body (`function init(){ obj.x = fn }`, `this.x = fn` in a
+                # constructor) is NOT externally visible unless that function runs, so it must
+                # stay reachability-gated via the CONTAINS edge below — else a dead initializer
+                # would mint live roots and mask its own dead members (panel R40C). Only ever
+                # adds roots at module scope (cardinal-safe).
+                if not name.startswith("_") and enclosing_func is None:
                     roles.add("callback")
                 cid = f"{rel}::{qual}"
                 nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, val),
