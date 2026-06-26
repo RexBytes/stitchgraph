@@ -209,6 +209,21 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 
 ## Cost-of-fix exceeds value
 
+### An exported name shared by an unrelated class over-roots that class (incl. its inherited methods)
+- **Concern:** Python export tracking (`__all__` / re-exports) is by **unqualified name** — a
+  flat `exported_names` set. If `pkg/__init__.py` exports `Widget`, then an *unrelated*
+  `class Widget` in another module is also treated as exported: its public methods, and (since
+  the inherited-public-method rescue was added) its first-party ancestors' public methods, get
+  the `exported` root and are hidden from `find_stale`.
+- **Decision:** keep the flat name match; it is **cardinal-safe** (over-rooting only ever
+  *masks* dead code, never flags live code dead). The precise fix — module-qualified export
+  resolution (which re-export/`__all__` entry binds to which class id) — is a real refactor.
+  A naive "skip on name collision" guard is *rejected*: it would fail to root the genuinely
+  exported class's inherited methods, re-introducing a cardinal false-dead. So the safe
+  direction is to over-root the rare collision, and this is the motivating case for the
+  future qualified-export work. (Cosmetic sibling: a `@Controller export class` records only
+  the `exported` role, not also `callback` — liveness is identical, the role label differs.)
+
 ### A console-script target maps to its module by path suffix (a shadow copy is over-rooted)
 - **Concern:** a `[project.scripts]` target `pkg.mod:main` (issue #21) is matched to the
   node by module-path **suffix** (`…/pkg/mod.py`), so a *second* copy of that module —
