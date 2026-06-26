@@ -82,6 +82,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** pin the symbol in `stitchgraph.toml [entry_points]`, or re-export it
   with an idiomatic form (`module.exports = { Member }`).
 
+### JS/TS member-assigned functions are rooted, not dead-code-eligible
+- **Concern:** a function/class defined by **assignment to an object member** —
+  `app.render = function(){…}` (CommonJS prototype augmentation, e.g. Express),
+  `Foo.prototype.m = () => {…}`, `module.exports.x = function(){…}`, `this.h = function(){…}`
+  — is now modeled (its body is walked, so calls inside it are visible — closing the old gap
+  where Express's `tryRender`/`logerror` were flagged dead). But because there is no static
+  caller for such a member (it is invoked externally, dynamically, or by a framework), a
+  non-underscore one is **rooted** rather than treated as a dead-code candidate.
+- **Decision / rationale:** rooting is the cardinal-safe direction — the same stance as
+  "every public method of an exported class is public API." The cost is that a *genuinely*
+  dead member-assigned method is not reported (an underscore-prefixed one still is). A bare
+  `const f = function(){}` / `const f = () => {}` declaration is fully modeled and remains
+  dead-code-eligible. Still not modeled: a computed member (`obj['x'] = …`) and re-aliased
+  receivers (`var a = module.exports; a.x = …`) for the *export* signal specifically.
+- **Escape hatch:** pin or exclude via `stitchgraph.toml`.
+
 ### A receiver call to a *single* same-named symbol is `INFERRED`, not `EXTRACTED`
 - **Concern:** `obj.save()` resolves to the one project `save` — obviously correct — yet
   its CALLS edge is labelled `INFERRED` (a guess), not `EXTRACTED` (issue #10). Looks like
@@ -161,7 +177,52 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   keeps a dead class's dunders dead, so this rescues only genuinely-live callees. Dunders are
   already excluded from stale candidates, so this changes only their callees' liveness.
 
+### Language implicit-hook methods are rooted by name (Ruby/Java/PHP/C++)
+- **Concern:** every language has methods the runtime/interpreter invokes *implicitly*, never
+  by name — Ruby's `inherited`/`included`/`extended`/`method_missing`, Java's serialization
+  `writeReplace`/`readObject`/… and `equals`/`hashCode`/`toString`, PHP's `__call`/`__get`/…
+  magic methods, C++ operator overloads/destructors. The name-based call graph can't see the
+  use, so they (and their callees) were flagged dead — `Sinatra::Base.inherited`, arguably
+  sinatra's core mechanism, is the headline example (multi-language false-positive hunt).
+- **Decision:** root these by name per language (role `callback`), the cross-language analogue
+  of skipping Python dunders. Constructors are handled separately (`initialize`/`__construct`/
+  `constructor`).
+- **Rationale:** these names are interpreter/runtime contracts, so a definition is a genuine
+  implicit entry point. Rooting by name only ever *adds* roots (cardinal-safe); over-rooting a
+  genuinely-dead hook is the documented precision-over-recall trade-off.
+
+### Framework annotations/attributes/decorators are rooted (Java/C#/JS/TS)
+- **Concern:** a method/class the framework invokes by *reflection or routing* — marked by an
+  annotation (`@PostConstruct`, `@EventListener`, JPA `@PrePersist`, JMH `@Setup`), an
+  attribute (`[OnSerializing]`, `[ModuleInitializer]`, BenchmarkDotNet `[Benchmark]`), or a
+  JS/TS decorator (NestJS `@Controller`/`@Get`, Angular `@Component`/`@HostListener`, TypeORM
+  `@Entity`) — has a free-form name the convention misses, so it (and its callees) was flagged
+  dead (multi-language hunt: gson `@PostConstruct`, Newtonsoft `[OnSerializing]`, NestJS route
+  handlers).
+- **Decision:** root by a curated per-language set of framework annotations/attributes/
+  decorators (role `callback`). The sets cover the dominant frameworks, not every library.
+- **Rationale / gaps:** these markers denote framework contracts, so a definition is a genuine
+  entry point; rooting only ever *adds* roots (cardinal-safe). NOT yet covered: a *custom*
+  user-defined decorator/annotation, C#'s named serialization callbacks discovered only via a
+  `[method]` reference, and JS/TS *metadata-only* decorators (`@Version`) that enhance but
+  don't invoke. Pin those in `stitchgraph.toml [entry_points]`.
+
 ## Cost-of-fix exceeds value
+
+### An exported name shared by an unrelated class over-roots that class (incl. its inherited methods)
+- **Concern:** Python export tracking (`__all__` / re-exports) is by **unqualified name** — a
+  flat `exported_names` set. If `pkg/__init__.py` exports `Widget`, then an *unrelated*
+  `class Widget` in another module is also treated as exported: its public methods, and (since
+  the inherited-public-method rescue was added) its first-party ancestors' public methods, get
+  the `exported` root and are hidden from `find_stale`.
+- **Decision:** keep the flat name match; it is **cardinal-safe** (over-rooting only ever
+  *masks* dead code, never flags live code dead). The precise fix — module-qualified export
+  resolution (which re-export/`__all__` entry binds to which class id) — is a real refactor.
+  A naive "skip on name collision" guard is *rejected*: it would fail to root the genuinely
+  exported class's inherited methods, re-introducing a cardinal false-dead. So the safe
+  direction is to over-root the rare collision, and this is the motivating case for the
+  future qualified-export work. (Cosmetic sibling: a `@Controller export class` records only
+  the `exported` role, not also `callback` — liveness is identical, the role label differs.)
 
 ### A console-script target maps to its module by path suffix (a shadow copy is over-rooted)
 - **Concern:** a `[project.scripts]` target `pkg.mod:main` (issue #21) is matched to the
@@ -342,6 +403,24 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   per-language work, not a correctness gap.
 - **Escape hatch:** contribute the relevant `LangSpec` fields (`imports`,
   `heritage`).
+
+### Very large monorepos are indexed as one in-memory graph (peak RAM scales with the repo)
+- **Concern:** `reindex(store, path)` extracts the *whole* tree into one graph and holds all
+  nodes + edges in memory before/while writing, so peak RAM scales with total nodes+edges,
+  not with the on-disk store. A directory `reindex` is whole-project (it replaces the store),
+  so it can't be chunked across calls to bound memory. Measured: Magento 2.4.7 (24,401 PHP
+  files) and even its `app/code` subtree (14,324 files) exceed ~12 GB; the `Framework` core
+  (3,968 files) indexes fine at ~1.9 GB / 42s. WordPress, PrestaShop (31k functions), and
+  Symfony (16k methods) all complete comfortably — this only bites tens-of-thousands-of-file
+  monorepos.
+- **Decision / rationale:** keep a single-pass in-memory extraction — it makes cross-file
+  name resolution (the basis of dead-code/impact/trace) exact and the code simple; streaming
+  with cross-batch symbol resolution is a large architectural change with its own correctness
+  risk. An over-budget run raises a clean `MemoryError` (or is killed), never corrupting the
+  store.
+- **Escape hatch:** index self-contained sub-trees separately (e.g. per top-level
+  package/module), or provision RAM proportional to repo size (rule of thumb from the hunt:
+  roughly 0.7–0.9 GB per 1,000 dense PHP files).
 
 ## Behaviour is the contract (changing it would silently break callers)
 

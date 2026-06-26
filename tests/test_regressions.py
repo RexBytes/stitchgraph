@@ -5267,3 +5267,589 @@ def test_r38_to_dict_meta_is_sanitized():
     assert d["meta"]["n"] == 3 and d["meta"]["s"] == "ok"
     dumped = json.dumps(d)
     assert "Infinity" not in dumped and "NaN" not in dumped
+
+
+# ===========================================================================
+# Post-1.0.6 multi-repo false-positive hunt (corpora: flake8 / isort / flask /
+# cookiecutter / datasette). The hunt surfaced ONE genuine cardinal-class gap:
+# entry points declared in setup.cfg `[options.entry_points]` (the older but still
+# ubiquitous packaging format — flake8 et al.) were not read, only pyproject.toml's
+# `[project.*]`. Live plugin code (functions AND classes) registered there with no
+# internal caller was flagged dead. Reproduced minimally below.
+# ===========================================================================
+
+
+def test_src_layout_namespace_package_absolute_import_resolves(tmp_path):
+    """R42A (cardinal): a PEP 420 namespace package (no `__init__.py`) under `src/` must still
+    be recognized as a src-layout source root. Otherwise its absolute imports
+    (`from nspkg.handlers import Handler`) stay 'external', the module-load side effect is
+    dropped, and a class instantiated only in a module-level registry is flagged dead."""
+    _mk(tmp_path, {
+        # NOTE: deliberately NO src/nspkg/__init__.py — namespace package is the trigger
+        "pyproject.toml": '[project]\nname="nspkg"\n[project.scripts]\nnscli = "nspkg.cli:main"\n',
+        "src/nspkg/cli.py": "from nspkg import registry\ndef main():\n    return registry.run_all()\n",
+        "src/nspkg/registry.py": (
+            "from nspkg.handlers import Handler\n"
+            "TABLE = {'h': Handler()}\n"
+            "def run_all():\n    return TABLE\n"
+        ),
+        "src/nspkg/handlers.py": "class Handler:\n    def __init__(self):\n        self._x = 1\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        # Handler is instantiated at registry import, reached from the console-script entry: live
+        assert not any(s.endswith("handlers.py::Handler") for s in stale)
+
+
+def test_setup_cfg_console_script_target_is_live(tmp_path):
+    """A `console_scripts` entry in setup.cfg roots its target exactly like a
+    pyproject `[project.scripts]` one — else a CLI's `main` is false-flagged dead."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            console_scripts =
+                mytool = mypkg.cli:main
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "def main():\n    return 0\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "main" not in stale
+
+
+def test_setup_cfg_plugin_group_function_target_is_live(tmp_path):
+    """A function registered only through a plugin-group entry point in setup.cfg
+    (`flake8.extension = E = flake8.plugins.pycodestyle:pycodestyle_logical`) is loaded
+    exclusively by the framework's entry-point machinery and has no internal caller, yet is
+    definitively live. Was a cardinal-class false positive before setup.cfg was parsed."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            myframework.plugins =
+                foo = mypkg.plugins:do_foo
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/plugins.py": (
+            "def do_foo(x):\n    return x + 1\n\n"
+            "def truly_dead():\n    return 99\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "do_foo" not in stale            # entry-point plugin: live
+        assert "truly_dead" in stale            # genuinely dead: still flagged (no over-root)
+
+
+def test_setup_cfg_plugin_group_class_target_and_methods_are_live(tmp_path):
+    """A *class* registered as a plugin (`flake8.report = pylint = ...:Pylint`) is
+    instantiated and driven by the framework, so the class AND its public protocol methods
+    are live API with no internal caller. The class target must root its public methods just
+    like an exported class does — underscore methods stay private."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            myframework.reporters =
+                bar = mypkg.plugins:DoBar
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/plugins.py": (
+            "class DoBar:\n"
+            "    def run(self):\n        return self._impl()\n\n"
+            "    def _impl(self):\n        return 2\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "DoBar" not in stale             # plugin class: live
+        assert "DoBar.run" not in stale         # public protocol method: live API
+
+
+def test_setup_cfg_entry_point_does_not_root_same_named_symbol_elsewhere(tmp_path):
+    """The entry-point match is module-path-precise: a same-named function in an unrelated
+    module is NOT mis-rooted (precision over recall — the fix only adds the true target)."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            console_scripts =
+                mytool = mypkg.cli:run
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "def run():\n    return 0\n",
+        "mypkg/other.py": "def run():\n    return 1\n",  # same name, different module
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert not any(s.endswith("mypkg/cli.py::run") for s in stale)   # the target: live
+        assert any(s.endswith("mypkg/other.py::run") for s in stale)     # unrelated: still dead
+
+
+def test_inherited_public_method_of_exported_class_is_live(tmp_path):
+    """A public method an exported class *inherits* from a (non-exported) base is part of
+    its public surface — callable on an instance of the exported class — so it is live API
+    with no internal caller. `Flask(App)`, `App(Scaffold)`: `.shell_context_processor` /
+    `.patch` live on the base yet are public API. Was a cardinal-class FP (flask corpus)."""
+    _mk(tmp_path, {
+        "lib/__init__.py": '__all__ = ["App"]\nfrom .app import App\n',
+        "lib/base.py": (
+            "class Scaffold:\n"
+            "    def patch(self, rule):\n        return rule\n\n"
+            "    def _private_helper(self):\n        return 1\n"
+        ),
+        "lib/app.py": (
+            "from .base import Scaffold\n\n"
+            "class App(Scaffold):\n"
+            "    def run(self):\n        return 0\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Scaffold.patch" not in stale          # inherited public API: live
+        assert "Scaffold._private_helper" in stale     # private, genuinely dead: still flagged
+
+
+def test_transitive_external_base_methods_are_callback_roots(tmp_path):
+    """A class that subclasses a first-party class which itself has an EXTERNAL framework
+    base inherits that base transitively — its method overrides are framework-invoked too.
+    `FlaskGroup(AppGroup)`, `AppGroup(click.Group)`: FlaskGroup.get_command overrides a click
+    method with no internal caller. The 'callback' role must propagate down INHERITS (C1)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/cli.py": (
+            "import click\n\n"
+            "class AppGroup(click.Group):\n"
+            "    def make_context(self, *a):\n        return None\n\n"
+            "class FlaskGroup(AppGroup):\n"
+            "    def get_command(self, ctx, name):\n        return None\n\n"
+            "    def list_commands(self, ctx):\n        return []\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "FlaskGroup.get_command" not in stale    # transitive framework override: live
+        assert "FlaskGroup.list_commands" not in stale
+        assert "AppGroup.make_context" not in stale      # direct framework override: live
+
+
+def test_self_named_external_base_is_a_callback_class(tmp_path):
+    """`class EnvironBuilder(werkzeug.test.EnvironBuilder)` — a subclass whose external base
+    shares its own leaf name. The INHERITS edge resolves the base to the subclass itself (a
+    self-loop), so the inline name heuristic misses it and its overrides were flagged dead.
+    A self-loop INHERITS means the real base is external -> a framework callback class (C2)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/testing.py": (
+            "import werkzeug.test\n\n"
+            "class EnvironBuilder(werkzeug.test.EnvironBuilder):\n"
+            "    def json_dumps(self, obj, **kw):\n        return '{}'\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "EnvironBuilder.json_dumps" not in stale  # override of external same-name base
+        assert "EnvironBuilder" not in stale             # class itself: live (has callbacks)
+
+
+def test_plain_stdlib_exception_subclass_is_not_over_rooted(tmp_path):
+    """Precision guard for the C1/C2 widening: subclassing a stdlib *plain* base
+    (`Exception`, `Enum`, ...) must NOT turn the subclass into a framework-callback class —
+    its genuinely-dead methods must still be flagged. Only non-plain external bases count."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/errs.py": (
+            "class MyError(Exception):\n"
+            "    def never_called(self):\n        return 1\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "MyError.never_called" in stale   # plain-base subclass: dead method still flagged
+
+
+def test_src_layout_absolute_import_module_load_side_effect_is_live(tmp_path):
+    """src-layout (`src/pkg/...`): a module reached only via an ABSOLUTE first-party import
+    (`from pkg.sub import mod`) must still fire its module-load side effects, so module-level
+    code is live. Before src-root detection, the path-qualname `src.pkg.*` never matched the
+    import `pkg.*`, the import was dropped as external, and `_enable` was flagged dead
+    (the flake8 `_windows_color` cardinal FP)."""
+    _mk(tmp_path, {
+        "src/app/__init__.py": '__all__ = ["Default"]\nfrom app.default import Default\n',
+        "src/app/default.py": (
+            "from app import base\n\n"
+            "class Default(base.BaseFormatter):\n"
+            "    def after_init(self):\n        return 1\n"
+        ),
+        "src/app/base.py": (
+            "from app import _color\n\n"
+            "class BaseFormatter:\n"
+            "    def color(self):\n        return _color.supported\n"
+        ),
+        "src/app/_color.py": "def _enable():\n    return 1\n\nsupported = _enable()\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "_enable" not in stale   # module-level call in a transitively-reached module
+
+
+# ===========================================================================
+# Multi-language false-positive hunt (real repos: sinatra/gson/carbon/...). The
+# runtime/framework invokes certain methods IMPLICITLY (never by name), so the
+# name-based call graph can't see the use and flagged them dead — the cross-language
+# analogue of skipping Python dunders. Rooted as `callback`.
+# ===========================================================================
+
+
+def test_ruby_implicit_hooks_are_live(tmp_path):
+    """Ruby's class/module lifecycle hooks (`inherited`, `included`, `extended`) and
+    `method_missing` are interpreter-invoked, never called by name. `Sinatra::Base.inherited`
+    (sinatra's core subclass hook) was flagged dead — a cardinal FP."""
+    _mk(tmp_path, {
+        "lib/base.rb": (
+            "module App\n"
+            "  class Base\n"
+            "    def self.inherited(subclass)\n      setup(subclass)\n    end\n\n"
+            "    def method_missing(name, *args)\n      handle(name)\n    end\n\n"
+            "    def really_unused\n      1\n    end\n"
+            "  end\n"
+            "end\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "inherited" not in stale        # interpreter subclass hook: live
+        assert "method_missing" not in stale   # interpreter missing-method hook: live
+        assert "really_unused" in stale        # ordinary unused method: still flagged
+
+
+def test_java_serialization_hooks_are_live(tmp_path):
+    """Java serialization magic methods (`writeReplace`/`readObject`/...) are invoked by
+    `ObjectOutputStream`/`ObjectInputStream` via reflection, never by name. `gson`'s
+    `LazilyParsedNumber.writeReplace` was flagged dead — a cardinal FP."""
+    _mk(tmp_path, {
+        "Num.java": (
+            "class Num {\n"
+            "    private Object writeReplace() { return helper(); }\n"
+            "    private Object helper() { return this; }\n"
+            "    private int reallyUnused() { return 7; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "writeReplace" not in stale   # serialization hook: live
+        assert "reallyUnused" in stale       # ordinary unused method: still flagged
+
+
+def test_php_magic_methods_are_live(tmp_path):
+    """PHP magic methods (`__call`, `__get`, ...) are invoked by the engine on missing
+    members, never by name — they must not be flagged dead."""
+    _mk(tmp_path, {
+        "Obj.php": (
+            "<?php\n"
+            "class Obj {\n"
+            "    public function __call($name, $args) { return $this->dispatch($name); }\n"
+            "    private function dispatch($name) { return $name; }\n"
+            "    private function reallyUnused() { return 1; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "__call" not in stale       # engine magic method: live
+        assert "reallyUnused" in stale     # ordinary unused method: still flagged
+
+
+def test_c_bodyless_struct_reference_is_not_a_phantom_class(tmp_path):
+    """A bodyless C struct specifier — `struct timeval tv` as a param/field, a forward decl
+    `struct X;` — is a TYPE REFERENCE, not a definition. Extracting it as a CLASS minted a
+    phantom node that was then flagged dead (hiredis: dozens of `struct timeval`/`event_base`
+    references became dead 'classes'). Only a specifier WITH a body defines a type."""
+    _mk(tmp_path, {
+        "lib.h": (
+            "struct timeval;\n"                       # forward decl (bodyless)
+            "struct Real { int x; };\n"               # real definition (has a body)
+            "void use(struct timeval tv);\n"          # bodyless ref in a param
+        ),
+        "lib.c": (
+            "#include \"lib.h\"\n"
+            "struct Real make(void) {\n"
+            "    struct timeval local;\n"              # bodyless ref as a local
+            "    struct Real r; r.x = 1; return r;\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import NodeKind
+        classes = {n.name for n in store.nodes_by_kind(NodeKind.CLASS)}
+        assert "timeval" not in classes   # bodyless type reference: never a node
+        assert "Real" in classes          # real bodied struct: still extracted
+
+
+def test_java_framework_callback_annotation_is_live(tmp_path):
+    """A Java method carrying a framework-callback annotation (`@PostConstruct`,
+    `@BeforeExperiment`, ...) is reflection-invoked, never called by name. gson's
+    `@PostConstruct validate` and Caliper `@BeforeExperiment setUp` were flagged dead."""
+    _mk(tmp_path, {
+        "Svc.java": (
+            "class Svc {\n"
+            "    @PostConstruct void validate() { check(); }\n"
+            "    private void check() { }\n"
+            "    private void reallyUnused() { }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "validate" not in stale     # @PostConstruct callback: live
+        assert "reallyUnused" in stale     # ordinary unused method: still flagged
+
+
+def test_csharp_serialization_callback_attribute_is_live(tmp_path):
+    """A C# method with a serialization-callback attribute (`[OnSerializing]`,
+    `[OnDeserialized]`, ...) is invoked by the serializer via reflection. Newtonsoft's
+    `[OnSerializing] OnSerializingMethod` (free-form name) was flagged dead."""
+    _mk(tmp_path, {
+        "Obj.cs": (
+            "class Obj {\n"
+            "    [OnSerializing]\n"
+            "    internal void OnSerializingMethod(StreamingContext c) { Prep(); }\n"
+            "    void Prep() { }\n"
+            "    void ReallyUnused() { }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "OnSerializingMethod" not in stale   # [OnSerializing] callback: live
+        assert "ReallyUnused" in stale              # ordinary unused method: still flagged
+
+
+def test_ts_framework_decorator_handler_is_live(tmp_path):
+    """A TS class/method carrying a framework decorator (`@Controller`, `@Get`, `@Injectable`,
+    `@Entity`) is framework-instantiated/-invoked, never called by name. NestJS controller
+    route handlers were flagged dead. (Method decorators precede the method as siblings; class
+    decorators are children — both must be detected.)"""
+    # No `export` — otherwise every public method is rooted as public API and the test
+    # can't isolate the decorator's effect. Here the ONLY roots are the decorators.
+    _mk(tmp_path, {
+        "app.controller.ts": (
+            "@Controller('users')\n"
+            "class UsersController {\n"
+            "  @Get(':id')\n"
+            "  getUser(id: string) { return this.lookup(id); }\n\n"
+            "  lookup(id: string) { return id; }\n\n"
+            "  reallyUnused() { return 0; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "getUser" not in stale        # @Get route handler: live (framework-invoked)
+        assert "UsersController" not in stale  # @Controller class: live (framework-instantiated)
+        assert "lookup" not in stale          # reached from the live handler
+        assert "reallyUnused" in stale        # undecorated, uncalled: still flagged
+
+
+def test_dependency_directories_are_not_indexed(tmp_path):
+    """Vendored/dependency/build dirs (`node_modules`, `vendor`, `third_party`, ...) are
+    never first-party source — indexing them floods find_stale with thousands of dead
+    vendored symbols and wastes time (tinycc Win32 headers, composer/Go vendor/, npm deps).
+    Both extractors must skip them; only the real source is indexed."""
+    _mk(tmp_path, {
+        "app.py": "def real_fn():\n    return 1\n",
+        "node_modules/dep/index.js": "function vendoredJs() { return 1; }\n",
+        "vendor/lib.py": "def vendored_py():\n    return 2\n",
+        "third_party/x.go": "package x\nfunc Vendored() {}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import NodeKind
+        names = {n.name for k in (NodeKind.FUNCTION, NodeKind.METHOD)
+                 for n in store.nodes_by_kind(k)}
+        assert "real_fn" in names           # first-party source: indexed
+        assert "vendoredJs" not in names    # node_modules: skipped
+        assert "vendored_py" not in names   # vendor/: skipped
+        assert "Vendored" not in names      # third_party/: skipped
+
+
+def test_js_member_assigned_function_body_is_walked(tmp_path):
+    """A function assigned to an object member (`app.render = function(){...}`, the Express/
+    CommonJS prototype-augmentation idiom) must become a node whose BODY is walked — else
+    calls inside it are invisible and a module-private helper it alone calls (`tryRender`)
+    is flagged dead. The assigned method itself is rooted (external/dynamic-invoked)."""
+    _mk(tmp_path, {
+        "app.js": (
+            "function tryRender(v) { return v; }\n"
+            "function trulyDead() { return 0; }\n\n"
+            "var app = {};\n"
+            "app.render = function render(name) { return tryRender(name); };\n"
+            "Obj.prototype.handle = function() { return this.helper(); };\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tryRender" not in stale   # called from the (now-walked) app.render body: live
+        assert "render" not in stale      # member-assigned handler: rooted
+        assert "handle" not in stale      # prototype method: rooted
+        assert "trulyDead" in stale       # genuinely uncalled module function: still flagged
+
+
+def test_c_export_symbol_is_public_abi(tmp_path):
+    """A C function marked `EXPORT_SYMBOL(foo)` / `EXPORT_SYMBOL_GPL(foo)` is public
+    kernel/module ABI — called by code outside the tree, so never dead for lack of an
+    in-tree caller (the C analogue of __all__/module.exports). The Linux hunt flagged 543
+    such functions. Scoped to the file the macro appears in."""
+    _mk(tmp_path, {
+        "lz4.c": (
+            "int LZ4_compress_default(const char *s, char *d) { return 0; }\n"
+            "EXPORT_SYMBOL(LZ4_compress_default);\n\n"
+            "static int helper_gpl(void) { return 1; }\n"
+            "EXPORT_SYMBOL_GPL(helper_gpl);\n\n"
+            "static int really_internal(void) { return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "LZ4_compress_default" not in stale   # EXPORT_SYMBOL: public ABI, live
+        assert "helper_gpl" not in stale             # EXPORT_SYMBOL_GPL: public ABI, live
+        assert "really_internal" in stale            # not exported, uncalled: still flagged
+
+
+def test_classmethod_console_script_does_not_over_root_sibling_methods(tmp_path):
+    """A `Class.method` console-script target (`demo = pkg.cli:App.run`) must root ONLY the
+    targeted method (and keep its class live), NOT the class's whole public surface. Panel
+    R40A: the plugin-class rescue keyed off the post-enclosing-rescue `script` set, so a CLI's
+    command class had every public method rooted, masking genuine dead methods."""
+    _mk(tmp_path, {
+        "pyproject.toml": '[project]\nname="demo"\n[project.scripts]\ndemo = "pkg.cli:App.run"\n',
+        "pkg/__init__.py": "",
+        "pkg/cli.py": (
+            "class App:\n"
+            "    def run(self):\n        return self._helper()\n"
+            "    def _helper(self):\n        return 1\n"
+            "    def genuinely_dead(self):\n        return 99\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "App.run" not in stale              # the entry-point target: live
+        assert "App.genuinely_dead" in stale       # sibling public method, uncalled: flagged
+
+
+def test_comment_between_decorator_and_method_keeps_callback(tmp_path):
+    """A `comment` between a JS/TS `@decorator` and the method it annotates must not flush the
+    pending decorators — else the framework-callback rooting never fires and the live handler
+    (and its callees) is flagged dead. Panel R40B (also protects Rust `#[test]` + comment)."""
+    _mk(tmp_path, {
+        "svc.ts": (
+            "@Controller()\n"
+            "class Svc {\n"
+            "  @Get()\n"
+            "  // a comment between decorator and method\n"
+            "  findAll() { return this.helper(); }\n"
+            "  helper() { return usedByDecorated(); }\n"
+            "  reallyUnused() { return 0; }\n"
+            "}\n"
+            "function usedByDecorated() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "findAll" not in stale          # @Get handler (comment notwithstanding): live
+        assert "usedByDecorated" not in stale   # reached from the live handler
+        assert "reallyUnused" in stale          # undecorated, uncalled: still flagged
+
+
+def test_member_assigned_function_inside_dead_function_is_not_rooted(tmp_path):
+    """A member-assigned function is auto-rooted only at MODULE/class scope. One nested inside
+    a function body (`function init(){ obj.x = fn }`) must stay reachability-gated: if the
+    enclosing function is dead, the assignment isn't externally visible and must be flagged.
+    Panel R40C — the unconditional callback role masked dead code inside dead code."""
+    _mk(tmp_path, {
+        "m.js": (
+            "function deadInit() {\n"
+            "  utils.formatDate = function() { return 1; };\n"
+            "}\n"
+            "app.render = function() { return moduleHelper(); };\n"
+            "function moduleHelper() { return 3; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadInit" in stale          # uncalled module function: dead
+        assert "formatDate" in stale        # assigned inside a dead function: NOT auto-rooted
+        assert "render" not in stale        # module-scope member assignment: rooted
+        assert "moduleHelper" not in stale  # called by the live module-scope handler
+
+
+def test_member_assigned_class_public_methods_are_live(tmp_path):
+    """R46A (cardinal): a module-scope member-assigned CLASS (`exports.Parser = class {...}`,
+    the CommonJS pattern) is public API, so it takes the `exported` role — its public methods
+    must be rescued by _seed_exported_class_methods. Otherwise the class is live via the root
+    while its methods (and their private callees) are flagged dead — the inverse-cardinal
+    'class live, methods dead' shape."""
+    _mk(tmp_path, {
+        "plugin.js": (
+            "exports.Parser = class {\n"
+            "  constructor(input) { this.input = input; }\n"
+            "  parse() { return tokenize(this.input); }\n"
+            "  reset() { this.input = ''; }\n"
+            "  _privhelper() { return 1; }\n"
+            "};\n"
+            "function tokenize(s) { return s.split(' '); }\n"
+            "function trulyDead() { return 0; }\n"
+        ),
+        "use.js": "const { Parser } = require('./plugin');\nnew Parser('a b').parse();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "exports.Parser.parse" not in stale   # public method of member-assigned class: live
+        assert "exports.Parser.reset" not in stale
+        assert "tokenize" not in stale               # reached only from parse: live
+        assert "trulyDead" in stale                  # genuinely uncalled module fn: flagged
+        assert "exports.Parser._privhelper" in stale  # private, uncalled: flagged
+
+
+def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
+    """R41A: the R40B comment-skip must cover Rust comment node types (`line_comment`/
+    `block_comment`, NOT `comment`) — else a `#[test]` + comment + fn drops the test marker
+    and the test fn (plus helpers it alone reaches) is confidently flagged dead (cardinal)."""
+    _mk(tmp_path, {
+        "lib.rs": (
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    #[test]\n"
+            "    // a comment between attribute and fn\n"
+            "    fn closeness_works() { helper_in_test(); }\n"
+            "    fn helper_in_test() -> i32 { 1 }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "closeness_works" not in stale   # #[test] survives the comment: rooted
+        assert "helper_in_test" not in stale     # reached only from the test fn: live

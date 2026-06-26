@@ -26,6 +26,7 @@ from typing import Any, cast
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
 from ._testfile import is_test_file
+from .python import SKIP_DIRS as _SKIP  # one shared dependency/build/VCS skip set
 
 try:
     from tree_sitter import Parser
@@ -71,6 +72,36 @@ _PLAIN_BASES = {
     "Object", "Array", "Function", "Error", "TypeError", "RangeError",
     "SyntaxError", "Promise", "Map", "Set", "WeakMap", "WeakSet",
     "Symbol", "BigInt", "Number", "String", "Boolean", "Date", "RegExp",
+}
+
+# Methods a language runtime/framework invokes IMPLICITLY (never called by name in source),
+# so the name-based call graph can't see the use — the cross-language analogue of skipping
+# Python dunders and rooting C++ operator overloads/destructors. Rooting them (role
+# 'callback') keeps the hook AND whatever its body calls live, instead of flagging the most
+# important framework entry points dead (e.g. Ruby's `Sinatra::Base.inherited` — a class
+# subclass hook and arguably sinatra's core mechanism — or Java's serialization `writeReplace`).
+# Constructors are handled separately (`_CTOR_NAMES`) so they are NOT repeated here. Keyed by
+# the raw file language. Only ever adds roots (cardinal-safe; over-rooting a genuinely-dead
+# hook is the documented precision-over-recall trade-off).
+_IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
+    "ruby": frozenset({
+        "method_missing", "respond_to_missing?", "method_added", "method_removed",
+        "method_undefined", "singleton_method_added", "singleton_method_removed",
+        "singleton_method_undefined", "inherited", "included", "extended", "prepended",
+        "append_features", "prepend_features", "extend_object", "initialize_copy",
+        "initialize_clone", "initialize_dup", "coerce",
+        "const_missing", "const_added",   # interpreter constant-resolution hooks (grape API)
+    }),
+    "php": frozenset({
+        "__destruct", "__call", "__callStatic", "__get", "__set", "__isset", "__unset",
+        "__sleep", "__wakeup", "__serialize", "__unserialize", "__toString", "__invoke",
+        "__set_state", "__clone", "__debugInfo",
+    }),
+    "java": frozenset({
+        "equals", "hashCode", "toString", "finalize", "clone",
+        "readObject", "writeObject", "readResolve", "writeReplace", "readObjectNoData",
+        "readExternal", "writeExternal",
+    }),
 }
 
 
@@ -174,7 +205,6 @@ EXT_LANG = {
     ".sh": "bash", ".bash": "bash", ".go": "go", ".java": "java", ".rb": "ruby",
     ".php": "php",
 }
-_SKIP = {".venv", "venv", "build", "dist", "__pycache__", ".git", "node_modules", "target"}
 
 
 def supported_languages() -> list[str]:
@@ -221,6 +251,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     src_by: dict[str, bytes] = {}
     file_lang: dict[str, str] = {}
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
+    c_exports: dict[str, set[str]] = {}  # rel -> EXPORT_SYMBOL'd C function names (per file)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -314,6 +345,10 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             for name in _import_names(tree.root_node, src, spec):
                 imports.append((mod_id, name, lang))
             reexports |= _reexport_names(tree.root_node, src)
+            if _canon_lang(lang) == "cpp":  # C/C++: EXPORT_SYMBOL'd functions are public ABI
+                names = _export_symbol_names(src)
+                if names:
+                    c_exports[rel] = names
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -347,6 +382,17 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
                     and file_lang.get(n.id.split("::", 1)[0]) in _CLASS_VISIBILITY_LANGS:
                 n.roles = n.roles | {"exported"}
 
+    # C/C++ `EXPORT_SYMBOL(foo)` marks `foo` as public kernel/module ABI — called by code
+    # outside this tree, so never dead for lack of an in-tree caller (the C analogue of
+    # __all__ / module.exports; Linux hunt: 543 EXPORT_SYMBOL'd fns were flagged). Scoped to
+    # the SAME file the macro appears in so a same-named static fn elsewhere isn't mis-rooted.
+    if c_exports:
+        for n in nodes:
+            if n.kind in (F, M):
+                rel = n.id.split("::", 1)[0]
+                if n.name in c_exports.get(rel, ()):
+                    n.roles = n.roles | {"exported"}
+
     # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
     # to FUNCTION even for methods defined inside a class body (there is no separate
     # `method_declaration` node), so the method-based class-rooting passes below
@@ -372,6 +418,15 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         if n.kind in (F, M) and _is_cpp_special_member(n.name) \
                 and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
             n.roles = n.roles | {"callback"}
+
+    # Language implicit hooks (Ruby `method_missing`/`inherited`/…, Java `writeReplace`/…,
+    # PHP `__call`/…) — invoked by the runtime, never by name, so root them like the C++
+    # special members above (panel: multi-language false-positive hunt, sinatra/gson).
+    for n in nodes:
+        if n.kind in (F, M):
+            hooks = _IMPLICIT_HOOKS.get(file_lang.get(n.id.split("::", 1)[0], "") or "")
+            if hooks and n.name in hooks:
+                n.roles = n.roles | {"callback"}
 
     _seed_exported_class_methods(nodes, file_lang)
     # Public members of an exported interface/trait are public API but, unlike class
@@ -758,6 +813,52 @@ _TEST_ANNOTATIONS = {
     "php": frozenset({"Test", "DataProvider", "Before", "After", "BeforeClass", "AfterClass"}),
 }
 
+# Annotation/attribute names that mark a method as a FRAMEWORK CALLBACK — invoked by a
+# runtime/container/serializer via reflection, never by name (the non-test analogue of
+# `_TEST_ANNOTATIONS`). Grounded in the multi-language hunt: gson `@PostConstruct` (a real
+# gson feature) and `@BeforeExperiment` (Caliper), Newtonsoft `[OnSerializing]`/
+# `[OnDeserialized]`. Such a method — and whatever it calls — is a live entry point that the
+# name-based call graph can't see. Marked `callback` (rooted). Only ever adds roots.
+_CALLBACK_ANNOTATIONS = {
+    "java": frozenset({
+        "PostConstruct", "PreDestroy",                        # JSR-250 / CDI lifecycle
+        "PrePersist", "PostPersist", "PreUpdate", "PostUpdate",
+        "PreRemove", "PostRemove", "PostLoad",                # JPA entity lifecycle
+        "EventListener", "Scheduled", "Bean",                 # Spring
+        "Setup", "TearDown", "Benchmark",                     # JMH
+        "BeforeExperiment", "AfterExperiment",                # Caliper
+    }),
+    "csharp": frozenset({
+        "OnSerializing", "OnSerialized", "OnDeserializing",   # serialization callbacks
+        "OnDeserialized", "OnError",
+        "ModuleInitializer",                                  # runtime module init
+        "GlobalSetup", "GlobalCleanup", "IterationSetup",     # BenchmarkDotNet
+        "IterationCleanup", "Benchmark",
+    }),
+}
+
+# JS/TS framework DECORATORS that mark a class as framework-instantiated or a method as a
+# framework-invoked handler/callback (NestJS, Angular, TypeORM, routing-controllers). Unlike
+# Java/C# annotations (children of the decl), TS decorators are a `decorator` node that is a
+# CHILD of a `class_declaration` but a preceding SIBLING of a `method_definition` — so both
+# positions are checked. A decorated class/method is reached by the framework, never by name,
+# so it (and its callees) is a live root (multi-language hunt: nestjs controllers). Curated to
+# well-known framework decorators so an ordinary decorator can't drag unrelated code live.
+_CALLBACK_DECORATORS = frozenset({
+    # HTTP route handlers (NestJS, routing-controllers)
+    "Get", "Post", "Put", "Delete", "Patch", "Options", "Head", "All", "Search", "Sse",
+    # NestJS class roots / microservices / websockets / GraphQL resolvers
+    "Controller", "Injectable", "Module", "Resolver", "Catch", "WebSocketGateway",
+    "SubscribeMessage", "MessagePattern", "EventPattern", "GrpcMethod", "GrpcStreamMethod",
+    "Query", "Mutation", "ResolveField", "Subscription",
+    # scheduling / events (NestJS schedule, event-emitter)
+    "Cron", "Interval", "Timeout", "OnEvent",
+    # Angular
+    "Component", "Directive", "Pipe", "NgModule", "HostListener", "Input", "Output",
+    # TypeORM / data-mapper class roots
+    "Entity", "Repository", "EventSubscriber", "ChildEntity", "ViewEntity",
+})
+
 
 def _annotation_name(anno, src: str) -> str:
     """Last path segment of an annotation/attribute name, with C#'s optional
@@ -799,10 +900,39 @@ def _has_test_annotation(node, lang: str, src: str) -> bool:
     return bool(_annotation_idents(node, src) & annos)
 
 
+def _has_callback_annotation(node, lang: str, src: str) -> bool:
+    """True when a Java/C# declaration carries a framework-callback annotation/attribute
+    (`@PostConstruct`, `[OnSerializing]`, …) — reflection-invoked, never called by name."""
+    annos = _CALLBACK_ANNOTATIONS.get(lang)
+    if not annos:
+        return False
+    return bool(_annotation_idents(node, src) & annos)
+
+
+def _decorator_name(deco, src: str) -> str:
+    """Leaf name of a JS/TS `decorator` node: `@Get('x')` -> `Get`, `@ns.Controller()` ->
+    `Controller`, `@Injectable` -> `Injectable`. Text-based so it handles call/member forms."""
+    txt = _text(deco, src).lstrip("@").strip()
+    txt = txt.split("(", 1)[0].strip()          # drop call arguments
+    return txt.rsplit(".", 1)[-1].strip()       # last segment of a `ns.Name` path
+
+
+def _has_callback_decorator(node, src: str, sibling_decos: list[str]) -> bool:
+    """True when a JS/TS class/method carries a framework decorator (NestJS/Angular/TypeORM).
+    A method's decorators precede it as SIBLINGS (passed in `sibling_decos`); a class's
+    decorators are its own CHILDREN — check both positions."""
+    names = set(sibling_decos)
+    for c in node.children:
+        if c.type == "decorator":
+            names.add(_decorator_name(c, src))
+    return bool(names & _CALLBACK_DECORATORS)
+
+
 # -- pass 1: definitions ----------------------------------------------------
 def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test,
              contains, enclosing_func):
     pending_attrs: list[str] = []
+    pending_decos: list[str] = []
     for child in node.children:
         t = child.type
         # Rust attributes (`#[test]`, `#[tokio::test]`, `#[cfg(test)]`, ...) parse as
@@ -811,7 +941,23 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         if t in ("attribute_item", "inner_attribute_item"):
             pending_attrs.append(_text(child, src))
             continue
+        # JS/TS method decorators (`@Get('x')`) precede the method as SIBLINGS inside the
+        # class body — accumulate them like Rust attributes so the next def can see them.
+        if t == "decorator":
+            pending_decos.append(_decorator_name(child, src))
+            continue
+        # A comment between a decorator/attribute and the def it annotates must NOT flush the
+        # pending accumulators — `@Get()\n// note\nfindAll()` and `#[test]\n// note\nfn` are
+        # common; resetting here drops the marker so the framework-callback/test rooting never
+        # fires and the live handler (and its callees) is flagged dead (panel R40B/R41A).
+        # Cover every supported grammar's comment node type: most use `comment`; Rust uses
+        # `line_comment`/`block_comment` (Rust-only among supported langs — and it is the one
+        # language using the sibling `attribute_item` accumulator, so missing it dropped
+        # `#[test]` markers).
+        if t in ("comment", "line_comment", "block_comment"):
+            continue
         attrs, pending_attrs = pending_attrs, []
+        decos, pending_decos = pending_decos, []
         attr_test = any(_is_rust_test_attr(a) for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
@@ -833,6 +979,17 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                      exported=False, is_test=is_test, contains=contains,
                      enclosing_func=enclosing_func)
         elif t in spec.defs:
+            # A bodyless C/C++ struct/union/enum/class specifier is a TYPE REFERENCE, not a
+            # definition: `struct timeval tv` (a param/field/local), a forward decl
+            # `struct X;`, an `enum E` used as a type. It has no `body` field. Extracting it
+            # as a CLASS mints a phantom node that is then flagged dead (hiredis: `struct
+            # timeval`/`struct event_base` references became dozens of dead "classes"). Only a
+            # specifier WITH a body defines a type; descend so any real nested defs still get
+            # collected (a bodyless ref has none — keeps the traversal uniform).
+            if t.endswith("_specifier") and child.child_by_field_name("body") is None:
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         False, is_test, contains=contains, enclosing_func=enclosing_func)
+                continue
             name = _name_of(child, src)
             if not name:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
@@ -849,6 +1006,15 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # stays flagged, consistent with a dead helper in any test file.
             if _is_test_name(name) or attr_test or _has_test_annotation(child, lang, src):
                 roles.add("test")
+            # A method carrying a framework-callback annotation (@PostConstruct,
+            # [OnSerializing], …) is reflection-invoked — root it (multi-language hunt).
+            if _has_callback_annotation(child, lang, src):
+                roles.add("callback")
+            # JS/TS: a class/method carrying a framework decorator (@Controller/@Get/@Entity)
+            # is framework-instantiated/-invoked, never called by name — root it.
+            if lang in ("javascript", "typescript", "tsx") \
+                    and _has_callback_decorator(child, src, decos):
+                roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
             nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, child),
@@ -895,6 +1061,59 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # regular-def branch above already does this; this is its arrow twin).
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=cid)
+        elif spec.arrow_decls and t == "assignment_expression":
+            # A function/class assigned to an object MEMBER — `app.render = function(){…}`
+            # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
+            # `module.exports.x = function(){…}`, `this.handler = function(){…}`. Unlike a
+            # `const f = function(){}` declaration (handled above), this never became a node,
+            # so its BODY was never walked and the calls inside it were invisible — a
+            # module-private helper it alone calls (Express `tryRender`/`logerror`, jQuery
+            # internals) was then flagged dead. Model it and walk the body.
+            left = child.child_by_field_name("left")
+            val = child.child_by_field_name("right")
+            prop = left.child_by_field_name("property") if left is not None \
+                and left.type == "member_expression" else None
+            name = _text(prop, src) if prop is not None else None
+            if name and val is not None and val.type in (
+                    "arrow_function", "function", "function_expression",
+                    "class", "class_expression"):
+                qual = _join(parent, _text(left, src))   # full LHS keeps ids distinct
+                kind = C if val.type in ("class", "class_expression") else M
+                roles = {"exported"} if exported else set()
+                if _is_test_name(name):
+                    roles.add("test")
+                # A member-assigned function/class at MODULE/class scope is a method/handler/
+                # export invoked externally or dynamically (a prototype method, a route
+                # handler, an export), never by a plain local name — root it (callback) unless
+                # underscore-private. Gated to `enclosing_func is None`: an assignment nested
+                # inside a function body (`function init(){ obj.x = fn }`, `this.x = fn` in a
+                # constructor) is NOT externally visible unless that function runs, so it must
+                # stay reachability-gated via the CONTAINS edge below — else a dead initializer
+                # would mint live roots and mask its own dead members (panel R40C). Only ever
+                # adds roots at module scope (cardinal-safe). A member-assigned CLASS
+                # (`exports.Parser = class {…}`) is public API, so it takes the `exported`
+                # role — NOT `callback` — so that `_seed_exported_class_methods` rescues its
+                # public methods too; otherwise the class is live via the root while its
+                # methods (and their private callees) are flagged dead, the inverse-cardinal
+                # "class live, methods dead" shape (panel R46A). A function/handler keeps
+                # `callback`.
+                if not name.startswith("_") and enclosing_func is None:
+                    roles.add("exported" if kind is C else "callback")
+                cid = f"{rel}::{qual}"
+                nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, val),
+                                  end_line=val.end_point[0] + 1, roles=frozenset(roles)))
+                defs.append((rel, cid, val, lang))
+                if kind is C:
+                    for base in _bases(val, src, spec):
+                        inherits.append((cid, base, lang))
+                if enclosing_func is not None:
+                    contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                         False, is_test, contains=contains,
+                         enclosing_func=(cid if kind is M else None))
+            else:
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         exported, is_test, contains=contains, enclosing_func=enclosing_func)
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)
@@ -921,6 +1140,18 @@ def _identifiers(node, src):
     for c in node.children:
         out += _identifiers(c, src)
     return out
+
+
+_EXPORT_SYMBOL_RE = re.compile(rb"\bEXPORT_SYMBOL\w*\s*\(\s*([A-Za-z_]\w*)")
+
+
+def _export_symbol_names(src: bytes) -> set[str]:
+    """Function names a Linux/driver `EXPORT_SYMBOL(foo)` / `EXPORT_SYMBOL_GPL(foo)` /
+    `EXPORT_SYMBOL_NS(foo, ns)` macro marks as public kernel/module ABI — invoked by code
+    outside this tree, so never dead for lack of an in-tree caller (the C analogue of
+    `__all__` / `module.exports`). Text-scanned: the macro doesn't parse as a call expression
+    in the grammar, and a byte regex is robust to the surrounding declaration context."""
+    return {m.decode("ascii", "ignore") for m in _EXPORT_SYMBOL_RE.findall(src)}
 
 
 def _reexport_names(root, src):
