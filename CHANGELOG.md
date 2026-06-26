@@ -4,6 +4,25 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.0.1] — 2026-06-26
+
+**PHP precision fix from dogfooding v2.0.0 on Magento.** Running `find_stale` on the Magento
+Framework surfaced a cardinal-class false-positive: methods invoked through PHP's
+**`[$this, 'method']` callable-array idiom** (the `usort` / `uasort` / `preg_replace_callback`
+comparator pattern) and **`'Class::method'` string callables** were flagged dead, because the
+method name is a *string*, not a syntactic call, so the call scan never saw it.
+
+### Fixed
+
+- **PHP string callables are now recognized** (tree-sitter extractor). A 2-element callable
+  array `[$this|self::class|static::class|'Class'|$obj, 'method']` emits a REFERENCES edge to
+  `method`; a `'Class::method'` string emits REFERENCES to both the class and the method.
+  Cardinal-safe — only project symbols resolve, so a non-callable string that happens to match
+  a name merely over-roots (masking dead code), never causing a false-dead. On the Magento
+  Framework this removed 9 false-positive dead-flags (39 → 30 PHP candidates) while still
+  flagging genuinely-unused private methods. Byte-identity (streaming == full) is preserved —
+  the new edges flow through the shared extractor path. Owned by a regression test.
+
 ## [2.0.0] — 2026-06-26
 
 **Constant-memory streaming indexer.** The major feature of v2: `reindex` can now stream the

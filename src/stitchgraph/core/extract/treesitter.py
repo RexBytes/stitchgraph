@@ -115,6 +115,7 @@ class LangSpec:
     heritage: frozenset[str] = frozenset()          # child types holding base classes
     imports: frozenset[str] = frozenset()           # import statement node types
     bare_calls: bool = False            # Ruby: paren-less `foo` calls parse as identifier
+    callable_strings: bool = False      # PHP: `[$this, 'method']` / `'Class::method'` callables
 
 
 _JS = LangSpec(
@@ -196,6 +197,7 @@ SPECS: dict[str, LangSpec] = {
                               "interface_declaration", "trait_declaration"}),
         heritage=frozenset({"base_clause", "class_interface_clause"}),
         imports=frozenset({"namespace_use_declaration"}),
+        callable_strings=True,  # `[$this, 'm']` / `[self::class, 'm']` / `'Class::m'` callables
     ),
 }
 EXT_LANG = {
@@ -1457,6 +1459,28 @@ def _is_bare_call(parent, ident):
     return True
 
 
+def _php_callable_names(node, src):
+    """The method named by a PHP 2-element array callable
+    `[$this|self::class|static::class|'Class'|$obj, 'method']` — the form PHP resolves at
+    runtime (usort/uasort/preg_replace_callback/array_map comparators) but a syntactic call
+    scan misses, so the live target is false-flagged dead (panel R53, the Magento idiom).
+    Emit the method name so it isn't flagged dead; over-approximated through `_ref` (only
+    project symbols resolve), so a non-callable 2-element array merely over-roots —
+    cardinal-safe, never a false-dead. A `'Class::method'` *string* callable needs no handling:
+    a string static call requires a PUBLIC target, which is already rooted as exported."""
+    if node.type != "array_creation_expression":
+        return []
+    elems = [c for c in node.children if c.type == "array_element_initializer"]
+    if len(elems) != 2:
+        return []
+    sval = next((c for c in elems[1].children
+                 if c.type in ("string", "encapsed_string")), None)
+    if sval is None:
+        return []
+    meth = _text(sval, src).strip().strip("\"'`").strip()
+    return [(meth, sval.start_point[0] + 1)] if meth else []
+
+
 def _direct_refs(body, src, spec):
     """Identifier/type references in a def body (not crossing nested defs, excluding
     the def's own name): a symbol used by name as a value or type. Emitted as
@@ -1476,6 +1500,10 @@ def _direct_refs(body, src, spec):
             if c.type in ("identifier", "type_identifier", "constant", "name") \
                     and (c.start_byte, c.end_byte) != name_span:
                 out.append((_text(c, src), c.start_point[0] + 1))
+            elif spec.callable_strings:
+                # PHP array callables (`[$this, 'm']`) name a method the syntactic call scan
+                # can't see; emit it so the live target isn't flagged dead.
+                out.extend(_php_callable_names(c, src))
             rec(c, False)
 
     rec(body, True)

@@ -5879,3 +5879,37 @@ def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "closeness_works" not in stale   # #[test] survives the comment: rooted
         assert "helper_in_test" not in stale     # reached only from the test fn: live
+
+
+def test_php_array_callable_method_is_live(tmp_path):
+    """R53 (Magento dogfood, cardinal): PHP invokes methods via the `[$this, 'method']`
+    callable-array idiom (usort/uasort/preg_replace_callback comparators) — the method name is
+    a STRING, not a syntactic call, so the call scan missed it and the live method was
+    confidently flagged dead. The tree-sitter PHP extractor now emits a REFERENCES edge for
+    the array-callable's method (cardinal-safe: only project symbols resolve, so a non-callable
+    2-element array merely over-roots). A genuinely unused private method is still flagged.
+    (`compareRows` is protected and `_convert` private — neither is rooted by public-export, so
+    they would be flagged dead without the callable-array fix.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Svc.php": (
+            "<?php\n"
+            "class Svc {\n"
+            "    public function run() {\n"
+            "        $rows = [];\n"
+            "        usort($rows, [$this, 'compareRows']);\n"
+            "        return preg_replace_callback('/x/', [$this, '_convert'], 'y');\n"
+            "    }\n"
+            "    protected function compareRows($a, $b) { return $a <=> $b; }\n"
+            "    private function _convert($m) { return ''; }\n"
+            "    private function _reallyDead() { return 1; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "compareRows" not in stale     # [$this, 'compareRows'] usort callback: live
+    assert "_convert" not in stale        # [$this, '_convert'] preg_replace_callback: live
+    assert "_reallyDead" in stale         # genuinely unused private method: still flagged
