@@ -4,6 +4,26 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.1] — 2026-06-26
+
+**Ruby operator-method cardinal fix, from dogfooding across a Rust/Go/Ruby hunt** (serde, clap,
+gorm, cobra, gin, logrus, grape). Go and Rust came back clean (0 cardinal false-positives;
+serde's library is fully live, only test-suite/trybuild fixtures flag). Ruby surfaced a real
+one.
+
+### Fixed
+
+- **Ruby operator methods (`def []`, `def []=`, `def <=>`, `def ==`, `def <<`, …) are now
+  captured and rooted.** Their name node is tree-sitter type `operator`, which `_trailing_id`
+  didn't recognize — so the method was dropped from the graph entirely. Two consequences, both
+  fixed: (1) the operator method was un-navigable / un-analyzable; (2) anything used *only*
+  inside its body was false-flagged dead — e.g. in grape, `def []=` does `ValueArray.new(value)`,
+  so `ValueArray`'s constructor was flagged dead though the class is instantiated (cardinal,
+  panel R61). Operator methods are invoked through operator/index **syntax** (`a[k]`, `a[k]=v`,
+  `a <=> b`, `sort`), never a by-name call, so they're rooted as `callback` — the Ruby analogue
+  of the existing C++ special-member pass. Cardinal-safe (only adds roots). Owned by a
+  regression test.
+
 ## [2.1.0] — 2026-06-26
 
 **Constant-memory *queries*, from dogfooding v2.0.1 across a multi-repo Python hunt** (Django,

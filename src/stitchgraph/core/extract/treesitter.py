@@ -492,6 +492,17 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
             n.roles = n.roles | {"callback"}
 
+    # Ruby operator methods (`def []`, `def []=`, `def <=>`, `def ==`, `def <<`, `def +`, …) are
+    # invoked through operator/index SYNTAX (`a[k]`, `a[k]=v`, `a <=> b`, `sort`, `a + b`), never
+    # by a name the call scan sees — so once captured (their name node is `operator`, see
+    # _trailing_id) they'd be flagged dead, and with them whatever their bodies use (panel R61,
+    # grape: `def []=` constructs `ValueArray.new`). Root them as callback — the Ruby analogue of
+    # the C++ special-member pass. An operator name never starts with a letter/underscore.
+    for n in nodes:
+        if n.kind in (F, M) and n.name and not (n.name[0].isalpha() or n.name[0] == "_") \
+                and file_lang.get(n.id.split("::", 1)[0], "") == "ruby":
+            n.roles = n.roles | {"callback"}
+
     # Language implicit hooks (Ruby `method_missing`/`inherited`/…, Java `writeReplace`/…,
     # PHP `__call`/…) — invoked by the runtime, never by name, so root them like the C++
     # special members above (panel: multi-language false-positive hunt, sinatra/gson).
@@ -1573,7 +1584,12 @@ def _trailing_id(node, src):
     # node name instead of None. `operator_cast` (conversion ops) has a `type` field that the
     # generic walk below would follow to the target type (`bool`) and lose the name, so it
     # must be handled here too (panels R13A/R14A).
-    if node.type in ("operator_name", "destructor_name", "operator_cast"):
+    # C++ `operator_name`/`destructor_name`/`operator_cast`; Ruby `operator` (the name node
+    # of `def []`, `def []=`, `def <=>`, `def ==`, …). Without `operator`, every Ruby operator
+    # method was dropped from the graph — so it was un-navigable AND anything used only inside
+    # its body (e.g. `ValueArray.new(value)` inside `def []=`) was false-flagged dead (panel
+    # R61, the grape dogfood: ValueArray's constructor flagged dead though it is instantiated).
+    if node.type in ("operator_name", "destructor_name", "operator_cast", "operator"):
         return _text(node, src)
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:

@@ -5913,3 +5913,42 @@ def test_php_array_callable_method_is_live(tmp_path):
     assert "compareRows" not in stale     # [$this, 'compareRows'] usort callback: live
     assert "_convert" not in stale        # [$this, '_convert'] preg_replace_callback: live
     assert "_reallyDead" in stale         # genuinely unused private method: still flagged
+
+
+def test_ruby_operator_method_captured_and_rooted(tmp_path):
+    """R61 (grape dogfood, cardinal): Ruby operator methods (`def []`, `def []=`, `def <=>`)
+    have an `operator`-typed name node, which the extractor dropped — so the method was invisible
+    AND anything it used (e.g. `ValueArray.new(value)` inside `def []=`) was false-flagged dead,
+    because its only construction site lived in an uncaptured method. The extractor now captures
+    operator method names and roots them (invoked via operator/index SYNTAX, never a by-name
+    call — the Ruby analogue of the C++ special-member pass)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "store.rb": (
+            "class Bag\n"
+            "  def []=(key, value)\n"
+            "    @h ||= {}\n"
+            "    @h[key] = Entry.new(value)\n"   # Entry constructed only inside []=
+            "  end\n"
+            "  def [](key)\n    @h[key]\n  end\n"
+            "end\n"
+            "class Entry\n"
+            "  def initialize(v)\n    @v = v\n  end\n"
+            "  def evaluate\n    @v\n  end\n"
+            "end\n"
+            "class Unused\n"
+            "  def initialize\n    @x = 1\n  end\n"   # never .new'd -> genuinely dead
+            "end\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = {r["id"].split("::", 1)[-1] for r in store.conn.execute("SELECT id FROM nodes")}
+        stale_full = {c["id"] for c in sg.find_stale(store).result}
+    stale = {i.split("::", 1)[-1].split(".")[-1] for i in stale_full}
+    assert "Bag.[]=" in ids and "Bag.[]" in ids       # operator methods captured as nodes
+    assert "[]=" not in stale and "[]" not in stale     # rooted (syntax-invoked), not dead
+    # Entry is constructed only inside `[]=`; its constructor is now reached, not false-dead:
+    assert not any(i.endswith("Entry.initialize") for i in stale_full)
+    assert any(i.endswith("Unused.initialize") for i in stale_full)  # genuinely unused: flagged
