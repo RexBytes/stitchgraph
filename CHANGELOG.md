@@ -42,6 +42,19 @@ verified row-for-row), ~40% slower.
   `cache_trees` / `edge_sink` parameters; their public `(nodes, edges)` return is unchanged.
 - **`Node` / `Edge` use `__slots__`** — lower per-object overhead at scale.
 
+### Fixed
+
+- **`name_based` consistency between the in-memory and store dedups (panel R50).** The
+  in-memory `_dedup_edges` now ORs the `name_based` flag onto a `(src, relation, dst_id)`
+  group's survivor — matching the store's `_dedup_resolved_edges` (the R23A rule). Without
+  this, `reindex(precise=True, streaming=True)` could diverge from `streaming=False` on
+  `name_based` (jedi's precise edge and the extractor's name-based edge to the same target
+  land in different sink groups, so the store's OR fires while the in-memory path kept the
+  precise survivor's flag). Cardinal-safe: a pure-precise group still keeps `name_based=False`,
+  so a precise resolution is never wrongly made re-widenable (R22A). The streaming differential
+  oracle now compares `name_based` (and `weight`/`provenance`) and includes a `precise=True`
+  (jedi) case.
+
 ### Notes / trade-offs
 
 - Streaming reindex commits in batches rather than as one transaction, so a crash mid-rebuild

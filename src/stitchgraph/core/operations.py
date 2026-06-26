@@ -1142,6 +1142,7 @@ def _dedup_edges(edges: list) -> list:
     best: dict[tuple, Any] = {}
     order: list[tuple] = []
     holes: list = []
+    nb_any: dict[tuple, bool] = {}  # any arm of this (src,rel,dst_id) group was name-based?
     for e in edges:
         if e.dst_id is None:
             holes.append(e)
@@ -1150,8 +1151,24 @@ def _dedup_edges(edges: list) -> list:
         if key not in best:
             best[key] = e
             order.append(key)
-        elif e.weight > best[key].weight:
-            best[key] = e
+            nb_any[key] = e.name_based
+        else:
+            nb_any[key] = nb_any[key] or e.name_based
+            if e.weight > best[key].weight:
+                best[key] = e
+    # Mirror the store's `_dedup_resolved_edges` step 0: a (src,relation,dst_id) group that
+    # contains ANY name-based arm stays re-widenable, so its survivor carries name_based=True
+    # even when the kept (highest-weight) row was a PRECISE resolution. Without this the
+    # in-memory full path and the store/streaming path (which ORs in SQL) diverge on
+    # `name_based` whenever a precise edge — e.g. jedi under `--precise`, which arrives as a
+    # separate resolver edge from the extractor's name-based arm — coincides with a name-based
+    # edge to the same target (panel R50, opus: a real streaming-vs-full byte-identity break).
+    # OR-only, so a pure-precise group keeps False and a precise resolution is never wrongly
+    # made re-widenable (R22A preserved); aligning with the store also closes the same latent
+    # full-vs-incremental gap (R23A).
+    for key, survivor in best.items():
+        if nb_any[key] and not survivor.name_based:
+            survivor.name_based = True
     called = {(e.src, e.dst_id) for e in best.values() if e.relation is Relation.CALLS}
 
     def _drop(e) -> bool:  # a redundant or self-looping REFERENCES edge

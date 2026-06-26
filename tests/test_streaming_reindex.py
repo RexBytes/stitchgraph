@@ -117,6 +117,63 @@ def test_dedup_keeps_all_holes():
     assert sum(1 for e in out if e.dst_id is None) == 3
 
 
+def test_dedup_ors_name_based_onto_precise_survivor():
+    """A (src,rel,dst_id) group with BOTH a precise (name_based=False) and a name-based arm
+    must leave the survivor re-widenable (name_based=True), matching the store's dedup — even
+    though the kept highest-weight row is the precise one. This is the panel-R50 fix: under
+    --precise (jedi) the precise arm and the extractor's name-based arm hit the same target,
+    and the full vs streaming paths would otherwise diverge on name_based."""
+    precise = Edge(src="a::f", relation=Relation.CALLS, dst_symbol="g", dst_id="b::g",
+                   weight=1.0, name_based=False)
+    namebased = Edge(src="a::f", relation=Relation.CALLS, dst_symbol="g", dst_id="b::g",
+                     weight=0.5, name_based=True)
+    out = _dedup_edges([precise, namebased])
+    assert len(out) == 1
+    assert out[0].weight == 1.0          # precise (highest-weight) row is the survivor
+    assert out[0].name_based is True     # ...but the group stays re-widenable
+
+
+def test_dedup_pure_precise_group_stays_pinned():
+    """A group with NO name-based arm keeps name_based=False — a precise resolution is never
+    wrongly made re-widenable (R22A)."""
+    a = Edge(src="a::f", relation=Relation.CALLS, dst_symbol="g", dst_id="b::g",
+             weight=1.0, name_based=False)
+    b = Edge(src="a::f", relation=Relation.CALLS, dst_symbol="g", dst_id="b::g",
+             weight=0.8, name_based=False)
+    out = _dedup_edges([a, b])
+    assert len(out) == 1
+    assert out[0].name_based is False
+
+
+def test_streaming_equals_full_precise_jedi(tmp_path):
+    """`reindex(precise=True)` (jedi adds precise edges) must ALSO be byte-identical between
+    streaming and full — incl. name_based. Pins panel R50: jedi's precise arm arrives as a
+    resolver edge in a different sink group than the extractor's name-based arm, so the mixed
+    (src,rel,dst_id) group reaches the store; the _dedup_edges name_based-OR keeps both paths
+    identical."""
+    import pytest
+    pytest.importorskip("jedi")
+    src = tmp_path / "proj"
+    _write(src, {
+        # `foo` is a project homonym (defined in b and c) -> the extractor emits a name-based
+        # AMBIGUOUS fan-out, while jedi resolves the import precisely to b.foo.
+        "a.py": "from b import foo\ndef caller():\n    return foo()\n",
+        "b.py": "def foo():\n    return 1\n",
+        "c.py": "def foo():\n    return 2\n",
+    })
+    def snap(store):
+        return sorted(tuple(r) for r in store.conn.execute(
+            "SELECT src, relation, dst_symbol, COALESCE(dst_id,''), weight, provenance, "
+            "name_based FROM edges"))
+    with sg.Store(str(tmp_path / "full.db")) as full:
+        sg.reindex(full, str(src), precise=True, streaming=False)
+        fe = snap(full)
+    with sg.Store(str(tmp_path / "stream.db")) as stream:
+        sg.reindex(stream, str(src), precise=True, streaming=True)
+        se = snap(stream)
+    assert fe == se
+
+
 def _snapshot(store):
     nodes = sorted((r["id"], r["kind"], r["name"], r["roles"] or "")
                    for r in store.conn.execute("SELECT id, kind, name, roles FROM nodes"))
