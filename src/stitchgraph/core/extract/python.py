@@ -65,10 +65,18 @@ _PLAIN_BASES = {
 
 
 def extract_project(root: str | Path,
-                    ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
+                    ignore: list[str] | None = None, *,
+                    cache_asts: bool = True) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
+
+    `cache_asts` (streaming, v2 work): when True (default) every file's AST is held in
+    memory between the two passes — fastest, but all ASTs are co-resident at peak. When
+    False, ASTs are dropped after pass 1 and the file is *re-parsed* in pass 2 — trading ~2x
+    parse CPU for a much lower memory peak (no all-ASTs-resident step). The produced
+    (nodes, edges) are IDENTICAL either way (same deterministic parse); the only observable
+    difference is peak RSS and CPU. Verified by the streaming differential oracle.
     """
     proj = _Project(root=Path(root))
     try:
@@ -81,7 +89,8 @@ def extract_project(root: str | Path,
     proj.source_prefix = _detect_source_prefix(files, proj.root)
     proj.packages = _project_packages(files, proj.root, proj.source_prefix)
 
-    parsed: dict[str, ast.Module] = {}
+    parsed: dict[str, ast.Module] | None = {} if cache_asts else None
+    ok_files: list[tuple[str, Path]] = []  # (rel, path) of files whose defs were collected
     for path in files:
         rel = path.relative_to(proj.root).as_posix()
         try:
@@ -93,15 +102,27 @@ def extract_project(root: str | Path,
             # RecursionError: a pathologically deep AST — a huge flat expression
             # (generated SQL/HTML/string builders) overflows ast.parse or the walk;
             # one bad file must not leave the entire DB empty.
-            parsed.pop(rel, None)
+            if parsed is not None:
+                parsed.pop(rel, None)
             continue
-        parsed[rel] = tree
+        if parsed is not None:
+            parsed[rel] = tree
+        ok_files.append((rel, path))
+        # streaming (cache_asts=False): `tree` falls out of scope here and is freed, so the
+        # ASTs are never all co-resident; pass 2 re-parses each ok_file below.
 
     _index(proj)
     _apply_entrypoint_roles(proj)
     _apply_script_roles(proj)
     _seed_entrypoint_classes(proj)
-    for rel, tree in parsed.items():
+    for rel, path in ok_files:
+        if parsed is not None:
+            tree = parsed[rel]
+        else:
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+            except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+                continue  # vanished/changed since pass 1 (race) -> skip, as a parse error would
         try:
             _collect_edges(proj, rel, tree)
         except RecursionError:

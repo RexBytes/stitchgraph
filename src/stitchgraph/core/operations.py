@@ -861,12 +861,19 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
 
 
 @operation("Incrementally (re)index a path into the graph (admin).")
-def reindex(store: Store, path: str, precise: bool = False) -> Result:
+def reindex(store: Store, path: str, precise: bool = False,
+            streaming: bool = False) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
     index — never to source (read-only invariant).
 
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
+
+    streaming=True lowers the extraction memory peak (v2 work): the Python extractor drops
+    each file's AST after pass 1 and re-parses in pass 2 instead of holding all ASTs at once
+    (~2x parse CPU for a lower peak). The resulting index is IDENTICAL to streaming=False —
+    pinned by the streaming differential oracle. (Phase 1: AST-resident peak removed; the
+    node/edge/resolver in-memory working set is the next phase toward constant memory.)
     """
     import os
 
@@ -895,7 +902,8 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
 
-    nodes, edges = extract_project(path, ignore=load_config(path).ignore)
+    nodes, edges = extract_project(path, ignore=load_config(path).ignore,
+                                   cache_asts=not streaming)
     # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
     # optional jedi precision pass.
     resolvers = default_resolvers()

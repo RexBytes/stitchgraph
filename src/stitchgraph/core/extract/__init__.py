@@ -22,8 +22,11 @@ from . import python as _python
 
 
 def extract_project(root: str | Path,
-                    ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
-    nodes, edges = _python.extract_project(root, ignore)
+                    ignore: list[str] | None = None, *,
+                    cache_asts: bool = True) -> tuple[list[Node], list[Edge]]:
+    # `cache_asts=False` is the streaming (lower-peak-memory) mode for the Python extractor —
+    # see python.extract_project. The result is identical; only peak RSS/CPU differ.
+    nodes, edges = _python.extract_project(root, ignore, cache_asts=cache_asts)
     try:
         from . import treesitter
         if treesitter.HAS_TREE_SITTER:
