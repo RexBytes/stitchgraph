@@ -84,9 +84,11 @@ def test_streaming_equals_full_on_entrypoint_shapes(tmp_path):
 def test_streaming_equals_full_polyglot(tmp_path):
     """The streaming property must hold ACROSS LANGUAGES, not just Python — every extractor
     feeds the same shared graph, so the flag must never perturb the combined result. A mixed
-    Python + JS/TS + Go + Ruby + C tree (tree-sitter for the non-Python files) must produce a
-    byte-identical graph either way. (Phase 1 streams only the Python AST; this pins that the
-    polyglot result is unaffected — and stays the guard when tree-sitter streaming lands.)"""
+    Python + JS/TS + Go + Ruby + C + PHP tree (tree-sitter for the non-Python files) must
+    produce a byte-identical graph either way. This is the gate for tree-sitter streaming
+    (Phase 4): in streaming mode each file's parse tree + source are freed after pass 1, with
+    its defs' call/ref/scope info precomputed — the result must stay identical. PHP is here
+    because Magento (the motivating monorepo) is PHP."""
     pytest.importorskip("tree_sitter")
     pytest.importorskip("tree_sitter_language_pack")
     files = {
@@ -96,6 +98,25 @@ def test_streaming_equals_full_polyglot(tmp_path):
         "main.go": "package main\nfunc main() {\n    hello()\n}\nfunc hello() {}\n",
         "lib.rb": "class Service\n  def call\n    work\n  end\n  def work; 1; end\nend\n",
         "core.c": "int add(int a,int b){return a+b;}\nint main(void){return add(1,2);}\n",
+        "Svc.php": (
+            "<?php\nclass Service {\n  public function handle() { return $this->work(); }\n"
+            "  private function work() { return 1; }\n}\n"
+            "function bootstrap() { return (new Service())->handle(); }\nbootstrap();\n"
+        ),
+        # Rust trait impl — exercises _seed_trait_impl_methods (the parent-chain walk that
+        # streaming precomputes into _DefInfo.is_trait_impl) AND _iface_ids (trait_item).
+        "lib.rs": (
+            "pub trait Greeter {\n    fn greet(&self) -> i32;\n}\n"
+            "pub struct Hi;\n"
+            "impl Greeter for Hi {\n    fn greet(&self) -> i32 { 1 }\n}\n"
+        ),
+        # C++ out-of-line member definition — exercises _cpp_method_scope (precomputed into
+        # _DefInfo.cpp_scope/cpp_line in streaming mode) and the F->M method promotion.
+        "widget.h": "class Widget {\npublic:\n    int value();\n};\n",
+        "widget.cpp": "#include \"widget.h\"\nint Widget::value() { return 1; }\n",
+        # TS interface — exercises _iface_ids (interface_declaration) for the streaming
+        # _DefInfo.type path.
+        "port.ts": "export interface Port {\n  open(): number;\n}\n",
     }
     for rel, content in files.items():
         (tmp_path / rel).write_text(content)

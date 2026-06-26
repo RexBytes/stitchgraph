@@ -30,7 +30,10 @@ def extract_project(root: str | Path,
     try:
         from . import treesitter
         if treesitter.HAS_TREE_SITTER:
-            jn, je = treesitter.extract(root, ignore)
+            # The same streaming flag drives both extractors: in streaming mode tree-sitter
+            # drops each file's parse tree + source after pass 1 (Magento/PHP's memory hog),
+            # exactly as the Python extractor drops its ASTs. Result is identical either way.
+            jn, je = treesitter.extract(root, ignore, cache_trees=cache_asts)
             nodes += jn
             edges += je
     except Exception as exc:  # noqa: BLE001 — must never break Python extraction

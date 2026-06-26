@@ -16,6 +16,14 @@ phase below ships only when that stays green on the dogfood + the hunt corpora.
   (~2× parse CPU, no all-ASTs-resident step). Identical output.
 - **Phase 2a — `__slots__` on Node/Edge.** Edges outnumber nodes ~6:1; slots removes the
   per-instance `__dict__`, ~halving object overhead (~150–200 MB at Magento scale).
+- **Phase 4 — tree-sitter re-parse streaming (Magento/PHP).** `treesitter.extract(..,
+  cache_trees=False)` (driven by the same `reindex(streaming=True)` flag) drops each file's
+  parse tree **and** source bytes after pass 1. While the tree is still alive it precomputes
+  the only things pass 2 + the seeds read back from a body — call/ref tuples, node type, C/C++
+  out-of-line scope, Rust trait-impl flag — into a tiny `_DefInfo` record (replacing the body
+  ref in `defs`). This removes the double-pin (`src_by` + tree refs) that was Magento's actual
+  hog. Identical output, gated by the polyglot streaming oracle (now incl. PHP, Rust trait
+  impl, C++ out-of-line, TS interface).
 
 ## The remaining refactor (the v2.0.0 core)
 
@@ -57,10 +65,10 @@ done only if O(symbols) is still too big.
   in-memory `(nodes, edges)` and *adds* edges. It must move to operate over the store (or a
   streamed view) — the largest single sub-task. For a pure-Python repo it adds little, but the
   design isn't constant-memory until resolvers stream too.
-- **tree-sitter extractor.** It holds every file's source bytes (`src_by`) *and* the parse
-  trees (the `defs` list holds body-node refs) across both passes — Magento is PHP, so this is
-  Magento's actual hog. Streaming it needs a re-parse-in-pass-2 restructure analogous to
-  Python phase 1, but harder (tree-node refs can't survive a re-parse, so pass 2 must re-walk).
+- ~~**tree-sitter extractor.**~~ *Done (Phase 4).* Resolved by precomputing each def's pass-2
+  inputs while its tree is alive, rather than re-parsing in pass 2: a re-parse can't recover
+  the same body node refs, so instead the call/ref/scope tuples (which are all pass 2 needs)
+  are captured into `_DefInfo` and the tree + source are freed per file.
 - **Seed parity.** Each seed reformulated on lean records must produce identical roles —
   driven entirely by the streaming differential oracle.
 
@@ -69,7 +77,7 @@ done only if O(symbols) is still too big.
 - **Phase 2b** — stream Python nodes+edges to the store; lean seeds over (lean nodes +
   INHERITS); reuse store `_propagate_overrides`/dedup. (Python path constant-ish.)
 - **Phase 3** — resolvers over the store.
-- **Phase 4** — tree-sitter re-parse streaming (Magento/PHP).
+- ~~**Phase 4** — tree-sitter re-parse streaming (Magento/PHP).~~ **Shipped** (see above).
 - **Phase 5** — validate on Magento end-to-end; make streaming the default (or auto above a
   file-count threshold); evolve the public API (`extract_project`'s `(nodes, edges)` return is
   incompatible with streaming → the semver-major trigger). → **v2.0.0**.

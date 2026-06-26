@@ -238,7 +238,61 @@ def _header_lang(path: Path) -> str:
     return "cpp" if re.search(markers, head) else "c"
 
 
-def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Node], list[Edge]]:
+class _DefInfo:
+    """Streaming (cache_trees=False) substitute for a def's parse-tree body node.
+
+    The tree-sitter extractor normally pins every file's parse tree (via the body refs
+    in `defs`) AND every file's source bytes (`src_by`) across BOTH passes — Magento is
+    PHP, so that double-pin is its actual memory hog. In streaming mode we precompute,
+    while each file's tree is still alive in pass 1, the only things pass 2 and the seed
+    passes ever read back from a body: its node type (`_iface_ids`), its call/ref tuples
+    and C/C++ out-of-line scope (the edge loop), and the Rust trait-impl flag
+    (`_seed_trait_impl_methods`). With those captured, the tree and source are freed
+    per-file. `.type` mirrors the live node's `.type` so `_iface_ids` reads it unchanged.
+    """
+
+    __slots__ = ("type", "is_trait_impl", "calls", "refs", "cpp_scope", "cpp_line")
+
+    def __init__(self, type, is_trait_impl, calls, refs, cpp_scope, cpp_line):  # noqa: A002
+        self.type = type
+        self.is_trait_impl = is_trait_impl
+        self.calls = calls
+        self.refs = refs
+        self.cpp_scope = cpp_scope
+        self.cpp_line = cpp_line
+
+
+def _precompute_def(body, src, lang) -> _DefInfo:
+    """Capture everything pass 2 / the seeds need from a live body node (cache_trees=False)
+    — computed against the live tree + source so the streamed graph is byte-identical to the
+    in-memory one (the streaming differential oracle is the gate)."""
+    node = cast(Any, body)
+    spec = SPECS[lang]
+    cpp_scope = _cpp_method_scope(body, src) if lang in ("c", "cpp") else None
+    is_trait_impl = False
+    if lang == "rust" and node.type == "function_item":
+        p = node.parent
+        while p is not None:
+            if p.type == "impl_item":
+                is_trait_impl = p.child_by_field_name("trait") is not None
+                break
+            p = p.parent
+    return _DefInfo(
+        type=node.type,
+        is_trait_impl=is_trait_impl,
+        calls=_direct_calls(body, src, spec),
+        refs=_direct_refs(body, src, spec),
+        cpp_scope=cpp_scope,
+        cpp_line=node.start_point[0] + 1,
+    )
+
+
+def extract(root: str | Path, ignore: list[str] | None = None, *,
+            cache_trees: bool = True) -> tuple[list[Node], list[Edge]]:
+    # `cache_trees=False` is the streaming (lower-peak-memory) mode: each file's parse tree
+    # and source are dropped after pass 1 (its defs' body refs are swapped for precomputed
+    # `_DefInfo` records), so peak memory tracks symbol count, not total parse-tree size.
+    # The result is byte-identical to the default path (test_streaming_differential.py).
     if not HAS_TREE_SITTER:
         return [], []
     root = Path(root)
@@ -356,6 +410,15 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
             del nodes[_n0:], defs[_d0:], inherits[_i0:]
             del contains[_c0:], module_tests[_mt0:], imports[_im0:]
             continue
+        if not cache_trees:
+            # Streaming: while THIS file's tree + source are still alive, precompute
+            # everything pass 2 + the seed passes read back from each def, then drop the
+            # tree (swap the body refs for `_DefInfo`) and the source (`src_by`). All of
+            # `defs[_d0:]` belong to this file, so `src` is exactly `src_by[rel]`.
+            for i in range(_d0, len(defs)):
+                d_rel, d_id, d_body, d_lang = defs[i]
+                defs[i] = (d_rel, d_id, _precompute_def(d_body, src, d_lang), d_lang)
+            src_by.pop(rel, None)
 
     # Surface grammar-load failures instead of returning a silent empty graph (issue
     # #7): without this, a non-Python repo looks like "ran fine, found almost nothing".
@@ -441,7 +504,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     _seed_classes_from_exported_methods(nodes)
     _seed_test_classes(nodes, inherits, file_lang)
     _seed_main_classes(nodes)
-    _seed_trait_impl_methods(nodes, defs)
+    _seed_trait_impl_methods(nodes, defs, cache_trees)
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn. C and C++
     # share one bucket (`_canon_lang`) so a header symbol resolves across the .h/.c/.cpp split.
@@ -454,8 +517,19 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
     edges: list[Edge] = []
     for rel, def_id, body, lang in defs:
         by_name = by_lang.get(_canon_lang(lang), {})
+        # In streaming mode the body is a `_DefInfo` with the call/ref/scope tuples already
+        # computed against the (now-freed) live tree; otherwise read them off the live body.
+        if cache_trees:
+            calls = _direct_calls(body, src_by[rel], SPECS[lang])
+            refs = _direct_refs(body, src_by[rel], SPECS[lang])
+            cpp_scope = _cpp_method_scope(body, src_by[rel]) if lang in ("c", "cpp") else None
+            cpp_line = cast(Any, body).start_point[0] + 1
+        else:
+            info = cast(_DefInfo, body)
+            calls, refs = info.calls, info.refs
+            cpp_scope, cpp_line = info.cpp_scope, info.cpp_line
         called: set[str] = set()
-        for name, line, is_method in _direct_calls(body, src_by[rel], SPECS[lang]):
+        for name, line, is_method in calls:
             _ref(edges, def_id, name, by_name, rel, line, is_method=is_method)
             called.add(name)
         # Bare-name *references*: a symbol named by value/type (`const cb = handler`,
@@ -464,7 +538,7 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # symbols resolve via `_ref`) so a live symbol used only by name isn't flagged
         # dead — closing the same gap the Python extractor's `_direct_names` does, and
         # covering constructor idioms whose grammar lacks a clean callee field.
-        for name, line in _direct_refs(body, src_by[rel], SPECS[lang]):
+        for name, line in refs:
             if name not in called:  # already a CALLS edge; don't double-count as REFERENCES
                 _ref(edges, def_id, name, by_name, rel, line, relation=Relation.REFERENCES)
         # C/C++ out-of-line member definition `RetT Scope::method(...) {...}`: the method
@@ -472,11 +546,8 @@ def extract(root: str | Path, ignore: list[str] | None = None) -> tuple[list[Nod
         # FUNCTION with no link to its class. Edge it -> REFERENCES its class (resolved by
         # name across the .h/.c/.cpp bucket) so a class whose members are all defined
         # out-of-line isn't flagged dead while a member is reached (panel R12B, cardinal).
-        if lang in ("c", "cpp"):
-            scope = _cpp_method_scope(body, src_by[rel])
-            if scope:
-                _ref(edges, def_id, scope, by_name, rel,
-                     cast(Any, body).start_point[0] + 1, relation=Relation.REFERENCES)
+        if lang in ("c", "cpp") and cpp_scope:
+            _ref(edges, def_id, cpp_scope, by_name, rel, cpp_line, relation=Relation.REFERENCES)
 
     # Root module-level calls AND name-references of each test file from its module
     # node (Bug B): the `test()`->helper chain in call-based suites (Jest/Mocha/RSpec)
@@ -699,7 +770,7 @@ def _seed_exported_interface_methods(nodes, interface_ids: set[str]) -> None:
             n.roles = n.roles | {"exported"}
 
 
-def _seed_trait_impl_methods(nodes, defs) -> None:
+def _seed_trait_impl_methods(nodes, defs, cache_trees=True) -> None:
     """Methods inside a Rust `impl Trait for X` block are public-by-contract API invoked via
     language sugar (operators, `Display::fmt` through `{}`, `Iterator::next` through `for`,
     `Drop::drop`) — no call node — and cannot carry `pub`, so `_roles` never marks them
@@ -709,6 +780,11 @@ def _seed_trait_impl_methods(nodes, defs) -> None:
     impl_method_ids: set[str] = set()
     for _rel, cid, body, lang in defs:
         if lang != "rust":
+            continue
+        if not cache_trees:
+            # Streaming: the trait-impl test was precomputed against the live tree.
+            if body.type == "function_item" and body.is_trait_impl:
+                impl_method_ids.add(cid)
             continue
         node = cast(Any, body)
         if node.type != "function_item":
