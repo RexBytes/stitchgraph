@@ -389,6 +389,24 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** contribute the relevant `LangSpec` fields (`imports`,
   `heritage`).
 
+### Very large monorepos are indexed as one in-memory graph (peak RAM scales with the repo)
+- **Concern:** `reindex(store, path)` extracts the *whole* tree into one graph and holds all
+  nodes + edges in memory before/while writing, so peak RAM scales with total nodes+edges,
+  not with the on-disk store. A directory `reindex` is whole-project (it replaces the store),
+  so it can't be chunked across calls to bound memory. Measured: Magento 2.4.7 (24,401 PHP
+  files) and even its `app/code` subtree (14,324 files) exceed ~12 GB; the `Framework` core
+  (3,968 files) indexes fine at ~1.9 GB / 42s. WordPress, PrestaShop (31k functions), and
+  Symfony (16k methods) all complete comfortably — this only bites tens-of-thousands-of-file
+  monorepos.
+- **Decision / rationale:** keep a single-pass in-memory extraction — it makes cross-file
+  name resolution (the basis of dead-code/impact/trace) exact and the code simple; streaming
+  with cross-batch symbol resolution is a large architectural change with its own correctness
+  risk. An over-budget run raises a clean `MemoryError` (or is killed), never corrupting the
+  store.
+- **Escape hatch:** index self-contained sub-trees separately (e.g. per top-level
+  package/module), or provision RAM proportional to repo size (rule of thumb from the hunt:
+  roughly 0.7–0.9 GB per 1,000 dense PHP files).
+
 ## Behaviour is the contract (changing it would silently break callers)
 
 ### Read-only on analyzed source
