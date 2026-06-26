@@ -5645,6 +5645,8 @@ def test_ts_framework_decorator_handler_is_live(tmp_path):
     `@Entity`) is framework-instantiated/-invoked, never called by name. NestJS controller
     route handlers were flagged dead. (Method decorators precede the method as siblings; class
     decorators are children — both must be detected.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     # No `export` — otherwise every public method is rooted as public API and the test
     # can't isolate the decorator's effect. Here the ONLY roots are the decorators.
     _mk(tmp_path, {
@@ -5694,6 +5696,8 @@ def test_js_member_assigned_function_body_is_walked(tmp_path):
     CommonJS prototype-augmentation idiom) must become a node whose BODY is walked — else
     calls inside it are invisible and a module-private helper it alone calls (`tryRender`)
     is flagged dead. The assigned method itself is rooted (external/dynamic-invoked)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "app.js": (
             "function tryRender(v) { return v; }\n"
@@ -5717,6 +5721,8 @@ def test_c_export_symbol_is_public_abi(tmp_path):
     kernel/module ABI — called by code outside the tree, so never dead for lack of an
     in-tree caller (the C analogue of __all__/module.exports). The Linux hunt flagged 543
     such functions. Scoped to the file the macro appears in."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lz4.c": (
             "int LZ4_compress_default(const char *s, char *d) { return 0; }\n"
@@ -5760,6 +5766,8 @@ def test_comment_between_decorator_and_method_keeps_callback(tmp_path):
     """A `comment` between a JS/TS `@decorator` and the method it annotates must not flush the
     pending decorators — else the framework-callback rooting never fires and the live handler
     (and its callees) is flagged dead. Panel R40B (also protects Rust `#[test]` + comment)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "svc.ts": (
             "@Controller()\n"
@@ -5786,6 +5794,8 @@ def test_member_assigned_function_inside_dead_function_is_not_rooted(tmp_path):
     a function body (`function init(){ obj.x = fn }`) must stay reachability-gated: if the
     enclosing function is dead, the assignment isn't externally visible and must be flagged.
     Panel R40C — the unconditional callback role masked dead code inside dead code."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "m.js": (
             "function deadInit() {\n"
@@ -5810,6 +5820,8 @@ def test_member_assigned_class_public_methods_are_live(tmp_path):
     must be rescued by _seed_exported_class_methods. Otherwise the class is live via the root
     while its methods (and their private callees) are flagged dead — the inverse-cardinal
     'class live, methods dead' shape."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "plugin.js": (
             "exports.Parser = class {\n"
@@ -5837,6 +5849,8 @@ def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
     """R41A: the R40B comment-skip must cover Rust comment node types (`line_comment`/
     `block_comment`, NOT `comment`) — else a `#[test]` + comment + fn drops the test marker
     and the test fn (plus helpers it alone reaches) is confidently flagged dead (cardinal)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.rs": (
             "#[cfg(test)]\n"
