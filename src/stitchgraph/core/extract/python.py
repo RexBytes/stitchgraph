@@ -51,6 +51,7 @@ class _Project:
     external_base_classes: set[str] = field(default_factory=set)  # subclass framework bases
     module_by_qual: dict[str, str] = field(default_factory=dict)  # module qualname -> node id
     module_ids: set[str] = field(default_factory=set)  # all MODULE node ids
+    source_prefix: str = ""  # qualname prefix of a src-layout source root, e.g. "src." (else "")
 
 # Ordinary bases whose subclasses are NOT framework callbacks — their methods
 # should still be eligible for dead-code. Anything else external (HTMLParser,
@@ -77,7 +78,8 @@ def extract_project(root: str | Path,
     except OSError:
         files = []  # unwalkable root (over-long path / permission) -> empty extraction,
                     # not a crash; reindex degrades to 0 nodes like a missing path (panel YYY)
-    proj.packages = _project_packages(files, proj.root)
+    proj.source_prefix = _detect_source_prefix(files, proj.root)
+    proj.packages = _project_packages(files, proj.root, proj.source_prefix)
 
     parsed: dict[str, ast.Module] = {}
     for path in files:
@@ -106,6 +108,7 @@ def extract_project(root: str | Path,
             continue  # same pathological-depth guard for the edge pass (panel OOO)
     _apply_callback_roles(proj)
     _seed_test_classes(proj)
+    _seed_exported_inherited_methods(proj)
     _seed_protocol_dunders(proj)
     _propagate_overrides(proj)
     return proj.nodes, proj.edges
@@ -165,13 +168,41 @@ def _apply_callback_roles(proj: _Project) -> None:
     framework-instantiated too (e.g. a `unittest.TestCase` subclass, registered by a
     test runner), so mark it a root as well — otherwise the methods are live but the
     class is flagged dead (the 'method live, class dead' shape)."""
-    if not proj.external_base_classes:
+    class_ids = {n.id for n in proj.nodes if n.kind is NodeKind.CLASS}
+    # Framework (externally-subclassed) classes whose methods are framework-invoked
+    # overrides. Three signals, unioned:
+    #  (a) the inline name heuristic (`external_base_classes`): a base name that is neither a
+    #      first-party class nor a known stdlib plain base;
+    #  (b) an INHERITS edge that did NOT resolve to a distinct first-party class — either
+    #      unresolved (no dst_id) or a SELF-LOOP (dst_id == src), the same-leaf-name collision
+    #      where `class EnvironBuilder(werkzeug.test.EnvironBuilder)` bound its base to itself
+    #      (C2). Gated by `_PLAIN_BASES` on the base leaf so `class E(Exception)` stays plain;
+    #  (c) transitive descent: a first-party subclass of a framework class is itself
+    #      framework-driven (FlaskGroup -> AppGroup -> click.Group, C1) — its overrides are
+    #      invoked the same way, so liveness must propagate down INHERITS.
+    framework: set[str] = set(proj.external_base_classes)
+    subclasses: dict[str, set[str]] = {}
+    for e in proj.edges:
+        if e.relation is not Relation.INHERITS or e.src not in class_ids:
+            continue
+        if e.dst_id and e.dst_id != e.src and e.dst_id in class_ids:
+            subclasses.setdefault(e.dst_id, set()).add(e.src)  # resolved first-party base
+        elif e.dst_symbol not in _PLAIN_BASES:
+            framework.add(e.src)  # unresolved / self-loop external base (and not a plain base)
+    if not framework:
         return
+    stack = list(framework)
+    while stack:  # (c) transitive closure down the INHERITS tree (cardinal-safe: only adds)
+        cid = stack.pop()
+        for sub in subclasses.get(cid, ()):
+            if sub not in framework:
+                framework.add(sub)
+                stack.append(sub)
     classes_with_callbacks: set[str] = set()
     for node in proj.nodes:
         if node.kind is NodeKind.METHOD and "." in node.id:
             class_id = node.id.rsplit(".", 1)[0]
-            if class_id in proj.external_base_classes:
+            if class_id in framework:
                 node.roles = node.roles | {"callback"}
                 classes_with_callbacks.add(class_id)
     # A framework subclass that actually overrides hook methods is framework-
@@ -271,6 +302,52 @@ def _propagate_overrides(proj: _Project) -> None:
                 dst_id=override, weight=1.0, provenance=Provenance.AMBIGUOUS,
                 location=e.location, source="ast"))
     proj.edges.extend(new_edges)
+
+
+def _seed_exported_inherited_methods(proj: _Project) -> None:
+    """Public methods a class *inherits* from a first-party base are part of its public
+    surface too. `_apply_entrypoint_roles` roots the public methods defined directly on an
+    exported class, but a method defined on a (non-exported) base class — `Flask(App)`,
+    `App(Scaffold)`, where `.shell_context_processor`/`.patch` live on the base and are
+    called on a `Flask` instance — was flagged dead for lack of an internal caller (a
+    cardinal-class false positive surfaced by the flask corpus).
+
+    So: for every exported class, walk its INHERITS ancestor chain and root the public
+    (non-underscore) methods of each first-party ancestor. INHERITS edges are resolved
+    child->base and only exist after _collect_edges, so this must run in the post-edge phase.
+    Only ever adds roots (cardinal-safe); over-rooting a shadowed base method is the same
+    documented precision-over-recall trade-off as the exported-class rule itself."""
+    exported_class_ids = {n.id for n in proj.nodes
+                          if n.kind is NodeKind.CLASS and n.name in proj.exported_names}
+    if not exported_class_ids:
+        return
+    class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
+    # child_id -> {base_id, ...}, first-party classes only (dst_id set ⟹ resolved internal).
+    bases: dict[str, set[str]] = {}
+    for e in proj.edges:
+        if (e.relation is Relation.INHERITS and e.src in class_ids
+                and e.dst_id in class_ids and e.src != e.dst_id):
+            bases.setdefault(e.src, set()).add(e.dst_id)
+    if not bases:
+        return
+    # Transitive ancestor closure of all exported classes (the bases whose public methods
+    # become public API). Excludes the exported classes themselves — those are handled by
+    # the direct-method rule already.
+    ancestors: set[str] = set()
+    stack = [b for cid in exported_class_ids for b in bases.get(cid, ())]
+    while stack:
+        a = stack.pop()
+        if a in ancestors:
+            continue
+        ancestors.add(a)
+        stack.extend(bases.get(a, ()))
+    if not ancestors:
+        return
+    for node in proj.nodes:
+        if node.kind is NodeKind.METHOD and "." in node.id \
+                and not node.name.startswith("_") \
+                and node.id.rsplit(".", 1)[0] in ancestors:
+            node.roles = node.roles | {"exported"}
 
 
 # -- pass 1: definitions ----------------------------------------------------
@@ -457,6 +534,12 @@ def _index(proj: _Project) -> None:
         # Alias modules by their short name so `from pkg import submodule` resolves.
         if n.kind == NodeKind.MODULE:
             proj.module_by_qual[n.name] = n.id  # exact qualname -> module node (panel R13)
+            # src-layout: also key the module by its src-stripped qualname (`src.flake8.x` ->
+            # `flake8.x`), the name absolute imports actually use, so `from flake8 import x`
+            # module-load edges resolve. Node ids/qualnames are left untouched (the resolver
+            # pipeline rebuilds ids from the path), so only the lookup gains an alias.
+            if proj.source_prefix and n.name.startswith(proj.source_prefix):
+                proj.module_by_qual.setdefault(n.name[len(proj.source_prefix):], n.id)
             proj.module_ids.add(n.id)
             if "." in n.name:
                 proj.by_name.setdefault(n.name.rsplit(".", 1)[-1], []).append(n.id)
@@ -532,15 +615,44 @@ def _seed_entrypoint_classes(proj: _Project) -> None:
                     and n.name in proj.main_calls \
                     and n.id.rsplit(".", 1)[0] in main_class_ids:
                 n.roles = n.roles | {"main"}
+    # (3) public methods of a class that is itself a `script`-rooted entry-point target
+    # (a plugin class, e.g. `flake8.report = default = ...:Default`). The framework
+    # instantiates it and calls its protocol methods, none of which has an internal caller —
+    # so they are live API exactly like the public methods of an exported class. The class
+    # target is module-path-precise (matched in _apply_script_roles), so this can't drag an
+    # unrelated same-named class live. Only ever adds roots (cardinal-safe). Underscore
+    # methods stay private — reached only if something internal calls them.
+    script_class_ids = {n.id for n in proj.nodes
+                        if n.kind is NodeKind.CLASS and "script" in n.roles}
+    if script_class_ids:
+        for n in proj.nodes:
+            if n.kind is NodeKind.METHOD and not n.name.startswith("_") \
+                    and n.id.rsplit(".", 1)[0] in script_class_ids:
+                n.roles = n.roles | {"script"}
 
 
-def _console_script_targets(root: Path) -> list[tuple[str, str]]:
+def _spec_to_candidates(spec: str) -> list[tuple[str, str]]:
+    """Turn one entry-point spec (`"pkg.mod:obj"`, optionally `"... [extra]"`) into the
+    (module_path_suffix, object_leaf) candidates we tag. The module may be a plain module
+    (`pkg/mod.py`) OR a package whose target lives in its `__init__.py` (`pkg:main` ->
+    `pkg/__init__.py`) — emit both, harmless because each only matches a node that actually
+    exists at that path (panel ZZ, cardinal-class)."""
+    if ":" not in spec:
+        return []
+    module, _, obj = spec.partition(":")
+    module = module.strip()
+    obj = obj.split("[", 1)[0].strip()  # drop any "[extra]" suffix
+    if not (module and obj):
+        return []
+    base = module.replace(".", "/")
+    return [(base + ".py", obj), (base + "/__init__.py", obj)]
+
+
+def _pyproject_targets(root: Path) -> list[tuple[str, str]]:
     """Parse pyproject.toml for console/GUI/plugin entry points (design §4, issue #21).
 
     Returns (module_path_suffix, object_name) pairs from `[project.scripts]`,
-    `[project.gui-scripts]`, and every `[project.entry-points.*]` group. A spec is
-    `"pkg.mod:func"` (optionally `"pkg.mod:func [extra]"`); the module becomes a path
-    suffix (`pkg/mod.py`) and the object's leaf name is what we tag."""
+    `[project.gui-scripts]`, and every `[project.entry-points.*]` group."""
     pp = root / "pyproject.toml"
     if not pp.is_file():
         return []  # is_file() (not exists()) so a FIFO/dir named pyproject.toml is
@@ -565,21 +677,52 @@ def _console_script_targets(root: Path) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for tbl in tables:
         for spec in tbl.values():
-            if not isinstance(spec, str) or ":" not in spec:
-                continue
-            module, _, obj = spec.partition(":")
-            module = module.strip()
-            obj = obj.split("[", 1)[0].strip()  # drop any "[extra]" suffix
-            if module and obj:
-                base = module.replace(".", "/")
-                # The module may be a plain module (`pkg/mod.py`) OR a package whose
-                # target lives in its `__init__.py` (`pkg:main` -> `pkg/__init__.py`) —
-                # emit both candidates so a package-level entry point is rooted too
-                # (panel ZZ, cardinal-class). The extra candidate is harmless: it only
-                # matches a node that actually exists at that path.
-                out.append((base + ".py", obj))
-                out.append((base + "/__init__.py", obj))
+            if isinstance(spec, str):
+                out.extend(_spec_to_candidates(spec))
     return out
+
+
+def _setup_cfg_targets(root: Path) -> list[tuple[str, str]]:
+    """Parse setup.cfg `[options.entry_points]` for console/GUI/plugin entry points.
+
+    The older-but-still-ubiquitous packaging format (flake8, isort, … declare their
+    plugins here). Every group — `console_scripts`, `gui_scripts`, AND plugin groups like
+    `flake8.extension`/`flake8.report` — registers code loaded only via the entry-point
+    machinery, so its targets are live roots exactly like the pyproject ones. Without this,
+    a plugin function/class with no internal caller is flagged dead (cardinal-class FP)."""
+    sc = root / "setup.cfg"
+    if not sc.is_file():
+        return []  # is_file() (not exists()): a FIFO/dir named setup.cfg would block read
+    import configparser
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    try:
+        parser.read_string(sc.read_text(encoding="utf-8"))
+    except (configparser.Error, OSError, UnicodeDecodeError):
+        return []  # malformed setup.cfg -> no roots, never a crash
+    if not parser.has_section("options.entry_points"):
+        return []
+    out: list[tuple[str, str]] = []
+    # Each key is a group name; its value is a multiline block of `name = pkg.mod:obj`
+    # lines (configparser folds the indented continuation lines into one string).
+    for value in parser["options.entry_points"].values():
+        if not value:
+            continue
+        for line in value.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            _, _, spec = line.partition("=")  # drop the `name =` label, keep `pkg.mod:obj`
+            out.extend(_spec_to_candidates(spec.strip()))
+    return out
+
+
+def _console_script_targets(root: Path) -> list[tuple[str, str]]:
+    """All entry-point targets declared for the project, across both packaging formats:
+    pyproject.toml `[project.*]` and setup.cfg `[options.entry_points]`. A spec is
+    `"pkg.mod:func"`; the module becomes a path suffix (`pkg/mod.py`) and the object's
+    leaf name is what we tag. (setup.py `entry_points=` is arbitrary Python, not statically
+    parseable, and is left to the user override — see LIMITATIONS.)"""
+    return _pyproject_targets(root) + _setup_cfg_targets(root)
 
 
 def _apply_script_roles(proj: _Project) -> None:
@@ -592,7 +735,10 @@ def _apply_script_roles(proj: _Project) -> None:
         return
     by_name: dict[str, list[Node]] = {}
     for n in proj.nodes:
-        if n.kind in (NodeKind.FUNCTION, NodeKind.METHOD):
+        # CLASS included: a plugin entry point can target a class
+        # (`flake8.extension = F = flake8.plugins.pyflakes:FlakesChecker`), instantiated and
+        # driven by the framework — its public methods are rescued in _seed_entrypoint_classes.
+        if n.kind in (NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS):
             by_name.setdefault(n.name, []).append(n)
     for mod_suffix, obj in targets:
         leaf = obj.split(".")[-1]  # "Class.method"/"func" -> the node's own name
@@ -1310,9 +1456,17 @@ def _import_edge(proj: _Project, src_id: str, rel: str, dotted: str, line: int,
         # unrelated pkg2 — keep only candidates whose owning module is the imported package
         # or under it. Avoids a false cross-package link that masks dead code and inflates
         # impact_of (panel R13B). Fall back to all candidates if none match (cardinal-safe).
+        # `pkg_base` is the import as written (`flake8.formatting`); a candidate's qualname is
+        # path-derived and in a src-layout carries the `src.` prefix the import omits — strip
+        # it before comparing so the scope match still fires (else it falls through to the
+        # cardinal-safe keep-all fallback and loses precision).
+        def _scope_qual(cid: str) -> str:
+            mq = _module_qualname(cid.split("::", 1)[0])
+            if proj.source_prefix and mq.startswith(proj.source_prefix):
+                mq = mq[len(proj.source_prefix):]
+            return mq
         scoped = [c for c in cands
-                  if (mq := _module_qualname(c.split("::", 1)[0])) == pkg_base
-                  or mq.startswith(pkg_base + ".")]
+                  if (mq := _scope_qual(c)) == pkg_base or mq.startswith(pkg_base + ".")]
         if scoped:
             cands = scoped
     loc = f"{rel}:{line}:0"
@@ -1482,11 +1636,37 @@ def _module_qualname(rel: str) -> str:
     return ".".join(parts) if parts else rel
 
 
-def _project_packages(files: list[Path], root: Path) -> set[str]:
+def _detect_source_prefix(files: list[Path], root: Path) -> str:
+    """Return the qualname prefix of a PyPA *src-layout* source root — `"src."` when the
+    project keeps its package(s) under a top-level `src/` that is NOT itself a package — else
+    `""`. In a src-layout the module `src/pkg/m.py` is installed and imported as `pkg.m`
+    (absolute imports say `from pkg import ...`), but its path-derived qualname is
+    `src.pkg.m`; without reconciling the two, every absolute first-party import is treated as
+    external and dropped, so module-level-only-live code is flagged dead (src-layout cardinal
+    gap, surfaced by the flake8 corpus). Scoped to the conventional `src` name to stay
+    predictable; `src` itself being a package (a `src/__init__.py`) disables it."""
+    rels = [p.relative_to(root).as_posix() for p in files]
+    if "src/__init__.py" in rels:
+        return ""  # `src` is a real package, not a source root
+    # a package directly under src: `src/<pkg>/__init__.py`
+    has_pkg_under_src = any(
+        r.startswith("src/") and r.endswith("/__init__.py") and r.count("/") == 2
+        for r in rels)
+    return "src." if has_pkg_under_src else ""
+
+
+def _project_packages(files: list[Path], root: Path, source_prefix: str = "") -> set[str]:
     pkgs: set[str] = set()
     for path in files:
-        top = path.relative_to(root).parts[0]
+        parts = path.relative_to(root).parts
+        top = parts[0]
         pkgs.add(top[:-3] if top.endswith(".py") else top)
+        # src-layout: the importable top-level package is the child of `src/`, not `src`
+        # itself (`from flake8 import ...`, not `from src.flake8 import ...`). Add it so the
+        # absolute import resolves as internal.
+        if source_prefix == "src." and top == "src" and len(parts) > 1:
+            child = parts[1]
+            pkgs.add(child[:-3] if child.endswith(".py") else child)
     return pkgs
 
 

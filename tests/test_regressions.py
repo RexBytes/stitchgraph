@@ -5267,3 +5267,186 @@ def test_r38_to_dict_meta_is_sanitized():
     assert d["meta"]["n"] == 3 and d["meta"]["s"] == "ok"
     dumped = json.dumps(d)
     assert "Infinity" not in dumped and "NaN" not in dumped
+
+
+# ===========================================================================
+# Post-1.0.6 multi-repo false-positive hunt (corpora: flake8 / isort / flask /
+# cookiecutter / datasette). The hunt surfaced ONE genuine cardinal-class gap:
+# entry points declared in setup.cfg `[options.entry_points]` (the older but still
+# ubiquitous packaging format — flake8 et al.) were not read, only pyproject.toml's
+# `[project.*]`. Live plugin code (functions AND classes) registered there with no
+# internal caller was flagged dead. Reproduced minimally below.
+# ===========================================================================
+
+
+def test_setup_cfg_console_script_target_is_live(tmp_path):
+    """A `console_scripts` entry in setup.cfg roots its target exactly like a
+    pyproject `[project.scripts]` one — else a CLI's `main` is false-flagged dead."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            console_scripts =
+                mytool = mypkg.cli:main
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "def main():\n    return 0\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "main" not in stale
+
+
+def test_setup_cfg_plugin_group_function_target_is_live(tmp_path):
+    """A function registered only through a plugin-group entry point in setup.cfg
+    (`flake8.extension = E = flake8.plugins.pycodestyle:pycodestyle_logical`) is loaded
+    exclusively by the framework's entry-point machinery and has no internal caller, yet is
+    definitively live. Was a cardinal-class false positive before setup.cfg was parsed."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            myframework.plugins =
+                foo = mypkg.plugins:do_foo
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/plugins.py": (
+            "def do_foo(x):\n    return x + 1\n\n"
+            "def truly_dead():\n    return 99\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "do_foo" not in stale            # entry-point plugin: live
+        assert "truly_dead" in stale            # genuinely dead: still flagged (no over-root)
+
+
+def test_setup_cfg_plugin_group_class_target_and_methods_are_live(tmp_path):
+    """A *class* registered as a plugin (`flake8.report = pylint = ...:Pylint`) is
+    instantiated and driven by the framework, so the class AND its public protocol methods
+    are live API with no internal caller. The class target must root its public methods just
+    like an exported class does — underscore methods stay private."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            myframework.reporters =
+                bar = mypkg.plugins:DoBar
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/plugins.py": (
+            "class DoBar:\n"
+            "    def run(self):\n        return self._impl()\n\n"
+            "    def _impl(self):\n        return 2\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "DoBar" not in stale             # plugin class: live
+        assert "DoBar.run" not in stale         # public protocol method: live API
+
+
+def test_setup_cfg_entry_point_does_not_root_same_named_symbol_elsewhere(tmp_path):
+    """The entry-point match is module-path-precise: a same-named function in an unrelated
+    module is NOT mis-rooted (precision over recall — the fix only adds the true target)."""
+    _mk(tmp_path, {
+        "setup.cfg": """
+            [options.entry_points]
+            console_scripts =
+                mytool = mypkg.cli:run
+        """,
+        "mypkg/__init__.py": "",
+        "mypkg/cli.py": "def run():\n    return 0\n",
+        "mypkg/other.py": "def run():\n    return 1\n",  # same name, different module
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert not any(s.endswith("mypkg/cli.py::run") for s in stale)   # the target: live
+        assert any(s.endswith("mypkg/other.py::run") for s in stale)     # unrelated: still dead
+
+
+def test_inherited_public_method_of_exported_class_is_live(tmp_path):
+    """A public method an exported class *inherits* from a (non-exported) base is part of
+    its public surface — callable on an instance of the exported class — so it is live API
+    with no internal caller. `Flask(App)`, `App(Scaffold)`: `.shell_context_processor` /
+    `.patch` live on the base yet are public API. Was a cardinal-class FP (flask corpus)."""
+    _mk(tmp_path, {
+        "lib/__init__.py": '__all__ = ["App"]\nfrom .app import App\n',
+        "lib/base.py": (
+            "class Scaffold:\n"
+            "    def patch(self, rule):\n        return rule\n\n"
+            "    def _private_helper(self):\n        return 1\n"
+        ),
+        "lib/app.py": (
+            "from .base import Scaffold\n\n"
+            "class App(Scaffold):\n"
+            "    def run(self):\n        return 0\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Scaffold.patch" not in stale          # inherited public API: live
+        assert "Scaffold._private_helper" in stale     # private, genuinely dead: still flagged
+
+
+def test_transitive_external_base_methods_are_callback_roots(tmp_path):
+    """A class that subclasses a first-party class which itself has an EXTERNAL framework
+    base inherits that base transitively — its method overrides are framework-invoked too.
+    `FlaskGroup(AppGroup)`, `AppGroup(click.Group)`: FlaskGroup.get_command overrides a click
+    method with no internal caller. The 'callback' role must propagate down INHERITS (C1)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/cli.py": (
+            "import click\n\n"
+            "class AppGroup(click.Group):\n"
+            "    def make_context(self, *a):\n        return None\n\n"
+            "class FlaskGroup(AppGroup):\n"
+            "    def get_command(self, ctx, name):\n        return None\n\n"
+            "    def list_commands(self, ctx):\n        return []\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "FlaskGroup.get_command" not in stale    # transitive framework override: live
+        assert "FlaskGroup.list_commands" not in stale
+        assert "AppGroup.make_context" not in stale      # direct framework override: live
+
+
+def test_self_named_external_base_is_a_callback_class(tmp_path):
+    """`class EnvironBuilder(werkzeug.test.EnvironBuilder)` — a subclass whose external base
+    shares its own leaf name. The INHERITS edge resolves the base to the subclass itself (a
+    self-loop), so the inline name heuristic misses it and its overrides were flagged dead.
+    A self-loop INHERITS means the real base is external -> a framework callback class (C2)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/testing.py": (
+            "import werkzeug.test\n\n"
+            "class EnvironBuilder(werkzeug.test.EnvironBuilder):\n"
+            "    def json_dumps(self, obj, **kw):\n        return '{}'\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "EnvironBuilder.json_dumps" not in stale  # override of external same-name base
+        assert "EnvironBuilder" not in stale             # class itself: live (has callbacks)
+
+
+def test_plain_stdlib_exception_subclass_is_not_over_rooted(tmp_path):
+    """Precision guard for the C1/C2 widening: subclassing a stdlib *plain* base
+    (`Exception`, `Enum`, ...) must NOT turn the subclass into a framework-callback class —
+    its genuinely-dead methods must still be flagged. Only non-plain external bases count."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "",
+        "pkg/errs.py": (
+            "class MyError(Exception):\n"
+            "    def never_called(self):\n        return 1\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "MyError.never_called" in stale   # plain-base subclass: dead method still flagged
