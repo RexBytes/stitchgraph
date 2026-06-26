@@ -820,6 +820,28 @@ _CALLBACK_ANNOTATIONS = {
     }),
 }
 
+# JS/TS framework DECORATORS that mark a class as framework-instantiated or a method as a
+# framework-invoked handler/callback (NestJS, Angular, TypeORM, routing-controllers). Unlike
+# Java/C# annotations (children of the decl), TS decorators are a `decorator` node that is a
+# CHILD of a `class_declaration` but a preceding SIBLING of a `method_definition` — so both
+# positions are checked. A decorated class/method is reached by the framework, never by name,
+# so it (and its callees) is a live root (multi-language hunt: nestjs controllers). Curated to
+# well-known framework decorators so an ordinary decorator can't drag unrelated code live.
+_CALLBACK_DECORATORS = frozenset({
+    # HTTP route handlers (NestJS, routing-controllers)
+    "Get", "Post", "Put", "Delete", "Patch", "Options", "Head", "All", "Search", "Sse",
+    # NestJS class roots / microservices / websockets / GraphQL resolvers
+    "Controller", "Injectable", "Module", "Resolver", "Catch", "WebSocketGateway",
+    "SubscribeMessage", "MessagePattern", "EventPattern", "GrpcMethod", "GrpcStreamMethod",
+    "Query", "Mutation", "ResolveField", "Subscription",
+    # scheduling / events (NestJS schedule, event-emitter)
+    "Cron", "Interval", "Timeout", "OnEvent",
+    # Angular
+    "Component", "Directive", "Pipe", "NgModule", "HostListener", "Input", "Output",
+    # TypeORM / data-mapper class roots
+    "Entity", "Repository", "EventSubscriber", "ChildEntity", "ViewEntity",
+})
+
 
 def _annotation_name(anno, src: str) -> str:
     """Last path segment of an annotation/attribute name, with C#'s optional
@@ -870,10 +892,30 @@ def _has_callback_annotation(node, lang: str, src: str) -> bool:
     return bool(_annotation_idents(node, src) & annos)
 
 
+def _decorator_name(deco, src: str) -> str:
+    """Leaf name of a JS/TS `decorator` node: `@Get('x')` -> `Get`, `@ns.Controller()` ->
+    `Controller`, `@Injectable` -> `Injectable`. Text-based so it handles call/member forms."""
+    txt = _text(deco, src).lstrip("@").strip()
+    txt = txt.split("(", 1)[0].strip()          # drop call arguments
+    return txt.rsplit(".", 1)[-1].strip()       # last segment of a `ns.Name` path
+
+
+def _has_callback_decorator(node, src: str, sibling_decos: list[str]) -> bool:
+    """True when a JS/TS class/method carries a framework decorator (NestJS/Angular/TypeORM).
+    A method's decorators precede it as SIBLINGS (passed in `sibling_decos`); a class's
+    decorators are its own CHILDREN — check both positions."""
+    names = set(sibling_decos)
+    for c in node.children:
+        if c.type == "decorator":
+            names.add(_decorator_name(c, src))
+    return bool(names & _CALLBACK_DECORATORS)
+
+
 # -- pass 1: definitions ----------------------------------------------------
 def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported, is_test,
              contains, enclosing_func):
     pending_attrs: list[str] = []
+    pending_decos: list[str] = []
     for child in node.children:
         t = child.type
         # Rust attributes (`#[test]`, `#[tokio::test]`, `#[cfg(test)]`, ...) parse as
@@ -882,7 +924,13 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         if t in ("attribute_item", "inner_attribute_item"):
             pending_attrs.append(_text(child, src))
             continue
+        # JS/TS method decorators (`@Get('x')`) precede the method as SIBLINGS inside the
+        # class body — accumulate them like Rust attributes so the next def can see them.
+        if t == "decorator":
+            pending_decos.append(_decorator_name(child, src))
+            continue
         attrs, pending_attrs = pending_attrs, []
+        decos, pending_decos = pending_decos, []
         attr_test = any(_is_rust_test_attr(a) for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
@@ -934,6 +982,11 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # A method carrying a framework-callback annotation (@PostConstruct,
             # [OnSerializing], …) is reflection-invoked — root it (multi-language hunt).
             if _has_callback_annotation(child, lang, src):
+                roles.add("callback")
+            # JS/TS: a class/method carrying a framework decorator (@Controller/@Get/@Entity)
+            # is framework-instantiated/-invoked, never called by name — root it.
+            if lang in ("javascript", "typescript", "tsx") \
+                    and _has_callback_decorator(child, src, decos):
                 roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"

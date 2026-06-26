@@ -187,9 +187,23 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `constructor`).
 - **Rationale:** these names are interpreter/runtime contracts, so a definition is a genuine
   implicit entry point. Rooting by name only ever *adds* roots (cardinal-safe); over-rooting a
-  genuinely-dead hook is the documented precision-over-recall trade-off. C#'s serialization
-  callbacks are *attribute*-driven with arbitrary names (`[OnDeserialized] void Foo()`) and are
-  **not** yet rooted — pin them in `stitchgraph.toml [entry_points]` if needed.
+  genuinely-dead hook is the documented precision-over-recall trade-off.
+
+### Framework annotations/attributes/decorators are rooted (Java/C#/JS/TS)
+- **Concern:** a method/class the framework invokes by *reflection or routing* — marked by an
+  annotation (`@PostConstruct`, `@EventListener`, JPA `@PrePersist`, JMH `@Setup`), an
+  attribute (`[OnSerializing]`, `[ModuleInitializer]`, BenchmarkDotNet `[Benchmark]`), or a
+  JS/TS decorator (NestJS `@Controller`/`@Get`, Angular `@Component`/`@HostListener`, TypeORM
+  `@Entity`) — has a free-form name the convention misses, so it (and its callees) was flagged
+  dead (multi-language hunt: gson `@PostConstruct`, Newtonsoft `[OnSerializing]`, NestJS route
+  handlers).
+- **Decision:** root by a curated per-language set of framework annotations/attributes/
+  decorators (role `callback`). The sets cover the dominant frameworks, not every library.
+- **Rationale / gaps:** these markers denote framework contracts, so a definition is a genuine
+  entry point; rooting only ever *adds* roots (cardinal-safe). NOT yet covered: a *custom*
+  user-defined decorator/annotation, C#'s named serialization callbacks discovered only via a
+  `[method]` reference, and JS/TS *metadata-only* decorators (`@Version`) that enhance but
+  don't invoke. Pin those in `stitchgraph.toml [entry_points]`.
 
 ## Cost-of-fix exceeds value
 

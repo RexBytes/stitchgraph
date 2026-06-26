@@ -5615,3 +5615,30 @@ def test_csharp_serialization_callback_attribute_is_live(tmp_path):
         stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
         assert "OnSerializingMethod" not in stale   # [OnSerializing] callback: live
         assert "ReallyUnused" in stale              # ordinary unused method: still flagged
+
+
+def test_ts_framework_decorator_handler_is_live(tmp_path):
+    """A TS class/method carrying a framework decorator (`@Controller`, `@Get`, `@Injectable`,
+    `@Entity`) is framework-instantiated/-invoked, never called by name. NestJS controller
+    route handlers were flagged dead. (Method decorators precede the method as siblings; class
+    decorators are children — both must be detected.)"""
+    # No `export` — otherwise every public method is rooted as public API and the test
+    # can't isolate the decorator's effect. Here the ONLY roots are the decorators.
+    _mk(tmp_path, {
+        "app.controller.ts": (
+            "@Controller('users')\n"
+            "class UsersController {\n"
+            "  @Get(':id')\n"
+            "  getUser(id: string) { return this.lookup(id); }\n\n"
+            "  lookup(id: string) { return id; }\n\n"
+            "  reallyUnused() { return 0; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "getUser" not in stale        # @Get route handler: live (framework-invoked)
+        assert "UsersController" not in stale  # @Controller class: live (framework-instantiated)
+        assert "lookup" not in stale          # reached from the live handler
+        assert "reallyUnused" in stale        # undecorated, uncalled: still flagged
