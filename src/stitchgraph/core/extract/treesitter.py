@@ -89,6 +89,7 @@ _IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
         "singleton_method_undefined", "inherited", "included", "extended", "prepended",
         "append_features", "prepend_features", "extend_object", "initialize_copy",
         "initialize_clone", "initialize_dup", "coerce",
+        "const_missing", "const_added",   # interpreter constant-resolution hooks (grape API)
     }),
     "php": frozenset({
         "__destruct", "__call", "__callStatic", "__get", "__set", "__isset", "__unset",
