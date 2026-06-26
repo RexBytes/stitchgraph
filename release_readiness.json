@@ -892,6 +892,16 @@
       ],
       "findings": {},
       "theme": "2.1.0 \u2014 FULL-DIVERSITY clean round 1 (post-R58-fix). opus: differential on 3 real indexes \u2014 iter_resolved corrupt-skip/weight-coerce are strict no-ops on normal indexes (byte-identical find_stale/fan_in/impact), _STOP_TABLES drops no plausible real table. sonnet: corrupt-row + real-SQL-vs-prose verified. haiku: confirmed db::the phantom gone, orders resolves; empty/:memory:/corrupt edge cases clean. All 3 CLEAN. Tidied 2 NITs (stale test docstring, redundant import math)."
+    },
+    {
+      "id": "R60",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.0 \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: full differential parent-vs-HEAD on 400n/3000e (GraphBLAS + pure-Python) \u2014 reachable/reverse/fan_in/fan_out/find_stale byte-identical; docs match mechanism (structural regex + _STOP_TABLES, not a signal gate); flagged a stale v2.0.0 LIMITATIONS line (streaming 'opt-in') now corrected to AUTO-default. sonnet: two-layer SQL defense + docs verified. haiku: all 4 invariants, 403 tests + 27 oracles green. All 3 CLEAN."
     }
   ]
 }

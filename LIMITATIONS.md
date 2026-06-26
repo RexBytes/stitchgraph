@@ -454,8 +454,14 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   oracle (`tests/oracles/test_streaming_differential.py`). See
   [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
 - **Note:** streaming realises the saving only with an **on-disk** `Store` (a `:memory:` DB
-  necessarily holds the rows in RAM). It is currently opt-in via `streaming=True`; making it
-  the default above a file-count threshold is the final v2.0.0 step.
+  necessarily holds the rows in RAM). As of v2.0.0 it is the **default** (`streaming=None` →
+  AUTO: on-disk store with ≥ `_STREAM_AUTO_FILES` source files); force it either way with
+  `streaming=True` / `streaming=False`.
+- **Querying at that scale (v2.1.0):** the reachability sweeps (`find_stale`, `impact_of`,
+  `fan_in`) now stream their adjacency from `Store.iter_resolved()` rather than materialising
+  every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM. The
+  one remaining O(edges) structure is the in-memory adjacency itself (compact ints, not `Edge`
+  objects); pushing that to disk/GraphBLAS-on-disk is the next step if even that is too big.
 
 ## Behaviour is the contract (changing it would silently break callers)
 

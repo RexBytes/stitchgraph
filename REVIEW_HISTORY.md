@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.0.0: R49–R52. **2.0.1: R53–R57** (full diversity opus/sonnet/haiku) on the PHP callable-array fix |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 + 5/5 ✅ · oracles 26 ✅ · no-open-defects ✅ |
-| Tests | 392 passing (full extras) |
+| Multi-model review panels | 2.0.1: R53–R57. **2.1.0: R58–R60** (full diversity opus/sonnet/haiku) on streaming reachability + SQL-prose |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 + 5/5 + 16/16 + 3/3 ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 403 passing (full extras) |
 | Coverage | ~86% |
-| Convergence | 1.0.7: R40–R46 → R47✓ R48✓ (streak 2). 2.0.0: R49✓ R50✗ (precise×streaming name_based, fixed) → **R51✓ R52✓** (streak 2). 2.0.1: R53✓ R54✗ (doc) R55✗ (incomplete doc fix) R56✓ → **R57✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.0.0: R49✓ R50✗ → R51✓ R52✓ (streak 2). 2.0.1: R53✓ R54✗ R55✗ R56✓ → R57✓ (streak 2). 2.1.0: R58✗ (opus corrupt-relation LOW; haiku SQL prose-phantom MEDIUM) R59✓ → **R60✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.0.0 RELEASED/releasable** (maintainer tags). **2.0.1** (PHP `[$this,'method']` array-callable recognition — Magento dogfood cardinal fix, 39→30 PHP dead-flags) **RELEASABLE** — R54/R55 doc findings fixed; R56+R57 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.0.1` tag |
+| Verdict | **1.0.0–2.0.1 RELEASED/releasable** (maintainer tags). **2.1.0** (constant-memory *queries* — `find_stale` streams its adjacency, ~16M-edge graph queried in ~2 GB instead of OOM; + SQL-prose precision fix) **RELEASABLE** — R58 findings fixed; R59+R60 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.0` tag |
 
 ## Trajectory
 
@@ -867,6 +867,33 @@ partial doc correction (R54→R55) was caught twice before a comprehensive grep-
 closed it — and the final round (R57) turned up two adjacent recall gaps to document rather
 than silently ship. The cardinal fix itself was clean from R53; the iterations were all about
 keeping the docs honest about exactly what is and isn't covered.
+
+## 2.1.0 — constant-memory queries + SQL-prose precision (R58–R60)
+
+Dogfooding v2.0.1's streaming indexer across a **multi-repo Python hunt** (Django, Salt,
+Ansible, CPython stdlib, Home Assistant) found that *indexing* outran *querying*: Home Assistant
+indexed at ~4 GB (6,728 files / ~16M edges) but `find_stale` then **OOM'd** — every reachability
+sweep went through `Store.resolved_edges()` → `SELECT * … fetchall()`, building all 16M `Edge`
+objects at once. v2.1.0 streams a lean `(src, relation, dst_id, weight)` tuple view
+(`Store.iter_resolved()`); `algebra._Adjacency` and the `reach.py` sweeps build from it. Result
+byte-identical (the GraphBLAS==pure-Python oracle proves it); 6M-edge `find_stale` peak dropped
+to ~840 MB, so 16M now queries in ~2 GB. Plus a precision fix: the SQL resolver was treating
+prose docstrings (`"Create a list…"`) as SQL — now a structural regex + an English function-word
+`_STOP_TABLES` drop. And the Salt-loader string-name dynamic-dispatch blind spot (3,907
+flagged) is documented.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R58 | 3 | ✗ | reachability streaming verified byte-identical (opus differential, all sweeps). **opus** LOW: `iter_resolved` bypassed `_row_to_edge`'s corrupt-row drop → a corrupt relation could reach `best_path(relations=None)`. **haiku** MEDIUM: the SQL structural regex still let clause-shaped prose (`"Select items from the list"`) mint a phantom `db::the`. Fixes: skip invalid relations + coerce non-finite weight; `_STOP_TABLES` drops function-word table names. (A first signal-gate attempt was reverted — it rejected real minimal `SELECT x FROM y`.) |
+| R59 | 3 | ✓ | full-diversity clean — fixes confirmed byte-identical on real indexes; `_STOP_TABLES` drops no plausible real table. Tidied 2 NITs (stale test docstring, redundant import). |
+| R60 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. opus full differential (GraphBLAS + pure-Python) + doc-accuracy audit (corrected a stale v2.0.0 "streaming opt-in" LIMITATIONS line to AUTO-default). |
+
+The 2.1.0 lesson: **a memory-shape change is only as safe as its differential oracle, and the
+meta-oracle must run the path that actually executes.** The streaming rewrite was correct from
+the start (oracles green), but the first mutation run showed 16/16 survivors — because with
+GraphBLAS installed the pure-Python sweeps it mutated are *shadowed*; pinning them required a
+test that forces the core-only path. And the SQL fix needed two attempts (signal-gate →
+stop-words) to cut prose phantoms *without* dropping real minimal queries.
 
 ## Standing themes
 
