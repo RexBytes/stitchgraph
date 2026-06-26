@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 47 (Panels A–VV; FF–VV are the post-sonnet-restoration full-3-model panels for 1.0.2/1.0.3/1.0.4/1.0.5) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ (dev 1.10.6 **and** pinned bundled 0.13.0) · no-open-defects ✅ |
-| Tests | 184 passing, 0 skipped (full extras) |
+| Multi-model review panels | 1.0.6: R33–R39. **1.0.7: R40–R42 fix-panels over 6 review rounds** (full diversity opus/sonnet/haiku) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 17/17 ✅ · oracles 23 ✅ · no-open-defects ✅ |
+| Tests | 373 passing, 0 skipped (full extras) |
 | Coverage | ~86% |
-| Convergence | 1.0.0: U→V streak 2. 1.0.1: W→X clean. 1.0.2: HH→II streak 2. 1.0.3: JJ clean. 1.0.4: KK→LL→MM (streak 2). 1.0.5: NN–TT (a chain of LOW/MEDIUM risk/report-rendering + doc/version nits, all fixed) → **UU → VV clean (streak 2, gate met, RELEASABLE)** |
-| Dogfood (self) | find_stale 3 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–1.0.4 RELEASED/releasable** (maintainer tags). **1.0.5** (CLI/UX papercuts #18/#19) **RELEASABLE** — NN–TT findings fixed, UU+VV clean streak met; awaiting the maintainer's manual `v1.0.5` tag |
+| Convergence | 1.0.4: KK→LL→MM (streak 2). 1.0.5: NN–TT → UU→VV (streak 2). 1.0.6: R33–R39 → **R38–R39 3-layer-clean (streak 2)**. 1.0.7: R1✗ R2✗ R3✓ R4✗(R42A) → **R5✓ R6✓ (streak 2, gate met, RELEASABLE)** |
+| Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
+| Verdict | **1.0.0–1.0.6 RELEASED/releasable** (maintainer tags). **1.0.7** (multi-repo/multi-language precision hunt — ~47 real repos, 9 languages, 0 crashes) **RELEASABLE** — R40–R42 findings fixed, R5+R6 clean streak met; awaiting the maintainer's manual `v1.0.7` tag |
 
 ## Trajectory
 
@@ -775,6 +775,37 @@ panel cadence to zero. Two `replace_file` divergences (find_holes-count and fan_
 incremental delete) are documented in LIMITATIONS.md as library-only (the shipped CLI/MCP/watch
 full-reindex). A round-39 reviewer ran a destructive `git reset` mid-run; future panel briefs
 forbid any git state mutation.
+
+## 1.0.7 — multi-repo / multi-language false-positive hunt (R40–R42)
+
+Post-1.0.6, stitchgraph was run against ~47 real-world projects across 9 languages —
+deliberately including code built to break parsers (IOCCC) and large/messy corpora (Linux
+kernel core, WordPress, Magento, PrestaShop, symfony, flake8, flask, NestJS, TypeORM) —
+ground-truthing `find_stale` against actual liveness. **Robustness: 0 crashes across all
+corpora.** The hunt surfaced 9 cardinal-class entry-point/liveness gaps, each fixed
+root-cause + owned by a regression test (see CHANGELOG 1.0.7): setup.cfg entry points,
+src-layout absolute imports (incl. PEP 420 namespace packages), exported-class inherited
+methods, Java/C# annotations, JS/TS decorators, transitive/self-named external-base
+callbacks, Ruby implicit hooks, C/C++ `EXPORT_SYMBOL`, JS/TS member-assigned functions;
+plus dependency-dir skipping and a bodyless-struct phantom fix.
+
+Then a full-diversity fix-panel campaign (opus/sonnet/haiku) over the session diff with the
+three-layer gate. Six review rounds; the panels caught and fixed 4 defects the new features
+themselves introduced — all **over-rooting/recall**, never a shipped cardinal false-dead:
+
+| Round | Result | Findings |
+|---|---|---|
+| R1 | ✗ | R40A script-class over-root (HIGH); R40B comment dropped JS/TS decorator; R40C member-assign-in-dead-fn rooted |
+| R2 | ✗ | **R41A** comment-skip missed Rust `line_comment`/`block_comment` → `#[test]` dropped (cardinal); + 2 documented cardinal-safe (flat-name export collision; cosmetic export-class role) |
+| R3 | ✓ | clean (cardinal + crash) |
+| R4 | ✗ | **R42A** namespace-package src-layout false-dead (cardinal) — fix reset the streak |
+| R5 | ✓ | clean — R42A broadening verified cardinal-safe; cross-feature + fuzz clean |
+| R6 | ✓ | clean — **streak 2, gate met** |
+
+Every fix only *adds* roots (cardinal-safe). The src-layout incremental defect class is now
+owned by the differential oracle (a new `src/`-layout incremental==full fixture); the
+scalability ceiling (in-memory whole-graph reindex; Magento-scale exceeds ~12 GB) is
+documented in LIMITATIONS as the next architectural item (streaming/constant-memory indexer).
 
 ## Standing themes
 

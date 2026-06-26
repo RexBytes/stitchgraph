@@ -5804,6 +5804,35 @@ def test_member_assigned_function_inside_dead_function_is_not_rooted(tmp_path):
         assert "moduleHelper" not in stale  # called by the live module-scope handler
 
 
+def test_member_assigned_class_public_methods_are_live(tmp_path):
+    """R46A (cardinal): a module-scope member-assigned CLASS (`exports.Parser = class {...}`,
+    the CommonJS pattern) is public API, so it takes the `exported` role — its public methods
+    must be rescued by _seed_exported_class_methods. Otherwise the class is live via the root
+    while its methods (and their private callees) are flagged dead — the inverse-cardinal
+    'class live, methods dead' shape."""
+    _mk(tmp_path, {
+        "plugin.js": (
+            "exports.Parser = class {\n"
+            "  constructor(input) { this.input = input; }\n"
+            "  parse() { return tokenize(this.input); }\n"
+            "  reset() { this.input = ''; }\n"
+            "  _privhelper() { return 1; }\n"
+            "};\n"
+            "function tokenize(s) { return s.split(' '); }\n"
+            "function trulyDead() { return 0; }\n"
+        ),
+        "use.js": "const { Parser } = require('./plugin');\nnew Parser('a b').parse();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "exports.Parser.parse" not in stale   # public method of member-assigned class: live
+        assert "exports.Parser.reset" not in stale
+        assert "tokenize" not in stale               # reached only from parse: live
+        assert "trulyDead" in stale                  # genuinely uncalled module fn: flagged
+        assert "exports.Parser._privhelper" in stale  # private, uncalled: flagged
+
+
 def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
     """R41A: the R40B comment-skip must cover Rust comment node types (`line_comment`/
     `block_comment`, NOT `comment`) — else a `#[test]` + comment + fn drops the test marker

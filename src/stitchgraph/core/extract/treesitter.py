@@ -1090,9 +1090,15 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # constructor) is NOT externally visible unless that function runs, so it must
                 # stay reachability-gated via the CONTAINS edge below — else a dead initializer
                 # would mint live roots and mask its own dead members (panel R40C). Only ever
-                # adds roots at module scope (cardinal-safe).
+                # adds roots at module scope (cardinal-safe). A member-assigned CLASS
+                # (`exports.Parser = class {…}`) is public API, so it takes the `exported`
+                # role — NOT `callback` — so that `_seed_exported_class_methods` rescues its
+                # public methods too; otherwise the class is live via the root while its
+                # methods (and their private callees) are flagged dead, the inverse-cardinal
+                # "class live, methods dead" shape (panel R46A). A function/handler keeps
+                # `callback`.
                 if not name.startswith("_") and enclosing_func is None:
-                    roles.add("callback")
+                    roles.add("exported" if kind is C else "callback")
                 cid = f"{rel}::{qual}"
                 nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, val),
                                   end_line=val.end_point[0] + 1, roles=frozenset(roles)))

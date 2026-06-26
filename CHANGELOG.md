@@ -4,6 +4,64 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [1.0.7] — 2026-06-26
+
+**Precision release from a multi-repo / multi-language false-positive hunt.** stitchgraph
+was run against ~47 real-world projects across 9 languages — including code *designed* to
+break parsers (IOCCC obfuscated C), and large/messy corpora (Linux kernel core, WordPress,
+Magento, PrestaShop, symfony) — to ground-truth `find_stale` against actual liveness. The
+hunt surfaced a family of **cardinal-class false-deads** (live code flagged dead) caused by
+entry-point/liveness signals stitchgraph did not yet model. Every fix only ever *adds* roots
+(precision-safe). **Robustness held: 0 crashes across all corpora** (the 1.0.6 RecursionError/
+FIFO/large-file guards survive obfuscated and machine-generated C).
+
+### Added (new entry-point / liveness signals — all cardinal-safe)
+
+- **`setup.cfg [options.entry_points]`** parsed alongside `pyproject.toml` — `console_scripts`,
+  `gui_scripts`, and plugin groups (e.g. `flake8.extension`/`flake8.report`); class targets
+  root their public methods too.
+- **src-layout (`src/`) absolute-import resolution** — a PyPA `src/pkg/…` project's absolute
+  imports (`from pkg import …`) now resolve (incl. **PEP 420 namespace packages**, no
+  `__init__.py`), so module-load-only-live code isn't flagged dead. Node ids are unchanged;
+  the module lookup gains a src-stripped alias.
+- **Inherited public methods of an exported class** are rooted (a base-class method like
+  `Flask`'s `shell_context_processor`, used on an instance, is public API).
+- **Framework callbacks across more languages:** Java/C# reflection **annotations/attributes**
+  (`@PostConstruct`, `[OnSerializing]`, …); JS/TS **decorators** (NestJS/Angular/TypeORM —
+  `@Controller`/`@Get`/`@Entity`/…); transitive & self-named external-base callback classes
+  (`FlaskGroup→AppGroup→click.Group`; `EnvironBuilder(werkzeug…EnvironBuilder)`); Ruby
+  `const_missing`/`const_added` and more implicit hooks.
+- **C/C++ `EXPORT_SYMBOL(...)`** roots the named function as public kernel/module ABI (the C
+  analogue of `__all__`/`module.exports`).
+- **JS/TS member-assigned functions** (`app.render = function(){…}`, `X.prototype.m = …`,
+  `module.exports.x = …`) are modeled and their bodies walked, so helpers they call aren't
+  flagged dead; module-scope ones are rooted (function-nested ones stay reachability-gated).
+
+### Changed
+
+- **Skip dependency/vendored/build dirs** when indexing — one shared set across both
+  extractors: `node_modules`, `vendor`, `third_party`, `bower_components`, `target`, `.gradle`,
+  plus the existing `.venv`/`build`/`dist`/`.git`/… (conventionally non-first-party).
+- Don't extract a **bodyless C/C++ struct/enum/union** as a phantom dead class.
+
+### Notes
+
+- **Documented scalability limit:** `reindex` builds one in-memory graph, so peak RAM scales
+  with repo size — a tens-of-thousands-of-file monorepo (Magento, 24k files) exceeds ~12 GB;
+  index sub-trees or provision RAM. (A streaming/constant-memory indexer is the next big item.)
+- New documented cardinal-safe over-rooting tradeoffs (flat-name export collisions; member-
+  assigned methods) — see `LIMITATIONS.md`.
+
+**Hardening rounds (R40–R42).** A full-diversity panel campaign (opus/sonnet/haiku) over the
+session's diff, with the three-layer gate (adversarial panel + `tests/oracles/` + mutation
+meta-oracle). The panels found and fixed, at root cause, 4 over-rooting/recall defects the
+features introduced (R40A script-class over-root; R40B/R41A comment dropping a decorator/
+attribute marker across JS/TS **and** Rust; R40C member-assignment-in-dead-function rooting;
+R42A namespace-package src-layout false-dead) — each owned by a regression test, and the
+src-layout incremental defect class newly owned by the differential oracle. Release gated on
+**two consecutive full-diversity (opus+sonnet+haiku) clean panels** per `scripts/readiness.py`
+(R46–R47). The maintainer applies the tag.
+
 ## [1.0.6] — 2026-06-25
 
 **Field-fix patch — entry-point coverage (#20/#21/#22) that grew into a robustness +

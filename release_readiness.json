@@ -676,6 +676,82 @@
       ],
       "findings": {},
       "theme": "1.0.6 CLEAN \u2014 SECOND consecutive 3-layer-clean round (gate met, streak 2). All 6 reviewers FINDINGS:0 across extraction/resolution (deep multi-language syntax, cross-language isolation), operations/metrics/GraphBLAS parity, incremental+trace long sequences, hostile inputs/adapters/corrupt-DB, full CLI sweeps. Panel clean + oracle suite green (348 tests) + mutation clean (envelope 17/17, config 4/4). Dogfood exact."
+    },
+    {
+      "id": "R40",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 2,
+        "MEDIUM": 1
+      },
+      "theme": "1.0.7 fix-panel round 1: R40A script-class over-root (Class.method CLI target rooting its class's whole public surface, HIGH); R40C member-assign-in-dead-function rooted (HIGH); R40B comment dropping a JS/TS @decorator marker (MEDIUM). All over-rooting/recall, cardinal-safe; fixed root-cause + owning tests."
+    },
+    {
+      "id": "R41",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1
+      },
+      "theme": "1.0.7 round 2: R41A \u2014 the R40B comment-skip missed Rust line_comment/block_comment, so #[test]+comment+fn dropped the test marker (cardinal false-dead); fixed. Plus 2 documented cardinal-safe tradeoffs (flat-name export-collision over-rooting; cosmetic @Controller export-class role)."
+    },
+    {
+      "id": "R42",
+      "models": [
+        "opus",
+        "sonnet"
+      ],
+      "findings": {},
+      "theme": "1.0.7 round 3: CLEAN \u2014 both reviewers no cardinal/crash; verified R40/R41 fixes correct + complete."
+    },
+    {
+      "id": "R43",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1
+      },
+      "theme": "1.0.7 round 4: R42A \u2014 namespace-package src-layout (no __init__.py under src/) not detected, so absolute imports stayed external and module-load-only-live code was flagged dead (cardinal); fixed (detect any src/<pkg>/*.py). Cross-feature + fuzz reviewers clean (0 crashes/69 fuzz inputs). Fix reset the streak."
+    },
+    {
+      "id": "R44",
+      "models": [
+        "opus",
+        "sonnet"
+      ],
+      "findings": {},
+      "theme": "1.0.7 round 5: CLEAN \u2014 R42A broadening verified cardinal-safe (real module wins qualname key via direct-assign vs setdefault alias; only adds edges); 20+ real-world shapes + relative-imports/Django/tsx/cpp-EXPORT_SYMBOL/multi-src all clean."
+    },
+    {
+      "id": "R45",
+      "models": [
+        "opus",
+        "sonnet"
+      ],
+      "findings": {},
+      "theme": "1.0.7 round 6: CLEAN \u2014 SECOND consecutive clean round (gate met, streak 2). Final cardinal+crash sweep over 17+ boundary repros; suite 373 green; one JS top-level-fn flag verified pre-existing on the 1.0.6 baseline, not introduced."
+    },
+    {
+      "id": "R46",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1
+      },
+      "theme": "1.0.7 FULL-DIVERSITY round (opus+sonnet+haiku): R46A \u2014 a module-scope member-assigned CLASS (exports.X = class {}) took role 'callback' not 'exported', so _seed_exported_class_methods never rescued its public methods -> class live but its methods + their private callees flagged dead (inverse-cardinal). Fixed: member-assigned class takes 'exported'. Fuzz seat: 0 crashes/15 inputs. Net-new feature-9 regression; streak reset."
     }
   ]
 }
