@@ -902,6 +902,16 @@
       ],
       "findings": {},
       "theme": "2.1.0 \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: full differential parent-vs-HEAD on 400n/3000e (GraphBLAS + pure-Python) \u2014 reachable/reverse/fan_in/fan_out/find_stale byte-identical; docs match mechanism (structural regex + _STOP_TABLES, not a signal gate); flagged a stale v2.0.0 LIMITATIONS line (streaming 'opt-in') now corrected to AUTO-default. sonnet: two-layer SQL defense + docs verified. haiku: all 4 invariants, 403 tests + 27 oracles green. All 3 CLEAN."
+    },
+    {
+      "id": "R62",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.1 Ruby operator-method fix \u2014 FULL-DIVERSITY clean round 1. opus: the shared `operator` capture in _trailing_id never reaches a node/edge-minting path in C++/C# (bare keyword leaf), so zero cross-language regression; setters (type `setter`) handled separately; Ruby-scoped rooting cardinal-safe. sonnet: 24 operator forms classified right; bodies' callees ([]=/<=>/==/<</+@) live, dead normals + their callees still stale; polyglot full==streaming; grape ValueArray.initialize no longer stale. haiku: version 2.1.1, docs accurate, no bogus operator nodes in any language. All 3 CLEAN; mutation _is_ruby_operator_method 3/3; suite 405."
     }
   ]
 }
