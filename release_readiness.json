@@ -869,6 +869,19 @@
       ],
       "findings": {},
       "theme": "2.0.1 PHP fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). All 3 CLEAN. opus fresh 41-file PHP repo (every callable position, nested, multibyte, long array() form, trailing comma, precise=True) \u2014 byte-identical, cardinal-safe; surfaced two PRE-EXISTING recall gaps (bare-string function callable usort($x,'fn'); module-scope array callable) \u2014 not regressions, not overclaimed, now documented in LIMITATIONS. sonnet fresh fuzz (default-arg/property/nested callables) full==streaming. haiku closure audit clean. Mutation 5/5; suite 392."
+    },
+    {
+      "id": "R58",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "LOW": 1
+      },
+      "theme": "2.1.0 streaming-reachability + SQL-prose \u2014 round 1. opus: differential parent-vs-HEAD on 400n/2000e (both GraphBLAS + pure-Python paths) byte-identical for fan_in/fan_out/reachable/reverse/SCC/best_path/find_stale/impact; Relation.value==name so the string membership switch is exact. Found LOW: iter_resolved bypassed _row_to_edge's corrupt-row drop -> a corrupt relation could reach best_path(relations=None). sonnet: CLEAN. haiku: MEDIUM \u2014 SQL structural regex still let prose 'Select items from the list' parse to a phantom db::the. FIXES: iter_resolved skips invalid relations + coerces non-finite weight; SQL resolver drops English function-word table names (_STOP_TABLES). Streak resets -> R59/R60. Mutation reach 16/16 + sql 3/3; suite 403."
     }
   ]
 }

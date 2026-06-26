@@ -28,10 +28,12 @@ except ModuleNotFoundError:  # pragma: no cover
 # A string is treated as SQL only if it has real statement *structure*, not merely a leading
 # verb. The old "first word in {select,insert,...,create,...}" test misfired on ordinary English
 # docstrings — "Create a list of…", "Update the…", "Delete a…", "With this…" — flooding sqlglot
-# with prose to parse (hundreds per file on Django/Salt) and occasionally minting phantom tables
-# (multi-repo Python hunt, panel R58). Requiring the companion keyword (FROM/INTO/SET/the CREATE
-# object type/…) keeps real queries while rejecting prose. Recall cost: a SELECT with no FROM or
-# a `CREATE %sINDEX`-style format template won't match — neither yields a real table edge anyway.
+# with prose to parse (hundreds per file on Django/Salt). Requiring the companion keyword
+# (FROM/INTO/SET/the CREATE object type/…) keeps real queries while rejecting most prose
+# (multi-repo Python hunt, panel R58). The residual — prose that *reads* like a clause, "Select
+# items from the list" — is caught downstream by `_STOP_TABLES` (its parsed "table" is an
+# English function word, never a real identifier). Recall cost: a `SELECT` with no FROM or a
+# `CREATE %sINDEX` format template won't match — neither yields a real table edge anyway.
 _SQL_RE = re.compile(
     r"""^\s*(
         select\b[\s\S]*?\bfrom\b
@@ -47,6 +49,16 @@ _SQL_RE = re.compile(
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
+# English function-words that are never real table identifiers but are what prose-parsed-as-SQL
+# mints: "Select items from the list" -> sqlglot reads `FROM the (AS list)` -> a phantom
+# `db::the` (panel R58, haiku). Dropping these table names removes the residual prose phantom
+# without rejecting any real query (a real schema never names a table `the`/`a`/`of`/…). Words
+# that CAN be real tables (`user`, `order`, `group`, `set`, `key`, `value`, `list`) are NOT here.
+_STOP_TABLES = frozenset({
+    "the", "a", "an", "of", "to", "for", "with", "this", "that", "these", "those",
+    "and", "or", "but", "by", "as", "at", "if", "is", "are", "be", "it", "in", "into",
+    "from", "when", "while", "then", "than", "all", "any", "no", "not", "so", "such",
+})
 
 
 class SqlResolver:
@@ -101,7 +113,8 @@ def _link_one(nodes: dict[str, Node], edges: list[Edge], fid: str, rel: str,
         # FROM / UPDATE x); sqlglot misparses the `TABLE` keyword itself as the table,
         # yielding a phantom `db::TABLE` node while missing the real one (panel R11B).
         # An unquoted bare `table` is never a real identifier — skip it.
-        if not name or name in cte_names or name.lower() == "table":
+        if not name or name in cte_names or name.lower() == "table" \
+                or name.lower() in _STOP_TABLES:
             continue
         rel_kind = Relation.WRITES if id(table) in write_tables else Relation.READS
         tid = f"db::{name}"

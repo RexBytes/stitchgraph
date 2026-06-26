@@ -713,7 +713,15 @@ class Store:
         16M-edge graph (Home Assistant) then materialises ~3 int columns, not 16M `Edge`
         objects, keeping the *query* peak bounded the way the *index* peak already is.
         `relation` is returned as its raw stored string; compare against a set of
-        `Relation.value` (see callers), not the enum, to avoid per-row enum coercion."""
+        `Relation.value` (see callers), not the enum, to avoid per-row enum coercion.
+
+        Rows whose `relation` isn't a known `Relation` are skipped — only possible from a
+        corrupt/bit-rotted index (no writer emits one), but it keeps parity with
+        `resolved_edges()`'s `_row_to_edge` drop so an unfiltered consumer (`best_path`/
+        `trace_path` with `relations=None`) can't traverse a garbage edge (panel R58, opus).
+        A non-finite `weight` from such an index is coerced to 1.0 (matches the Edge default)."""
+        import math
+        valid = {r.value for r in Relation}
         sql = "SELECT src, relation, dst_id, weight FROM edges WHERE dst_id IS NOT NULL"
         params: tuple[str, ...] = ()
         if relation is not None:
@@ -725,7 +733,13 @@ class Store:
             if not rows:
                 break
             for r in rows:
-                yield r["src"], r["relation"], r["dst_id"], r["weight"]
+                rel = r["relation"]
+                if rel not in valid:
+                    continue
+                w = r["weight"]
+                if not isinstance(w, (int, float)) or not math.isfinite(w):
+                    w = 1.0
+                yield r["src"], rel, r["dst_id"], w
 
     def node_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"]

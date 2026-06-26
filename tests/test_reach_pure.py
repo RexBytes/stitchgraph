@@ -105,6 +105,24 @@ def test_fan_out_counts():
         assert "m::c" not in fo
 
 
+def test_iter_resolved_skips_corrupt_relation_rows():
+    """R58 (opus): a corrupt/bit-rotted index row whose `relation` isn't a known Relation must be
+    skipped by iter_resolved (parity with resolved_edges' _row_to_edge drop), so an unfiltered
+    consumer (best_path/trace_path with relations=None) can't traverse a garbage edge. Also a
+    non-finite weight is coerced to 1.0."""
+    with _graph() as store:
+        store.conn.execute(
+            "INSERT INTO edges(src,relation,dst_symbol,dst_id,weight,provenance,"
+            "location,source,file,name_based) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("m::b", "BOGUS_REL", "e", "m::e", 1.0, "extracted", "x:1:0", "ts", "m", 0))
+        store.conn.commit()
+        rels = {rel for _s, rel, _d, _w in store.iter_resolved()}
+        assert "BOGUS_REL" not in rels                 # corrupt relation dropped
+        # best_path with no relation filter must NOT cross the corrupt b->e edge
+        from stitchgraph.core.reach import best_path
+        assert best_path(store, "m::a", "m::e") is None
+
+
 def test_find_stale_uses_pure_path(no_graphblas):
     """End-to-end find_stale on the pure-Python path: with `a` the only root, e is dead."""
     with _graph() as store:
