@@ -814,6 +814,16 @@
       ],
       "findings": {},
       "theme": "2.0.0 streaming \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met). Release confirmation. opus: AUTO threshold boundary (streaming=None == forced), store residue (stream->full->stream == fresh full), CLI/MCP tri-state round-trip, resolver-only + protocol-dunder/override + jedi-homonym non-adjacent overlap, ignore-globs \u2014 all byte-identical incl location/source/name_based + find_stale/holes/meta. sonnet: resolver-heavy (Flask/ORM/fetch) + precise=True + reindex-twice fuzzing \u2014 identical. haiku: CLI/MCP surface + docs-accuracy audit (12x, threshold 2000, on-disk caveat) + meta equality \u2014 CLEAN. All 3 CLEAN. Mutation _dedup_edges/_auto_stream 20/20; suite 391; oracles incl streaming==full (weight/provenance/name_based) + precise=True jedi."
+    },
+    {
+      "id": "R53",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.1 PHP callable-array fix \u2014 FULL-DIVERSITY clean round 1. The fix recognizes [$this,'method'] array callables (usort/preg_replace_callback) -> REFERENCES. opus: append-only/cardinal-safe verified, PHP-only gating, byte-identity across 9 edge fields, edge cases (keyed/3-elem/non-string/nested) all over-root-only. sonnet: 263 non-PHP regressions + edge-case probes, full vs streaming identical. haiku: crash-safety on malformed arrays, quote-stripping, PHP-only flag. All 3 CLEAN. mutation _php_callable_names 5/5 killed; suite 392; Magento Framework 39->30 PHP dead."
     }
   ]
 }
