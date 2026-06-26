@@ -949,8 +949,12 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         # A comment between a decorator/attribute and the def it annotates must NOT flush the
         # pending accumulators — `@Get()\n// note\nfindAll()` and `#[test]\n// note\nfn` are
         # common; resetting here drops the marker so the framework-callback/test rooting never
-        # fires and the live handler (and its callees) is flagged dead (panel R40B).
-        if t == "comment":
+        # fires and the live handler (and its callees) is flagged dead (panel R40B/R41A).
+        # Cover every supported grammar's comment node type: most use `comment`; Rust uses
+        # `line_comment`/`block_comment` (Rust-only among supported langs — and it is the one
+        # language using the sibling `attribute_item` accumulator, so missing it dropped
+        # `#[test]` markers).
+        if t in ("comment", "line_comment", "block_comment"):
             continue
         attrs, pending_attrs = pending_attrs, []
         decos, pending_decos = pending_decos, []

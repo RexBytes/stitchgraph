@@ -5779,3 +5779,25 @@ def test_member_assigned_function_inside_dead_function_is_not_rooted(tmp_path):
         assert "formatDate" in stale        # assigned inside a dead function: NOT auto-rooted
         assert "render" not in stale        # module-scope member assignment: rooted
         assert "moduleHelper" not in stale  # called by the live module-scope handler
+
+
+def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
+    """R41A: the R40B comment-skip must cover Rust comment node types (`line_comment`/
+    `block_comment`, NOT `comment`) — else a `#[test]` + comment + fn drops the test marker
+    and the test fn (plus helpers it alone reaches) is confidently flagged dead (cardinal)."""
+    _mk(tmp_path, {
+        "lib.rs": (
+            "#[cfg(test)]\n"
+            "mod tests {\n"
+            "    #[test]\n"
+            "    // a comment between attribute and fn\n"
+            "    fn closeness_works() { helper_in_test(); }\n"
+            "    fn helper_in_test() -> i32 { 1 }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "closeness_works" not in stale   # #[test] survives the comment: rooted
+        assert "helper_in_test" not in stale     # reached only from the test fn: live
