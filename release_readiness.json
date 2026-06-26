@@ -772,6 +772,48 @@
       ],
       "findings": {},
       "theme": "1.0.7 FULL-DIVERSITY clean round 2 (gate met, streak 2). opus high-distrust boundary sweep; sonnet 14 real-world apps (Flask/Django/NestJS/Ruby/C-EXPORT_SYMBOL/monorepo); haiku 11 robustness incl all-features-combined + 1000-file repo. No cardinal/crash. Suite 374, oracles 23, mutation 17/17, dogfood find_stale=1."
+    },
+    {
+      "id": "R49",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.0 streaming indexer \u2014 FULL-DIVERSITY clean round 1 (first clean run; an earlier R49 attempt was discarded as contaminated \u2014 panels had read operations.py while the mutation tester was rewriting it in place). opus: fuzzed _DefInfo/precompute (Rust trait-impl, C++ out-of-line, iface .type), cache_asts re-parse, 59 non-adjacent same-src runs, double-reindex, mixed-lang stems, 260 polyglot fuzz trials \u2014 all byte-identical incl weight/provenance/name_based. sonnet: 15 adversarial scripts (nested scopes, cross-group dedup, AUTO path, resolver edges, 30-class fanout, mixed C/C++/Py) \u2014 identical. haiku: flush/threshold/:memory:/meta/exception-safety \u2014 CLEAN. name_based first-seen-vs-OR is structural-safe (mixed pairs share src -> sink collapses pre-store; 0 affected rows on self-source) and now pinned by the oracle. Mutation _dedup_edges/_auto_stream 17/17 killed; suite 388; oracles incl weight/provenance/name_based."
+    },
+    {
+      "id": "R50",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "2.0.0 streaming \u2014 full-diversity round 2. opus found a REAL byte-identity break: reindex(precise=True, streaming=True) diverged from streaming=False on name_based (jedi's precise edge + the extractor's name-based edge to the same (src,rel,dst_id) land in different sink groups -> store ORs name_based while in-memory _dedup_edges kept the precise survivor's flag). haiku + sonnet (15min/80 tools: huge-file>_BATCH, many-tiny-files, holes, syntax-errors, symlink loops, reindex-into-same-store, tiebreak) CLEAN. FIX: _dedup_edges now ORs name_based onto the survivor (the store's R23A rule); pure-precise groups keep False (R22A). Pinned by a precise=True jedi oracle case + unit tests; mutation now 20/20. Streak resets -> R51/R52."
+    },
+    {
+      "id": "R51",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.0 streaming \u2014 FULL-DIVERSITY clean round 1 of the post-R50-fix streak. Verified the name_based-OR fix under precise=True (jedi 0.20): opus 9-field differential on jedi-outside-candidates, 2/4/5-way homonyms, lower-weight precise, REFERENCES-vs-CALLS, declared-type, self/cls + multi-level override, propagate_overrides equal-weight collisions, polyglot, full src/ tree \u2014 byte-identical. sonnet 14 fuzz scripts / 60+ combos incl 10-class max-ambiguity, non-contiguous same-src, last-group jedi join \u2014 identical. haiku scrutinized the OR loop (no shared-object/leak), meta equality \u2014 CLEAN. All 3 CLEAN; mutation 20/20; suite 391."
+    },
+    {
+      "id": "R52",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.0.0 streaming \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met). Release confirmation. opus: AUTO threshold boundary (streaming=None == forced), store residue (stream->full->stream == fresh full), CLI/MCP tri-state round-trip, resolver-only + protocol-dunder/override + jedi-homonym non-adjacent overlap, ignore-globs \u2014 all byte-identical incl location/source/name_based + find_stale/holes/meta. sonnet: resolver-heavy (Flask/ORM/fetch) + precise=True + reindex-twice fuzzing \u2014 identical. haiku: CLI/MCP surface + docs-accuracy audit (12x, threshold 2000, on-disk caveat) + meta equality \u2014 CLEAN. All 3 CLEAN. Mutation _dedup_edges/_auto_stream 20/20; suite 391; oracles incl streaming==full (weight/provenance/name_based) + precise=True jedi."
     }
   ]
 }

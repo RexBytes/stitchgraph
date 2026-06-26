@@ -404,23 +404,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** contribute the relevant `LangSpec` fields (`imports`,
   `heritage`).
 
-### Very large monorepos are indexed as one in-memory graph (peak RAM scales with the repo)
-- **Concern:** `reindex(store, path)` extracts the *whole* tree into one graph and holds all
-  nodes + edges in memory before/while writing, so peak RAM scales with total nodes+edges,
-  not with the on-disk store. A directory `reindex` is whole-project (it replaces the store),
-  so it can't be chunked across calls to bound memory. Measured: Magento 2.4.7 (24,401 PHP
-  files) and even its `app/code` subtree (14,324 files) exceed ~12 GB; the `Framework` core
-  (3,968 files) indexes fine at ~1.9 GB / 42s. WordPress, PrestaShop (31k functions), and
-  Symfony (16k methods) all complete comfortably — this only bites tens-of-thousands-of-file
-  monorepos.
-- **Decision / rationale:** keep a single-pass in-memory extraction — it makes cross-file
-  name resolution (the basis of dead-code/impact/trace) exact and the code simple; streaming
-  with cross-batch symbol resolution is a large architectural change with its own correctness
-  risk. An over-budget run raises a clean `MemoryError` (or is killed), never corrupting the
-  store.
-- **Escape hatch:** index self-contained sub-trees separately (e.g. per top-level
-  package/module), or provision RAM proportional to repo size (rule of thumb from the hunt:
-  roughly 0.7–0.9 GB per 1,000 dense PHP files).
+### Very large monorepos (RESOLVED in v2 by the streaming indexer)
+- **Was:** `reindex(store, path)` extracted the whole tree into one in-memory graph and held
+  all nodes + edges before writing, so peak RAM scaled with total nodes+edges. Magento 2.4.7
+  (24,401 PHP files) and even its `app/code` subtree exceeded ~12 GB. The hog was the edge
+  list — name-based ambiguous fan-out produces ~15.5M edges on a single Magento module.
+- **Now:** `reindex(store, path, streaming=True)` streams the graph to SQLite instead of
+  building it in Python first — each file's AST/parse-tree + source are dropped after pass 1,
+  and edges are deduplicated per-source on the fly and written in committed batches, so peak
+  RAM tracks one file's working set, not the repo. Measured on the Magento `Framework` core
+  (4,304 files): **3,183 MB → 269 MB (~12×), byte-identical output** (verified row-for-row),
+  ~40% slower. The streamed index is pinned equal to the in-memory one by a differential
+  oracle (`tests/oracles/test_streaming_differential.py`). See
+  [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
+- **Note:** streaming realises the saving only with an **on-disk** `Store` (a `:memory:` DB
+  necessarily holds the rows in RAM). It is currently opt-in via `streaming=True`; making it
+  the default above a file-count threshold is the final v2.0.0 step.
 
 ## Behaviour is the contract (changing it would silently break callers)
 

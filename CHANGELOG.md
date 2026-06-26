@@ -4,6 +4,66 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.0.0] — 2026-06-26
+
+**Constant-memory streaming indexer.** The major feature of v2: `reindex` can now stream the
+graph straight to SQLite instead of building it all in Python first, so peak memory tracks
+one file's working set — not the size of the whole repo. Tens-of-thousands-of-file monorepos
+(Magento, 24k PHP files) that used to need >12 GB and OOM now index on a laptop. The streamed
+index is **byte-identical** to the in-memory one, pinned by a differential oracle across
+Python + JS/TS + Go + Ruby + C/C++ + Rust + PHP.
+
+Measured on the Magento `Framework` core (4,304 PHP files → 30,412 nodes, ~15.5M raw edges):
+**reindex peak 3,183 MB → 269 MB (~12×), output identical** (3,926,345 edges / 30,412 nodes
+verified row-for-row), ~40% slower.
+
+### Added
+
+- **`reindex(store, path, streaming=...)`** — tri-state:
+  - `None` (default) — **AUTO**: streams when the store is on-disk AND the tree is large
+    (≥ 2,000 indexable source files); small repos keep the slightly faster in-memory path.
+  - `True` / `False` — force streaming / in-memory.
+  Exposed on the CLI (`--streaming/--no-streaming`) and MCP. Streaming saves memory only with
+  an on-disk `Store` (a `:memory:` DB holds rows in RAM regardless), so AUTO never picks it
+  for `:memory:`.
+- **Streaming differential oracle** (`tests/oracles/test_streaming_differential.py`) — the
+  release gate for the streaming path: `streaming == full`, byte-for-byte, on a polyglot
+  corpus plus a heavy-fan-out / cross-group stress fixture.
+- **`scripts/mutate.py --only <names>`** — restrict the mutation meta-oracle to specific
+  functions/classes, so the streaming-critical core is pinned by a fast, targeted kill-signal.
+
+### Changed
+
+- **How extraction streams (internal).** Each file's AST / tree-sitter parse-tree **and**
+  source bytes are dropped after pass 1 (only a tiny per-definition record survives into pass
+  2); edges are deduplicated per-source on the fly and written to SQLite in committed batches,
+  so neither the parse trees nor the millions of edges are ever all resident at once. Output
+  is unchanged. `extract_project` / `treesitter.extract` gained internal `cache_asts` /
+  `cache_trees` / `edge_sink` parameters; their public `(nodes, edges)` return is unchanged.
+- **`Node` / `Edge` use `__slots__`** — lower per-object overhead at scale.
+
+### Fixed
+
+- **`name_based` consistency between the in-memory and store dedups (panel R50).** The
+  in-memory `_dedup_edges` now ORs the `name_based` flag onto a `(src, relation, dst_id)`
+  group's survivor — matching the store's `_dedup_resolved_edges` (the R23A rule). Without
+  this, `reindex(precise=True, streaming=True)` could diverge from `streaming=False` on
+  `name_based` (jedi's precise edge and the extractor's name-based edge to the same target
+  land in different sink groups, so the store's OR fires while the in-memory path kept the
+  precise survivor's flag). Cardinal-safe: a pure-precise group still keeps `name_based=False`,
+  so a precise resolution is never wrongly made re-widenable (R22A). The streaming differential
+  oracle now compares `name_based` (and `weight`/`provenance`) and includes a `precise=True`
+  (jedi) case.
+
+### Notes / trade-offs
+
+- Streaming reindex commits in batches rather than as one transaction, so a crash mid-rebuild
+  can leave a partial index; a re-run rebuilds cleanly (it clears first). The default
+  in-memory path remains crash-atomic. AUTO only engages streaming for large on-disk repos —
+  exactly where the in-memory alternative is an OOM.
+- The previous top deferred limitation ("very large monorepos indexed as one in-memory
+  graph") is **resolved**; see `LIMITATIONS.md` and `docs/V2_STREAMING_DESIGN.md`.
+
 ## [1.0.7] — 2026-06-26
 
 **Precision release from a multi-repo / multi-language false-positive hunt.** stitchgraph

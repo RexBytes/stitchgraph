@@ -861,12 +861,27 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
 
 
 @operation("Incrementally (re)index a path into the graph (admin).")
-def reindex(store: Store, path: str, precise: bool = False) -> Result:
+def reindex(store: Store, path: str, precise: bool = False,
+            streaming: bool | None = None) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
     index — never to source (read-only invariant).
 
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
+
+    `streaming` lowers the extraction memory peak (v2) and produces an index BYTE-IDENTICAL to
+    the in-memory path — pinned by the streaming differential oracle. It (a) drops each file's
+    AST/parse-tree after pass 1 and (b) streams edges straight to SQLite (deduped per-source on
+    the fly) instead of building the full Python edge list — the dominant hog on big repos
+    (~15.5M edges → ~4 GB on a Magento module; streaming holds peak ≈ node objects + one file).
+
+    Tri-state:
+      * None (default) — AUTO: stream when the store is on-disk AND the tree is large
+        (>= `_STREAM_AUTO_FILES` code files). Small repos use the slightly faster in-memory
+        path; large repos get the memory-safe streaming path automatically.
+      * True / False — force the streaming or in-memory path.
+    Streaming only saves memory with an on-disk Store (a `:memory:` DB holds the rows in RAM
+    regardless), so AUTO never picks it for `:memory:`.
     """
     import os
 
@@ -895,13 +910,21 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
 
-    nodes, edges = extract_project(path, ignore=load_config(path).ignore)
-    # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
-    # optional jedi precision pass.
+    if streaming is None:
+        streaming = _auto_stream(path, store)
+
     resolvers = default_resolvers()
     if precise:
         from .resolve.jedi_resolver import JediResolver
         resolvers.append(JediResolver())
+
+    if streaming:
+        return _reindex_streaming(store, path, abs_root, load_config(path).ignore, resolvers)
+
+    nodes, edges = extract_project(path, ignore=load_config(path).ignore,
+                                   cache_asts=not streaming)
+    # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
+    # optional jedi precision pass.
     nodes, edges = run_resolvers(path, nodes, edges, resolvers)
     edges = _dedup_edges(edges)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
@@ -918,6 +941,183 @@ def reindex(store: Store, path: str, precise: bool = False) -> Result:
             store.add_edge(e)
 
     store.set_meta("root", abs_root)
+    holes = len(store.unresolved_edges())
+    return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
+              files=len(files), nodes=store.node_count())
+
+
+_EDGE_INSERT_SQL = (
+    "INSERT INTO edges(src, relation, dst_symbol, dst_id, weight, provenance, "
+    "location, source, file, name_based) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+# AUTO-streaming threshold: at/above this many indexable source files, `reindex` switches to
+# the constant-memory streaming path (on-disk stores only). Below it, the in-memory path is
+# slightly faster and the peak is modest. Tuned from the Magento hunt: ~2k dense files already
+# push the in-memory path toward ~1 GB, and streaming's ~40% time cost is negligible in
+# absolute terms on a tree that small — so erring toward streaming earlier is cheap insurance.
+_STREAM_AUTO_FILES = 2000
+
+
+def _auto_stream(path: str, store: Store) -> bool:
+    """Decide whether AUTO mode (`streaming=None`) should stream. Streams only for an on-disk
+    store (a `:memory:` DB keeps rows in RAM, so streaming saves nothing there) with a large
+    source tree. The count short-circuits at the threshold, so this is O(threshold), not
+    O(repo) — a cheap probe, never a second full walk on a big monorepo."""
+    if getattr(store, "path", ":memory:") == ":memory:":
+        return False
+    from pathlib import Path
+    suffixes = {".py"}  # the Python extractor's fixed extension
+    try:
+        from .extract import treesitter
+        suffixes |= set(treesitter.EXT_LANG)
+    except Exception:  # noqa: BLE001 — tree-sitter absent: Python-only count still works
+        pass
+    n = 0
+    try:
+        for p in Path(path).rglob("*"):
+            if p.suffix in suffixes and p.is_file():
+                n += 1
+                if n >= _STREAM_AUTO_FILES:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+class _StoreEdgeSink:
+    """Append-only edge consumer that streams DEDUPED edges to the store (Phase 2b).
+
+    Stands in for the extractor's in-memory `edges` list so the bulk edge set never
+    materialises in Python. On a Magento-scale PHP repo that list is the dominant hog —
+    ~15.5M raw edges (~4 GB in Python; ~9 GB if written raw to sqlite). The blow-up is
+    name-based ambiguous fan-out: a bare call resolves to every same-named candidate, and the
+    same call site repeats. `_dedup_edges` collapses that ~4:1 (15.5M → ~3.9M), and CRUCIALLY
+    every dedup key is scoped to the edge's `src` (`(src, relation, dst_id)`; the
+    CALLS-subsumes-REFERENCES and self-loop rules are per-`src` too). So dedup can be applied
+    one source at a time.
+
+    The extractor emits a definition's edges CONSECUTIVELY (the pass-2 loop finishes one
+    def_id before the next), so the sink buffers the current source's edges and, when the
+    source changes, runs the exact in-memory `_dedup_edges` over just that group and writes
+    the survivors. Only ~3.9M deduped rows ever reach disk, not 15.5M — bounded memory AND a
+    ~2 GB DB instead of ~9 GB. A final `_dedup_resolved_edges` in the store still runs as the
+    authoritative GLOBAL pass: it catches the rare same-`src` edges split across non-adjacent
+    groups (INHERITS/constructor seeds vs the def loop) and any resolver edge that shares a
+    src with an extractor edge. The pre-pass only ever drops rows that the global pass would
+    also drop, keeping the first-seen survivor (== lowest future rowid), so the final graph is
+    byte-identical to the in-memory path (gated by the streaming differential oracle).
+
+    Writes are batched with `executemany` and COMMITTED per batch: a single open transaction
+    over millions of rows pins every dirty page and balloons RSS / exhausts temp space. On the
+    rare batch holding an unstorable id (non-UTF-8 / embedded NUL), the batch is rolled back
+    and re-applied per-row so only the bad edge is skipped, exactly as `add_edge` does.
+    """
+
+    __slots__ = ("_store", "_conn", "_group", "_cur_src", "_wbuf", "count")
+    _BATCH = 20000
+
+    def __init__(self, store: Store) -> None:
+        self._store = store
+        self._conn = store.conn
+        self._group: list[Any] = []      # edges of the current source, awaiting per-src dedup
+        self._cur_src: Any = None
+        self._wbuf: list[Any] = []       # deduped edges awaiting a batched write
+        self.count = 0
+
+    @staticmethod
+    def _row(e: Any) -> tuple:
+        from .store import _file_of
+        return (e.src, e.relation.value, e.dst_symbol, e.dst_id, e.weight,
+                e.provenance.value, e.location, e.source, _file_of(e.src), int(e.name_based))
+
+    def append(self, edge: Any) -> None:
+        if edge.src != self._cur_src and self._group:
+            self._finalize_group()
+        self._cur_src = edge.src
+        self._group.append(edge)
+
+    def _finalize_group(self) -> None:
+        # Per-source dedup, identical to the in-memory full path applied to this source's
+        # edges. Survivors are queued for a batched write.
+        for e in _dedup_edges(self._group):
+            self._wbuf.append(e)
+        self._group.clear()
+        if len(self._wbuf) >= self._BATCH:
+            self._write()
+
+    def _write(self) -> None:
+        if not self._wbuf:
+            return
+        try:
+            with self._conn:  # atomic batch: COMMIT on success, ROLLBACK on a bind error
+                self._conn.executemany(_EDGE_INSERT_SQL, [self._row(e) for e in self._wbuf])
+        except (UnicodeEncodeError, ValueError):
+            with self._conn:
+                for e in self._wbuf:
+                    self._store.add_edge(e)
+        self.count += len(self._wbuf)
+        self._wbuf.clear()
+
+    def flush(self) -> None:
+        if self._group:
+            self._finalize_group()
+        self._write()
+
+
+def _reindex_streaming(store: Store, path: str, abs_root: str,
+                       ignore: list[str], resolvers: list) -> Result:
+    """Constant(-ish)-memory reindex: stream nodes/edges to SQLite; dedup as we go + once more
+    globally in the store.
+
+    Byte-identical to the in-memory full path (the streaming differential oracle is the gate).
+    The facts that make this safe without re-deriving graph logic: (1) within extraction
+    `edges` is write-only — override propagation is Python-only (it runs inside
+    python.extract_project over the small Python edge set) and the bulk dedup is deferred;
+    (2) resolvers read only nodes + source, never the edge list; (3) every dedup key is scoped
+    to the edge's `src`, so the sink can collapse each source's fan-out with the exact
+    in-memory `_dedup_edges` on the fly, and the store's `_dedup_resolved_edges` (the proven
+    twin) is the authoritative GLOBAL pass for the rare cross-group / resolver overlap. We keep
+    the (far smaller) node list resident for the seeds/resolvers; only deduped edges hit disk.
+    """
+    from .extract import extract_project
+    from .resolve import run_resolvers
+
+    # NOT one transaction: the sink commits each edge batch so the deduped edge stream never
+    # sits in a single open transaction (that pins every dirty page and balloons RSS — the very
+    # thing streaming exists to avoid). The trade-off is that a crash mid-rebuild leaves a
+    # partial index; a re-run rebuilds cleanly (it clears first). The default in-memory path
+    # stays crash-atomic; AUTO only picks streaming for large on-disk repos, where the
+    # in-memory alternative is an OOM. The clear, node write, and dedup are each a transaction.
+    with store.conn:
+        store.conn.execute("DELETE FROM nodes")
+        store.conn.execute("DELETE FROM edges")
+    sink = _StoreEdgeSink(store)
+    try:
+        # Pass 1/2: nodes resident, edges streamed (deduped per-source, committed in batches).
+        nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink)
+        # Resolvers enrich from the node list + source only; their (few) extra edges stream to
+        # the store after the extractor's, preserving the full path's append order.
+        nodes, res_edges = run_resolvers(path, nodes, [], resolvers)
+        for e in res_edges:
+            sink.append(e)
+    finally:
+        sink.flush()  # never drop the buffered tail — even if extraction/resolvers raise
+    with store.conn:
+        for n in nodes:
+            store.add_node(n)
+    # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo. The
+    # dedup correlates rows by (src, relation, dst_id); a covering index makes its EXISTS
+    # subqueries index lookups instead of full scans. Temporary: dropped after, since the
+    # steady-state read indexes differ.
+    with store.conn:
+        store.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edges_dedup ON edges(src, relation, dst_id, weight)")
+        store._dedup_resolved_edges()
+        store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
+
+    store.set_meta("root", abs_root)
+    files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
               files=len(files), nodes=store.node_count())
@@ -942,6 +1142,7 @@ def _dedup_edges(edges: list) -> list:
     best: dict[tuple, Any] = {}
     order: list[tuple] = []
     holes: list = []
+    nb_any: dict[tuple, bool] = {}  # any arm of this (src,rel,dst_id) group was name-based?
     for e in edges:
         if e.dst_id is None:
             holes.append(e)
@@ -950,8 +1151,24 @@ def _dedup_edges(edges: list) -> list:
         if key not in best:
             best[key] = e
             order.append(key)
-        elif e.weight > best[key].weight:
-            best[key] = e
+            nb_any[key] = e.name_based
+        else:
+            nb_any[key] = nb_any[key] or e.name_based
+            if e.weight > best[key].weight:
+                best[key] = e
+    # Mirror the store's `_dedup_resolved_edges` step 0: a (src,relation,dst_id) group that
+    # contains ANY name-based arm stays re-widenable, so its survivor carries name_based=True
+    # even when the kept (highest-weight) row was a PRECISE resolution. Without this the
+    # in-memory full path and the store/streaming path (which ORs in SQL) diverge on
+    # `name_based` whenever a precise edge — e.g. jedi under `--precise`, which arrives as a
+    # separate resolver edge from the extractor's name-based arm — coincides with a name-based
+    # edge to the same target (panel R50, opus: a real streaming-vs-full byte-identity break).
+    # OR-only, so a pure-precise group keeps False and a precise resolution is never wrongly
+    # made re-widenable (R22A preserved); aligning with the store also closes the same latent
+    # full-vs-incremental gap (R23A).
+    for key, survivor in best.items():
+        if nb_any[key] and not survivor.name_based:
+            survivor.name_based = True
     called = {(e.src, e.dst_id) for e in best.values() if e.relation is Relation.CALLS}
 
     def _drop(e) -> bool:  # a redundant or self-looping REFERENCES edge
