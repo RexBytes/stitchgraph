@@ -836,6 +836,19 @@
         "MEDIUM": 1
       },
       "theme": "2.0.1 PHP fix \u2014 round 2. CODE unanimously clean at real-Magento scale: opus (full==streaming 2104n/17618e, find_stale 8->6 shrank only, attribution correct, precise clean), sonnet (cross-file inheritance target live, typo->0 holes, monotonic, 21586n/1.5Me byte-identical). haiku found 1 MEDIUM: stale DOC \u2014 CHANGELOG + RELEASE_NOTES_v2.0.1 still claimed 'Class::method' string callables are handled, but that branch was dropped in the mutation-cleanup simplification (redundant: string-static targets are public/exported). FIX: corrected both docs to array callables only. Streak resets -> R55/R56."
+    },
+    {
+      "id": "R55",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "LOW": 1
+      },
+      "theme": "2.0.1 PHP fix \u2014 round 1 of fresh streak. CODE unanimously clean (opus+sonnet+haiku: byte-identical, cardinal-safe, PHP-only, suite 392). But the R54 doc fix was INCOMPLETE: CHANGELOG INTRO (not just the Fixed bullet) still claimed 'Class::method' string callables were flagged-dead-and-fixed (MEDIUM, self-contradictory with the same entry's 'needs no handling' note), and two LangSpec in-code comments still listed 'Class::method' as handled (LOW). FIX: grep-verified purge of ALL stale 'handled' claims across CHANGELOG + comments; code/docs/comments now uniformly describe only the [$this,'method'] array form. Streak resets -> R56/R57."
     }
   ]
 }
