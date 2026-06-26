@@ -26,6 +26,7 @@ from typing import Any, cast
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
 from ._testfile import is_test_file
+from .python import SKIP_DIRS as _SKIP  # one shared dependency/build/VCS skip set
 
 try:
     from tree_sitter import Parser
@@ -204,7 +205,6 @@ EXT_LANG = {
     ".sh": "bash", ".bash": "bash", ".go": "go", ".java": "java", ".rb": "ruby",
     ".php": "php",
 }
-_SKIP = {".venv", "venv", "build", "dist", "__pycache__", ".git", "node_modules", "target"}
 
 
 def supported_languages() -> list[str]:

@@ -5642,3 +5642,25 @@ def test_ts_framework_decorator_handler_is_live(tmp_path):
         assert "UsersController" not in stale  # @Controller class: live (framework-instantiated)
         assert "lookup" not in stale          # reached from the live handler
         assert "reallyUnused" in stale        # undecorated, uncalled: still flagged
+
+
+def test_dependency_directories_are_not_indexed(tmp_path):
+    """Vendored/dependency/build dirs (`node_modules`, `vendor`, `third_party`, ...) are
+    never first-party source — indexing them floods find_stale with thousands of dead
+    vendored symbols and wastes time (tinycc Win32 headers, composer/Go vendor/, npm deps).
+    Both extractors must skip them; only the real source is indexed."""
+    _mk(tmp_path, {
+        "app.py": "def real_fn():\n    return 1\n",
+        "node_modules/dep/index.js": "function vendoredJs() { return 1; }\n",
+        "vendor/lib.py": "def vendored_py():\n    return 2\n",
+        "third_party/x.go": "package x\nfunc Vendored() {}\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.model import NodeKind
+        names = {n.name for k in (NodeKind.FUNCTION, NodeKind.METHOD)
+                 for n in store.nodes_by_kind(k)}
+        assert "real_fn" in names           # first-party source: indexed
+        assert "vendoredJs" not in names    # node_modules: skipped
+        assert "vendored_py" not in names   # vendor/: skipped
+        assert "Vendored" not in names      # third_party/: skipped

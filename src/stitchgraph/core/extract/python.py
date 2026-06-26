@@ -1670,10 +1670,21 @@ def _project_packages(files: list[Path], root: Path, source_prefix: str = "") ->
     return pkgs
 
 
+# Directories that are universally dependencies, build output, or VCS metadata — never
+# first-party source. Indexing them floods find_stale with thousands of "dead" vendored
+# symbols (Win32 headers shipped by tinycc, composer/Go `vendor/`, npm deps) and wastes time
+# (WordPress-scale). Shared by the Python and tree-sitter extractors so both stay consistent.
+# Conservative: only names that are reserved-by-convention for non-first-party content.
+SKIP_DIRS = frozenset({
+    ".venv", "venv", "build", "dist", "__pycache__", ".git", ".tox", ".svn", ".hg",
+    ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules", "bower_components",
+    "vendor", "third_party", "third-party", "target", ".gradle",
+})
+
+
 def _wanted(path: Path, root: Path) -> bool:
     parts = path.relative_to(root).parts
-    skip = {".venv", "venv", "build", "dist", "__pycache__", ".git", ".tox"}
-    return not any(p in skip for p in parts)
+    return not any(p in SKIP_DIRS for p in parts)
 
 
 def _ignored(path: Path, root: Path, ignore: list[str] | None) -> bool:
