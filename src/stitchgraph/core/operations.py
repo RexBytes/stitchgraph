@@ -862,19 +862,26 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
 
 @operation("Incrementally (re)index a path into the graph (admin).")
 def reindex(store: Store, path: str, precise: bool = False,
-            streaming: bool = False) -> Result:
+            streaming: bool | None = None) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
     index — never to source (read-only invariant).
 
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
 
-    streaming=True lowers the extraction memory peak (v2 work) and produces an index that is
-    IDENTICAL to streaming=False — pinned by the streaming differential oracle. It (a) drops
-    each file's AST/parse-tree after pass 1 (Phase 1/4) and (b) streams every edge straight to
-    SQLite instead of building the full Python edge list (Phase 2b). On a Magento-scale repo
-    that edge list is the dominant hog (~15.5M edges → ~4 GB); streaming removes it from
-    Python memory, leaving peak ≈ node objects + one file's working set.
+    `streaming` lowers the extraction memory peak (v2) and produces an index BYTE-IDENTICAL to
+    the in-memory path — pinned by the streaming differential oracle. It (a) drops each file's
+    AST/parse-tree after pass 1 and (b) streams edges straight to SQLite (deduped per-source on
+    the fly) instead of building the full Python edge list — the dominant hog on big repos
+    (~15.5M edges → ~4 GB on a Magento module; streaming holds peak ≈ node objects + one file).
+
+    Tri-state:
+      * None (default) — AUTO: stream when the store is on-disk AND the tree is large
+        (>= `_STREAM_AUTO_FILES` code files). Small repos use the slightly faster in-memory
+        path; large repos get the memory-safe streaming path automatically.
+      * True / False — force the streaming or in-memory path.
+    Streaming only saves memory with an on-disk Store (a `:memory:` DB holds the rows in RAM
+    regardless), so AUTO never picks it for `:memory:`.
     """
     import os
 
@@ -902,6 +909,9 @@ def reindex(store: Store, path: str, precise: bool = False,
             store.conn.execute("DELETE FROM edges")
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
+
+    if streaming is None:
+        streaming = _auto_stream(path, store)
 
     resolvers = default_resolvers()
     if precise:
@@ -940,6 +950,39 @@ _EDGE_INSERT_SQL = (
     "INSERT INTO edges(src, relation, dst_symbol, dst_id, weight, provenance, "
     "location, source, file, name_based) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
+
+# AUTO-streaming threshold: at/above this many indexable source files, `reindex` switches to
+# the constant-memory streaming path (on-disk stores only). Below it, the in-memory path is
+# slightly faster and the peak is modest. Tuned from the Magento hunt: ~2k dense files already
+# push the in-memory path toward ~1 GB, and streaming's ~40% time cost is negligible in
+# absolute terms on a tree that small — so erring toward streaming earlier is cheap insurance.
+_STREAM_AUTO_FILES = 2000
+
+
+def _auto_stream(path: str, store: Store) -> bool:
+    """Decide whether AUTO mode (`streaming=None`) should stream. Streams only for an on-disk
+    store (a `:memory:` DB keeps rows in RAM, so streaming saves nothing there) with a large
+    source tree. The count short-circuits at the threshold, so this is O(threshold), not
+    O(repo) — a cheap probe, never a second full walk on a big monorepo."""
+    if getattr(store, "path", ":memory:") == ":memory:":
+        return False
+    from pathlib import Path
+    suffixes = {".py"}  # the Python extractor's fixed extension
+    try:
+        from .extract import treesitter
+        suffixes |= set(treesitter.EXT_LANG)
+    except Exception:  # noqa: BLE001 — tree-sitter absent: Python-only count still works
+        pass
+    n = 0
+    try:
+        for p in Path(path).rglob("*"):
+            if p.suffix in suffixes and p.is_file():
+                n += 1
+                if n >= _STREAM_AUTO_FILES:
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 class _StoreEdgeSink:
