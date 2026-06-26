@@ -49,7 +49,7 @@ class Relation(str, Enum):
     RUNTIME_HITS = "RUNTIME_HITS"
 
 
-@dataclass
+@dataclass(slots=True)
 class Node:
     """A code entity. `id` is `path::qualified.name` (design §4 — stable ids).
 
@@ -83,7 +83,7 @@ class Node:
         return out
 
 
-@dataclass
+@dataclass(slots=True)
 class Edge:
     """A typed, weighted, provenanced relation.
 
