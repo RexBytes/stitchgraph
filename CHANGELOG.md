@@ -57,10 +57,11 @@ session's diff, with the three-layer gate (adversarial panel + `tests/oracles/` 
 meta-oracle). The panels found and fixed, at root cause, 4 over-rooting/recall defects the
 features introduced (R40A script-class over-root; R40B/R41A comment dropping a decorator/
 attribute marker across JS/TS **and** Rust; R40C member-assignment-in-dead-function rooting;
-R42A namespace-package src-layout false-dead) — each owned by a regression test, and the
-src-layout incremental defect class newly owned by the differential oracle. Release gated on
-**two consecutive full-diversity (opus+sonnet+haiku) clean panels** per `scripts/readiness.py`
-(R46–R47). The maintainer applies the tag.
+R42A namespace-package src-layout false-dead; R46A member-assigned-class methods flagged
+dead) — each owned by a regression test, and the src-layout incremental defect class newly
+owned by the differential oracle. Released on **two consecutive full-diversity
+(opus+sonnet+haiku) clean panels (R47–R48)**; `scripts/readiness.py` confirms RELEASABLE. The
+maintainer applies the tag.
 
 ## [1.0.6] — 2026-06-25
 

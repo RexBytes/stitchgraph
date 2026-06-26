@@ -752,6 +752,26 @@
         "HIGH": 1
       },
       "theme": "1.0.7 FULL-DIVERSITY round (opus+sonnet+haiku): R46A \u2014 a module-scope member-assigned CLASS (exports.X = class {}) took role 'callback' not 'exported', so _seed_exported_class_methods never rescued its public methods -> class live but its methods + their private callees flagged dead (inverse-cardinal). Fixed: member-assigned class takes 'exported'. Fuzz seat: 0 crashes/15 inputs. Net-new feature-9 regression; streak reset."
+    },
+    {
+      "id": "R47",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "1.0.7 FULL-DIVERSITY clean round 1 (opus+sonnet+haiku). opus verified R46A correct+complete (member-assigned class extends/nested-in-dead-fn/underscore-only/inverse-cardinal chain); sonnet 8 real shapes; haiku 15 fuzz inputs (0 crashes). No cardinal/crash."
+    },
+    {
+      "id": "R48",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "1.0.7 FULL-DIVERSITY clean round 2 (gate met, streak 2). opus high-distrust boundary sweep; sonnet 14 real-world apps (Flask/Django/NestJS/Ruby/C-EXPORT_SYMBOL/monorepo); haiku 11 robustness incl all-features-combined + 1000-file repo. No cardinal/crash. Suite 374, oracles 23, mutation 17/17, dogfood find_stale=1."
     }
   ]
 }

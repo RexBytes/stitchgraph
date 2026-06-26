@@ -12,9 +12,9 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 17/17 ✅ · oracles 23 ✅ · no-open-defects ✅ |
 | Tests | 373 passing, 0 skipped (full extras) |
 | Coverage | ~86% |
-| Convergence | 1.0.4: KK→LL→MM (streak 2). 1.0.5: NN–TT → UU→VV (streak 2). 1.0.6: R33–R39 → **R38–R39 3-layer-clean (streak 2)**. 1.0.7: R1✗ R2✗ R3✓ R4✗(R42A) → **R5✓ R6✓ (streak 2, gate met, RELEASABLE)** |
+| Convergence | 1.0.4: KK→LL→MM (streak 2). 1.0.5: NN–TT → UU→VV (streak 2). 1.0.6: R33–R39 → **R38–R39 3-layer-clean (streak 2)**. 1.0.7: R40✗ R41✗ R42✓ R43✗(R42A) R44✓ R45✓ R46✗(R46A, first full-diversity) → **R47✓ R48✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–1.0.6 RELEASED/releasable** (maintainer tags). **1.0.7** (multi-repo/multi-language precision hunt — ~47 real repos, 9 languages, 0 crashes) **RELEASABLE** — R40–R42 findings fixed, R5+R6 clean streak met; awaiting the maintainer's manual `v1.0.7` tag |
+| Verdict | **1.0.0–1.0.6 RELEASED/releasable** (maintainer tags). **1.0.7** (multi-repo/multi-language precision hunt — ~47 real repos, 9 languages, 0 crashes) **RELEASABLE** — R40–R46 findings fixed; R47+R48 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v1.0.7` tag |
 
 ## Trajectory
 
@@ -789,18 +789,24 @@ methods, Java/C# annotations, JS/TS decorators, transitive/self-named external-b
 callbacks, Ruby implicit hooks, C/C++ `EXPORT_SYMBOL`, JS/TS member-assigned functions;
 plus dependency-dir skipping and a bodyless-struct phantom fix.
 
-Then a full-diversity fix-panel campaign (opus/sonnet/haiku) over the session diff with the
-three-layer gate. Six review rounds; the panels caught and fixed 4 defects the new features
-themselves introduced — all **over-rooting/recall**, never a shipped cardinal false-dead:
+Then a fix-panel campaign (opus/sonnet/haiku) over the session diff with the three-layer
+gate. Nine review rounds (R40–R48); the panels caught and fixed 5 defects the new features
+themselves introduced — all **over-rooting/recall**, never a shipped cardinal false-dead. The
+release gate (`scripts/readiness.py`) requires **two consecutive FULL-diversity (all three
+models) clean panels** — earlier 2-model clean rounds (R42/R44/R45) confirmed correctness but
+did not satisfy the diversity bar, so the campaign continued to full-diversity R47–R48:
 
-| Round | Result | Findings |
-|---|---|---|
-| R1 | ✗ | R40A script-class over-root (HIGH); R40B comment dropped JS/TS decorator; R40C member-assign-in-dead-fn rooted |
-| R2 | ✗ | **R41A** comment-skip missed Rust `line_comment`/`block_comment` → `#[test]` dropped (cardinal); + 2 documented cardinal-safe (flat-name export collision; cosmetic export-class role) |
-| R3 | ✓ | clean (cardinal + crash) |
-| R4 | ✗ | **R42A** namespace-package src-layout false-dead (cardinal) — fix reset the streak |
-| R5 | ✓ | clean — R42A broadening verified cardinal-safe; cross-feature + fuzz clean |
-| R6 | ✓ | clean — **streak 2, gate met** |
+| Round | Models | Result | Findings |
+|---|---|---|---|
+| R40 | 3 | ✗ | R40A script-class over-root (HIGH); R40B comment dropped JS/TS decorator; R40C member-assign-in-dead-fn rooted |
+| R41 | 3 | ✗ | **R41A** comment-skip missed Rust `line_comment`/`block_comment` → `#[test]` dropped (cardinal); + 2 documented cardinal-safe |
+| R42 | 2 | ✓ | clean (not full-diversity) |
+| R43 | 3 | ✗ | **R42A** namespace-package src-layout false-dead (cardinal) |
+| R44 | 2 | ✓ | clean — R42A broadening verified cardinal-safe (not full-diversity) |
+| R45 | 2 | ✓ | clean (not full-diversity) |
+| R46 | 3 | ✗ | **R46A** member-assigned CLASS methods flagged dead (inverse-cardinal); fuzz clean |
+| R47 | 3 | ✓ | full-diversity clean — R46A verified complete; 8 shapes; 15 fuzz |
+| R48 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE** (14 real-world apps; all-features-combined + 1000-file fuzz) |
 
 Every fix only *adds* roots (cardinal-safe). The src-layout incremental defect class is now
 owned by the differential oracle (a new `src/`-layout incremental==full fixture); the
