@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import textwrap
 
+import pytest
+
 import stitchgraph as sg
 from stitchgraph.core.reach import fan_in
 
@@ -76,4 +78,25 @@ def test_streaming_equals_full_on_entrypoint_shapes(tmp_path):
     for rel, content in files.items():
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text(textwrap.dedent(content))
+    _assert_identical(str(tmp_path))
+
+
+def test_streaming_equals_full_polyglot(tmp_path):
+    """The streaming property must hold ACROSS LANGUAGES, not just Python — every extractor
+    feeds the same shared graph, so the flag must never perturb the combined result. A mixed
+    Python + JS/TS + Go + Ruby + C tree (tree-sitter for the non-Python files) must produce a
+    byte-identical graph either way. (Phase 1 streams only the Python AST; this pins that the
+    polyglot result is unaffected — and stays the guard when tree-sitter streaming lands.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    files = {
+        "app.py": "def run():\n    return helper()\ndef helper():\n    return 1\n",
+        "ui.js": "export function widget() { return draw(); }\nfunction draw() { return 1; }\n",
+        "svc.ts": "@Controller()\nclass Svc {\n  @Get()\n  all() { return this.q(); }\n  q() { return 1; }\n}\n",
+        "main.go": "package main\nfunc main() {\n    hello()\n}\nfunc hello() {}\n",
+        "lib.rb": "class Service\n  def call\n    work\n  end\n  def work; 1; end\nend\n",
+        "core.c": "int add(int a,int b){return a+b;}\nint main(void){return add(1,2);}\n",
+    }
+    for rel, content in files.items():
+        (tmp_path / rel).write_text(content)
     _assert_identical(str(tmp_path))
