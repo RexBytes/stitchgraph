@@ -9,8 +9,8 @@ All notable changes to stitchgraph. Format follows
 **PHP precision fix from dogfooding v2.0.0 on Magento.** Running `find_stale` on the Magento
 Framework surfaced a cardinal-class false-positive: methods invoked through PHP's
 **`[$this, 'method']` callable-array idiom** (the `usort` / `uasort` / `preg_replace_callback`
-comparator pattern) and **`'Class::method'` string callables** were flagged dead, because the
-method name is a *string*, not a syntactic call, so the call scan never saw it.
+comparator pattern) were flagged dead, because the method name is a *string*, not a syntactic
+call, so the call scan never saw it.
 
 ### Fixed
 

@@ -115,7 +115,7 @@ class LangSpec:
     heritage: frozenset[str] = frozenset()          # child types holding base classes
     imports: frozenset[str] = frozenset()           # import statement node types
     bare_calls: bool = False            # Ruby: paren-less `foo` calls parse as identifier
-    callable_strings: bool = False      # PHP: `[$this, 'method']` / `'Class::method'` callables
+    callable_strings: bool = False      # PHP: `[$this, 'method']` array callables
 
 
 _JS = LangSpec(
@@ -197,7 +197,7 @@ SPECS: dict[str, LangSpec] = {
                               "interface_declaration", "trait_declaration"}),
         heritage=frozenset({"base_clause", "class_interface_clause"}),
         imports=frozenset({"namespace_use_declaration"}),
-        callable_strings=True,  # `[$this, 'm']` / `[self::class, 'm']` / `'Class::m'` callables
+        callable_strings=True,  # `[$this, 'm']` / `[self::class, 'm']` array callables
     ),
 }
 EXT_LANG = {
