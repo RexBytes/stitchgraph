@@ -1163,6 +1163,16 @@
       ],
       "findings": {},
       "theme": "2.1.8 PHP bare-string recall \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: Magento-style array+bare-string, nested array_map(array_filter), closures, heredoc/nowdoc/interpolated/constant callbacks no crash + precision held, builtin-scoping confirmed, cross-language no bleed, idempotence/streaming/incremental, self-dogfood on real Python codebase unchanged (1 advisory). sonnet: oracle 27/27, cardinal matrix 12/12, stress 19-builtins+27-dead exact x3 runs, polyglot index (PHP+Rust+Java+C+++Python) zero contamination, all 6 guards correct (namespaced/Class::method/variable-callee/backslash-builtin/non-builtin), 292 regressions+428 full. haiku: 428, mutation 11/11, readiness RELEASABLE, docs, no leak. All 3 CLEAN. Pre-existing non-regression note: preg_replace_callback_array array-of-patterns form not covered (micro recall gap)."
+    },
+    {
+      "id": "R88",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.9 runtime/native FFI entry points (Rust panic_handler/start/alloc_error_handler, C# UnmanagedCallersOnly/JSInvokable, Go //export) \u2014 FULL-DIVERSITY clean round 1. opus: cross-language key test \u2014 one index with Rust+Go+C#+Java+Python all defining start/export/UnmanagedCallersOnly, ALL 13 unattributed homonyms stay dead, only the 3 attributed root; wrapper syntaxes #[unsafe(panic_handler)]/#[cfg_attr(...,panic_handler)] covered; name-mismatch/blank-gap/prev-None guards work; #[doc=\"start..\"] not matched; determinism/streaming/incremental. sonnet: oracle 27/27, monkeypatch exact (only intended roles move), streaming==full (prev_sibling read in pass-1 before tree free), dual-attr no double-count, no cross-language bleed, 297 regressions+433 full. haiku: 433, mutation 8/8, 5 regression tests, docs, no leak. All 3 CLEAN. Non-cardinal notes (over-root, cardinal-safe, real cgo never triggers): Go regex accepts `// export`(space) and a blank line between //export and func; pre-existing _module_uses #[start]-ident over-root; C# attr-suffix same-lang over-root."
     }
   ]
 }
