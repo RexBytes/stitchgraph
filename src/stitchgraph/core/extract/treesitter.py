@@ -1564,6 +1564,46 @@ def _php_callable_names(node, src):
     return [(meth, sval.start_point[0] + 1)] if meth else []
 
 
+# PHP builtins that take a callback by string name. A bare-string callable passed to one of these
+# names a project global function the syntactic call scan can't see; scoping to this set keeps an
+# ordinary string literal that merely matches a function name from over-rooting (panel R86).
+_PHP_CALLBACK_BUILTINS = frozenset({
+    "usort", "uasort", "uksort", "call_user_func", "call_user_func_array",
+    "array_map", "array_filter", "array_walk", "array_walk_recursive", "array_reduce",
+    "preg_replace_callback", "preg_replace_callback_array", "array_udiff", "array_uintersect",
+    "register_shutdown_function", "set_error_handler", "set_exception_handler",
+    "spl_autoload_register", "forward_static_call", "iterator_apply",
+})
+
+
+def _php_string_callable_names(call_node, src):
+    """Project function names passed as a bare-STRING callback to a known PHP callback builtin —
+    `usort($x, 'topcmp')`, `call_user_func('handler')`. The syntactic call scan can't see the
+    string, so the live target is false-flagged dead (panel R86, the bare-string analogue of the
+    v2.0.1 array form). Scoped to `_PHP_CALLBACK_BUILTINS` so an ordinary string literal matching a
+    function name doesn't over-root. Over-approximated through `_ref` (only project symbols resolve);
+    a `'Class::method'` string needs no handling (a static string call requires a public target,
+    already rooted)."""
+    if call_node.type != "function_call_expression":
+        return []
+    callee = call_node.child_by_field_name("function")  # PHP always exposes the callee here
+    if callee is None or _text(callee, src).strip().lstrip("\\") not in _PHP_CALLBACK_BUILTINS:
+        return []
+    args = next((c for c in call_node.children if c.type == "arguments"), None)
+    if args is None:
+        return []
+    out: list[tuple[str, int]] = []
+    for arg in args.children:
+        if arg.type != "argument":
+            continue
+        for s in arg.children:
+            if s.type in ("string", "encapsed_string"):
+                nm = _text(s, src).strip().strip("\"'`").strip()
+                if nm and "::" not in nm and "\\" not in nm:
+                    out.append((nm, s.start_point[0] + 1))
+    return out
+
+
 def _csharp_attribute_suffix_ref(attr_node, src):
     """The `<Name>Attribute` form of a C# `[Name]` attribute usage, or None. C# omits the
     `Attribute` suffix when applying an attribute, so `[NoEnumeration]` references class
@@ -1600,8 +1640,11 @@ def _direct_refs(body, src, spec):
                 out.append((_text(c, src), c.start_point[0] + 1))
             elif spec.callable_strings:
                 # PHP array callables (`[$this, 'm']`) name a method the syntactic call scan
-                # can't see; emit it so the live target isn't flagged dead.
+                # can't see; emit it so the live target isn't flagged dead. Bare-string callables
+                # passed to a known callback builtin (`usort($x, 'topcmp')`) name a global function
+                # the scan also misses (panel R86).
                 out.extend(_php_callable_names(c, src))
+                out.extend(_php_string_callable_names(c, src))
             elif spec.attr_suffix and c.type == "attribute":
                 # C# applies an attribute with the `Attribute` suffix OMITTED — `[NoEnumeration]`
                 # names class `NoEnumerationAttribute`. The generic walk already emits the bare

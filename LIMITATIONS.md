@@ -73,9 +73,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   forms — `export {}` / inline `export class/fn` / `export default <ident>` / CommonJS
   `module.exports`/`exports.*` / TS `export =`). A handful of indirect forms are still
   not rooted, so a symbol exported *only* that way can surface as a stale candidate:
-  a `module.exports = X` assignment buried *inside a function body*; `export * from
-  './m'`; `Object.assign(module.exports, {…})`; and `module.exports = ns.Member` via a
-  locally-constructed namespace object.
+  a `module.exports = X` assignment buried *inside a function body*;
+  `Object.assign(module.exports, {…})`; and `module.exports = ns.Member` via a
+  locally-constructed namespace object. (`export * from './m'` is **not** affected — it
+  re-exports symbols that `m` already `export`s inline, so they are already rooted in `m`;
+  verified, panel R86.)
 - **Decision / rationale:** match the idiomatic top-level forms by exact shape; these
   indirections are rare, and rooting them generically (e.g. any member-expression RHS)
   would over-mark and *hide* genuinely-dead code — the precision-unsafe direction. They
@@ -255,25 +257,24 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   extracted as its own node — a non-cardinal navigability gap, since a node-less symbol is never
   flagged dead.)
 
-### PHP string callables: array form is covered; bare-string and module-scope are not (yet)
+### PHP string callables: array + bare-string covered; module-scope is not (yet)
 - **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`
   / `['Class', 'method']` inside a function/method body — the `usort` / `uasort` /
   `preg_replace_callback` / `array_map` comparator idiom — emits a REFERENCES edge to the method
   (Magento dogfood, panel R53). So a protected/private method invoked only this way is no longer
   flagged dead.
-- **Not yet covered (known recall gaps, panel R57):** (a) a **bare-string function callable**
-  `usort($x, 'topcmp')` / `call_user_func('topcmp')` — a project *global function* used only via a
-  plain string name is still flagged dead; (b) an array callable at **module/file scope** (not
-  inside a def), since the callable scan runs over def bodies (`_direct_refs`), not module-level
-  code (`_module_uses`). In practice (b)'s targets resolve to public/exported symbols, so a
-  false-dead is unlikely; (a) bites only a project global function referenced *exclusively* by a
-  bare-string callback.
-- **Decision / rationale:** ship the array form (the confirmed, high-value idiom) cardinal-safe
-  and precise; defer bare-string function callables (noisier — every string literal matching a
-  function name would over-root) and module-scope callables to a follow-up. Documented here so a
-  flagged-dead function used only via a bare-string callback is a known gap, not a silent error.
-- **Escape hatch:** treat a `find_stale` hit on a function you know is used via `'name'`-string
-  `call_user_func`/`usort` as a false positive until the follow-up lands.
+- **Covered (v2.1.8):** a **bare-string function callable** passed to a known PHP callback builtin —
+  `usort($x, 'topcmp')`, `call_user_func('handler')`, `array_map('mapper', …)` — now emits a
+  REFERENCES edge to the named global function (panel R86). Scoped to a curated builtin set
+  (`_PHP_CALLBACK_BUILTINS`) so an ordinary string literal that merely matches a function name
+  doesn't over-root.
+- **Not yet covered (known recall gap):** an array/bare-string callable at **module/file scope**
+  (not inside a def), since the callable scan runs over def bodies (`_direct_refs`), not module-level
+  code (`_module_uses`). In practice its targets resolve to public/exported symbols, so a false-dead
+  is unlikely. A bare-string callback passed to a *non-builtin* (project) higher-order function is
+  also out of scope (the builtin allowlist bounds the over-rooting).
+- **Escape hatch:** pin via `stitchgraph.toml [entry_points]` for the rare module-scope or
+  custom-dispatcher case.
 
 ### Framework annotations/attributes/decorators are rooted (Java/C#/JS/TS)
 - **Concern:** a method/class the framework invokes by *reflection or routing* — marked by an

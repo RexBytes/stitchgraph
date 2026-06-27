@@ -4,6 +4,27 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.8] — 2026-06-27
+
+**Recall: PHP bare-string function callables** (the last queued non-cardinal gap from the
+`LIMITATIONS.md` audit).
+
+### Fixed
+
+- **A PHP global function passed as a bare-string callback to a known callback builtin is no longer
+  flagged dead.** `usort($x, 'topcmp')`, `call_user_func('handler')`, `array_map('mapper', …)` etc.
+  name a project function the syntactic call scan can't see; it now emits a REFERENCES edge to the
+  named function (the bare-string analogue of the v2.0.1 array-callable form). Scoped to a curated
+  set of callback-taking builtins (`_PHP_CALLBACK_BUILTINS`) so an ordinary string literal that
+  merely matches a function name doesn't over-root. A `'Class::method'` string needs no handling (a
+  static string call requires a public target, already rooted). `_php_string_callable_names` helper,
+  regression + mutation pinned.
+
+### Docs
+
+- Corrected the JS export-indirections note: `export * from './m'` is **not** an unrooted form — it
+  re-exports symbols `m` already exports inline (so they are already rooted). Verified (panel R86).
+
 ## [2.1.7] — 2026-06-27
 
 **Recall: third-party Rust test harnesses + ByteBuddy/Moshi annotations rooted** (the non-cardinal

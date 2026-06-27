@@ -6538,3 +6538,70 @@ def test_java_bytebuddy_moshi_annotations_rooted(tmp_path):
     for live in ("enter", "reached_e", "exit", "reached_x", "toJson", "tj"):
         assert live not in stale, live
     assert "deadm" in stale
+
+
+def test_php_bare_string_callable_is_live(tmp_path):
+    """R86 (v2.1.8, recall): a project global function passed as a BARE-STRING callback to a known
+    PHP callback builtin — `usort($x, 'topcmp')`, `call_user_func('handler')`, `array_map('mapper',
+    …)` — is reached at runtime but the syntactic call scan misses the string, so it was
+    false-flagged dead (documented gap, panel R57). Now rooted. A string passed to a non-callback
+    function does NOT root it (over-match guard)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.php": (
+            "<?php\n"
+            "function topcmp($a, $b) { return $a - $b; }\n"
+            "function handler() { echo \"h\"; }\n"
+            "function mapper($x) { return $x * 2; }\n"
+            "function notcb() { echo \"x\"; }\n"
+            "function logmsg($s) { echo $s; }\n"
+            "function run() {\n"
+            "    $arr = [3,1,2];\n"
+            "    usort($arr, 'topcmp');\n"
+            "    call_user_func('handler');\n"
+            "    $r = array_map('mapper', $arr);\n"
+            "    logmsg('notcb');\n"           # 'notcb' to a non-callback fn: must NOT root
+            "    return $r;\n"
+            "}\n"
+            "function really_dead() { echo \"d\"; }\n"
+            "run();\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    for live in ("topcmp", "handler", "mapper"):
+        assert live not in stale, live
+    assert "notcb" in stale            # string arg to a non-callback builtin: not rooted
+    assert "really_dead" in stale      # never referenced: dead
+
+
+def test_php_string_callable_names_helper():
+    """Pin _php_string_callable_names (R86): only string args of known callback builtins; a
+    `Class::method` string and a non-callback callee yield nothing."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _php_string_callable_names
+
+    def names(call_src: str) -> set:
+        b = (f"<?php function f() {{ {call_src}; }}").encode()
+        root = get_parser("php").parse(b).root_node
+
+        def find_call(n):
+            for c in n.children:
+                if c.type == "function_call_expression":
+                    return c
+                r = find_call(c)
+                if r is not None:
+                    return r
+            return None
+
+        call = find_call(root)
+        return {nm for nm, _ in _php_string_callable_names(call, b)}
+
+    assert names("usort($x, 'topcmp')") == {"topcmp"}
+    assert names("call_user_func('handler')") == {"handler"}
+    assert names("array_map('mapper', $x)") == {"mapper"}
+    assert names("call_user_func('Cls::method')") == set()   # static string: already-rooted public
+    assert names("logmsg('notcb')") == set()                  # not a callback builtin
