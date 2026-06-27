@@ -1039,6 +1039,16 @@
       ],
       "findings": {},
       "theme": "2.1.4 C/C++ attribute fix (post weak/section/alias) \u2014 full-diversity clean, but the streak RESETS: in response to sonnet's R74 documented empty-body-method gap the maintainer asked to FIX limitations rather than document, so an additional fix (_c_dangling_attr_texts) landed AFTER this round and is re-gated by R76/R77. R75 itself: opus CLEAN (no cardinal in any valid C \u2014 cross-file alias is invalid C/rejected by gcc; weakref/named-weak/section over-root only; 415 pass, streaming byte-identical). sonnet CLEAN (oracle 27/27, EXPORT_SYMBOL|alias union per-file scoping correct, 3-deep helper chain live + dead sibling flagged 0.6, C++ special-member interaction no double-count, incremental==full, cross-language isolated). haiku CLEAN (415, truth tables, docs, no model-id leak)."
+    },
+    {
+      "id": "R76",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.4 final (incl. empty-body _c_dangling_attr_texts) \u2014 FULL-DIVERSITY clean round 1. opus: 8-scenario deep attack on the dangling-attr recovery \u2014 structurally additive (only ever copies attr text onto a node, never removes a role) so it cannot manufacture a false-dead; self-attr steal harmless (victim field is never a node; deprecated/aligned aren't entry keywords), chains/last-member/first-member(prev=`{`)/non-method-field-between/nested-struct/malformed-source all no-crash, no false-dead; full==streaming byte-identical; 417+oracle27. sonnet: whole-file monkeypatch non-regression (zero collateral movement), empty-body+normal-unattributed not contaminated, templated/nested/namespaced methods, confidence proof (result.confidence 0.6, no live in stale), incremental==full, Rust/C#/Ruby regressions 25 pass; LOW non-cardinal note: alias regex matches alias(\"x\") in comments = safe over-root, same as EXPORT_SYMBOL text-scan. haiku: tree clean, 417, mutation 12/12 (all 3 C helpers), 7 regression tests, docs reconciled (empty-body now FIXED not documented), no model-id leak. All 3 CLEAN."
     }
   ]
 }
