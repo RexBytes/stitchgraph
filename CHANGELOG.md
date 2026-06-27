@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.6] — 2026-06-27
+
+**C/C++ class-level export-attribute cardinal fix** (R80 Finding 2 — the last cardinal item from the
+limitation audit).
+
+### Fixed
+
+- **Public methods of a class carrying a *class-level* export attribute are no longer flagged
+  dead.** `class __attribute__((visibility("default"))) Foo { … };` / `__declspec(dllexport)` exports
+  the class's whole public interface, so every public method is public ABI even with no per-method
+  attribute. Their out-of-line `.cpp` definitions carry no attribute, so they (and their callees)
+  were false-flagged dead at 0.6 (cardinal). The public method names declared in an export-attributed
+  class/struct body are now collected (project-wide, into the same set as the header-declaration
+  fix) and root the matching definitions. `struct` defaults public, `class` private; a `private:`
+  section's methods are not ABI and stay dead-code-eligible. Cardinal-safe; `_c_public_method_names`
+  helper, regression + mutation pinned.
+
 ## [2.1.5] — 2026-06-27
 
 **C/C++ header-declaration export-attribute cardinal fix, from the limitation audit.** A review of

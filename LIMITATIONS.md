@@ -222,7 +222,13 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   int compute(int); };` or a top-level `… int W::compute(int);` — while the out-of-line `.cpp`
   definition carries none. The names of export-attributed declarations are collected project-wide and
   root the matching definition by name (the C/C++ analogue of `__all__`), so a public-ABI method
-  marked only in the header is no longer false-flagged dead (panel R77 F2).
+  marked only in the header is no longer false-flagged dead (panel R77 F2). Covers pointer/
+  reference-return wrappers (the `function_declarator` nested in a `pointer_declarator`; panel R78).
+- **Class-level export attribute (handled, v2.1.6):** `class __attribute__((visibility("default")))
+  Foo {…}` / `__declspec(dllexport)` exports the class's whole **public** interface; the public
+  method names declared in the class body are collected and root their out-of-line definitions, so a
+  public method with no per-method attribute isn't false-flagged dead (panel R80 F1). `private:`
+  members are not ABI and stay dead-code-eligible.
 - **Rationale / scope:** rooting only ever *adds* roots (cardinal-safe). `visibility("hidden")` is
   genuinely internal and stays dead-code-eligible; a plain non-`static` function (external linkage
   but no explicit export attribute) is still **not** auto-rooted — that is the deliberate

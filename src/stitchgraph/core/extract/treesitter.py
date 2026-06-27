@@ -1971,7 +1971,36 @@ def _c_export_decl_names(root, src: bytes) -> set[str]:
                     nm = _name_of(n, src)
                     if nm:
                         names.add(nm)
+        elif n.type in ("class_specifier", "struct_specifier"):
+            # A C++ class/struct carrying a *class-level* export attribute — `class
+            # __attribute__((visibility("default"))) Foo {…}` / `__declspec(dllexport)` — exports
+            # its whole PUBLIC interface, so every public method is public ABI even with no
+            # per-method attribute. Their out-of-line definitions carry no attribute and otherwise
+            # false-flag dead at 0.6 (panel R80 F1, cardinal). Collect the public method names;
+            # private members aren't ABI and stay dead-code-eligible. `struct` defaults to public,
+            # `class` to private.
+            if any(c.type in _C_ATTR_NODES
+                   and _C_EXPORT_ATTR_RE.search(src[c.start_byte:c.end_byte].decode("utf-8", "replace"))
+                   for c in n.children):
+                names |= _c_public_method_names(n, src)
         stack.extend(n.children)
+    return names
+
+
+def _c_public_method_names(class_node, src: bytes) -> set[str]:
+    """Public method names declared in a C++ class/struct body (for a class-level export attr)."""
+    body = next((c for c in class_node.children if c.type == "field_declaration_list"), None)
+    if body is None:
+        return set()
+    names: set[str] = set()
+    public = class_node.type == "struct_specifier"   # struct defaults public, class private
+    for c in body.children:
+        if c.type == "access_specifier":
+            public = b"public" in src[c.start_byte:c.end_byte]
+        elif c.type == "field_declaration" and public and _has_function_declarator(c):
+            nm = _name_of(c, src)
+            if nm:
+                names.add(nm)
     return names
 
 

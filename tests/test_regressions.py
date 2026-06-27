@@ -6370,3 +6370,64 @@ def test_cpp_pointer_return_header_export_is_live(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
     assert "make" not in stale       # pointer-returning header export: rooted
     assert "mk_help" not in stale     # reached from it
+
+
+def test_cpp_class_level_export_attr_roots_public_methods(tmp_path):
+    """R80 F1 (v2.1.6): a class carrying a CLASS-LEVEL export attribute (`class
+    __attribute__((visibility("default"))) Foo`) exports its whole public interface, so each public
+    method is public ABI even with no per-method attribute. Their out-of-line `.cpp` definitions
+    carry no attribute and were false-flagged dead at 0.6 (cardinal). Public methods are now rooted;
+    a PRIVATE method stays dead-code-eligible."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "api.hpp": (
+            "class __attribute__((visibility(\"default\"))) Foo {\n"
+            "public:\n"
+            "  int alpha(int x);\n"
+            "  int beta(int x);\n"
+            "private:\n"
+            "  int secret_dead();\n"
+            "};\n"
+        ),
+        "api.cpp": (
+            "#include \"api.hpp\"\n"
+            "int Foo::alpha(int x) { return a_help(x); }\n"
+            "static int a_help(int x){ return x; }\n"
+            "int Foo::beta(int x) { return x; }\n"
+            "int Foo::secret_dead() { return 0; }\n"
+            "__attribute__((constructor)) static void boot(void){ live(); }\n"
+            "static void live(void){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "alpha" not in stale and "beta" not in stale   # public methods of an exported class: live
+    assert "a_help" not in stale                            # reached from a public method
+    assert "secret_dead" in stale                           # private: not ABI, stays dead-eligible
+
+
+def test_c_public_method_names_helper():
+    """Pin _c_public_method_names (R80 F1): only PUBLIC methods of an export-attributed class/struct.
+    `class` defaults private, `struct` defaults public; a per-section access label switches it."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_export_decl_names
+
+    def names(src: str) -> set:
+        b = src.encode()
+        return _c_export_decl_names(get_parser("cpp").parse(b).root_node, b)
+
+    # class: default private -> alpha private (excluded), beta public (included)
+    assert names('class __attribute__((visibility("default"))) C {'
+                 ' int alpha(); public: int beta(); };') == {"beta"}
+    # struct: default public -> both included until a private label
+    assert names('struct __attribute__((visibility("default"))) S {'
+                 ' int a(); private: int b(); };') == {"a"}
+    # dllexport class
+    assert names('class __declspec(dllexport) D { public: int m(); };') == {"m"}
+    # no export attribute on the class -> nothing
+    assert names('class Plain { public: int m(); };') == set()
+    # a data member in the public section contributes no name (not a function)
+    assert names('struct __attribute__((visibility("default"))) V { int field; int f(); };') == {"f"}
