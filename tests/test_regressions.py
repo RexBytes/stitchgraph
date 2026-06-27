@@ -6175,5 +6175,10 @@ def test_c_attr_roots_helper():
     assert roots("static void f(void){}") == set()
     # GNU *trailing* form: the attribute attaches to the function_declarator, not the def node.
     assert roots("static void f(void) __attribute__((used)) { }") == {"callback"}
+    # GCC double-underscore synonyms (`__constructor__` etc.) — common in system headers (R74).
+    assert roots("__attribute__((__constructor__)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((__used__)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((__visibility__(\"default\"))) void f(void){}") == {"exported"}
+    assert roots("__attribute__((__visibility__(\"hidden\"))) void f(void){}") == set()
     assert roots("[[gnu::constructor]] static void f(){}", "cpp") == {"callback"}
     assert roots("__declspec(dllexport) void f(){}", "cpp") == {"exported"}

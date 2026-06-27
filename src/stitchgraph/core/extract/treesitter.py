@@ -1871,9 +1871,14 @@ def _c_attr_roots(node, src) -> set[str]:
         return set()
     blob = b" ".join(texts).decode("utf-8", "replace")
     roles: set[str] = set()
-    if re.search(r"\b(?:constructor|destructor|used|retain)\b", blob):
+    # GCC accepts a `__name__` synonym for every attribute (`__constructor__`, `__used__`,
+    # `__visibility__`, …) — common in system/library headers to dodge user macros — so allow an
+    # optional `_*` around each keyword (panel R74). `_*` still can't over-match inside a longer
+    # identifier like `my_constructor_helper`: both neighbours stay word chars, so no `\b` exists.
+    if re.search(r"\b_*(?:constructor|destructor|used|retain)_*\b", blob):
         roles.add("callback")
-    if re.search(r"\bdllexport\b", blob) or re.search(r"visibility\s*\(\s*\"default\"", blob):
+    if re.search(r"\b_*dllexport_*\b", blob) \
+            or re.search(r"\b_*visibility_*\s*\(\s*\"default\"", blob):
         roles.add("exported")
     return roles
 
