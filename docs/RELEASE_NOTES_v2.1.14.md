@@ -13,7 +13,9 @@ implicit-invocation protocol:
 
 - **Conversion / coercion** — `to_s`/`inspect` (string interpolation, `puts`, `p`), `to_str`/`to_ary`/
   `to_hash`/`to_int`/`to_io`/`to_path` (implicit coercion), `to_a` (splat), `to_h` (double-splat),
-  `to_proc` (`&obj` block conversion), `to_sym`, `to_i`.
+  `to_proc` (`&obj` block conversion), `to_sym`, and numeric coercion `to_i`/`to_f`/`to_r` (note
+  `Integer(obj)`/`Float(obj)` emit a call to `Integer`/`Float`, not to the object's hook, so the
+  hook itself has no textual caller).
 - **Enumerable** — `each` (driven by every `Enumerable` method: `map`/`select`/`reduce`/…), `each_pair`.
 - **Hash-key / ordering** — `hash` and `eql?` (called by the interpreter when the object is used as a
   Hash key), `succ` (drives `Range#each`).

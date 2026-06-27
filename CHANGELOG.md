@@ -15,7 +15,7 @@ a live class's protocol methods (and the helpers they reach) were false-flagged 
 
 - **`_IMPLICIT_HOOKS["ruby"]` extended with the documented implicit-invocation protocol** —
   conversion/coercion (`to_s`, `inspect`, `to_str`, `to_a`, `to_ary`, `to_h`, `to_hash`, `to_i`,
-  `to_int`, `to_proc`, `to_io`, `to_path`, `to_sym`), Enumerable (`each`, `each_pair`), Hash-key /
+  `to_int`, `to_f`, `to_r`, `to_proc`, `to_io`, `to_path`, `to_sym`), Enumerable (`each`, `each_pair`), Hash-key /
   ordering (`hash`, `eql?`, `succ`), and marshalling (`marshal_dump`, `marshal_load`, `_dump`,
   `_load`). Each such method is rooted `callback` (the Ruby analogue of Python dunder rooting). Only
   ever adds roots (cardinal-safe): a plain method with no caller still flags dead.

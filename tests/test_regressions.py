@@ -7116,6 +7116,8 @@ def test_ruby_implicit_protocol_methods_rooted(tmp_path):
             "  def initialize; @v = 1; end\n"
             "  def to_s; fmt; end\n"            # invoked by puts/interpolation
             "  def fmt; \"x\"; end\n"            # reached only via to_s
+            "  def to_f; as_float; end\n"       # numeric coercion (Float(obj)) -> calls Float, not to_f
+            "  def as_float; 1.0; end\n"        # reached only via to_f
             "  def really_dead; nuked; end\n"   # genuinely dead
             "  def nuked; 1; end\n"
             "end\n"
@@ -7133,5 +7135,6 @@ def test_ruby_implicit_protocol_methods_rooted(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
     assert "Money.to_s" not in stale and "Money.fmt" not in stale   # conversion hook + callee live
+    assert "Money.to_f" not in stale and "Money.as_float" not in stale  # numeric coercion hook + callee
     assert "Coll.each" not in stale                                 # Enumerable driver live
     assert "Money.really_dead" in stale and "Money.nuked" in stale  # genuinely dead -> still flagged
