@@ -542,9 +542,11 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
             kind = NodeKind.TEST
         elif is_test_file and not parent_is_class and _is_pytest_hook(node.name):
             # pytest plugin hooks (`pytest_configure`, `pytest_collection_modifyitems`, …) are
-            # discovered and invoked BY NAME by pytest from conftest.py / plugin modules — there
-            # is no in-tree call site, so they (and the helpers they reach) are otherwise
-            # false-flagged dead. The `pytest_` prefix is pytest's own hook-discovery convention.
+            # discovered and invoked BY NAME by pytest from conftest.py and other test-tree
+            # modules — no in-tree call site, so they (and the helpers they reach) are otherwise
+            # false-flagged dead. Scoped to test files (the `is_test_file` set) and the `pytest_`
+            # prefix (pytest's own hook-discovery convention); over-rooting a stray dead
+            # `pytest_*` in a test-tree helper is cardinal-safe.
             roles.add("callback")
         # An empty body inside a Protocol/ABC or under @abstractmethod is an
         # intentional contract, not an implementation hole (design §7 caveat).
@@ -1568,7 +1570,8 @@ def _base_name(node: ast.AST) -> str | None:
     # None — otherwise the subclass has no parent edge, polymorphic overrides of the
     # base's template methods are reached by nothing, and live code is flagged dead
     # (cardinal). Confirmed on sqlalchemy/werkzeug `Mixin(Base[K, V])` patterns.
-    if isinstance(node, ast.Subscript):
+    # Loop (not a single unwrap) so a nested subscript (`Base[K][V]`) still resolves.
+    while isinstance(node, ast.Subscript):
         node = node.value
     return _name_of(node)
 

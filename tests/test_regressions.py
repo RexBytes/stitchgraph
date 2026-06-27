@@ -6892,4 +6892,31 @@ def test_base_name_unwraps_subscripted_generic():
     assert _base_name(ast.parse("mod.Base", mode="eval").body) == "Base"
     assert _base_name(ast.parse("Base[K, V]", mode="eval").body) == "Base"
     assert _base_name(ast.parse("mod.Base[K, V]", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("Base[K][V]", mode="eval").body) == "Base"   # nested subscript
     assert _base_name(ast.parse("(a + b)", mode="eval").body) is None
+
+
+def test_subscripted_external_base_gets_framework_callback(tmp_path):
+    """The real sqlalchemy/werkzeug shape: a subclass of a *subscripted external* generic base
+    (`class V(GenericView[int])`) must get framework-callback rooting — the base resolves to a
+    non-first-party name (signal (b) in _apply_callback_roles), so the class's framework-invoked
+    override (and its callees) stay live. Before the _base_name fix the subscript yielded no base
+    name at all, so neither the INHERITS edge nor the external-base signal fired."""
+    _mk(tmp_path, {
+        "app/__init__.py": "from .views import MyView as MyView\n",
+        "app/views.py": """
+            from framework import GenericView   # external (unindexed) framework base
+
+            class MyView(GenericView[int]):
+                def get(self, request):          # framework-invoked override -- live
+                    return render_body()
+
+            def render_body():
+                return "ok"
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "MyView.get" not in stale          # framework override rooted via external base
+    assert "render_body" not in stale         # and its callee
