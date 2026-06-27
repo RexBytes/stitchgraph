@@ -954,6 +954,16 @@
       ],
       "findings": {},
       "theme": "2.1.2 C# attribute fix \u2014 FULL-DIVERSITY clean round 1 (post-R66-fix). opus: full coverage table \u2014 every C# attribute target routes through _direct_refs or _module_uses, no uncovered target, no double-count, PHP `attribute` gated out (attr_suffix=False), streaming byte-identical. sonnet: exhaustively verified ALL 18 attribute targets live (class/struct/iface/record/enum/enum-member/delegate/method/ctor/field/const/property/event/indexer/param/type-param/local-fn), unused dead, polyglot byte-identical. haiku: version/docs/no-cross-lang-bleed. All 3 CLEAN; mutation 2/2; suite 408."
+    },
+    {
+      "id": "R68",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.2 C# attribute fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). Fresh angles: local-function attr, nested enum-in-class routing (via class-body recursion, not _module_uses), no double-count, using-alias, [AttributeUsage]-decorated attr, fully-qualified names, no-live-root file (attr class correctly DEAD), C#+PHP polyglot streaming (PHP attribute nodes take callable_strings branch, not attr_suffix). All 3 CLEAN. Suite 408; oracles 27; mutation 2/2."
     }
   ]
 }

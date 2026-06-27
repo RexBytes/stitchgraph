@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.0: R58–R60. **2.1.1: R61–R63** (full diversity opus/sonnet/haiku) on the Ruby operator-method fix |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 405 passing (full extras) |
+| Multi-model review panels | 2.1.1: R61–R63. **2.1.2: R64–R68** (full diversity opus/sonnet/haiku) on the C# attribute-class fix |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 408 passing (full extras) |
 | Coverage | ~86% |
-| Convergence | 2.0.1: R53–R56 → R57✓ (streak 2). 2.1.0: R58✗ R59✓ → R60✓ (streak 2). 2.1.1: R61 (dogfood discovery — grape `ValueArray#initialize` false-dead) → fix → **R62✓ R63✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.0: R58✗ R59✓ → R60✓ (streak 2). 2.1.1: R61 (dogfood) → R62✓ R63✓ (streak 2). 2.1.2: R64 (dogfood — serilog attribute false-dead) → R65✓ R66✗ (sonnet: enum/delegate gap) → **R67✓ R68✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.0 RELEASED/releasable** (maintainer tags). **2.1.1** (Ruby operator-method cardinal fix — `def []`/`[]=`/`<=>` captured + rooted; grape dogfood) **RELEASABLE** — R62+R63 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.1` tag |
+| Verdict | **1.0.0–2.1.1 RELEASED/releasable** (maintainer tags). **2.1.2** (C# custom-attribute cardinal fix — `[Foo]` references class `FooAttribute`; serilog dogfood) **RELEASABLE** — R64/R66 findings fixed; R67+R68 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.2` tag |
 
 ## Trajectory
 
@@ -922,6 +922,32 @@ Python hunt (mature rooting) found a scalability ceiling; pointing the same tool
 less-battle-tested language (Ruby) immediately surfaced a real cardinal bug. The
 `ValueArray`/`ValueHash` asymmetry was the tell — when two structurally-identical things get
 opposite verdicts, one of them is a bug.
+
+## 2.1.2 — C# custom-attribute cardinal fix (R64–R68)
+
+Continuing the hunt into Java and C# (jackson-core, mockito, okhttp, serilog). Most findings
+were the **documented external-framework-annotation limitation** — mockito's `@Advice.*`
+(ByteBuddy bytecode instrumentation), okhttp's `@ToJson`/`@FromJson` (Moshi reflection): methods
+invoked by annotations outside the curated set, now cited in LIMITATIONS (pin via
+`[entry_points]`). serilog surfaced a clean extraction bug: `NoEnumerationAttribute`, defined and
+applied as `[NoEnumeration]`, was flagged dead — **C# omits the `Attribute` suffix in usage**, so
+the bare reference never resolved. Fix: an attribute usage also emits the suffixed reference
+(`Foo` → `FooAttribute`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R64 | — | discovery | dogfood: serilog `NoEnumerationAttribute` false-dead, root-caused to the omitted-suffix reference. |
+| R65 | 3 | ✓ | full-diversity clean on the initial fix (`_direct_refs`) — every attribute form (`[Foo(1)]`/`[A.B.Foo]`/`[assembly:]`/generics) safe, no cross-language regression. |
+| R66 | 3 | ✗ | opus + haiku clean, but **sonnet** found the fix was incomplete: C# `enum`/`delegate` aren't in `spec.defs`, so their attributes are walked by `_module_uses` (not `_direct_refs`) — `[MyFlag]` on an enum left `MyFlagAttribute` dead. Fix: mirror the branch in `_module_uses`. |
+| R67 | 3 | ✓ | full-diversity clean — opus's coverage table + sonnet's exhaustive 18-target sweep confirm every C# attribute target is now covered, no double-count. |
+| R68 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Fresh angles: nested enum-in-class routing, local-function attrs, `using`-alias, no-live-root (correctly dead), C#+PHP polyglot streaming. |
+
+The 2.1.2 lesson reprises 2.0.1's: **the same reviewer who is slowest is often the one who finds
+the incomplete fix.** sonnet drove both the R66 enum/delegate gap and (in 2.0.1) the
+partial-doc-fix catches — exhaustive enumeration of cases is its edge, exactly where a "looks
+done" fix hides one uncovered branch. Also: the curated framework-annotation allowlist is a
+deliberate, documented boundary (ByteBuddy/Moshi out of scope), distinct from the genuine
+extraction bug (the attribute *class* reference) that was fixed.
 
 ## Standing themes
 
