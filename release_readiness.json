@@ -1143,6 +1143,16 @@
       ],
       "findings": {},
       "theme": "2.1.7 recall \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: rstest #[case]/#[fixture]/mixed mod tests, shared prod+test helper stays live, Moshi @ToJson @Override, ByteBuddy advice, Kotlin produces ZERO nodes (no bleed), build.rs/examples/malformed no crash, idempotence/streaming/incremental; 19 unit cases 0 fail. sonnet: oracle 27/27, stress 30-rust+20-dead (20/20 flagged) & 20-java+15-dead (15/15 flagged), determinism 5x, cross-language no bleed (Go OnMethodEnter live by Go capitalized-export rule, not bleed), 290 regressions + 426 full. haiku: 426, mutation 11/11, readiness RELEASABLE, docs, no leak. All 3 CLEAN."
+    },
+    {
+      "id": "R86",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.8 recall (PHP bare-string callables) \u2014 FULL-DIVERSITY clean round 1. opus: positive coverage 9 targets across both arg positions (usort/uasort/uksort/call_user_func/array_map/filter/preg_replace_callback/register_shutdown_function/set_error_handler), over-match guard (notcb via logmsg/$b->method/project-HOF all stay dead), Class::method+namespaced safely dropped, closures/variables no crash, cross-language no bleed, JS export* independently verified non-gap, determinism/streaming/incremental; informational: position-agnostic emission over-roots a data-position string matching a project fn (array_reduce 3rd arg) = cardinal-safe bounded. sonnet: oracle 27/27, monkeypatch non-regression, array-callable (2.0.1) intact, Magento-like, stress 25-cb+15-dead exact, 292 regressions+428 full; Finding: top-level module-scope callable not covered = the DOCUMENTED pre-existing recall gap (both array+string forms scan def bodies not _module_uses), non-cardinal. haiku: 428, mutation 11/11, docs, no leak. All 3 CLEAN."
     }
   ]
 }
