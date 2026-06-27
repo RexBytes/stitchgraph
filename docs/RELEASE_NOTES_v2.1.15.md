@@ -27,8 +27,10 @@ Add a `"cpp"` entry to `_IMPLICIT_HOOKS` rooting `begin`/`end` as `callback`. A 
 over-rooting otherwise (only adds roots). Confirmed on the range-for desugaring; a plain method with
 no caller (`Range::truly_dead`) still flags dead.
 
-Scope: `.cpp`/`.cc`/`.cxx`/`.hpp` files (raw language `cpp`). A `.h` file is parsed as C — the
-pre-existing `.h`-as-C boundary — so a header-only C++ class in a `.h` is out of scope here.
+Scope: `.cpp`/`.cc`/`.cxx`/`.hpp` files (raw language `cpp`), **and** any `.h` that `_header_lang`
+content-sniffs as C++ (it carries `class`/`namespace`/`template`/`virtual`/… markers) — so a
+header-only C++ class in a `.h` is also covered. Only a pure-C `.h` (no C++ markers) is parsed as C,
+and a `begin`/`end` there stays dead-eligible (no C over-rooting).
 
 ## Compatibility
 

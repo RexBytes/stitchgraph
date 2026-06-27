@@ -14,8 +14,9 @@ those calls and an iterable type's `begin`/`end` (and what they reach) were fals
 
 - **`_IMPLICIT_HOOKS` gains a `"cpp"` entry rooting `begin`/`end`** as `callback`. A class defining
   `begin`/`end` is iterable by design; rooting them is semantically correct and cardinal-safe
-  (only adds roots). Covers `.cpp`/`.cc`/`.cxx`/`.hpp`; a `.h` is parsed as C (pre-existing
-  `.h`-as-C boundary). A plain method with no caller still flags dead.
+  (only adds roots). Covers `.cpp`/`.cc`/`.cxx`/`.hpp` and any `.h` that `_header_lang`
+  content-sniffs as C++ (carries `class`/`namespace`/`template`/… markers); a pure-C `.h` stays
+  C. A plain method with no caller still flags dead.
 
 ## [2.1.14] — 2026-06-27
 

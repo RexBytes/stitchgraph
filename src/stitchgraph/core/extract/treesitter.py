@@ -123,8 +123,10 @@ _IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
         # `begin(r)`/`end(r)`) — the name-based call graph never sees those calls, and no other pass
         # roots them, so an iterable's `begin`/`end` (+ whatever they reach) were false-flagged dead
         # (C++ manual pass, cardinal). A class defining `begin`/`end` is iterable by design, so
-        # rooting them is semantically right; cardinal-safe over-rooting otherwise. (Only `.cpp`/
-        # `.hpp`/`.cc` reach this — a `.h` is parsed as C, the pre-existing .h-as-C boundary.)
+        # rooting them is semantically right; cardinal-safe over-rooting otherwise. Reaches `.cpp`/
+        # `.cc`/`.cxx`/`.hpp` (raw lang `cpp`) AND any `.h` that `_header_lang` content-sniffs as C++
+        # (it carries `class`/`namespace`/`template`/… markers); only a pure-C `.h` (no such markers,
+        # raw lang `c`) keeps a `begin`/`end` dead-eligible — no C over-rooting.
         "begin", "end",
     }),
 }
