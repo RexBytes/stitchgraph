@@ -4,6 +4,22 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.14] — 2026-06-27
+
+**Ruby implicit conversion / Enumerable protocol methods — cardinal fix (doc-driven manual pass).**
+The interpreter/stdlib invoke a class's conversion (`to_s`/`inspect`/`to_str`/…), Enumerable
+(`each`), Hash-key (`hash`/`eql?`), and marshalling (`marshal_dump`/`_dump`/…) methods *by name*, so
+a live class's protocol methods (and the helpers they reach) were false-flagged dead.
+
+### Fixed
+
+- **`_IMPLICIT_HOOKS["ruby"]` extended with the documented implicit-invocation protocol** —
+  conversion/coercion (`to_s`, `inspect`, `to_str`, `to_a`, `to_ary`, `to_h`, `to_hash`, `to_i`,
+  `to_int`, `to_proc`, `to_io`, `to_path`, `to_sym`), Enumerable (`each`, `each_pair`), Hash-key /
+  ordering (`hash`, `eql?`, `succ`), and marshalling (`marshal_dump`, `marshal_load`, `_dump`,
+  `_load`). Each such method is rooted `callback` (the Ruby analogue of Python dunder rooting). Only
+  ever adds roots (cardinal-safe): a plain method with no caller still flags dead.
+
 ## [2.1.13] — 2026-06-27
 
 **Runtime/native entry-point attributes: C ISR, Rust `#[ctor]`, Java `native` — three narrow cardinal

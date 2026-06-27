@@ -91,6 +91,20 @@ _IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
         "append_features", "prepend_features", "extend_object", "initialize_copy",
         "initialize_clone", "initialize_dup", "coerce",
         "const_missing", "const_added",   # interpreter constant-resolution hooks (grape API)
+        # Implicit conversion/coercion protocol — invoked by the interpreter on string
+        # interpolation / `puts` / `p` (`to_s`/`inspect`), implicit coercion (`to_str`/`to_ary`/
+        # `to_hash`/`to_int`/`to_io`/`to_path`), splat (`to_a`), double-splat (`to_h`), and
+        # `&obj` block conversion (`to_proc`) — never by a textual call. The Ruby analogue of
+        # Python's `__str__`/`__repr__` dunders (Ruby manual pass, cardinal).
+        "to_s", "inspect", "to_str", "to_a", "to_ary", "to_h", "to_hash",
+        "to_i", "to_int", "to_proc", "to_io", "to_path", "to_sym",
+        # Enumerable / Comparable / Hash-key protocol — `each` is driven by every Enumerable
+        # method (`map`/`select`/…); `<=>` (an operator, already rooted) drives Comparable;
+        # `hash`/`eql?` are called by the interpreter when the object is a Hash key; `succ`
+        # drives `Range#each`. Marshalling hooks (`marshal_dump`/`marshal_load`/`_dump`/`_load`)
+        # are invoked by `Marshal.dump`/`.load` by name.
+        "each", "each_pair", "hash", "eql?", "succ",
+        "marshal_dump", "marshal_load", "_dump", "_load",
     }),
     "php": frozenset({
         "__destruct", "__call", "__callStatic", "__get", "__set", "__isset", "__unset",

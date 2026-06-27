@@ -7101,3 +7101,37 @@ def test_rust_runtime_entry_attr_helper():
     assert not _is_rust_runtime_entry_attr("#[derive(Debug)]")
     assert not _is_rust_runtime_entry_attr("ctor")                    # not bracketed -> no match
     assert not _is_rust_runtime_entry_attr("")                        # empty -> no match
+
+
+# -- R98 / manual-pass (CARDINAL): Ruby implicit conversion/Enumerable protocol ----
+def test_ruby_implicit_protocol_methods_rooted(tmp_path):
+    """Ruby invokes conversion (`to_s`/`inspect`/`to_str`/…), Enumerable (`each`), Hash-key
+    (`hash`/`eql?`) and marshalling hooks BY NAME from the interpreter/stdlib — never via a
+    textual call — so a live class's protocol methods (and the helpers they reach) were
+    false-flagged dead. The Ruby analogue of Python dunder rooting. Cardinal-safe: a plain
+    method with no caller still flags dead."""
+    _mk(tmp_path, {
+        "lib.rb": (
+            "class Money\n"
+            "  def initialize; @v = 1; end\n"
+            "  def to_s; fmt; end\n"            # invoked by puts/interpolation
+            "  def fmt; \"x\"; end\n"            # reached only via to_s
+            "  def really_dead; nuked; end\n"   # genuinely dead
+            "  def nuked; 1; end\n"
+            "end\n"
+            "class Coll\n"
+            "  include Enumerable\n"
+            "  def initialize; @a = [1, 2]; end\n"
+            "  def each(&b); @a.each(&b); end\n"   # driven by Enumerable#map
+            "end\n"
+            "m = Money.new\n"
+            "puts m\n"
+            "Coll.new.map { |x| x }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Money.to_s" not in stale and "Money.fmt" not in stale   # conversion hook + callee live
+    assert "Coll.each" not in stale                                 # Enumerable driver live
+    assert "Money.really_dead" in stale and "Money.nuked" in stale  # genuinely dead -> still flagged
