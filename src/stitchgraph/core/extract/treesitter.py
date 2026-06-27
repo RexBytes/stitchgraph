@@ -994,14 +994,23 @@ def _is_rust_export_attr(attr_text: str) -> bool:
 # Rust attributes that mark a function as a RUNTIME entry point the language/runtime invokes
 # automatically — never by an in-tree call, and (unlike `#[proc_macro]`, which requires `pub`)
 # NOT necessarily `pub`, so export-rooting doesn't fire and the fn + its callees are flagged dead.
-_RUST_RUNTIME_ENTRY_ATTRS = frozenset({"panic_handler", "start", "alloc_error_handler"})
+_RUST_RUNTIME_ENTRY_ATTRS = frozenset({
+    "panic_handler", "start", "alloc_error_handler",
+    # `ctor`/`dtor` crate: `#[ctor::ctor]` / `#[ctor]` / `#[ctor::dtor]` run a function
+    # automatically before/after `main` — the direct Rust analogue of C `__attribute__((constructor))`
+    # (which the C extractor already roots). Idiomatically *private*, so the `pub` safety net never
+    # fires and the fn + its callees were false-flagged dead (Rust manual pass). Matched as a path
+    # token, so `#[ctor::ctor]` and bare `#[ctor]` both hit; `#[constructor_helper]` does not.
+    "ctor", "dtor",
+})
 
 
 def _is_rust_runtime_entry_attr(attr_text: str) -> bool:
     """True for a Rust runtime-entry attribute — `#[panic_handler]`, `#[start]`,
-    `#[alloc_error_handler]`. The runtime calls these automatically (on panic / as the program
-    entry / on allocation failure), so a non-`pub` one has no in-tree caller and was false-flagged
-    dead along with what its body reaches (doc-driven, panel R88). Cardinal-safe: only adds roots.
+    `#[alloc_error_handler]`, or the `ctor`/`dtor` before/after-main attributes. The runtime (or the
+    `ctor` crate's linker glue) calls these automatically, so a non-`pub` one has no in-tree caller
+    and was false-flagged dead along with what its body reaches (doc-driven, panels R88/R96).
+    Cardinal-safe: only adds roots.
     Matched on the attribute path (covers `#[unsafe(...)]` / `#[cfg_attr(...)]` wrappers via the
     last token), not a raw substring, so a `#[doc="…start…"]` can't trigger it."""
     m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
@@ -1998,6 +2007,12 @@ def _roles(node, src, name, lang, exported):
         roles.add("exported")
     elif lang in ("java", "php", "csharp") and _has_public(node, src):
         roles.add("exported")
+    # A Java `native` method is a JNI entry point: it has no Java body and is implemented in C,
+    # invoked across the JNI boundary — no in-tree by-name caller. A non-public one would be
+    # false-flagged dead (manual pass; the Java analogue of Go cgo `//export` / C#
+    # `[UnmanagedCallersOnly]` rooted in v2.1.9). Cardinal-safe: only adds a root.
+    if lang == "java" and _is_java_native(node, src):
+        roles.add("callback")
     if lang in ("c", "cpp"):
         roles |= _c_attr_roots(node, src)
     return frozenset(roles)
@@ -2059,8 +2074,10 @@ def _c_attr_roots(node, src) -> set[str]:
     # identifier like `my_constructor_helper`: both neighbours stay word chars, so no `\b` exists.
     #   * constructor/destructor — runtime-invoked around main; used/retain — explicitly kept;
     #     section — placed in a custom linker section (initcall tables, …), reached by the linker
-    #     not by name. All implicit entry points -> callback.
-    if re.search(r"\b_*(?:constructor|destructor|used|retain|section)_*\b", blob):
+    #     not by name; interrupt/signal — an ISR invoked by the hardware vector table (embedded C,
+    #     incl. ARM `interrupt`/`interrupt_handler` and AVR `signal`), never by an in-tree call.
+    #     All implicit entry points -> callback.
+    if re.search(r"\b_*(?:constructor|destructor|used|retain|section|interrupt|signal)_*\b", blob):
         roles.add("callback")
     #   * visibility("default")/dllexport — public ABI; weak — a linker-visible (overridable)
     #     symbol callable from outside the tree. -> exported.
@@ -2185,6 +2202,16 @@ def _has_public(node, src) -> bool:
                 and "public" in _text(c, src):
             return True
         if c.type == "public":
+            return True
+    return False
+
+
+def _is_java_native(node, src) -> bool:
+    """A Java `native` method declaration (JNI entry point). The `native` keyword lives in the
+    method's `modifiers` child; match it as a whitespace-delimited token so an annotation like
+    `@Native`/`@NativeFoo` can't trigger it. Cardinal-safe: callers only add a root."""
+    for c in node.children:
+        if c.type in ("modifiers", "modifier") and "native" in _text(c, src).split():
             return True
     return False
 

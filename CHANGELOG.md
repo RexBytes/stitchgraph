@@ -4,6 +4,28 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.13] — 2026-06-27
+
+**Runtime/native entry-point attributes: C ISR, Rust `#[ctor]`, Java `native` — three narrow cardinal
+fixes extending the v2.1.9 runtime/native (FFI) entry-point arc.** Each marks a function the runtime
+or toolchain invokes automatically with no in-tree by-name caller, so it (and its callees) was
+false-flagged dead. All three are attribute/modifier-gated and only ever *add* roots (cardinal-safe).
+
+### Fixed
+
+- **C interrupt service routines** — `__attribute__((interrupt))` / AVR `((signal))` /
+  `interrupt_handler` are invoked by the hardware vector table. The implicit-entry attribute regex
+  omitted `interrupt`/`signal`; now matched → rooted `callback`.
+- **Rust `#[ctor]` / `#[dtor]`** — the `ctor` crate's before/after-`main` attributes (the Rust
+  analogue of C `__attribute__((constructor))`), idiomatically private. Added `ctor`/`dtor` to
+  `_RUST_RUNTIME_ENTRY_ATTRS` (path-token match: `#[ctor::ctor]` and bare `#[ctor]` hit;
+  `#[constructor_helper]` does not).
+- **Java `native` methods** — JNI entry points (implemented in C, invoked across the JNI boundary,
+  no Java body, no in-tree caller). New `_is_java_native` helper roots a `native` method `callback`
+  (the Java analogue of Go cgo `//export` / C# `[UnmanagedCallersOnly]` from v2.1.9).
+
+  Each is cardinal-safe: a plain function with no such attribute/modifier still flags dead.
+
 ## [2.1.12] — 2026-06-27
 
 **Transitive framework-inheritance callback rooting (tree-sitter) — one cardinal fix clearing the

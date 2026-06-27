@@ -7023,3 +7023,79 @@ def test_same_name_external_self_loop_keeps_override_live(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
     assert "Foo.onEvent" not in stale     # framework override on same-name self-loop class
     assert "Foo.helper" not in stale      # reached only through it
+
+
+# -- R96 / manual-pass (CARDINAL): narrow runtime/native entry-point attrs -------
+def test_c_interrupt_isr_attribute_roots_handler(tmp_path):
+    """A C function marked `__attribute__((interrupt))` / AVR `((signal))` is an ISR invoked by the
+    hardware vector table — no in-tree caller — so it and its callees were flagged dead. The
+    implicit-entry attr regex omitted `interrupt`/`signal`. Cardinal-safe (only adds roots): a plain
+    static with no attribute still flags dead."""
+    _mk(tmp_path, {
+        "isr.c": (
+            "static void log_event(void) {}\n"
+            "__attribute__((interrupt)) static void isr(void) { log_event(); }\n"
+            "static void truly_dead(void) {}\n"
+            "int main(void) { return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "isr" not in stale and "log_event" not in stale   # ISR + callee rooted
+    assert "truly_dead" in stale                              # no attr -> still dead (cardinal-safe)
+
+
+def test_rust_ctor_dtor_attribute_roots_function(tmp_path):
+    """`#[ctor::ctor]` / `#[ctor]` / `#[ctor::dtor]` run a function automatically before/after main
+    (the Rust analogue of C `__attribute__((constructor))`), idiomatically private, so the fn + its
+    callees were flagged dead. `_RUST_RUNTIME_ENTRY_ATTRS` omitted ctor/dtor."""
+    _mk(tmp_path, {
+        "lib.rs": (
+            "pub fn api() -> i32 { 1 }\n"
+            "#[ctor::ctor]\n"
+            "fn init() { setup(); }\n"
+            "fn setup() {}\n"
+            "fn truly_dead() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "init" not in stale and "setup" not in stale   # ctor + callee rooted
+    assert "truly_dead" in stale                          # plain private -> still dead
+
+
+def test_java_native_method_is_rooted(tmp_path):
+    """A Java `native` method is a JNI entry point (implemented in C, invoked across the JNI
+    boundary) with no in-tree caller — a non-public one was flagged dead. Cardinal-safe: a plain
+    non-native private method with no caller still flags dead."""
+    _mk(tmp_path, {
+        "Jni.java": (
+            "class Jni {\n"
+            "    native int compute(int x);\n"
+            "    private int deadHelper() { return 0; }\n"
+            "    static { System.loadLibrary(\"jni\"); }\n}\n"
+        ),
+        "Main.java": "public class Main { public static void main(String[] a){ new Jni(); } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Jni.compute" not in stale     # native JNI entry rooted
+    assert "Jni.deadHelper" in stale      # plain private, no caller -> still dead
+
+
+def test_rust_runtime_entry_attr_helper():
+    """Pin _is_rust_runtime_entry_attr (R96): ctor/dtor path tokens match; a longer identifier
+    containing the token and a non-attr does not."""
+    from stitchgraph.core.extract.treesitter import _is_rust_runtime_entry_attr
+    assert _is_rust_runtime_entry_attr("#[ctor::ctor]")
+    assert _is_rust_runtime_entry_attr("#[ctor]")
+    assert _is_rust_runtime_entry_attr("#[ctor::dtor]")
+    assert _is_rust_runtime_entry_attr("#[panic_handler]")
+    assert not _is_rust_runtime_entry_attr("#[constructor_helper]")   # not a bare ctor token
+    assert not _is_rust_runtime_entry_attr("#[doc = \"ctor\"]")       # string stripped
+    assert not _is_rust_runtime_entry_attr("#[derive(Debug)]")
+    assert not _is_rust_runtime_entry_attr("ctor")                    # not bracketed -> no match
+    assert not _is_rust_runtime_entry_attr("")                        # empty -> no match
