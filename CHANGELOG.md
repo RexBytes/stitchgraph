@@ -4,6 +4,30 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.11] — 2026-06-27
+
+**Python implicit-invocation surface — three cardinal fixes, found by combining real-codebase
+dogfooding (sqlalchemy, werkzeug) with a doc-driven pass over the Python language/library
+reference.** Each was a live symbol confidently flagged dead at confidence ≥ 0.5; all three fixes
+are reachability-*adding* and therefore cardinal-safe by construction.
+
+### Fixed
+
+- **Subscripted generic base classes now record an INHERITS edge.** `class Sub(Base[K, V])` parses
+  the base as an `ast.Subscript`, so the old `_name_of` returned `None`, dropping the edge — and with
+  it the polymorphic-override path, so a live override of a base template method was flagged dead. New
+  `_base_name` helper unwraps the subscript (looping for nested `Base[K][V]`). `Generic`/`Iterator`/
+  `Iterable` are already plain bases, so `class Foo(Generic[T])` is not misclassified as a framework
+  base. Confirmed on sqlalchemy / werkzeug `Mixin(Base[K, V])`.
+- **Enum machinery hooks `_missing_` / `_generate_next_value_` are rooted to their class.** These are
+  single-underscore (not dunders) but invoked by name by the enum metaclass (`Color(x)` lookup miss;
+  `auto()`); added to `_is_protocol_method` so the existing class→method seed keeps them (and their
+  callees) live when the enum is reachable, dead otherwise.
+- **pytest plugin hooks (`pytest_*`) in test files are rooted.** pytest discovers and invokes
+  `pytest_configure`, `pytest_collection_modifyitems`, … by name from `conftest.py`/test-tree modules
+  with no in-tree call site. New `_is_pytest_hook` roots module-level `pytest_*` functions (callback
+  role), scoped to the `is_test_file` set. Regression + helper + mutation pinned.
+
 ## [2.1.10] — 2026-06-27
 
 **Python IPython/Jupyter rich-display protocol hooks cardinal fix — found by dogfooding `rich`.**
