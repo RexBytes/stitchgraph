@@ -1029,6 +1029,16 @@
         "MEDIUM": 1
       },
       "theme": "2.1.4 C/C++ attribute fix \u2014 round 1. opus found a CRITICAL CARDINAL miss: GCC accepts a __name__ synonym for every attribute (__constructor__/__used__/__visibility__ \u2014 common in system headers); the \\b-anchored match couldn't see inside (_ is a word char) so __attribute__((__constructor__)) stayed dead at 0.6. FIX: optional _* around each keyword (can't over-match inside my_constructor_helper). opus also flagged Finding 2 (recall): weak/section fns + alias(\"t\")/ifunc(\"r\") TARGETS still dead at 0.6 \u2014 user opted to fix in 2.1.4: section->callback, weak->exported, alias/ifunc target kept live by name via c_exports. sonnet: CLEAN, no v2.1.4 regression \u2014 oracle 27/27, F->M method normalization preserves roles, liveness propagates from ctor body, full==streaming==incremental; noted one pre-existing NON-cardinal structural gap (empty-body inline C++ method parses as field_declaration, attr misattributed) \u2014 documented, not introduced by 2.1.4. haiku: suite 413, truth table, docs, no model-id leak. Findings fixed; mutation 4/4."
+    },
+    {
+      "id": "R75",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.4 C/C++ attribute fix (post weak/section/alias) \u2014 full-diversity clean, but the streak RESETS: in response to sonnet's R74 documented empty-body-method gap the maintainer asked to FIX limitations rather than document, so an additional fix (_c_dangling_attr_texts) landed AFTER this round and is re-gated by R76/R77. R75 itself: opus CLEAN (no cardinal in any valid C \u2014 cross-file alias is invalid C/rejected by gcc; weakref/named-weak/section over-root only; 415 pass, streaming byte-identical). sonnet CLEAN (oracle 27/27, EXPORT_SYMBOL|alias union per-file scoping correct, 3-deep helper chain live + dead sibling flagged 0.6, C++ special-member interaction no double-count, incremental==full, cross-language isolated). haiku CLEAN (415, truth tables, docs, no model-id leak)."
     }
   ]
 }
