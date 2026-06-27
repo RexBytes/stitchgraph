@@ -6017,3 +6017,29 @@ def test_csharp_attribute_suffix_ref_helper():
     assert attr_ref("NoEnumeration") == "NoEnumerationAttribute"
     assert attr_ref("Obsolete") == "ObsoleteAttribute"
     assert attr_ref("NoEnumerationAttribute") is None    # already suffixed -> bare name resolves
+
+
+def test_csharp_attribute_on_enum_and_delegate_is_live(tmp_path):
+    """R66 (sonnet): the R64 C# attribute-suffix fix lived only in _direct_refs, which scans the
+    bodies of `spec.defs` nodes. C# `enum`/`delegate` declarations aren't in `defs`, so their
+    attributes are walked by _module_uses instead — which lacked the suffix branch, leaving the
+    attribute class false-flagged dead. _module_uses now mirrors the _direct_refs branch."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.cs": (
+            "using System;\n"
+            "sealed class MyFlagAttribute : Attribute { }\n"
+            "sealed class InterceptableAttribute : Attribute { }\n"
+            "sealed class UnusedAttribute : Attribute { }\n"   # defined, never applied -> dead
+            "enum Status { [MyFlag] Active = 1, Idle = 2 }\n"
+            "[Interceptable] public delegate void MyDelegate(int x);\n"
+            "public class App { public static void Main() { var s = Status.Active; } }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert not any(i.endswith("MyFlagAttribute") for i in stale)        # enum-member attribute
+    assert not any(i.endswith("InterceptableAttribute") for i in stale)  # delegate attribute
+    assert any(i.endswith("UnusedAttribute") for i in stale)            # never applied: dead

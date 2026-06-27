@@ -1385,6 +1385,13 @@ def _module_uses(root, src, spec):
                 calls.append((_text(c, src), c.start_point[0] + 1))
             if c.type in ("identifier", "type_identifier", "constant", "name"):
                 refs.append((_text(c, src), c.start_point[0] + 1))
+            elif spec.attr_suffix and c.type == "attribute":
+                # Same C# `[Foo]` -> `FooAttribute` suffix as _direct_refs (R64), but for
+                # attributes on declarations NOT in `spec.defs` — `enum`/`delegate` — whose
+                # bodies _module_uses walks instead of _direct_refs (panel R66, sonnet).
+                suffixed = _csharp_attribute_suffix_ref(c, src)
+                if suffixed is not None:
+                    refs.append((suffixed, c.start_point[0] + 1))
             rec(c)
 
     rec(root)

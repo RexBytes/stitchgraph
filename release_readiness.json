@@ -932,6 +932,18 @@
       ],
       "findings": {},
       "theme": "2.1.2 C# attribute-class fix \u2014 FULL-DIVERSITY clean round 1. opus: all attribute forms ([Foo(1)]/[A.B.Foo]/[assembly:]/[return:]/[Foo,Bar]/generics) safe, no other-lang regression, streaming byte-identical; wrong-class only a benign dead-code false-NEGATIVE (cardinal-safe). sonnet: 66 probes incl heritage FooAttribute, qualified, multi-attr; serilog NoEnumerationAttribute no longer stale; C#+Py full==streaming. haiku: version/docs/no-cross-lang-bleed. All 3 CLEAN; mutation _csharp_attribute_suffix_ref 2/2; suite 407. Noted pre-existing [assembly:X] not visited by _direct_refs (unrelated to R65)."
+    },
+    {
+      "id": "R66",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "2.1.2 C# attribute fix \u2014 round 2. opus + haiku CLEAN (fresh angles: nested/meta attrs, [Conditional], generic-arg, name-collision, enum/event/property targets; docs accurate; ByteBuddy/Moshi confirmed documented-not-fixed). sonnet found a CARDINAL gap: the R64 fix lived only in _direct_refs (scans spec.defs bodies); C# enum/delegate aren't in defs, so their attributes are walked by _module_uses, which lacked the suffix branch -> [MyFlag] on an enum left MyFlagAttribute dead. FIX: mirror the branch in _module_uses. Streak resets -> R67/R68. Mutation _csharp_attribute_suffix_ref 2/2; suite 408."
     }
   ]
 }

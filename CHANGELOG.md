@@ -20,8 +20,10 @@ serilog surfaced a clean, general extraction bug.
   used only via `[Foo]` was false-flagged dead (serilog `NoEnumerationAttribute`, applied in
   `Guard.AgainstNull`; panel R64, cardinal). An `attribute` usage now also emits the suffixed
   reference (`Foo` → `FooAttribute`), so the attribute class is kept live. Cardinal-safe (adds a
-  reference only; the suffixed name resolves only if such a class exists). Owned by a regression
-  test.
+  reference only; the suffixed name resolves only if such a class exists). Covered in both
+  `_direct_refs` (attributes on methods/classes/structs) and `_module_uses` (attributes on
+  `enum`/`delegate` declarations, which aren't in the C# `defs` set; panel R66). Owned by
+  regression tests.
 
 ## [2.1.1] — 2026-06-26
 
