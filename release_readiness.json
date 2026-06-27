@@ -1071,6 +1071,16 @@
         "HIGH": 1
       },
       "theme": "2.1.5 C/C++ header-decl export-attr fix \u2014 round 1. opus found a CARDINAL miss: _c_export_decl_names matched only DIRECT function_declarator children, so a pointer/reference-returning header export (char* W::make(int), function_declarator nested in pointer_declarator) wasn't collected and its live out-of-line def was flagged dead at 0.6. FIX: use _name_of (descends the _DECLARATOR_WRAPPERS chain) guarded by _has_function_declarator (exported variable adds no name); also fixes templates (function name vs type-param T). sonnet+haiku reviewed the PRE-fix code (CLEAN with non-cardinal notes: sonnet flagged the same template->T mis-collection now fixed, and the macro-byte-gate gap which is the documented preprocessor limit; monkeypatch non-regression, streaming name-capture-before-tree-drop, namespace/nested-class capture, variable exclusion, confidence proof, oracle 27/27, regressions 283 all verified). Re-gated by R79/R80. mutation 9/9."
+    },
+    {
+      "id": "R79",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.5 header-decl export fix (post-R78 wrapper descent) \u2014 FULL-DIVERSITY clean round 1. opus: hammered EVERY declarator-wrapper return shape \u2014 char*/int&/int&&/const char*/int* const/char**/function-pointer-return int (*p())(int), member (char* W::make), qualified+nested \u2014 ALL root and propagate to helpers; visibility(hidden) stays dead; determinism 3x, full==streaming, incremental==full; R78 class fully closed. sonnet: monkeypatch non-regression (collateral only at 0.1<0.5), template tmax rooted, 3-deep chain live + dead sibling 0.6, EXPORT_SYMBOL/alias/ifunc/special-members no double-count, streaming identical; 284 regressions + 27 oracles. haiku: 420, mutation 9/9, docs, no leak. Two NON-cardinal informational notes (both safe over-root direction, pre-existing, unrelated to R78): (1) function-pointer VARIABLE int (*h)(int) with export attr makes _has_function_declarator True -> name over-roots a same-named fn (masks dead code only); (2) deeply namespace-nested class SHELL (ns::Outer::Inner) flagged 0.6 via _cpp_method_scope resolving to the namespace not the class (panel-R12B-style; live exported method itself unaffected) \u2014 future candidate. All 3 CLEAN, no cardinal."
     }
   ]
 }
