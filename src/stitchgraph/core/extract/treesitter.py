@@ -118,6 +118,15 @@ _IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
         "readObject", "writeObject", "readResolve", "writeReplace", "readObjectNoData",
         "readExternal", "writeExternal",
     }),
+    "cpp": frozenset({
+        # Range-based `for (x : r)` is desugared by the compiler to `r.begin()` / `r.end()` (or ADL
+        # `begin(r)`/`end(r)`) — the name-based call graph never sees those calls, and no other pass
+        # roots them, so an iterable's `begin`/`end` (+ whatever they reach) were false-flagged dead
+        # (C++ manual pass, cardinal). A class defining `begin`/`end` is iterable by design, so
+        # rooting them is semantically right; cardinal-safe over-rooting otherwise. (Only `.cpp`/
+        # `.hpp`/`.cc` reach this — a `.h` is parsed as C, the pre-existing .h-as-C boundary.)
+        "begin", "end",
+    }),
 }
 
 

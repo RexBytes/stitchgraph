@@ -4,6 +4,19 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.15] — 2026-06-27
+
+**C++ range-based-`for` `begin()`/`end()` customization points — cardinal fix (doc-driven manual
+pass).** `for (x : r)` is desugared to `r.begin()`/`r.end()`, so the name-based call graph never sees
+those calls and an iterable type's `begin`/`end` (and what they reach) were false-flagged dead.
+
+### Fixed
+
+- **`_IMPLICIT_HOOKS` gains a `"cpp"` entry rooting `begin`/`end`** as `callback`. A class defining
+  `begin`/`end` is iterable by design; rooting them is semantically correct and cardinal-safe
+  (only adds roots). Covers `.cpp`/`.cc`/`.cxx`/`.hpp`; a `.h` is parsed as C (pre-existing
+  `.h`-as-C boundary). A plain method with no caller still flags dead.
+
 ## [2.1.14] — 2026-06-27
 
 **Ruby implicit conversion / Enumerable protocol methods — cardinal fix (doc-driven manual pass).**

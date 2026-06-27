@@ -7138,3 +7138,29 @@ def test_ruby_implicit_protocol_methods_rooted(tmp_path):
     assert "Money.to_f" not in stale and "Money.as_float" not in stale  # numeric coercion hook + callee
     assert "Coll.each" not in stale                                 # Enumerable driver live
     assert "Money.really_dead" in stale and "Money.nuked" in stale  # genuinely dead -> still flagged
+
+
+# -- R100 / manual-pass (CARDINAL): C++ range-for begin()/end() customization points
+def test_cpp_range_for_begin_end_rooted(tmp_path):
+    """`for (x : r)` is desugared by the compiler to `r.begin()`/`r.end()` — the name-based call
+    graph never sees those calls, and no other pass roots them, so an iterable's begin/end (and
+    what they reach) were false-flagged dead. Rooted via `_IMPLICIT_HOOKS["cpp"]`. Cardinal-safe:
+    a plain method with no caller still flags dead."""
+    _mk(tmp_path, {
+        "r.cpp": (
+            "struct Range {\n"
+            "    int* a; int n;\n"
+            "    int* begin() { return helper(); }\n"   # desugared call target
+            "    int* end() { return a + n; }\n"
+            "    int* helper() { return a; }\n"          # reached only via begin()
+            "    int* truly_dead() { return a; }\n"      # genuinely dead
+            "};\n"
+            "int main() { int d[2]={1,2}; Range r{d,2}; int s=0; for (int x : r) s+=x; return s; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Range.begin" not in stale and "Range.end" not in stale   # range-for CPOs rooted
+    assert "Range.helper" not in stale                               # reached via begin()
+    assert "Range.truly_dead" in stale                               # genuinely dead -> still flagged
