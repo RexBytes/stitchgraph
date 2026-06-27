@@ -6336,3 +6336,37 @@ def test_c_export_decl_names_helper():
     assert names('__declspec(dllexport) int Other::run();') == {"run"}
     assert names('__attribute__((visibility("hidden"))) void h(void);') == set()  # hidden: not export
     assert names('int plain(void);') == set()                                     # no attribute
+    # R78: the function_declarator is nested inside a pointer/reference-return wrapper — descend to
+    # it so a pointer-returning export is collected (else its def is false-flagged dead, cardinal).
+    assert names('__attribute__((visibility("default"))) char* make_buf(int n);') == {"make_buf"}
+    assert names('struct W { __attribute__((visibility("default"))) char* make(int); };') == {"make"}
+    assert names('__attribute__((visibility("default"))) int& ref_api(int);') == {"ref_api"}
+    # A non-function export (a variable/global) contributes no name.
+    assert names('__attribute__((visibility("default"))) int g_counter;') == set()
+
+
+def test_cpp_pointer_return_header_export_is_live(tmp_path):
+    """R78 (cardinal): a pointer/reference-returning function whose export attribute is on the header
+    declaration nests its function_declarator inside a pointer_declarator; the declaration-name
+    collector must descend to it, or the live out-of-line definition is flagged dead at 0.6."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "api.hpp": (
+            "struct W {\n"
+            "  __attribute__((visibility(\"default\"))) char* make(int n);\n"
+            "};\n"
+        ),
+        "api.cpp": (
+            "#include \"api.hpp\"\n"
+            "char* W::make(int n) { return mk_help(n); }\n"
+            "static char* mk_help(int n) { return 0; }\n"
+            "__attribute__((constructor)) static void boot(void){ live(); }\n"
+            "static void live(void){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "make" not in stale       # pointer-returning header export: rooted
+    assert "mk_help" not in stale     # reached from it

@@ -1961,16 +1961,30 @@ def _c_export_decl_names(root, src: bytes) -> set[str]:
             if any(c.type in _C_ATTR_NODES
                    and _C_EXPORT_ATTR_RE.search(src[c.start_byte:c.end_byte].decode("utf-8", "replace"))
                    for c in n.children):
-                for c in n.children:
-                    if c.type == "function_declarator":
-                        # _trailing_id on the function_declarator resolves to the function name
-                        # (it does not descend into the parameter list), so this works for a
-                        # qualified `Widget::compute`, a free `free_api`, and an in-class member.
-                        nm = _trailing_id(c, src)
-                        if nm:
-                            names.add(nm)
+                # Reuse the definition-side name extraction so the collected name MATCHES the
+                # node id exactly. `_name_of` descends the declarator-wrapper chain (pointer/
+                # reference/array-return), so a `char* W::make(int)` header export is collected as
+                # `make` and roots its out-of-line def — the direct-child-only scan missed this and
+                # left a pointer/reference-returning export false-flagged dead (panel R78, cardinal).
+                # Guard on an actual function_declarator so a plain exported *variable* adds nothing.
+                if _has_function_declarator(n):
+                    nm = _name_of(n, src)
+                    if nm:
+                        names.add(nm)
         stack.extend(n.children)
     return names
+
+
+def _has_function_declarator(node) -> bool:
+    """True if `node`'s declarator chain reaches a `function_declarator` — i.e. it declares a
+    function/method, not a variable. Descends the pointer/reference/array-return wrappers."""
+    decl = node.child_by_field_name("declarator")
+    while decl is not None:
+        if decl.type == "function_declarator":
+            return True
+        decl = decl.child_by_field_name("declarator") \
+            or next((c for c in decl.children if c.type in _DECLARATOR_WRAPPERS), None)
+    return False
 
 
 def _has_public(node, src) -> bool:
