@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.8: R86–R87. **2.1.9: R88–R89** (full diversity opus/sonnet/haiku) on the runtime/native FFI entry-point release (Rust/C#/Go) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/php-string-callable/rust-runtime-entry/go-export) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 433 passing (full extras) |
+| Multi-model review panels | 2.1.9: R88–R89. **2.1.10: R90–R91** (full diversity opus/sonnet/haiku) on the Python IPython/Jupyter display-protocol hook fix (rich dogfood) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/rust-runtime-entry/go-export/ipython-protocol) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 435 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.7: R84✓ R85✓ (streak 2). 2.1.8: R86✓ R87✓ (streak 2). 2.1.9: runtime/native FFI entry points → **R88✓ R89✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.8: R86✓ R87✓ (streak 2). 2.1.9: R88✓ R89✓ (streak 2). 2.1.10: IPython display hooks (rich dogfood) → **R90✓ R91✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.8 RELEASED/releasable** (maintainer tags). **2.1.9** (runtime/native FFI entry-point directives — Rust `#[panic_handler]`/`#[start]`/`#[alloc_error_handler]`, C# `[UnmanagedCallersOnly]`/`[JSInvokable]`, Go cgo `//export`; doc-driven, cardinal) **RELEASABLE** — R88+R89 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.9` tag. Beyond the `LIMITATIONS.md` audit, this extends the export-attribute work to the *runtime*-entry surface; remaining documented items are fundamental (type model), intentional (the contract), or unfixable (the preprocessor boundary). |
+| Verdict | **1.0.0–2.1.9 RELEASED/releasable** (maintainer tags). **2.1.10** (Python IPython/Jupyter rich-display protocol hooks — `_repr_html_`/`_repr_mimebundle_`/`_ipython_display_`/… rooted to their class like dunders; cardinal, found dogfooding `rich`) **RELEASABLE** — R90+R91 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.10` tag. This was the first fix this stretch found by *dogfooding a real library* (validated across 6 IPython-integrating packages, 65 hooks, 0 false-dead) rather than doc-driven hypothesis. |
 
 ## Trajectory
 
@@ -1111,6 +1111,28 @@ The 2.1.9 lesson extends the export-attribute arc to a sibling surface — *runt
 cross-language bleed test became the centerpiece: as the per-language entry-point sets grow, the
 sharpest risk is one language's marker leaking into another, so the "N languages, same symbol name,
 only the right ones root" fixture is now the canonical check for any entry-point addition.
+
+## 2.1.10 — Python IPython/Jupyter display-protocol hooks, found by dogfooding rich (R90–R91)
+
+The first release this stretch **discovered by dogfooding a real library** rather than doc-driven
+hypothesis. Indexing `rich` flagged `JupyterMixin._repr_mimebundle_` dead: the IPython rich-display
+protocol (`_repr_html_`, `_repr_png_`, `_repr_mimebundle_`, `_ipython_display_`, …) is invoked *by
+name* by IPython on display, but the methods are *single*-underscore so the `__x__` dunder pass
+missed them. Fix: `_seed_protocol_dunders` ties a class's IPython-protocol methods to the class like
+dunders (shared `_is_protocol_method`; documented 13-name set, exact membership).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R90 | 3 | ✓ | full-diversity clean on the first round. Cardinal-safety is structural (the seed edge is class→method, so it never self-roots the class — a class whose only surface is a hook stays fully dead); scope discrimination (a top-level *function* named `_repr_html_` stays dead); exact frozenset (no `_repr_*` glob); dunder pass unchanged; rich 38→36 (exactly the 2 hooks). |
+| R91 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Breadth dogfood across 6 real libs (ipython/prompt_toolkit/rich/tabulate/textual/traitlets) — 65 protocol hooks, 0 flagged dead; `--precise` path identical; override interaction; 30-item stress; polyglot zero interference; cardinal matrix 12/12. |
+
+The 2.1.10 lesson is the value of **dogfooding over hypothesis**: doc-driven hunting enumerates a
+language's *own* implicit surface, but a real library exercises *ecosystem* protocols (IPython's
+display hooks aren't in the Python language reference — they're an IPython convention). Running on
+`rich` surfaced in one shot what no amount of synthetic Python probing would. The fix slotted into
+the existing dunder-seeding machinery (same class-scoped, cardinal-safe mechanism), and the
+breadth-dogfood across six IPython-integrating libraries (65 hooks, 0 false-dead) is the kind of
+real-world validation that earns "best repo."
 
 ## Standing themes
 
