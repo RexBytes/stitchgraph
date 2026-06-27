@@ -226,9 +226,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   reference-return wrappers (the `function_declarator` nested in a `pointer_declarator`; panel R78).
 - **Class-level export attribute (handled, v2.1.6):** `class __attribute__((visibility("default")))
   Foo {…}` / `__declspec(dllexport)` exports the class's whole **public** interface; the public
-  method names declared in the class body are collected and root their out-of-line definitions, so a
-  public method with no per-method attribute isn't false-flagged dead (panel R80 F1). `private:`
-  members are not ABI and stay dead-code-eligible.
+  public/protected method names in the class body are collected and root their definitions, so a
+  public method with no per-method attribute isn't false-flagged dead (panel R80 F1). Covers
+  declared-only, inline-defined (`function_definition`), and templated (`template_declaration`)
+  members (panel R81). `protected` is included (out-of-tree subclass ABI); `private:` members are
+  internal and stay dead-code-eligible.
 - **Rationale / scope:** rooting only ever *adds* roots (cardinal-safe). `visibility("hidden")` is
   genuinely internal and stays dead-code-eligible; a plain non-`static` function (external linkage
   but no explicit export attribute) is still **not** auto-rooted — that is the deliberate

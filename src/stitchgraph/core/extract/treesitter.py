@@ -1988,17 +1988,35 @@ def _c_export_decl_names(root, src: bytes) -> set[str]:
 
 
 def _c_public_method_names(class_node, src: bytes) -> set[str]:
-    """Public method names declared in a C++ class/struct body (for a class-level export attr)."""
+    """Public/protected method names in a C++ class/struct body (for a class-level export attr).
+    Covers all three member shapes: a declared-only method (`field_declaration`), an INLINE-defined
+    method (`function_definition` — body written in the class), and a templated method
+    (`template_declaration`, descended into) — the last two parse differently and a field-only scan
+    missed them, leaving inline/templated public methods false-flagged dead at 0.6 (panel R81,
+    cardinal). `protected` is included: for an exported class it is reachable by out-of-tree
+    subclasses (extensibility ABI). `private` is internal and excluded. `struct` defaults public,
+    `class` private."""
     body = next((c for c in class_node.children if c.type == "field_declaration_list"), None)
     if body is None:
         return set()
     names: set[str] = set()
-    public = class_node.type == "struct_specifier"   # struct defaults public, class private
+    exported = class_node.type == "struct_specifier"   # struct defaults public; class private
     for c in body.children:
         if c.type == "access_specifier":
-            public = b"public" in src[c.start_byte:c.end_byte]
-        elif c.type == "field_declaration" and public and _has_function_declarator(c):
-            nm = _name_of(c, src)
+            txt = src[c.start_byte:c.end_byte]
+            exported = b"public" in txt or b"protected" in txt
+            continue
+        if not exported:
+            continue
+        member = c
+        if c.type == "template_declaration":   # templated member: the fn is nested one level down
+            member = next((g for g in c.children
+                           if g.type in ("function_definition", "field_declaration", "declaration")),
+                          None)
+        if member is not None \
+                and member.type in ("field_declaration", "function_definition", "declaration") \
+                and _has_function_declarator(member):
+            nm = _name_of(member, src)
             if nm:
                 names.add(nm)
     return names

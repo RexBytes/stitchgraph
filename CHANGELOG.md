@@ -17,9 +17,12 @@ limitation audit).
   attribute. Their out-of-line `.cpp` definitions carry no attribute, so they (and their callees)
   were false-flagged dead at 0.6 (cardinal). The public method names declared in an export-attributed
   class/struct body are now collected (project-wide, into the same set as the header-declaration
-  fix) and root the matching definitions. `struct` defaults public, `class` private; a `private:`
-  section's methods are not ABI and stay dead-code-eligible. Cardinal-safe; `_c_public_method_names`
-  helper, regression + mutation pinned.
+  fix) and root the matching definitions. Covers all three member shapes (panel R81): a declared-only
+  method, an **inline-defined** method (parses as `function_definition`, not `field_declaration`),
+  and a **templated** method (`template_declaration`). `public` and `protected` are collected
+  (protected is the extensibility ABI — reachable by out-of-tree subclasses); `private` is internal
+  and stays dead-code-eligible. `struct` defaults public, `class` private. Cardinal-safe;
+  `_c_public_method_names` helper, regression + mutation pinned.
 
 ## [2.1.5] — 2026-06-27
 

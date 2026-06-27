@@ -29,10 +29,23 @@ and have no in-tree caller, so they — and everything they reach — were flagg
 ## The fix
 
 When `_c_export_decl_names` encounters a class/struct carrying a class-level export attribute, it
-collects the **public** method names declared in its body and roots their definitions project-wide
-by name (the same mechanism as the v2.1.5 header-declaration fix). `struct` defaults to public,
-`class` to private; an access label switches the section, so a `private:` method is not collected and
-stays dead-code-eligible. Cardinal-safe: it only ever *adds* roots.
+collects the public/protected method names in its body and roots their definitions project-wide by
+name (the same mechanism as the v2.1.5 header-declaration fix). `struct` defaults to public, `class`
+to private; an access label switches the section, so a `private:` method is not collected and stays
+dead-code-eligible. Cardinal-safe: it only ever *adds* roots.
+
+### Panel R81 broadened the coverage
+
+The first review round found the collector handled only declared-only methods (`field_declaration`).
+Added (panel R81):
+
+- **Inline-defined methods** (`int m(int x){ … }` with the body in the class) parse as
+  `function_definition`, not `field_declaration`, and were missed — a live inline public method was
+  flagged dead at 0.6 (CARDINAL). Now collected.
+- **Templated methods** (`template<class X> X m(X)`) parse as `template_declaration`; the function is
+  descended into and collected.
+- **`protected`** members are collected alongside `public`: for an exported class they are the
+  extensibility ABI, reachable by out-of-tree subclasses. `private` stays internal/dead-eligible.
 
 ## Compatibility
 

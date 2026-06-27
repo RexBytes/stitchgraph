@@ -6431,3 +6431,45 @@ def test_c_public_method_names_helper():
     assert names('class Plain { public: int m(); };') == set()
     # a data member in the public section contributes no name (not a function)
     assert names('struct __attribute__((visibility("default"))) V { int field; int f(); };') == {"f"}
+    # R81: inline-defined method (function_definition, not field_declaration) is collected
+    assert names('class __attribute__((visibility("default"))) I {'
+                 ' public: int m(int x){ return x; } };') == {"m"}
+    # R81: inline templated method (template_declaration) is collected
+    assert names('class __attribute__((visibility("default"))) T {'
+                 ' public: template<class X> X tm(X a){ return a; } };') == {"tm"}
+    # R81: protected is part of the extensibility ABI (out-of-tree subclasses) -> collected
+    assert names('class __attribute__((visibility("default"))) P {'
+                 ' protected: int hook(); private: int sec(); };') == {"hook"}
+
+
+def test_cpp_class_level_export_inline_method_is_live(tmp_path):
+    """R81 (cardinal): an INLINE-defined public method of a class-level-export class parses as a
+    function_definition (templated: template_declaration), not a field_declaration; it must still be
+    rooted or the live public-ABI method is flagged dead at 0.6. Private members still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "api.hpp": (
+            "class __attribute__((visibility(\"default\"))) Api {\n"
+            "public:\n"
+            "  int compute(int x) { return x + secret(); }\n"   # inline public method
+            "  template<class X> X passthru(X a) { return a; }\n"  # inline templated public method
+            "protected:\n"
+            "  int hook() { return 1; }\n"                       # protected: extensibility ABI
+            "private:\n"
+            "  int secret() { return 7; }\n"                     # private, but reached from compute
+            "  int dead_priv() { return 9; }\n"                  # private, uncalled: dead
+            "};\n"
+        ),
+        "main.cpp": (
+            "#include \"api.hpp\"\n"
+            "__attribute__((constructor)) static void boot(){ live(); }\n"
+            "static void live(){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("compute", "passthru", "hook", "secret"):
+        assert live not in stale, live
+    assert "dead_priv" in stale
