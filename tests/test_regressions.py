@@ -6982,7 +6982,10 @@ def test_transitive_closure_does_not_overmask_pure_firstparty_chain(tmp_path):
 
 def test_framework_classes_helper():
     """Pin _framework_classes (R94): direct external base, transitive descendant, plain-base
-    exclusion, and same-name self-loop (must not self-root)."""
+    exclusion, and same-name self-loop. The self-loop (`class S extends S` — base leaf binds to
+    itself, the werkzeug-EnvironBuilder shape) IS framework: its real base is an external
+    same-named class, so it must be rooted (python.py `_apply_callback_roles` case (b)). A plain
+    base (`Object`) is not framework."""
     from stitchgraph.core.extract.treesitter import _framework_classes
     class_by_name = {
         "Base": {"f::Base"}, "Child": {"f::Child"}, "Grand": {"f::Grand"},
@@ -6993,8 +6996,30 @@ def test_framework_classes_helper():
         ("f::Child", "Base", "php"),     # first-party -> transitive
         ("f::Grand", "Child", "php"),    # first-party -> deeper transitive
         ("f::E", "Object", "php"),       # plain base (in _PLAIN_BASES) -> not framework
-        ("f::S", "S", "php"),            # same-name self loop -> not framework
+        ("f::S", "S", "php"),            # same-name self loop -> framework (case b)
     ]
     result = _framework_classes(inherits, class_by_name)
-    assert result == {"f::Base", "f::Child", "f::Grand"}
-    assert "f::E" not in result and "f::S" not in result
+    assert result == {"f::Base", "f::Child", "f::Grand", "f::S"}
+    assert "f::E" not in result          # plain base excluded
+
+
+def test_same_name_external_self_loop_keeps_override_live(tmp_path):
+    """An in-tree class that extends an EXTERNAL same-named framework class (`class Foo extends
+    com.framework.Foo`) parses to a self-loop INHERITS edge (base leaf == subclass name). It must
+    be treated as framework, or a protected override invoked only by the framework is flagged dead
+    (CARDINAL, the python.py `_apply_callback_roles` case-(b) shape, ported in R94)."""
+    _mk(tmp_path, {
+        "Foo.java": (
+            "package app;\n"
+            "import com.framework.Foo;\n"
+            "public class Foo extends com.framework.Foo {\n"
+            "    protected void onEvent() { helper(); }\n"
+            "    private void helper() {}\n}\n"
+        ),
+        "Main.java": "package app;\npublic class Main { public static void main(String[] a){ new Foo(); } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Foo.onEvent" not in stale     # framework override on same-name self-loop class
+    assert "Foo.helper" not in stale      # reached only through it

@@ -874,13 +874,18 @@ def _framework_classes(inherits, class_by_name: dict[str, set[str]]) -> set[str]
     external: set[str] = set()
     subclasses: dict[str, set[str]] = {}
     for class_id, base, _lang in inherits:
-        project_bases = class_by_name.get(base, set())
-        if project_bases:
-            for pbase in project_bases:
-                if pbase != class_id:  # first-party base; skip same-name self loops
-                    subclasses.setdefault(pbase, set()).add(class_id)
+        # A base resolves first-party only if it names a *distinct* project class. A same-name
+        # self-loop (`class Foo extends pkg.Foo` — the base leaf collides with the subclass and
+        # binds to itself) is NOT a first-party base: it's the werkzeug-`EnvironBuilder` shape
+        # where the real base is an external same-named framework class. Treat it as external
+        # (case (b) in python.py's `_apply_callback_roles`) — otherwise a framework override on
+        # such a class is flagged dead (cardinal).
+        distinct = class_by_name.get(base, set()) - {class_id}
+        if distinct:
+            for pbase in distinct:
+                subclasses.setdefault(pbase, set()).add(class_id)
         elif base not in _PLAIN_BASES:
-            external.add(class_id)  # (a) direct external base
+            external.add(class_id)  # (a) direct external base, or (b) same-name self loop
     stack = list(external)
     while stack:  # (c) transitive closure down the first-party INHERITS tree (only adds)
         cid = stack.pop()
