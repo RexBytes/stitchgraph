@@ -16,10 +16,11 @@ marked only the *direct* subclass of an external framework base.
 - **Framework-class detection now closes transitively over the in-tree INHERITS tree.** A concrete
   override two-or-more hops below an external framework base (via an in-tree abstract intermediary) is
   framework-invoked but had no in-tree caller, so it was confidently flagged dead — cardinal. New
-  `_framework_classes` helper: (a) every class with a direct external base, plus (c) the transitive
-  first-party descendants of those classes (fixpoint closure). Only ever *adds* roots, so it is
-  cardinal-safe; a pure first-party chain with no external base anywhere still flags genuinely-dead
-  overrides, and same-name self-loops are not treated as their own subclass. Confirmed on real
+  `_framework_classes` helper: (a) every class with a direct external base, (b) same-name self-loop
+  bases (`class Foo extends pkg.Foo`, base leaf binds to itself — the real base is an external
+  same-named framework class), plus (c) the transitive first-party descendants of those classes
+  (fixpoint closure). Only ever *adds* roots, so it is cardinal-safe; a pure first-party chain with
+  no external base anywhere still flags genuinely-dead overrides. Confirmed on real
   Magento 2.4.7 (`Shipment::_getValidationRulesBeforeSave`,
   `Transaction\Collection::_renderFiltersBefore`) and on the C# explicit `IDisposable.Dispose`
   reached only via `using` through a project interface that extends the framework interface.

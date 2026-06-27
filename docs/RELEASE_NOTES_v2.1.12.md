@@ -26,10 +26,12 @@ the framework `IDisposable`.
 ## The fix
 
 New `_framework_classes` helper computes the framework-class set as (a) every class with a direct
-external base **plus** (c) the transitive first-party descendants of those classes — a fixpoint
-closure down the in-tree INHERITS tree. This mirrors exactly what the Python extractor's
-`_apply_callback_roles` already did (cases (a) + (c)); the fix ports the missing transitive step to
-the tree-sitter extractor, so PHP/C#/Java/C++ get the same protection Python had.
+external base, (b) same-name self-loop bases (`class Foo extends pkg.Foo`, where the base leaf binds
+to itself — the real base is an external same-named framework class), **plus** (c) the transitive
+first-party descendants of those classes — a fixpoint closure down the in-tree INHERITS tree. This
+mirrors what the Python extractor's `_apply_callback_roles` already did (cases (a) + (b) + (c)); the
+fix ports the missing transitive + self-loop steps to the tree-sitter extractor, so PHP/C#/Java/C++
+get the same protection Python had.
 
 The change only ever **adds** roots — cardinal-safe by construction. A pure first-party inheritance
 chain with no external base anywhere gets no framework rooting, so genuinely-dead overrides stay
