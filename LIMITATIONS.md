@@ -204,6 +204,21 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Rationale:** rooting only ever *adds* roots (cardinal-safe); the prior gap was a genuine
   cardinal false-positive (a non-`pub` export and everything its body reached flagged dead).
 
+### C/C++ entry-point & export attributes are rooted (v2.1.4)
+- **Covered:** a C/C++ function carrying `__attribute__((constructor))` / `((destructor))` (incl.
+  the C++ `[[gnu::constructor]]` and priority `((constructor(101)))` forms), `__attribute__((used))`
+  / `((retain))`, `__attribute__((visibility("default")))`, or MSVC `__declspec(dllexport)` is
+  rooted — none has an in-tree by-name caller, yet each is live: constructor/destructor run
+  automatically around `main` (the C analogue of a static initializer / Go `init`), `used` is
+  explicitly kept by the compiler, and the visibility/dllexport forms are the public-ABI surface
+  (the analogue of Rust `#[no_mangle]`). Found doc-driven (the GCC/Clang/MSVC attribute reference
+  enumerates them); panel R73, cardinal.
+- **Rationale / scope:** rooting only ever *adds* roots (cardinal-safe). `visibility("hidden")` is
+  genuinely internal and stays dead-code-eligible; a plain non-`static` function (external linkage
+  but no explicit export attribute) is still **not** auto-rooted — that is the deliberate
+  precision/recall tradeoff for C, since otherwise no library function is ever dead. Annotate the
+  public surface (or pin via `[entry_points]`) to root those.
+
 ### PHP string callables: array form is covered; bare-string and module-scope are not (yet)
 - **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`
   / `['Class', 'method']` inside a function/method body — the `usort` / `uasort` /

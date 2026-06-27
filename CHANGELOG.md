@@ -4,6 +4,29 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.4] — 2026-06-27
+
+**C/C++ attribute-entry-point cardinal fix, from doc-driven hunting** (continuing the method that
+found the Rust FFI-export gap). The GCC/Clang/MSVC attribute reference enumerates the function
+attributes that make a symbol an implicit entry point or part of the public ABI — none of which
+produce an in-tree by-name caller. A minimal fixture confirmed a whole cluster was false-flagged
+dead (panel R73, cardinal).
+
+### Fixed
+
+- **C/C++ functions carrying an entry-point / export attribute are no longer flagged dead.**
+  `__attribute__((constructor))` / `((destructor))` (and the C++ `[[gnu::constructor]]` / priority
+  `((constructor(101)))` forms) run automatically before/after `main` — the C analogue of a static
+  initializer or Go `init` — so the function definitely executes; `__attribute__((used))` /
+  `((retain))` explicitly tells the compiler the symbol is used (a use it can't see by name —
+  inline asm, a linker section); `__attribute__((visibility("default")))` and MSVC
+  `__declspec(dllexport)` mark the public-ABI surface (the analogue of Rust `#[no_mangle]`). None
+  has an in-tree caller, so each — and everything its body reached — was false-flagged dead. They
+  are now rooted (`callback` for the runtime/used forms, `exported` for the visibility/dllexport
+  forms). `visibility("hidden")` and plain uncalled statics correctly stay dead-eligible.
+  Cardinal-safe (only adds roots). A `_c_attr_roots` helper isolates the mapping; owned by
+  regression tests and pinned by mutation.
+
 ## [2.1.3] — 2026-06-27
 
 **Rust FFI/linker-export cardinal fix, from doc-driven hunting.** Reading each language's

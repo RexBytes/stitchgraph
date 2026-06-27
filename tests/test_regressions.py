@@ -6091,3 +6091,89 @@ def test_is_rust_export_attr_helper():
               "#[unsafe(test)]", "#[link_name = \"x\"]",   # link_name is on imports, not exports
               "no_mangle", "", "not an attribute"):        # non-bracket strings: not attributes
         assert not _is_rust_export_attr(a), a
+
+
+def test_c_attribute_constructor_destructor_used_export_is_live(tmp_path):
+    """R73 (doc-driven): a C function carrying a GCC/Clang/MSVC attribute that makes it an
+    implicit entry point or exported symbol has no in-tree by-name caller — `constructor`/
+    `destructor` run automatically around `main`, `used` is explicitly kept, `visibility("default")`
+    is public ABI — so it (and everything its body reaches) was false-flagged dead (cardinal). Now
+    rooted. A plain uncalled static fn and a `visibility("hidden")` fn still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.c": (
+            "#include <stdio.h>\n"
+            "__attribute__((constructor)) static void init_module(void) { setup(); }\n"
+            "static void setup(void) { printf(\"s\"); }\n"        # reached only from constructor
+            "__attribute__((destructor)) static void fini_module(void) { teardown(); }\n"
+            "static void teardown(void) { printf(\"t\"); }\n"
+            "__attribute__((used)) static void keep_me(void) { printf(\"k\"); }\n"
+            "__attribute__((visibility(\"default\"))) void exported_api(void) { helper_v(); }\n"
+            "static void helper_v(void) { printf(\"h\"); }\n"
+            "__attribute__((visibility(\"hidden\"))) void hidden_fn(void) {}\n"  # hidden: stays dead
+            "static void really_dead(void) { printf(\"d\"); }\n"
+            "int main(void) { return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("init_module", "setup", "fini_module", "teardown", "keep_me",
+                 "exported_api", "helper_v"):
+        assert live not in stale, live          # implicit entry / export (and its callees): live
+    assert "really_dead" in stale               # plain uncalled static: dead
+    assert "hidden_fn" in stale                 # visibility("hidden") is internal: dead-eligible
+
+
+def test_cpp_attribute_forms_root(tmp_path):
+    """R73: the C++ `[[gnu::constructor]]` / `[[gnu::destructor]]` form, MSVC `__declspec(dllexport)`,
+    and a priority constructor `__attribute__((constructor(101)))` all root; `visibility("hidden")`
+    does not."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.cpp": (
+            "#include <cstdio>\n"
+            "[[gnu::constructor]] static void cpp_ctor() { c_helper(); }\n"
+            "static void c_helper() { printf(\"h\"); }\n"
+            "[[gnu::destructor]] static void cpp_dtor() {}\n"
+            "__attribute__((constructor(101))) static void prio_ctor() {}\n"
+            "__declspec(dllexport) void win_api() { w_helper(); }\n"
+            "static void w_helper() {}\n"
+            "static void plain_dead() {}\n"
+            "int main() { return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("cpp_ctor", "c_helper", "cpp_dtor", "prio_ctor", "win_api", "w_helper"):
+        assert live not in stale, live
+    assert "plain_dead" in stale
+
+
+def test_c_attr_roots_helper():
+    """Pin _c_attr_roots (R73): the parser-level mapping from a C/C++ function's attributes to
+    roots. constructor/destructor/used/retain -> callback; dllexport / visibility("default") ->
+    exported; visibility("hidden") and a plain fn -> no roots."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_attr_roots
+
+    def roots(decl: str, lang: str = "c") -> set:
+        src = decl.encode()
+        root = get_parser(lang).parse(src).root_node
+        fn = next(n for n in root.children if n.type == "function_definition")
+        return _c_attr_roots(fn, src)
+
+    assert roots("__attribute__((constructor)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((destructor)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((used)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((visibility(\"default\"))) void f(void){}") == {"exported"}
+    assert roots("__attribute__((visibility(\"hidden\"))) void f(void){}") == set()
+    assert roots("static void f(void){}") == set()
+    # GNU *trailing* form: the attribute attaches to the function_declarator, not the def node.
+    assert roots("static void f(void) __attribute__((used)) { }") == {"callback"}
+    assert roots("[[gnu::constructor]] static void f(){}", "cpp") == {"callback"}
+    assert roots("__declspec(dllexport) void f(){}", "cpp") == {"exported"}

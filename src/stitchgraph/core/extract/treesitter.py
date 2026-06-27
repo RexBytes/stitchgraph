@@ -1836,7 +1836,46 @@ def _roles(node, src, name, lang, exported):
         roles.add("exported")
     elif lang in ("java", "php", "csharp") and _has_public(node, src):
         roles.add("exported")
+    if lang in ("c", "cpp"):
+        roles |= _c_attr_roots(node, src)
     return frozenset(roles)
+
+
+# Function-attribute node types across the C and C++ grammars: the GNU `__attribute__((…))`
+# (`attribute_specifier`), the C++11 `[[…]]` form (`attribute_declaration`), and the MSVC
+# `__declspec(…)` modifier (`ms_declspec_modifier`).
+_C_ATTR_NODES = frozenset({"attribute_specifier", "attribute_declaration", "ms_declspec_modifier"})
+
+
+def _c_attr_roots(node, src) -> set[str]:
+    """Roots for a C/C++ function carrying a GCC/Clang/MSVC attribute that makes it an implicit
+    entry point or an exported symbol — there is no in-tree by-name caller, so without rooting it
+    (and everything its body reaches) is false-flagged dead (doc-driven, panel R73):
+      * `constructor` / `destructor` — run automatically before/after `main` by the C runtime
+        (the C analogue of a static initializer or Go `init`); the function definitely executes.
+        Rooted `callback`.
+      * `used` / `retain` — explicitly tells the compiler the symbol IS used and must be kept;
+        the use is one it can't see by name (inline asm, a linker section). Rooted `callback`.
+      * `visibility("default")` / `dllexport` — the explicit public-ABI surface (the analogue of
+        Rust `#[no_mangle]` / a `pub` item). Rooted `exported`.
+    Cardinal-safe: only ever ADDS roots, so a broad text match can over-root (mask dead code) but
+    can never flag live code dead. Visibility is matched only for `"default"` — `"hidden"` is
+    genuinely internal and must stay dead-code-eligible."""
+    texts: list[bytes] = []
+    for c in node.children:
+        if c.type in _C_ATTR_NODES:
+            texts.append(src[c.start_byte:c.end_byte])
+        elif c.type == "function_declarator":   # the GNU *trailing* form attaches to the declarator
+            texts.extend(src[g.start_byte:g.end_byte] for g in c.children if g.type in _C_ATTR_NODES)
+    if not texts:
+        return set()
+    blob = b" ".join(texts).decode("utf-8", "replace")
+    roles: set[str] = set()
+    if re.search(r"\b(?:constructor|destructor|used|retain)\b", blob):
+        roles.add("callback")
+    if re.search(r"\bdllexport\b", blob) or re.search(r"visibility\s*\(\s*\"default\"", blob):
+        roles.add("exported")
+    return roles
 
 
 def _has_public(node, src) -> bool:
