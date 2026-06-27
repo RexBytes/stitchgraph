@@ -37,10 +37,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `[Fact]`/`[Theory]`/`[Test]`/… (xUnit/NUnit/MSTest), PHP `#[Test]` (PHPUnit); and,
   for **call-based** suites that define no named test function (JS/TS Jest/Mocha/
   Vitest, Ruby RSpec), the module-level `test()`/`it()`/`describe()` call sites in a
-  test file, rooted from the module node. A test driven *only* by a runner the
-  detector doesn't know — a third-party Rust macro whose attribute path doesn't end in
-  `test` (`#[rstest]`, `#[test_case]`, `#[googletest::gtest]`), or a custom
-  Java/C# annotation not on the allowlist — can surface as a stale candidate.
+  test file, rooted from the module node. Common third-party Rust harnesses are on the allowlist
+  (`#[rstest]`, `#[test_case]`, `#[gtest]`, `#[quickcheck]`, plus any `*::test` like `#[tokio::test]`
+  / `#[googletest::test]`; v2.1.7). A test driven *only* by a runner still outside the allowlist —
+  a more obscure third-party Rust macro, or a custom Java/C# annotation not on the set — can surface
+  as a stale candidate.
 - **Decisions / safe direction:** attributes match the annotation **path/name**
   against an allowlist (not a raw `"test"` substring); annotation tests propagate the
   `test` role to the enclosing class (`_seed_test_classes`) so a package-private
@@ -285,11 +286,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Decision:** root by a curated per-language set of framework annotations/attributes/
   decorators (role `callback`). The sets cover the dominant frameworks, not every library.
 - **Rationale / gaps:** these markers denote framework contracts, so a definition is a genuine
-  entry point; rooting only ever *adds* roots (cardinal-safe). NOT yet covered: a method invoked
-  by an *unrecognised* framework annotation — e.g. ByteBuddy's `@Advice.OnMethodEnter`/
-  `@OnMethodExit` (mockito's mock advice), Moshi's `@ToJson`/`@FromJson` adapter methods — whose
-  annotation isn't in the curated set, and JS/TS *metadata-only* decorators (`@Version`) that
-  enhance but don't invoke. The curated set covers dominant frameworks, not every library; pin
+  entry point; rooting only ever *adds* roots (cardinal-safe). ByteBuddy's `@Advice.OnMethodEnter`/
+  `@OnMethodExit` (bytecode instrumentation, e.g. mockito's mock advice) and Moshi's `@ToJson`/
+  `@FromJson` adapter methods are now on the Java set (v2.1.7). Still NOT covered: a method invoked
+  by another *unrecognised* framework annotation, and JS/TS *metadata-only* decorators (`@Version`)
+  that enhance but don't invoke. The curated set covers dominant frameworks, not every library; pin
   the rest in `stitchgraph.toml [entry_points]`.
 - **Fixed in 2.1.2 (the related reference gap):** a *custom in-tree attribute class* used via
   `[Foo]` is now kept live. C# applies attributes with the `Attribute` suffix omitted

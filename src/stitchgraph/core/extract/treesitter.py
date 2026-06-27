@@ -890,6 +890,11 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
             n.roles = n.roles | {"callback"}
 
 
+# Third-party Rust test-harness attribute paths whose last segment is not `test` (those ending in
+# `::test` — tokio/async_std/test_log/googletest::test — are already matched generically).
+_RUST_TEST_ATTR_PATHS = frozenset({"rstest", "test_case", "gtest", "quickcheck"})
+
+
 def _is_rust_test_attr(attr_text: str) -> bool:
     """True for a Rust *test* attribute — matched on the attribute PATH, not a raw
     substring, so `#[cfg(feature="testing")]`, `#[doc="...test..."]`, a feature named
@@ -901,6 +906,14 @@ def _is_rust_test_attr(attr_text: str) -> bool:
     body = m.group(1)
     path = re.split(r"[(\s=]", body, maxsplit=1)[0].strip()  # attribute path before ( / = / ws
     if path == "test" or path.endswith("::test"):
+        return True
+    # Common third-party test-harness attributes whose path does NOT end in `test` — rstest
+    # (`#[rstest]`), test-case (`#[test_case(...)]`), googletest-rust (`#[gtest]`), quickcheck
+    # (`#[quickcheck]`). The free-form-named fn they decorate misses the test*/name convention,
+    # so it (and its helpers) was flagged dead (documented recall gap, panel R84). Matched on the
+    # last path segment so the crate-qualified form (`rstest::rstest`) is covered too. Cardinal-safe
+    # (only adds test roots).
+    if path.rsplit("::", 1)[-1] in _RUST_TEST_ATTR_PATHS:
         return True
     if path == "cfg" and "(" in body:
         # `cfg(test)` is test-gated; `cfg(feature="testing")` is not. Drop quoted string
@@ -971,6 +984,8 @@ _CALLBACK_ANNOTATIONS = {
         "EventListener", "Scheduled", "Bean",                 # Spring
         "Setup", "TearDown", "Benchmark",                     # JMH
         "BeforeExperiment", "AfterExperiment",                # Caliper
+        "OnMethodEnter", "OnMethodExit",                      # ByteBuddy @Advice.* (instrumentation)
+        "ToJson", "FromJson",                                 # Moshi adapter methods (reflection)
     }),
     "csharp": frozenset({
         "OnSerializing", "OnSerialized", "OnDeserializing",   # serialization callbacks

@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.7] — 2026-06-27
+
+**Recall: third-party Rust test harnesses + ByteBuddy/Moshi annotations rooted** (the non-cardinal
+recall gaps from the `LIMITATIONS.md` audit). These under-reported live code as dead — never a
+false-dead's opposite, just missed roots — and are now closed.
+
+### Fixed
+
+- **Common third-party Rust test attributes are recognized.** `#[rstest]`, `#[test_case(...)]`,
+  `#[gtest]` (googletest-rust), `#[quickcheck]` — whose attribute path doesn't end in `test`, so the
+  `test`/`*::test` convention missed them — now root the free-form-named test fn (and its helpers).
+  Matched on the last path segment, so the crate-qualified form (`rstest::rstest`) is covered too.
+- **ByteBuddy `@Advice.OnMethodEnter`/`@OnMethodExit` and Moshi `@ToJson`/`@FromJson` are rooted.**
+  These framework-invoked Java methods (bytecode instrumentation / reflection adapters) were the
+  documented external-framework-annotation gap (mockito/okhttp hunt); they are now on the curated
+  Java callback-annotation set (role `callback`). Cardinal-safe (only adds roots).
+
 ## [2.1.6] — 2026-06-27
 
 **C/C++ class-level export-attribute cardinal fix** (R80 Finding 2 — the last cardinal item from the

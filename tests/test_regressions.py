@@ -6473,3 +6473,68 @@ def test_cpp_class_level_export_inline_method_is_live(tmp_path):
     for live in ("compute", "passthru", "hook", "secret"):
         assert live not in stale, live
     assert "dead_priv" in stale
+
+
+def test_rust_third_party_test_attrs_rooted(tmp_path):
+    """R84 (v2.1.7, recall): third-party Rust test-harness attributes whose path doesn't end in
+    `test` — `#[rstest]`, `#[test_case(...)]`, `#[gtest]` (googletest-rust), `#[quickcheck]` — root
+    the free-form-named fn they decorate (and its helpers), which the name/`::test` convention
+    misses. A genuinely-dead fn still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": (
+            "pub fn used() -> i32 { 1 }\n"
+            "#[rstest]\nfn rstest_case() { helper_r(); }\nfn helper_r() {}\n"
+            "#[test_case(1)]\nfn tc_case() { helper_tc(); }\nfn helper_tc() {}\n"
+            "#[gtest]\nfn gt_case() {}\n"
+            "#[quickcheck]\nfn qc_case() {}\n"
+            "fn really_dead() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    for live in ("rstest_case", "helper_r", "tc_case", "helper_tc", "gt_case", "qc_case"):
+        assert live not in stale, live
+    assert "really_dead" in stale
+
+
+def test_is_rust_test_attr_third_party_helper():
+    """Pin the R84 third-party test-attr paths; non-test attrs stay False."""
+    from stitchgraph.core.extract.treesitter import _is_rust_test_attr
+    for a in ("#[rstest]", "#[rstest::rstest]", "#[test_case(1)]", "#[gtest]", "#[quickcheck]",
+              "#[tokio::test]", "#[test]", "#[cfg(test)]"):
+        assert _is_rust_test_attr(a), a
+    for a in ("#[derive(Debug)]", "#[inline]", "#[serde(rename=\"x\")]", "#[cfg(feature=\"testing\")]",
+              "#[my_attr(test)]",          # non-cfg attr containing a `test` arg token: not a test
+              "rstest", "", "not an attr"):  # non-bracket strings: not attributes
+        assert not _is_rust_test_attr(a), a
+
+
+def test_java_bytebuddy_moshi_annotations_rooted(tmp_path):
+    """R84 (v2.1.7, recall): ByteBuddy `@Advice.OnMethodEnter`/`@OnMethodExit` (bytecode
+    instrumentation) and Moshi `@ToJson`/`@FromJson` (reflection adapters) are framework-invoked,
+    not called by name — they were flagged dead (documented gap, panel R62/R68 hunt). Now rooted
+    `callback`; their callees go live. An unannotated uncalled method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Adv.java": (
+            "class Adv {\n"
+            "  @Advice.OnMethodEnter static void enter() { reached_e(); }\n"
+            "  static void reached_e() {}\n"
+            "  @Advice.OnMethodExit static void exit() { reached_x(); }\n"
+            "  static void reached_x() {}\n"
+            "  @ToJson String toJson(Url u) { return tj(); }\n"
+            "  String tj() { return \"\"; }\n"
+            "  void deadm() {}\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("enter", "reached_e", "exit", "reached_x", "toJson", "tj"):
+        assert live not in stale, live
+    assert "deadm" in stale
