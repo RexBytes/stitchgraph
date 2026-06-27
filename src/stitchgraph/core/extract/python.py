@@ -236,21 +236,39 @@ def _apply_callback_roles(proj: _Project) -> None:
             node.roles = node.roles | {"callback"}
 
 
-def _seed_protocol_dunders(proj: _Project) -> None:
-    """Tie each dunder method's liveness to its class. A dunder is invoked implicitly by
-    the interpreter (`instance()` -> `__call__`; attribute access on a descriptor ->
-    `__get__`/`__set__`; `obj[k]` -> `__getitem__`; `with obj` -> `__enter__`; etc.), so it
-    has no explicit call site — a helper it alone calls is orphaned and confidently flagged
-    dead once the class is in use (panel R20A, cardinal). Add a REFERENCES edge class ->
-    dunder so that when the class is reachable, its dunders (and their callees) are too.
+# IPython / Jupyter "rich display" protocol methods: single-underscore (so NOT dunders), invoked
+# BY NAME by IPython when an object is displayed (a notebook cell value, `display(obj)`), never from
+# source. A class implementing them — and whatever they reach — is otherwise false-flagged dead
+# (rich dogfood: `JupyterMixin._repr_mimebundle_`, panel R90). Enumerated by the IPython
+# rich-display docs; the analogue of the interpreter dunders below.
+_IPYTHON_PROTOCOL = frozenset({
+    "_repr_html_", "_repr_markdown_", "_repr_svg_", "_repr_png_", "_repr_jpeg_", "_repr_latex_",
+    "_repr_json_", "_repr_javascript_", "_repr_pdf_", "_repr_pretty_", "_repr_mimebundle_",
+    "_ipython_display_", "_ipython_key_completions_",
+})
 
-    Scoped to the class: a dead class's dunders stay dead (no over-rooting). Dunders are
-    already excluded from stale candidates, so this only rescues their *callees*."""
+
+def _is_protocol_method(name: str) -> bool:
+    """A method invoked implicitly by name, not from source: an interpreter dunder (`__call__`,
+    `__getitem__`, …) or an IPython/Jupyter rich-display hook (`_repr_html_`, `_repr_mimebundle_`)."""
+    return (len(name) > 4 and name.startswith("__") and name.endswith("__")) \
+        or name in _IPYTHON_PROTOCOL
+
+
+def _seed_protocol_dunders(proj: _Project) -> None:
+    """Tie each implicitly-invoked method's liveness to its class. A dunder is invoked by the
+    interpreter (`instance()` -> `__call__`; attribute access on a descriptor -> `__get__`/`__set__`;
+    `obj[k]` -> `__getitem__`; `with obj` -> `__enter__`; etc.) and an IPython rich-display hook
+    (`_repr_html_`/`_repr_mimebundle_`/…) is invoked by name by IPython on display — neither has an
+    explicit call site, so the method (and a helper it alone calls) is orphaned and confidently
+    flagged dead once the class is in use (panels R20A/R90, cardinal). Add a REFERENCES edge class ->
+    method so that when the class is reachable, these (and their callees) are too.
+
+    Scoped to the class: a dead class's hooks stay dead (no over-rooting)."""
     class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
     for node in proj.nodes:
         name = node.name
-        if (node.kind is NodeKind.METHOD and "." in node.id
-                and len(name) > 4 and name.startswith("__") and name.endswith("__")):
+        if node.kind is NodeKind.METHOD and "." in node.id and _is_protocol_method(name):
             class_id = node.id.rsplit(".", 1)[0]
             if class_id in class_ids:
                 proj.edges.append(Edge(

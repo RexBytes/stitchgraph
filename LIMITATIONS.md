@@ -169,16 +169,20 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** trust the per-edge `provenance` — the concrete-dispatch candidates are
   `AMBIGUOUS`; the `EXTRACTED`/`--precise` edge identifies the declared target.
 
-### Implicitly-invoked dunder methods are rooted to their class (Python)
-- **Concern:** a class's dunder (`__call__`, `__get__`/`__set__`/`__delete__`,
-  `__getitem__`, `__enter__`, operators, …) is invoked by the interpreter with no explicit
-  call site, so a helper it alone calls would be orphaned and flagged dead (panel R20A).
-- **Decision:** seed a `REFERENCES` edge from each class to its dunder methods, so that when
-  the class is reachable its dunders — and their callees — are reachable too.
-- **Rationale:** dunders are real, implicitly-reachable entry points whenever instances of
-  the class are used. Tying the edge to the *class* (not rooting the dunder unconditionally)
-  keeps a dead class's dunders dead, so this rescues only genuinely-live callees. Dunders are
-  already excluded from stale candidates, so this changes only their callees' liveness.
+### Implicitly-invoked dunder + IPython display methods are rooted to their class (Python)
+- **Concern:** a class's dunder (`__call__`, `__get__`/`__set__`/`__delete__`, `__getitem__`,
+  `__enter__`, operators, …) is invoked by the interpreter with no explicit call site, so a helper
+  it alone calls would be orphaned and flagged dead (panel R20A). The same applies to the
+  IPython/Jupyter rich-display protocol (`_repr_html_`, `_repr_mimebundle_`, `_repr_png_`,
+  `_ipython_display_`, …), which IPython invokes **by name** when displaying an object — these are
+  single-underscore, so the dunder rule missed them and a class's display hook (+ callees) was
+  false-flagged dead (rich dogfood, panel R90).
+- **Decision:** seed a `REFERENCES` edge from each class to its dunder **and** IPython-protocol
+  methods, so that when the class is reachable they — and their callees — are reachable too.
+- **Rationale:** these are real, implicitly-reachable entry points whenever instances of the class
+  are used/displayed. Tying the edge to the *class* (not rooting the method unconditionally) keeps a
+  dead class's hooks dead, so this rescues only genuinely-live methods/callees (cardinal-safe). The
+  IPython set is the documented rich-display protocol, not an open-ended name match.
 
 ### Language implicit-hook methods are rooted by name (Ruby/Java/PHP/C++)
 - **Concern:** every language has methods the runtime/interpreter invokes *implicitly*, never

@@ -4,6 +4,22 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.10] — 2026-06-27
+
+**Python IPython/Jupyter rich-display protocol hooks cardinal fix — found by dogfooding `rich`.**
+Indexing the real `rich` library surfaced `JupyterMixin._repr_mimebundle_` flagged dead: the
+IPython display protocol (`_repr_html_`, `_repr_png_`, `_repr_mimebundle_`, `_ipython_display_`, …)
+is invoked **by name** by IPython when an object is displayed, but its methods are *single*-underscore
+so the `__x__` dunder pass missed them.
+
+### Fixed
+
+- **A class's IPython/Jupyter rich-display hooks are now rooted to the class**, exactly like the
+  interpreter dunders. When the class is reachable, its `_repr_*_` / `_ipython_*_` hooks — and
+  whatever they reach — are live; a dead class's hooks stay dead (cardinal-safe). The set is the
+  documented IPython rich-display protocol, not an open-ended name match. `_is_protocol_method` helper
+  (shared with the dunder pass); regression + mutation pinned.
+
 ## [2.1.9] — 2026-06-27
 
 **Runtime / native (FFI) entry-point directives across Rust, C#, and Go cardinal fix** — found by

@@ -6720,3 +6720,50 @@ def test_csharp_unmanaged_callers_only_rooted(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
     assert "NativeEntry" not in stale and "UceHelp" not in stale
     assert "deadCs" in stale
+
+
+def test_python_ipython_display_protocol_hooks_rooted(tmp_path):
+    """R90 (v2.1.10, cardinal — found dogfooding rich): the IPython/Jupyter rich-display protocol
+    methods (`_repr_html_`, `_repr_mimebundle_`, …) are single-underscore (so the `__x__` dunder
+    pass misses them) but are invoked BY NAME by IPython on display, never from source. A live
+    class's hook — and whatever it reaches — was false-flagged dead. Tied to the class like a
+    dunder: a live class's hooks (+ callees) live; a dead class's hooks stay dead (cardinal-safe)."""
+    _mk(tmp_path, {
+        "m.py": (
+            "__all__ = [\"Widget\"]\n"
+            "class Widget:\n"
+            "    def _repr_html_(self):\n"
+            "        return fmt_html()\n"
+            "    def _repr_mimebundle_(self, include, exclude):\n"
+            "        return mime_payload()\n"
+            "def fmt_html():\n"
+            "    return \"<b>w</b>\"\n"
+            "def mime_payload():\n"
+            "    return {}\n"
+            "class DeadWidget:\n"
+            "    def _repr_html_(self):\n"
+            "        return dead_only_helper()\n"
+            "def dead_only_helper():\n"
+            "    return \"x\"\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Widget._repr_html_" not in stale          # live class's IPython hook: rooted
+    assert "Widget._repr_mimebundle_" not in stale
+    assert "fmt_html" not in stale and "mime_payload" not in stale   # hooks' callees: live
+    assert "DeadWidget._repr_html_" in stale          # dead class's hook stays dead (cardinal-safe)
+    assert "dead_only_helper" in stale
+
+
+def test_is_protocol_method_helper():
+    """Pin _is_protocol_method (R90): interpreter dunders AND IPython display hooks; a plain
+    single-underscore method or a public method is not a protocol method."""
+    from stitchgraph.core.extract.python import _is_protocol_method
+    for n in ("__call__", "__getitem__", "__enter__",                      # interpreter dunders
+              "_repr_html_", "_repr_mimebundle_", "_ipython_display_",      # IPython protocol
+              "_ipython_key_completions_"):
+        assert _is_protocol_method(n), n
+    for n in ("_private", "_repr_", "render", "__x", "x__", "__", "_repr_custom_"):
+        assert not _is_protocol_method(n), n
