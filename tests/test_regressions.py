@@ -7035,6 +7035,7 @@ def test_c_interrupt_isr_attribute_roots_handler(tmp_path):
         "isr.c": (
             "static void log_event(void) {}\n"
             "__attribute__((interrupt)) static void isr(void) { log_event(); }\n"
+            "__attribute__((interrupt_handler)) void isr_arm(void) { log_event(); }\n"
             "static void truly_dead(void) {}\n"
             "int main(void) { return 0; }\n"
         ),
@@ -7043,6 +7044,7 @@ def test_c_interrupt_isr_attribute_roots_handler(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
     assert "isr" not in stale and "log_event" not in stale   # ISR + callee rooted
+    assert "isr_arm" not in stale                            # ARM/MIPS `interrupt_handler` form rooted
     assert "truly_dead" in stale                              # no attr -> still dead (cardinal-safe)
 
 

@@ -2074,10 +2074,14 @@ def _c_attr_roots(node, src) -> set[str]:
     # identifier like `my_constructor_helper`: both neighbours stay word chars, so no `\b` exists.
     #   * constructor/destructor — runtime-invoked around main; used/retain — explicitly kept;
     #     section — placed in a custom linker section (initcall tables, …), reached by the linker
-    #     not by name; interrupt/signal — an ISR invoked by the hardware vector table (embedded C,
-    #     incl. ARM `interrupt`/`interrupt_handler` and AVR `signal`), never by an in-tree call.
+    #     not by name; interrupt/interrupt_handler/signal/signal_handler — an ISR invoked by the
+    #     hardware vector table (embedded C: ARM/MIPS/m68k `interrupt`/`interrupt_handler`, AVR
+    #     `signal`), never by an in-tree call. The explicit `(?:_handler)?` is required because the
+    #     `_*\b` synonym handling covers underscores AROUND a keyword (`__interrupt__`) but not a
+    #     trailing word like `_handler` (after `interrupt`, the `_` is a word char so `\b` fails).
     #     All implicit entry points -> callback.
-    if re.search(r"\b_*(?:constructor|destructor|used|retain|section|interrupt|signal)_*\b", blob):
+    if re.search(r"\b_*(?:constructor|destructor|used|retain|section"
+                 r"|interrupt(?:_handler)?|signal(?:_handler)?)_*\b", blob):
         roles.add("callback")
     #   * visibility("default")/dllexport — public ABI; weak — a linker-visible (overridable)
     #     symbol callable from outside the tree. -> exported.
