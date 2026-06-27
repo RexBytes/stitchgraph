@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.9: R88–R89. **2.1.10: R90–R91** (full diversity opus/sonnet/haiku) on the Python IPython/Jupyter display-protocol hook fix (rich dogfood) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/rust-runtime-entry/go-export/ipython-protocol) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 435 passing (full extras) |
+| Multi-model review panels | 2.1.10: R90–R91. **2.1.11: R92–R93** (full diversity opus/sonnet/haiku) on the Python implicit-invocation surface — subscripted-generic INHERITS + enum hooks + pytest conftest hooks (dogfood + manual reference) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/ipython-protocol/base_name/protocol_method/pytest_hook) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 441 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.8: R86✓ R87✓ (streak 2). 2.1.9: R88✓ R89✓ (streak 2). 2.1.10: IPython display hooks (rich dogfood) → **R90✓ R91✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.9: R88✓ R89✓ (streak 2). 2.1.10: R90✓ R91✓ (streak 2). 2.1.11: Python implicit-invocation surface (generics/enum/pytest hooks) → **R92✓ R93✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE, RRS 95)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.9 RELEASED/releasable** (maintainer tags). **2.1.10** (Python IPython/Jupyter rich-display protocol hooks — `_repr_html_`/`_repr_mimebundle_`/`_ipython_display_`/… rooted to their class like dunders; cardinal, found dogfooding `rich`) **RELEASABLE** — R90+R91 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.10` tag. This was the first fix this stretch found by *dogfooding a real library* (validated across 6 IPython-integrating packages, 65 hooks, 0 false-dead) rather than doc-driven hypothesis. |
+| Verdict | **1.0.0–2.1.10 RELEASED/releasable** (maintainer tags). **2.1.11** (Python implicit-invocation surface: subscripted-generic base INHERITS edge + enum `_missing_`/`_generate_next_value_` + pytest `pytest_*` conftest hooks — all cardinal, found by *combining* sqlalchemy/werkzeug dogfood with a doc-driven Python-reference manual pass) **RELEASABLE** — R92+R93 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.11` tag. Bonus: the same INHERITS-edge fix resolves a real pre-existing false *negative* (`flask.SecureCookieSession(CallbackDict[str, t.Any])` now correctly callback-rooted). |
 
 ## Trajectory
 
@@ -1133,6 +1133,34 @@ display hooks aren't in the Python language reference — they're an IPython con
 the existing dunder-seeding machinery (same class-scoped, cardinal-safe mechanism), and the
 breadth-dogfood across six IPython-integrating libraries (65 hooks, 0 false-dead) is the kind of
 real-world validation that earns "best repo."
+
+## 2.1.11 — Python implicit-invocation surface: generics, enum hooks, pytest hooks (R92–R93)
+
+Three Python cardinal false-positives in one release, found by **combining** the two hunting modes
+that earlier releases used separately: real-codebase dogfooding (sqlalchemy, werkzeug) *and* a
+doc-driven manual pass over the Python language/library reference. All three are reachability-*adding*
+and therefore cardinal-safe by construction (they can only make more code live).
+
+1. **Subscripted generic base** (`class Sub(Base[K, V])`) recorded no INHERITS edge — the base is an
+   `ast.Subscript` and `_name_of` returned `None`, dropping the edge and the polymorphic-override
+   path. New `_base_name` helper unwraps the subscript (loops for nested `Base[K][V]`).
+2. **Enum machinery hooks** `_missing_` / `_generate_next_value_` — single-underscore (not dunders),
+   invoked by name by the enum metaclass. Added to `_is_protocol_method` so the existing class→method
+   seed keeps them (and callees) live when the enum is reachable.
+3. **pytest plugin hooks** `pytest_*` in test files — discovered/invoked by name by pytest with no
+   in-tree call site. New `_is_pytest_hook` roots them (callback role), scoped to `is_test_file`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R92 | 3 | ✓ | full-diversity clean round 1. All three fixes strictly reachability-adding (subscripted base previously produced *neither* edge nor external-base entry — no diversion possible); `Generic[T]`/`Protocol[T]` in `_PLAIN_BASES` so not framework-misclassified (dead private method still flagged); enum/pytest hooks class- or test-file-scoped, dead variants stay dead. Minor/nit (nested-subscript one-level, pytest in any test-tree file, comment wording) all cardinal-safe — addressed in polish (`_base_name` while-loop, scope-accurate comment, external-base + nested-subscript tests). |
+| R93 | 3 | ✓ | full-diversity clean round 2 — **streak 2, gate met, RELEASABLE**. opus: full/streaming/incremental byte-identical, determinism holds, helper fuzzing. haiku: 441/441 + oracles 27/27 + ruff/mypy clean. sonnet: real-corpus dogfood (click/flask/requests/httpx/werkzeug) live-stays-live, and **confirmed the fix also resolves a real pre-existing false *negative*** — `flask.SecureCookieSession(CallbackDict[str, t.Any])` now correctly gets the `callback` role. |
+
+The 2.1.11 lesson: **dogfood + manual-reference together** is stronger than either alone. The manual
+pass enumerates a language's own implicit surface (enum hooks, subscripted-generic syntax); dogfooding
+proves they bite in real code (sqlalchemy/werkzeug mixins, conftest hooks) and — as the flask
+false-negative shows — the same INHERITS-edge fix that closes a cardinal gap also tightens recall.
+A single shared helper (`_base_name`) now backs the INHERITS edge and external-base detection, with a
+tracked follow-up to extend it to `_is_abstract_class` (find_holes precision, non-cardinal).
 
 ## Standing themes
 

@@ -6887,6 +6887,7 @@ def test_base_name_unwraps_subscripted_generic():
     """Pin _base_name (R92): a plain/attribute base resolves to its name; a subscripted
     generic unwraps to the underlying base name; a non-name expression is None."""
     import ast
+
     from stitchgraph.core.extract.python import _base_name
     assert _base_name(ast.parse("Base", mode="eval").body) == "Base"
     assert _base_name(ast.parse("mod.Base", mode="eval").body) == "Base"
