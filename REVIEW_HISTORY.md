@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.12: R94–R95. **2.1.13: R96–R97** (full diversity opus/sonnet/haiku) on runtime/native entry-point attributes (C ISR `interrupt`/`interrupt_handler`, Rust `#[ctor]`/`#[dtor]`, Java `native`); round 1 found + fixed an `interrupt_handler` cardinal, then a fresh two-round gate |
+| Multi-model review panels | 2.1.13: R96–R97. **2.1.14: R98–R99** (full diversity opus/sonnet/haiku) on Ruby implicit conversion / Enumerable protocol methods; round 1 flagged the `to_f`/`to_r` omission, added in round 2 |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/framework_classes/rust_runtime_entry_attr/c_attr_roots) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 450 passing (full extras) |
+| Tests | 451 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.11: R92✓ R93✓ (streak 2). 2.1.12: R94✓ R95✓ (streak 2). 2.1.13: runtime/native entry-point attrs (C ISR / Rust ctor / Java native) → **R96✓ R97✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — after round 1 caught + fixed an `interrupt_handler` cardinal |
+| Convergence | 2.1.12: R94✓ R95✓ (streak 2). 2.1.13: R96✓ R97✓ (streak 2). 2.1.14: Ruby implicit conversion/Enumerable protocol → **R98✓ R99✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — round 1 completed the conversion family (`to_f`/`to_r`) |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.12 RELEASED/releasable** (maintainer tags). **2.1.13** (runtime/native entry-point attributes — C `__attribute__((interrupt))`/`((interrupt_handler))`/AVR `((signal))` ISRs, Rust `#[ctor]`/`#[dtor]`, Java `native` JNI methods all rooted; extends the v2.1.9 FFI-entry arc) **RELEASABLE** — R96+R97 full-diversity clean; awaiting the maintainer's manual `v2.1.13` tag. Again the gate earned its keep: round 1 found a cardinal where the regex matched `interrupt` but not the real-world `interrupt_handler` spelling. |
+| Verdict | **1.0.0–2.1.13 RELEASED/releasable** (maintainer tags). **2.1.14** (Ruby implicit conversion/coercion `to_s`/`inspect`/`to_i`/`to_f`/…, Enumerable `each`, Hash-key `hash`/`eql?`, and marshalling hooks rooted in `_IMPLICIT_HOOKS["ruby"]` — the Ruby analogue of Python dunder rooting) **RELEASABLE** — R98+R99 full-diversity clean; awaiting the maintainer's manual `v2.1.14` tag. |
 
 ## Trajectory
 
@@ -1214,6 +1214,26 @@ the keyword's real-world spellings.** `interrupt` matched but `interrupt_handler
 MIPS/m68k/ARM attribute) did not — and a confirmatory review that only checked the documented happy
 path would have shipped it. The adversarial probe that enumerated *toolchain spellings* found it. The
 reference/audit finds the mechanism; the adversarial panel finds the spelling.
+
+## 2.1.14 — Ruby implicit conversion / Enumerable protocol methods (R98–R99)
+
+The Ruby analogue of Python's dunder rooting: the interpreter/stdlib invoke a class's conversion
+(`to_s`/`inspect`/`to_str`/…), numeric-coercion (`to_i`/`to_f`/`to_r`), Enumerable (`each`),
+Hash-key (`hash`/`eql?`), and marshalling (`marshal_dump`/`_dump`/…) methods *by name*, so a live
+class's protocol methods (and their callees) were false-flagged dead. Fix: extend
+`_IMPLICIT_HOOKS["ruby"]` with the documented protocol names — each such method (in a `.rb` file) is
+rooted `callback`. Add-roots-only, cardinal-safe; Ruby-gated (no cross-language bleed).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R98 | 3 | ✓ | round 1. opus: all 22 names verified genuine Ruby protocol (no wrong member), Ruby-gated (no bleed into Python/JS `each`/`to_s`/`hash`), callee cascade live, genuinely-dead non-protocol methods still flag; NIT (top-level free fn named `to_s` also rooted — safe over-root, consistent with existing hooks). sonnet: 54 fixtures incl. real Rack/Money/ActiveRecord-style gems, before/after patch comparison proving the FPs were real; flagged `to_f`/`to_r` omission (same cardinal class as `to_i`). haiku: cross-language bleed empirically negative, 451 + oracles 27 + ruff/mypy + RELEASABLE. |
+| R99 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. `to_f`/`to_r` added (completing the conversion family); final confirmation on the complete set — no cardinal, no bleed, over-mask boundary holds. |
+
+The 2.1.14 lesson: **complete the family.** Adding `to_s`/`to_i` but not `to_f`/`to_r` leaves the
+same cardinal open for the un-added members — `Integer(obj)`/`Float(obj)` emit a call to
+`Integer`/`Float`, never to the object's hook, so a coercion-only `to_f` has no textual caller. The
+panel that enumerated the *whole* numeric-conversion family caught the omission a per-name spot-check
+would not.
 
 ## Standing themes
 

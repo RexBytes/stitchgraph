@@ -1263,6 +1263,26 @@
       ],
       "findings": {},
       "theme": "2.1.13 runtime/native entry-point attributes — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected release. Final skeptical pass: no cardinal across all three fixes (C ISR incl. interrupt_handler, Rust ctor/dtor, Java native); over-mask boundary holds (plain fn without the attr/modifier still flags dead); determinism/streaming parity. Macro-wrapped ISR noted as the pre-existing preprocessor boundary, not introduced here. All 3 CLEAN."
+    },
+    {
+      "id": "R98",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.14 Ruby implicit conversion/coercion + Enumerable/Hash-key/marshalling protocol methods added to _IMPLICIT_HOOKS[ruby] (the Ruby analogue of Python dunder rooting) — FULL-DIVERSITY clean round 1. opus: all names genuine Ruby protocol (no wrong member), Ruby-gated (no bleed into Python/JS each/to_s/hash), callee cascade live, genuinely-dead non-protocol methods still flag; NIT top-level free fn named to_s also rooted (safe over-root, consistent w/ existing hooks). sonnet: 54 fixtures incl. real Rack/Money/ActiveRecord-style gems + before/after patch proving FPs were real; flagged to_f/to_r omission (same cardinal class as to_i). haiku: cross-language bleed empirically negative, 451 + oracles 27 + ruff/mypy + RELEASABLE. All 3 CLEAN."
+    },
+    {
+      "id": "R99",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.14 Ruby implicit protocol — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete set after adding to_f/to_r (numeric coercion: Integer(obj)/Float(obj) call Integer/Float, not the object's hook, so a coercion-only hook had no textual caller). Final pass: no cardinal across the complete 24-name set, no cross-language bleed, over-mask boundary holds, determinism. Conversion family now complete. All 3 CLEAN."
     }
   ]
 }
