@@ -412,7 +412,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 imports.append((mod_id, name, lang))
             reexports |= _reexport_names(tree.root_node, src)
             if _canon_lang(lang) == "cpp":  # C/C++: EXPORT_SYMBOL'd functions are public ABI
-                names = _export_symbol_names(src)
+                names = _export_symbol_names(src) | _c_alias_target_names(src)
                 if names:
                     c_exports[rel] = names
         except RecursionError:
@@ -1875,12 +1875,31 @@ def _c_attr_roots(node, src) -> set[str]:
     # `__visibility__`, …) — common in system/library headers to dodge user macros — so allow an
     # optional `_*` around each keyword (panel R74). `_*` still can't over-match inside a longer
     # identifier like `my_constructor_helper`: both neighbours stay word chars, so no `\b` exists.
-    if re.search(r"\b_*(?:constructor|destructor|used|retain)_*\b", blob):
+    #   * constructor/destructor — runtime-invoked around main; used/retain — explicitly kept;
+    #     section — placed in a custom linker section (initcall tables, …), reached by the linker
+    #     not by name. All implicit entry points -> callback.
+    if re.search(r"\b_*(?:constructor|destructor|used|retain|section)_*\b", blob):
         roles.add("callback")
-    if re.search(r"\b_*dllexport_*\b", blob) \
+    #   * visibility("default")/dllexport — public ABI; weak — a linker-visible (overridable)
+    #     symbol callable from outside the tree. -> exported.
+    if re.search(r"\b_*(?:dllexport|weak)_*\b", blob) \
             or re.search(r"\b_*visibility_*\s*\(\s*\"default\"", blob):
         roles.add("exported")
     return roles
+
+
+# An `alias("target")` / `ifunc("resolver")` attribute names ANOTHER in-tree function that the
+# linker/loader reaches through this symbol — `void old() __attribute__((alias("new")))` keeps
+# `new` live; `__attribute__((ifunc("res")))` keeps the resolver `res` live. The attributed symbol
+# is itself usually a body-less declaration (no node), but the named target has a real definition
+# with no by-name caller and is otherwise flagged dead (panel R74). Text-scanned like EXPORT_SYMBOL
+# — the name in the string literal isn't a call expression in the grammar.
+_C_ALIAS_RE = re.compile(rb"_*(?:alias|ifunc)_*\s*\(\s*\"([A-Za-z_]\w*)\"")
+
+
+def _c_alias_target_names(src: bytes) -> set[str]:
+    """Function names kept live as the target of a C/C++ `alias(...)` / `ifunc(...)` attribute."""
+    return {m.decode("ascii", "ignore") for m in _C_ALIAS_RE.findall(src)}
 
 
 def _has_public(node, src) -> bool:

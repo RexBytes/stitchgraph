@@ -23,9 +23,21 @@ dead (panel R73, cardinal).
   `__declspec(dllexport)` mark the public-ABI surface (the analogue of Rust `#[no_mangle]`). None
   has an in-tree caller, so each — and everything its body reached — was false-flagged dead. They
   are now rooted (`callback` for the runtime/used forms, `exported` for the visibility/dllexport
-  forms). `visibility("hidden")` and plain uncalled statics correctly stay dead-eligible.
-  Cardinal-safe (only adds roots). A `_c_attr_roots` helper isolates the mapping; owned by
-  regression tests and pinned by mutation.
+  forms). Also covered (panel R74): the GCC `__name__` synonyms (`__constructor__`, `__used__`,
+  `__visibility__`, …) used in system headers; `__attribute__((section("…")))` (linker-collected
+  init tables → callback) and `((weak))` (linker-visible overridable symbol → exported); and the
+  **target** of `((alias("t")))` / `((ifunc("r")))`, which is kept live by name (the attributed
+  symbol is itself a body-less declaration). `visibility("hidden")` and plain uncalled statics
+  correctly stay dead-eligible. Cardinal-safe (only adds roots). `_c_attr_roots` /
+  `_c_alias_target_names` helpers isolate the mapping; owned by regression tests and pinned by
+  mutation.
+
+### Known limitation
+
+- An *empty-body* inline C++ method (`void f() {}`) is parsed by the tree-sitter C++ grammar as a
+  `field_declaration` rather than a `function_definition`, so an entry-point/export attribute can
+  be misattributed to an adjacent member and not root it (panel R74). Structural to the grammar
+  and pre-existing; the common non-empty-body case works. Pin via `[entry_points]` if hit.
 
 ## [2.1.3] — 2026-06-27
 

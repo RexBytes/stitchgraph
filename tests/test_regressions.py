@@ -6182,3 +6182,42 @@ def test_c_attr_roots_helper():
     assert roots("__attribute__((__visibility__(\"hidden\"))) void f(void){}") == set()
     assert roots("[[gnu::constructor]] static void f(){}", "cpp") == {"callback"}
     assert roots("__declspec(dllexport) void f(){}", "cpp") == {"exported"}
+    # R74 Finding 2: section -> callback (linker-collected); weak -> exported (linker-visible).
+    assert roots("__attribute__((section(\".init_array\"))) void f(void){}") == {"callback"}
+    assert roots("__attribute__((weak)) void f(void){}") == {"exported"}
+
+
+def test_c_alias_ifunc_target_kept_live(tmp_path):
+    """R74 Finding 2: `__attribute__((alias("t")))` / `((ifunc("r")))` names another in-tree
+    function the linker/loader reaches through this symbol; the target has a real definition with
+    no by-name caller and was false-flagged dead (cardinal). The named target is now kept live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.c": (
+            "#include <stdio.h>\n"
+            "void real_func(void) { rf_help(); }\n"
+            "static void rf_help(void) { printf(\"a\"); }\n"
+            "void alias_name(void) __attribute__((alias(\"real_func\")));\n"
+            "__attribute__((weak)) void weak_hook(void) { wh_help(); }\n"
+            "static void wh_help(void) { printf(\"w\"); }\n"
+            "__attribute__((section(\".init_array\"))) void section_entry(void) {}\n"
+            "static void plain_dead(void) {}\n"
+            "int main(void){return 0;}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("real_func", "rf_help", "weak_hook", "wh_help", "section_entry"):
+        assert live not in stale, live
+    assert "plain_dead" in stale
+
+
+def test_c_alias_target_names_helper():
+    """Pin _c_alias_target_names (R74): extract alias/ifunc target names, incl. dunder spelling."""
+    from stitchgraph.core.extract.treesitter import _c_alias_target_names
+    assert _c_alias_target_names(b'void o(void) __attribute__((alias(\"new_impl\")));') == {"new_impl"}
+    assert _c_alias_target_names(b'void f(void) __attribute__((ifunc(\"resolver\")));') == {"resolver"}
+    assert _c_alias_target_names(b'void o() __attribute__((__alias__(\"t\")));') == {"t"}
+    assert _c_alias_target_names(b'static void f(void){}') == set()

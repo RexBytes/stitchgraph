@@ -39,6 +39,29 @@ Cardinal-safe: it only ever *adds* roots, so a broad match can over-root (mask d
 never flag live code dead. `visibility` is matched only for `"default"` — `"hidden"` is genuinely
 internal and stays dead-code-eligible; plain uncalled statics stay dead.
 
+### Panel R74 broadened the coverage
+
+The first review round found the bare-keyword match was incomplete — exactly the v2.1.3 pattern
+(doc-driven finds the mechanism, the panel finds the spellings). Added:
+
+- **GCC `__name__` synonyms** (`__constructor__`, `__used__`, `__visibility__`, …) — the
+  double-underscore form system/library headers use to dodge user macros. The original
+  `\b…\b` match couldn't see inside `__constructor__` (`_` is a word char); now an optional `_*`
+  surrounds each keyword. This was a CARDINAL miss (opus, R74).
+- **`section("…")`** → `callback` (linker-collected init tables) and **`weak`** → `exported`
+  (a linker-visible, overridable symbol callable from outside the tree).
+- **`alias("t")` / `ifunc("r")` targets** — these attributes name *another* in-tree function the
+  linker/loader reaches through this symbol; the attributed symbol is usually a body-less
+  declaration (no node), but its named target had a real definition with no by-name caller and was
+  flagged dead. The target is now kept live by name (the same mechanism as `EXPORT_SYMBOL`).
+
+### Known limitation (structural, pre-existing)
+
+An *empty-body* inline C++ method (`void f() {}`) is parsed by the tree-sitter C++ grammar as a
+`field_declaration` rather than a `function_definition`, so an entry-point/export attribute can be
+misattributed to an adjacent member. This predates v2.1.4 (the attribute lands on a different AST
+node) and the common non-empty-body case works; pin via `[entry_points]` if hit.
+
 ## Why doc-driven found it
 
 This is the C analogue of the Rust `#[no_mangle]` gap. As with Rust, real repos exercise only a

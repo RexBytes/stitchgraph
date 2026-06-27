@@ -207,17 +207,25 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 ### C/C++ entry-point & export attributes are rooted (v2.1.4)
 - **Covered:** a C/C++ function carrying `__attribute__((constructor))` / `((destructor))` (incl.
   the C++ `[[gnu::constructor]]` and priority `((constructor(101)))` forms), `__attribute__((used))`
-  / `((retain))`, `__attribute__((visibility("default")))`, or MSVC `__declspec(dllexport)` is
-  rooted — none has an in-tree by-name caller, yet each is live: constructor/destructor run
-  automatically around `main` (the C analogue of a static initializer / Go `init`), `used` is
-  explicitly kept by the compiler, and the visibility/dllexport forms are the public-ABI surface
-  (the analogue of Rust `#[no_mangle]`). Found doc-driven (the GCC/Clang/MSVC attribute reference
-  enumerates them); panel R73, cardinal.
+  / `((retain))`, `((section("…")))`, `((weak))`, `__attribute__((visibility("default")))`, or MSVC
+  `__declspec(dllexport)` is rooted — none has an in-tree by-name caller, yet each is live:
+  constructor/destructor run automatically around `main` (the C analogue of a static initializer /
+  Go `init`), `used` is explicitly kept by the compiler, `section` places the function in a
+  linker-collected table, `weak` is a linker-visible overridable symbol, and visibility/dllexport
+  are the public-ABI surface (the analogue of Rust `#[no_mangle]`). The **target** of
+  `((alias("t")))` / `((ifunc("r")))` is kept live by name (the attributed symbol is itself a
+  body-less declaration). The GCC `__name__` synonyms (`__constructor__`, …) are matched too.
+  Found doc-driven (the GCC/Clang/MSVC attribute reference enumerates them); panels R73/R74,
+  cardinal.
 - **Rationale / scope:** rooting only ever *adds* roots (cardinal-safe). `visibility("hidden")` is
   genuinely internal and stays dead-code-eligible; a plain non-`static` function (external linkage
   but no explicit export attribute) is still **not** auto-rooted — that is the deliberate
   precision/recall tradeoff for C, since otherwise no library function is ever dead. Annotate the
   public surface (or pin via `[entry_points]`) to root those.
+- **Known gap (structural, pre-existing):** an *empty-body* inline C++ method (`void f() {}`) is
+  parsed by the tree-sitter C++ grammar as a `field_declaration`, not a `function_definition`, so
+  an entry-point/export attribute can be misattributed to an adjacent member and not root it (panel
+  R74). The common non-empty-body case works; pin via `[entry_points]` if hit.
 
 ### PHP string callables: array form is covered; bare-string and module-scope are not (yet)
 - **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`
