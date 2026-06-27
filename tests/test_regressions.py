@@ -6043,3 +6043,40 @@ def test_csharp_attribute_on_enum_and_delegate_is_live(tmp_path):
     assert not any(i.endswith("MyFlagAttribute") for i in stale)        # enum-member attribute
     assert not any(i.endswith("InterceptableAttribute") for i in stale)  # delegate attribute
     assert any(i.endswith("UnusedAttribute") for i in stale)            # never applied: dead
+
+
+def test_rust_no_mangle_export_is_live(tmp_path):
+    """R69 (doc-driven): a Rust `#[no_mangle]` / `#[export_name]` fn exports its symbol to the
+    linker/FFI regardless of `pub`, so a NON-pub one is a public-ABI entry point with no in-tree
+    caller — it (and what its body reaches) was false-flagged dead. Now rooted (exported), the
+    Rust analogue of C EXPORT_SYMBOL. `#[inline]`-only / unused fns still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": (
+            "#[no_mangle]\n"
+            "extern \"C\" fn rust_entry() -> i32 { only_from_entry() }\n"
+            "#[export_name = \"sym\"]\n"
+            "fn renamed() -> i32 { 2 }\n"
+            "fn only_from_entry() -> i32 { 42 }\n"   # reached only from the non-pub export
+            "#[inline]\n"
+            "fn inline_dead() -> i32 { 1 }\n"        # #[inline] is NOT an export -> dead
+            "fn really_dead() -> i32 { 0 }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "rust_entry" not in stale and "renamed" not in stale     # FFI exports: live
+    assert "only_from_entry" not in stale                            # reached from an export
+    assert "inline_dead" in stale and "really_dead" in stale         # not exports: dead
+
+
+def test_is_rust_export_attr_helper():
+    """Pin _is_rust_export_attr (R69): only no_mangle/export_name are exports; inline/test/cfg not."""
+    from stitchgraph.core.extract.treesitter import _is_rust_export_attr
+    for a in ("#[no_mangle]", "#[export_name = \"x\"]", "#![no_mangle]"):
+        assert _is_rust_export_attr(a), a
+    for a in ("#[inline]", "#[test]", "#[cfg(test)]", "#[derive(Debug)]", "#[doc=\"no_mangle\"]",
+              "no_mangle", "", "not an attribute"):   # non-bracket strings: not attributes
+        assert not _is_rust_export_attr(a), a

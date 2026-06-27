@@ -191,6 +191,17 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   implicit entry point. Rooting by name only ever *adds* roots (cardinal-safe); over-rooting a
   genuinely-dead hook is the documented precision-over-recall trade-off.
 
+### Rust FFI/linker exports are rooted regardless of `pub` (v2.1.3)
+- **Covered:** a function carrying `#[no_mangle]` or `#[export_name = "…"]` exports its symbol to
+  the linker / foreign (C) code, so it is a public-ABI entry point with no in-tree caller — the
+  Rust analogue of C's `EXPORT_SYMBOL`. `pub fn` was already export-rooted; these attributes now
+  root the function (role `exported`) **even without `pub`** (`#[no_mangle] extern "C" fn f()` is
+  valid Rust and still exports). Found doc-driven (the Rust reference documents the attribute
+  independent of visibility), since real crates almost always pair `#[no_mangle]` with `pub`
+  (cdylib convention), masking the non-`pub` path (panel R69).
+- **Rationale:** rooting only ever *adds* roots (cardinal-safe); the prior gap was a genuine
+  cardinal false-positive (a non-`pub` export and everything its body reached flagged dead).
+
 ### PHP string callables: array form is covered; bare-string and module-scope are not (yet)
 - **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`
   / `['Class', 'method']` inside a function/method body — the `usort` / `uasort` /

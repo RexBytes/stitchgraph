@@ -896,6 +896,20 @@ def _is_rust_test_attr(attr_text: str) -> bool:
     return False
 
 
+def _is_rust_export_attr(attr_text: str) -> bool:
+    """True for a Rust FFI/linker-export attribute — `#[no_mangle]` or `#[export_name = "…"]`.
+    These export the function's symbol to the linker / foreign (C) code regardless of `pub`
+    visibility, so the function is a public-ABI entry point with no in-tree caller (the Rust
+    analogue of C's `EXPORT_SYMBOL`). Without this, a non-`pub` `#[no_mangle]` export — valid
+    Rust, the symbol is still exported — has no `pub` to trigger export-rooting and is
+    false-flagged dead along with whatever its body reaches (doc-driven, panel R69)."""
+    m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
+    if not m:
+        return False
+    path = re.split(r"[(\s=]", m.group(1), maxsplit=1)[0].strip()
+    return path in ("no_mangle", "export_name")
+
+
 # Annotation/attribute names that mark a method as a test entry or framework-invoked
 # test hook (JUnit/TestNG, xUnit/NUnit/MSTest, PHPUnit). The analog of Rust `#[test]`:
 # these decorate free-form-named methods that the test*/Test* name convention misses,
@@ -1061,6 +1075,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         attrs, pending_attrs = pending_attrs, []
         decos, pending_decos = pending_decos, []
         attr_test = any(_is_rust_test_attr(a) for a in attrs)
+        attr_export = any(_is_rust_export_attr(a) for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported=True, is_test=is_test, contains=contains,
@@ -1108,6 +1123,11 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # stays flagged, consistent with a dead helper in any test file.
             if _is_test_name(name) or attr_test or _has_test_annotation(child, lang, src):
                 roles.add("test")
+            # A Rust `#[no_mangle]`/`#[export_name]` fn is a linker/FFI export — public ABI with
+            # no in-tree caller — so root it even without `pub` (the Rust analogue of C
+            # EXPORT_SYMBOL; doc-driven panel R69).
+            if attr_export:
+                roles.add("exported")
             # A method carrying a framework-callback annotation (@PostConstruct,
             # [OnSerializing], …) is reflection-invoked — root it (multi-language hunt).
             if _has_callback_annotation(child, lang, src):

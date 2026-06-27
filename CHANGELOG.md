@@ -4,6 +4,26 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.3] — 2026-06-27
+
+**Rust FFI/linker-export cardinal fix, from doc-driven hunting.** Reading each language's
+reference enumerates its *complete* implicit-invocation surface (magic methods, operator
+overloads, FFI exports, reflection hooks) — gaps a repo only surfaces if it happens to exercise
+them. The Rust reference's "the `no_mangle` attribute" / `export_name` made a gap visible that no
+scanned repo had hit: a non-`pub` `#[no_mangle]` export. A minimal fixture confirmed it was a
+cardinal false-positive (panel R69).
+
+### Fixed
+
+- **Rust `#[no_mangle]` / `#[export_name]` functions are no longer flagged dead.** These
+  attributes export the function's symbol to the linker / foreign (C) code regardless of `pub`
+  visibility — the function is a public-ABI entry point with no in-tree caller (the Rust analogue
+  of C's `EXPORT_SYMBOL`). A `pub fn` was already export-rooted, but a non-`pub`
+  `#[no_mangle] extern "C" fn` (valid Rust — the symbol is still exported) had no `pub` to trigger
+  that rooting, so it *and everything its body reached* were false-flagged dead (cardinal). Such
+  functions are now rooted `exported`. Cardinal-safe (only adds roots). A `_is_rust_export_attr`
+  helper isolates the attribute test; owned by a regression test and pinned by mutation.
+
 ## [2.1.2] — 2026-06-26
 
 **C# custom-attribute cardinal fix, from continuing the cross-language hunt** (jackson-core,
