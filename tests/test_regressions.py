@@ -5964,3 +5964,30 @@ def test_is_ruby_operator_method_helper():
     for normal in ("evaluate", "initialize", "_private", "valid?", "save!", "to_s", "call"):
         assert not _is_ruby_operator_method(normal), normal
     assert not _is_ruby_operator_method("")
+
+
+def test_csharp_attribute_class_used_via_bracket_is_live(tmp_path):
+    """R64 (serilog dogfood, cardinal): C# applies an attribute with the `Attribute` suffix
+    OMITTED — `[NoEnumeration]` names class `NoEnumerationAttribute`. The bare `NoEnumeration`
+    reference never resolved, so an in-tree attribute class used only via `[X]` was flagged dead.
+    The extractor now also emits the suffixed reference from an `attribute` usage."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.cs": (
+            "using System;\n"
+            "sealed class NoEnumerationAttribute : Attribute { }\n"
+            "sealed class UnusedAttribute : Attribute { }\n"   # defined, never applied -> dead
+            "public class Guard {\n"
+            "    public static T AgainstNull<T>([NoEnumeration] T arg) { return arg; }\n"
+            "}\n"
+            "public class App {\n"
+            "    public static void Main() { Guard.AgainstNull(\"x\"); }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert not any(i.endswith("NoEnumerationAttribute") for i in stale)  # used via [NoEnumeration]
+    assert any(i.endswith("UnusedAttribute") for i in stale)             # never applied: dead

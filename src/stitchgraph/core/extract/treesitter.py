@@ -116,6 +116,7 @@ class LangSpec:
     imports: frozenset[str] = frozenset()           # import statement node types
     bare_calls: bool = False            # Ruby: paren-less `foo` calls parse as identifier
     callable_strings: bool = False      # PHP: `[$this, 'method']` array callables
+    attr_suffix: bool = False           # C#: `[Foo]` may resolve to class `FooAttribute`
 
 
 _JS = LangSpec(
@@ -160,6 +161,7 @@ SPECS: dict[str, LangSpec] = {
                               "interface_declaration", "declaration_list"}),
         heritage=frozenset({"base_list"}),
         imports=frozenset({"using_directive"}),
+        attr_suffix=True,  # `[Foo]` may name class `FooAttribute` (C# omits the suffix)
     ),
     "bash": LangSpec(
         defs={"function_definition": F},
@@ -1515,6 +1517,17 @@ def _direct_refs(body, src, spec):
                 # PHP array callables (`[$this, 'm']`) name a method the syntactic call scan
                 # can't see; emit it so the live target isn't flagged dead.
                 out.extend(_php_callable_names(c, src))
+            elif spec.attr_suffix and c.type == "attribute":
+                # C# applies an attribute with the `Attribute` suffix OMITTED — `[NoEnumeration]`
+                # names class `NoEnumerationAttribute`. The generic walk already emits the bare
+                # `NoEnumeration` (which won't resolve); also emit the suffixed form so the
+                # in-tree attribute class isn't false-flagged dead (panel R64, serilog dogfood).
+                an = c.child_by_field_name("name") or next(
+                    (k for k in c.children if k.type in ("identifier", "qualified_name")), None)
+                if an is not None:
+                    nm = _trailing_id(an, src)
+                    if nm and not nm.endswith("Attribute"):
+                        out.append((nm + "Attribute", c.start_point[0] + 1))
             rec(c, False)
 
     rec(body, True)

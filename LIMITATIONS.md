@@ -222,10 +222,18 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Decision:** root by a curated per-language set of framework annotations/attributes/
   decorators (role `callback`). The sets cover the dominant frameworks, not every library.
 - **Rationale / gaps:** these markers denote framework contracts, so a definition is a genuine
-  entry point; rooting only ever *adds* roots (cardinal-safe). NOT yet covered: a *custom*
-  user-defined decorator/annotation, C#'s named serialization callbacks discovered only via a
-  `[method]` reference, and JS/TS *metadata-only* decorators (`@Version`) that enhance but
-  don't invoke. Pin those in `stitchgraph.toml [entry_points]`.
+  entry point; rooting only ever *adds* roots (cardinal-safe). NOT yet covered: a method invoked
+  by an *unrecognised* framework annotation — e.g. ByteBuddy's `@Advice.OnMethodEnter`/
+  `@OnMethodExit` (mockito's mock advice), Moshi's `@ToJson`/`@FromJson` adapter methods — whose
+  annotation isn't in the curated set, and JS/TS *metadata-only* decorators (`@Version`) that
+  enhance but don't invoke. The curated set covers dominant frameworks, not every library; pin
+  the rest in `stitchgraph.toml [entry_points]`.
+- **Fixed in 2.1.2 (the related reference gap):** a *custom in-tree attribute class* used via
+  `[Foo]` is now kept live. C# applies attributes with the `Attribute` suffix omitted
+  (`[NoEnumeration]` → class `NoEnumerationAttribute`), so the bare reference never resolved and
+  the attribute class was false-flagged dead (serilog dogfood, panel R64). An `attribute` usage
+  now also emits the suffixed reference. (This is the attribute *class* being referenced — not
+  the same as rooting an annotated *method*, which is the curated-set concern above.)
 
 ## Cost-of-fix exceeds value
 

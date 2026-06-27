@@ -4,6 +4,25 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.2] — 2026-06-26
+
+**C# custom-attribute cardinal fix, from continuing the cross-language hunt** (jackson-core,
+mockito, okhttp, serilog). Most findings were the documented external-framework-annotation
+limitation (ByteBuddy `@Advice.*` on mockito's advice methods, Moshi `@ToJson`/`@FromJson` on
+okhttp's sample adapters — unrecognised framework annotations, now cited in LIMITATIONS).
+serilog surfaced a clean, general extraction bug.
+
+### Fixed
+
+- **C# in-tree attribute classes used via `[Foo]` are no longer flagged dead.** C# applies an
+  attribute with the `Attribute` suffix omitted — `[NoEnumeration]` names class
+  `NoEnumerationAttribute` — so the bare reference never resolved, and a custom attribute class
+  used only via `[Foo]` was false-flagged dead (serilog `NoEnumerationAttribute`, applied in
+  `Guard.AgainstNull`; panel R64, cardinal). An `attribute` usage now also emits the suffixed
+  reference (`Foo` → `FooAttribute`), so the attribute class is kept live. Cardinal-safe (adds a
+  reference only; the suffixed name resolves only if such a class exists). Owned by a regression
+  test.
+
 ## [2.1.1] — 2026-06-26
 
 **Ruby operator-method cardinal fix, from dogfooding across a Rust/Go/Ruby hunt** (serde, clap,
