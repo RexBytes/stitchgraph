@@ -869,7 +869,16 @@ def _framework_classes(inherits, class_by_name: dict[str, set[str]]) -> set[str]
     override (live, but with no in-tree caller) was flagged dead — CARDINAL. Confirmed on
     Magento (PHP template methods through an in-tree AbstractModel intermediary) and on a C#
     explicit `IDisposable.Dispose` reached via a project interface that extends the framework
-    interface. Mirrors the Python extractor's `_apply_callback_roles` (case (a) + case (c)).
+    interface. Mirrors the Python extractor's `_apply_callback_roles` (cases (a) + (b) + (c)).
+
+    Case (b) — same-name self-loop (`class Foo extends pkg.Foo`, base leaf binds to itself) —
+    fires only when the base name resolves *solely* to the class itself (`class_by_name[base] ==
+    {class_id}`). When the same short name also collides with an unrelated project class, this
+    name-based check resolves the base to that distinct class instead, so the self-loop is not
+    detected here; framework status then propagates only if the transitive closure reaches it.
+    Closing that residual collision case needs the resolved INHERITS `dst_id` (python.py keys on
+    `dst_id == src`); tracked as a follow-up. It is cardinal-safe in the common shapes and
+    pre-existing — this change is a strict superset of the prior rooting (only ever adds).
     """
     external: set[str] = set()
     subclasses: dict[str, set[str]] = {}
