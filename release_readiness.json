@@ -1091,6 +1091,18 @@
       ],
       "findings": {},
       "theme": "2.1.5 header-decl export fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: realistic C++ lib flags exactly the genuinely-dead internals (no public API), mixed export signals, header included by 3 .cpp no dup-crash, decl-without-def no crash, anon-ns/static export no crash, idempotent. sonnet: oracle 27/27 (streaming==full for a c_decl_exports fixture, incremental==full, graphblas==pure-py), two-library same-name over-root bounded+safe (==Python __all__), order-independent (header-first==source-first), cross-language gated (Py/Go process stay dead), 100-export+50-dead stress exact, 284 regressions+420 full. haiku: 420, mutation 9/9, docs, no leak. All 3 CLEAN. NON-blocking future candidate (opus F1, pre-existing, NOT introduced here): a class exported via a CLASS-LEVEL visibility/dllexport attribute doesn't propagate exported to its public methods (out-of-line C++ method nodes lack the class in their id) -> queued as v2.1.6."
+    },
+    {
+      "id": "R81",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1
+      },
+      "theme": "2.1.6 class-level export fix \u2014 round 1. opus found a CARDINAL miss: _c_public_method_names iterated only field_declaration children, so an INLINE-defined public method (parses as function_definition; templated -> template_declaration) was missed and a live inline public method flagged dead at 0.6. FIX: handle all three member shapes (field_declaration/function_definition/template_declaration) and include protected (out-of-tree subclass ABI); private stays dead. sonnet (reviewed the fixed code, ~13min run overlapped the commit): CLEAN \u2014 inline/template/protected all included, struct-vs-class defaults, 3-deep chain live + dead private sibling 0.6, streaming byte-identical, combined fixture no double-count; non-cardinal notes: protected-by-design over-root, comment-blind byte-scans (pre-existing), harmless constructor-name over-root. haiku: 422->gates, mutation, docs, no leak. Re-gated by R82/R83. mutation 12/12."
     }
   ]
 }
