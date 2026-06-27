@@ -1081,6 +1081,16 @@
       ],
       "findings": {},
       "theme": "2.1.5 header-decl export fix (post-R78 wrapper descent) \u2014 FULL-DIVERSITY clean round 1. opus: hammered EVERY declarator-wrapper return shape \u2014 char*/int&/int&&/const char*/int* const/char**/function-pointer-return int (*p())(int), member (char* W::make), qualified+nested \u2014 ALL root and propagate to helpers; visibility(hidden) stays dead; determinism 3x, full==streaming, incremental==full; R78 class fully closed. sonnet: monkeypatch non-regression (collateral only at 0.1<0.5), template tmax rooted, 3-deep chain live + dead sibling 0.6, EXPORT_SYMBOL/alias/ifunc/special-members no double-count, streaming identical; 284 regressions + 27 oracles. haiku: 420, mutation 9/9, docs, no leak. Two NON-cardinal informational notes (both safe over-root direction, pre-existing, unrelated to R78): (1) function-pointer VARIABLE int (*h)(int) with export attr makes _has_function_declarator True -> name over-roots a same-named fn (masks dead code only); (2) deeply namespace-nested class SHELL (ns::Outer::Inner) flagged 0.6 via _cpp_method_scope resolving to the namespace not the class (panel-R12B-style; live exported method itself unaffected) \u2014 future candidate. All 3 CLEAN, no cardinal."
+    },
+    {
+      "id": "R80",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.5 header-decl export fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: realistic C++ lib flags exactly the genuinely-dead internals (no public API), mixed export signals, header included by 3 .cpp no dup-crash, decl-without-def no crash, anon-ns/static export no crash, idempotent. sonnet: oracle 27/27 (streaming==full for a c_decl_exports fixture, incremental==full, graphblas==pure-py), two-library same-name over-root bounded+safe (==Python __all__), order-independent (header-first==source-first), cross-language gated (Py/Go process stay dead), 100-export+50-dead stress exact, 284 regressions+420 full. haiku: 420, mutation 9/9, docs, no leak. All 3 CLEAN. NON-blocking future candidate (opus F1, pre-existing, NOT introduced here): a class exported via a CLASS-LEVEL visibility/dllexport attribute doesn't propagate exported to its public methods (out-of-line C++ method nodes lack the class in their id) -> queued as v2.1.6."
     }
   ]
 }

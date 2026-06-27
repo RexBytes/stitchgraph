@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.3: R69–R72. **2.1.4: R73–R77** (full diversity opus/sonnet/haiku) on the C/C++ entry-point & export attribute fix (doc-driven) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export/c-attr) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 417 passing (full extras) |
+| Multi-model review panels | 2.1.4: R73–R77. **2.1.5: R78–R80** (full diversity opus/sonnet/haiku) on the C/C++ header-declaration export-attribute fix (limitation audit) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export/c-attr/c-export-decl) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 420 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.2: R64 (dogfood) → R65✓ R66✗ → R67✓ R68✓ (streak 2). 2.1.3: R69 (discovery) → R70✗ (Rust-2024 `#[unsafe(no_mangle)]`) → R71✓ R72✓ (streak 2). 2.1.4: R73 (doc-driven discovery — C/C++ constructor/used/visibility cluster) → R74✗ (opus: GCC `__name__` synonyms + weak/section/alias-target) → R75✓→reset (empty-body fix landed: "fix don't document") → **R76✓ R77✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.3: R69 → R70✗ → R71✓ R72✓ (streak 2). 2.1.4: R73 (discovery) → R74✗ → R75✓→reset → R76✓ R77✓ (streak 2). 2.1.5: R77-F2 (limitation-audit discovery — C/C++ header-declaration export attr) → R78✗ (opus: pointer/reference-return declarator wrapper missed) → **R79✓ R80✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.3 RELEASED/releasable** (maintainer tags). **2.1.4** (C/C++ entry-point & export attribute cardinal fix — `__attribute__((constructor/destructor/used/section/weak/visibility))`, `__declspec(dllexport)`, alias/ifunc targets, GCC `__name__` synonyms, and empty-body-method attribute recovery; doc-driven) **RELEASABLE** — R73/R74 findings fixed, R75 empty-body fix ("fix don't document"); R76+R77 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.4` tag. Next: v2.1.5 leads with the header-declaration export-attribute propagation fix (R77 F2). |
+| Verdict | **1.0.0–2.1.4 RELEASED/releasable** (maintainer tags). **2.1.5** (C/C++ header-declaration export-attribute cardinal fix — an export attribute on a header declaration now roots the out-of-line definition project-wide by name; from a full `LIMITATIONS.md` audit) **RELEASABLE** — R78 finding fixed; R79+R80 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.5` tag. Next: v2.1.6 = class-level export-attribute → method propagation (R80 F1). |
 
 ## Trajectory
 
@@ -1004,6 +1004,29 @@ sonnet's documented empty-body limitation into a fix. The only things left docum
 genuinely unfixable (macro-wrapped attributes — no preprocessor) or a real refactor (header-decl
 attribute propagation, now scheduled). Cardinal-safety made every broadening cheap: a wider match
 can only over-root (mask dead code), never flag live code dead.
+
+## 2.1.5 — C/C++ header-declaration export-attribute cardinal fix, from the limitation audit (R78–R80)
+
+A full audit of `LIMITATIONS.md` (per the maintainer's *fix it, don't document it* direction) triaged
+every note into fixable / fundamental / intentional and promoted the one genuinely-cardinal fixable
+item — R77 Finding 2 — to a fix. The export attribute (`visibility("default")` / `dllexport`) is
+commonly placed on the **header declaration** while the out-of-line `.cpp` definition carries none, so
+the public-ABI method (and its callees) was false-flagged dead at 0.6. Fix: `_c_export_decl_names`
+collects export-attributed declaration names **project-wide** (declaration and definition live in
+different files) and roots the matching definition by name — the C/C++ analogue of Python's `__all__`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R78 | 3 | ✗ | opus found a CARDINAL miss: the collector matched only *direct* `function_declarator` children, so a pointer/reference-returning export (`char* W::make(int)`, whose `function_declarator` nests inside a `pointer_declarator`) wasn't collected and its live def was flagged dead at 0.6. Fixed by reusing `_name_of` (which descends `_DECLARATOR_WRAPPERS`), guarded by `_has_function_declarator`; this also fixed the template-param mis-collection. sonnet/haiku reviewed the pre-fix code. |
+| R79 | 3 | ✓ | full-diversity clean on the fixed tree — every return-type wrapper (`char*`/`int&`/`int&&`/`const char*`/`char**`/function-pointer-return/member/qualified-nested) roots and propagates to helpers; determinism, full==streaming, incremental==full. Two non-cardinal informational notes (both safe over-root direction, pre-existing): a function-pointer *variable* over-rooting its name, and a deeply-namespace-nested class *shell* flagged via a `_cpp_method_scope` gap. |
+| R80 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Realistic multi-class lib (exactly the genuinely-dead internals flag), oracle 27/27, bounded two-library same-name over-root (== Python `__all__`), order-independent, cross-language gated, 100-export + 50-dead stress exact. opus surfaced **F1** (pre-existing, non-blocking): a class exported via a *class-level* attribute doesn't propagate `exported` to its public methods — queued as **v2.1.6**. |
+
+The 2.1.5 lesson: **a limitation audit is itself a doc-driven hunt** — `LIMITATIONS.md` enumerates the
+known gaps the way a language reference enumerates mechanisms, and triaging it cleanly separates the
+*fixable* (this release), the *fundamental* (needs a type model), and the *intentional* (the contract).
+R78 reprised the now-familiar pattern one more time (the fix handled the common declarator, the panel
+found the wrapped one). Cardinal-safety again made the project-wide rooting cheap: over-rooting a
+homonym across libraries is bounded and safe, exactly as Python's flat `__all__` already is.
 
 ## Standing themes
 
