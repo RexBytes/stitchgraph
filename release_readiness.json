@@ -986,6 +986,16 @@
         "CRITICAL": 1
       },
       "theme": "2.1.3 Rust FFI-export fix \u2014 round 1. opus found a CRITICAL CARDINAL miss: the initial path-only _is_rust_export_attr missed `#[unsafe(no_mangle)]` / `#[unsafe(export_name=...)]` \u2014 the REQUIRED spelling in the Rust 2024 edition (mainstream, not an edge case) \u2014 and `#[cfg_attr(<pred>, no_mangle)]`; a non-pub export in either form stayed flagged dead (verified: rust_entry_2024 + its private callee dead, conf 0.6). FIX: helper now drops string literals then matches the export token anywhere in the attr content, covering unsafe()/cfg_attr while keeping #[doc=\"no_mangle\"] from reading as an export. sonnet (vs fixed code): CLEAN \u2014 22 fixtures incl unsafe(), nested mod, impl assoc fn, multi-attr both orders, export-with-space, transitive chain, word-boundary negatives, streaming==full byte-identical, static_item not indexed (non-issue). haiku: version/docs consistent, no cross-language bleed, no model-id leak. static_item not in rust defs -> #[no_mangle] static can't be flagged (confirmed)."
+    },
+    {
+      "id": "R71",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.3 Rust FFI-export fix (post unsafe()/cfg_attr) \u2014 FULL-DIVERSITY clean round 1. opus (fresh angles): raw strings r\"..\"/r#\"..\"# + escaped-quote export_name rooted (string-strip never eats the path token); doc/line comments around attr don't flush pending-attrs; extern \"C\"{} import blocks mint no nodes (never flagged); macro_rules! no crash; transitive depth>1 (entry->a->b->c) all live; pub/#[no_mangle]/#[test]/pub+no_mangle root independently no double-count; dead controls still flagged; conf 0.5-0.78. sonnet: cross-language non-regression \u2014 attr_export fires only on Rust attribute_item/inner_attribute_item (C# attribute_list, Java marker_annotation, Go none), Py fns named export_name/no_mangle still stale; all-private Rust file all dead; trait method /nested-in-fn no crash; incremental==full. haiku: suite 410, truth-table 16/16 incl word-boundary negatives (#[no_mangle_extra]/#[xno_mangle] False), docs/version consistent, no model-id leak. All 3 CLEAN."
     }
   ]
 }
