@@ -1283,6 +1283,26 @@
       ],
       "findings": {},
       "theme": "2.1.14 Ruby implicit protocol — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete set after adding to_f/to_r (numeric coercion: Integer(obj)/Float(obj) call Integer/Float, not the object's hook, so a coercion-only hook had no textual caller). Final pass: no cardinal across the complete 24-name set, no cross-language bleed, over-mask boundary holds, determinism. Conversion family now complete. All 3 CLEAN."
+    },
+    {
+      "id": "R100",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.15 C++ range-based-for begin()/end() customization points rooted via a new _IMPLICIT_HOOKS[cpp] entry (for(x:r) desugars to r.begin()/r.end(), no textual call site) — FULL-DIVERSITY clean round 1. opus: core fix works (begin/end + callees live, genuinely-dead still flag), pre-existing cardinal confirmed, const begin() const extracts to name begin (rooted), no cross-language bleed, no C-file over-rooting; flagged a DOC inaccuracy (the .h-as-C boundary claim is wrong: _header_lang content-sniffs C++ .h headers to cpp so their begin/end ARE rooted — better coverage, cardinal-safe). sonnet: real C++ lib dogfood (Span/SmallVec/FilterView in .hpp) all live, rbegin/rend correctly NOT rooted (called explicitly), same doc finding. haiku: C-file bleed negative, 452 + oracles 27 + RELEASABLE. No functional/cardinal defect; doc-only finding. All 3 CLEAN."
+    },
+    {
+      "id": "R101",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.15 C++ range-for begin/end — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) after correcting the .h-scope doc wording (the comment/CHANGELOG/release-notes now state _header_lang sniffs C++ .h headers to cpp so their begin/end are rooted; only a pure-C .h stays C). Final pass across .cpp/.hpp/.h-C++/pure-C-.h/.c: no cardinal, no bleed, over-mask boundary holds, determinism. All 3 CLEAN."
     }
   ]
 }

@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.13: R96–R97. **2.1.14: R98–R99** (full diversity opus/sonnet/haiku) on Ruby implicit conversion / Enumerable protocol methods; round 1 flagged the `to_f`/`to_r` omission, added in round 2 |
+| Multi-model review panels | 2.1.14: R98–R99. **2.1.15: R100–R101** (full diversity opus/sonnet/haiku) on C++ range-for `begin()`/`end()` customization points; round 1 flagged a `.h`-scope doc inaccuracy, corrected in round 2 |
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/framework_classes/rust_runtime_entry_attr/c_attr_roots) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 451 passing (full extras) |
+| Tests | 452 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.12: R94✓ R95✓ (streak 2). 2.1.13: R96✓ R97✓ (streak 2). 2.1.14: Ruby implicit conversion/Enumerable protocol → **R98✓ R99✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — round 1 completed the conversion family (`to_f`/`to_r`) |
+| Convergence | 2.1.13: R96✓ R97✓ (streak 2). 2.1.14: R98✓ R99✓ (streak 2). 2.1.15: C++ range-for begin/end → **R100✓ R101✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — round 1 corrected a `.h`-scope doc inaccuracy |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.13 RELEASED/releasable** (maintainer tags). **2.1.14** (Ruby implicit conversion/coercion `to_s`/`inspect`/`to_i`/`to_f`/…, Enumerable `each`, Hash-key `hash`/`eql?`, and marshalling hooks rooted in `_IMPLICIT_HOOKS["ruby"]` — the Ruby analogue of Python dunder rooting) **RELEASABLE** — R98+R99 full-diversity clean; awaiting the maintainer's manual `v2.1.14` tag. |
+| Verdict | **1.0.0–2.1.14 RELEASED/releasable** (maintainer tags). **2.1.15** (C++ range-based-`for` `begin()`/`end()` customization points rooted via a new `_IMPLICIT_HOOKS["cpp"]` entry — `for (x:r)` desugars to `r.begin()`/`r.end()` with no textual call site) **RELEASABLE** — R100+R101 full-diversity clean; awaiting the maintainer's manual `v2.1.15` tag. |
 
 ## Trajectory
 
@@ -1234,6 +1234,24 @@ same cardinal open for the un-added members — `Integer(obj)`/`Float(obj)` emit
 `Integer`/`Float`, never to the object's hook, so a coercion-only `to_f` has no textual caller. The
 panel that enumerated the *whole* numeric-conversion family caught the omission a per-name spot-check
 would not.
+
+## 2.1.15 — C++ range-based-`for` `begin()`/`end()` customization points (R100–R101)
+
+`for (x : r)` is desugared by the compiler to `r.begin()`/`r.end()` (or ADL `begin(r)`/`end(r)`), so
+the name-based call graph never sees those calls — an iterable type's `begin`/`end` (and what they
+reach) were false-flagged dead. `_IMPLICIT_HOOKS` had no C++ entry and the special-member pass covers
+only operators/destructors. Fix: a `"cpp"` entry rooting `begin`/`end` as `callback`. Add-roots-only,
+cardinal-safe.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R100 | 3 | ✓ | round 1. opus: core fix works (begin/end + callees live, genuinely-dead still flag), pre-existing cardinal confirmed, const `begin() const` extracts to name `begin` (rooted), no cross-language bleed, no C-file over-rooting; flagged a DOC inaccuracy — the `.h`-as-C boundary claim is wrong, `_header_lang` content-sniffs C++ `.h` headers to `cpp` so their begin/end ARE rooted (better coverage, cardinal-safe). sonnet: real C++ lib dogfood (`Span`/`SmallVec`/`FilterView` in `.hpp`) all live, rbegin/rend correctly NOT rooted (called explicitly), same doc-inaccuracy finding. haiku: C-file bleed negative, 452 + oracles 27 + RELEASABLE. |
+| R101 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Doc wording corrected (the `.h` `_header_lang` sniff); final confirmation across `.cpp`/`.hpp`/`.h`-C++/pure-C-`.h`/`.c` — no cardinal, no bleed, over-mask boundary holds, determinism. |
+
+The 2.1.15 lesson: **the docs are part of the diff.** The code was correct and cardinal-safe, but the
+comment/CHANGELOG/release-notes asserted a `.h` "out of scope" boundary that the `_header_lang`
+content-sniffer had already removed — the panel checked the *claim against the code* and caught it. A
+factually-wrong comment that understates coverage is still a defect worth fixing.
 
 ## Standing themes
 
