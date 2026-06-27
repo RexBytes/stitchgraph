@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.5: R78–R80. **2.1.6: R81–R83** (full diversity opus/sonnet/haiku) on the C/C++ class-level export-attribute fix |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export/c-attr/c-export-decl/c-class-export) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 423 passing (full extras) |
+| Multi-model review panels | 2.1.6: R81–R83. **2.1.7: R84–R85** (full diversity opus/sonnet/haiku) on the recall release (Rust 3rd-party test attrs + ByteBuddy/Moshi annotations) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/c-class-export/rust-test-attr) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 426 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.4: R73 → R74✗ → R75✓→reset → R76✓ R77✓ (streak 2). 2.1.5: R77-F2 → R78✗ → R79✓ R80✓ (streak 2). 2.1.6: R80-F1 (class-level export attr → methods) → R81✗ (opus: inline/templated methods missed) → **R82✓ R83✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.5: R77-F2 → R78✗ → R79✓ R80✓ (streak 2). 2.1.6: R80-F1 → R81✗ → R82✓ R83✓ (streak 2). 2.1.7: recall additions → **R84✓ R85✓ full-diversity, no-finding (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.5 RELEASED/releasable** (maintainer tags). **2.1.6** (C/C++ class-level export-attribute cardinal fix — public/protected methods of a `class __attribute__((visibility("default")))`/`__declspec(dllexport)` class are rooted; declared-only + inline + templated shapes; completes the v2.1.4→v2.1.6 export-attribute arc) **RELEASABLE** — R81 finding fixed; R82+R83 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.6` tag. Next: v2.1.7 = the non-cardinal recall gaps (Rust 3rd-party test attrs, ByteBuddy/Moshi annotations). |
+| Verdict | **1.0.0–2.1.6 RELEASED/releasable** (maintainer tags). **2.1.7** (non-cardinal recall — third-party Rust test attrs `#[rstest]`/`#[test_case]`/`#[gtest]`/`#[quickcheck]` + ByteBuddy `@Advice.*` / Moshi `@ToJson`/`@FromJson` rooted) **RELEASABLE** — R84+R85 full-diversity clean (no findings); awaiting the maintainer's manual `v2.1.7` tag. Next: v2.1.8 = PHP bare-string callables + JS `export *` (the last queued recall gaps). |
 
 ## Trajectory
 
@@ -1050,6 +1050,25 @@ direct → pointer/reference wrappers), class-level (v2.1.6: declared-only → i
 broadening was cardinal-safe, so the cost of the iterative widening was only review rounds, never a
 shipped regression. What remains documented for C/C++ is genuinely unfixable (macro-wrapped
 attributes — no preprocessor) or non-compilable (double-nested member templates).
+
+## 2.1.7 — recall: third-party Rust test harnesses + ByteBuddy/Moshi annotations (R84–R85)
+
+The first **non-cardinal** release from the limitation audit — recall gaps that under-report live code
+as dead (a test/framework method that *is* reached, surfacing as a stale candidate). `_is_rust_test_attr`
+gained the common third-party harnesses (`#[rstest]`/`#[test_case]`/`#[gtest]`/`#[quickcheck]`, matched
+on the last path segment); the Java callback-annotation set gained ByteBuddy `@Advice.OnMethodEnter`/
+`@OnMethodExit` and Moshi `@ToJson`/`@FromJson`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R84 | 3 | ✓ | full-diversity clean **on the first round** (unlike the cardinal fixes, which kept surfacing wrapped/inline forms). Last-segment match rejects `#[my_rstest]`/`#[derive(rstest)]`/`#[cfg(feature="rstest")]`, accepts the real ones; monkeypatch diff shows only the intended new roots; zero cross-language bleed. |
+| R85 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Stress (30 Rust + 20 dead → 20/20 flagged; 20 Java + 15 dead → 15/15 flagged), rstest `#[case]`/`#[fixture]`/mixed `mod tests`, Kotlin produces zero nodes (no bleed), Go `OnMethodEnter` live by Go's own export rule (not bleed), build.rs/malformed no crash, determinism 5×, 290 regressions + 426 full. |
+
+The 2.1.7 contrast is the lesson: **a recall (additive-allowlist) change converges in one round, where a
+cardinal extraction change took two or three** — because over-rooting is structurally safe, so the only
+review questions are over-match, cross-language bleed, and regression, all of which a single thorough
+round settles. The cardinal fixes had a second axis (every syntactic form of the mechanism) that only
+adversarial breadth across rounds exhausts.
 
 ## Standing themes
 

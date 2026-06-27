@@ -1133,6 +1133,16 @@
       ],
       "findings": {},
       "theme": "2.1.7 recall (Rust 3rd-party test attrs + ByteBuddy/Moshi annotations) \u2014 FULL-DIVERSITY clean round 1. opus: last-segment match rejects #[my_rstest]/#[derive(rstest)]/#[cfg(feature=\"rstest\")]/#[doc=\"rstest\"], accepts #[rstest]/#[test_case(..)]/#[gtest]/#[quickcheck]/#[rstest::rstest]/#![rstest]; Java @Advice.OnMethodEnter/Exit + @ToJson/@FromJson root callback (qualified->last-segment); monkeypatch diff shows ONLY intended new roots, nothing newly dead; no cross-language bleed; determinism/streaming/incremental hold. sonnet: oracle 27/27, monkeypatch zero live<->stale either direction, existing test-attr/callback behavior intact, C# set unaffected, dual-path no double-count, 290 regressions+426 full. haiku: 426, mutation 11/11, docs, no leak. All 3 CLEAN; the only informational note is cardinal-safe over-rooting of user-defined homonym annotations."
+    },
+    {
+      "id": "R85",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.7 recall \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: rstest #[case]/#[fixture]/mixed mod tests, shared prod+test helper stays live, Moshi @ToJson @Override, ByteBuddy advice, Kotlin produces ZERO nodes (no bleed), build.rs/examples/malformed no crash, idempotence/streaming/incremental; 19 unit cases 0 fail. sonnet: oracle 27/27, stress 30-rust+20-dead (20/20 flagged) & 20-java+15-dead (15/15 flagged), determinism 5x, cross-language no bleed (Go OnMethodEnter live by Go capitalized-export rule, not bleed), 290 regressions + 426 full. haiku: 426, mutation 11/11, readiness RELEASABLE, docs, no leak. All 3 CLEAN."
     }
   ]
 }
