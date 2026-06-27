@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.6: R81–R83. **2.1.7: R84–R85** (full diversity opus/sonnet/haiku) on the recall release (Rust 3rd-party test attrs + ByteBuddy/Moshi annotations) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/c-class-export/rust-test-attr) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 426 passing (full extras) |
+| Multi-model review panels | 2.1.7: R84–R85. **2.1.8: R86–R87** (full diversity opus/sonnet/haiku) on the recall release (PHP bare-string callables) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/rust-test-attr/php-string-callable) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 428 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.5: R77-F2 → R78✗ → R79✓ R80✓ (streak 2). 2.1.6: R80-F1 → R81✗ → R82✓ R83✓ (streak 2). 2.1.7: recall additions → **R84✓ R85✓ full-diversity, no-finding (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.6: R80-F1 → R81✗ → R82✓ R83✓ (streak 2). 2.1.7: recall → R84✓ R85✓ (streak 2). 2.1.8: recall → **R86✓ R87✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.6 RELEASED/releasable** (maintainer tags). **2.1.7** (non-cardinal recall — third-party Rust test attrs `#[rstest]`/`#[test_case]`/`#[gtest]`/`#[quickcheck]` + ByteBuddy `@Advice.*` / Moshi `@ToJson`/`@FromJson` rooted) **RELEASABLE** — R84+R85 full-diversity clean (no findings); awaiting the maintainer's manual `v2.1.7` tag. Next: v2.1.8 = PHP bare-string callables + JS `export *` (the last queued recall gaps). |
+| Verdict | **1.0.0–2.1.7 RELEASED/releasable** (maintainer tags). **2.1.8** (non-cardinal recall — PHP bare-string function callables to known callback builtins rooted; JS `export *` docs correction) **RELEASABLE** — R86+R87 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.8` tag. The full `LIMITATIONS.md` audit ("fix it, don't document it") is complete: every cardinal item fixed (through v2.1.6) and the non-cardinal recall gaps closed (v2.1.7–v2.1.8); what remains documented is fundamental (needs a type model), intentional (the contract), or unfixable (the preprocessor boundary). |
 
 ## Trajectory
 
@@ -1069,6 +1069,28 @@ cardinal extraction change took two or three** — because over-rooting is struc
 review questions are over-match, cross-language bleed, and regression, all of which a single thorough
 round settles. The cardinal fixes had a second axis (every syntactic form of the mechanism) that only
 adversarial breadth across rounds exhausts.
+
+## 2.1.8 — recall: PHP bare-string function callables (R86–R87)
+
+The last queued non-cardinal item from the limitation audit. A PHP global function passed by bare
+string to a known callback builtin (`usort($x, 'topcmp')`, `call_user_func('handler')`,
+`array_map('mapper', …)`) is reached at runtime but the syntactic call scan misses the string;
+`_php_string_callable_names` now emits a REFERENCES edge to it, scoped to a curated builtin allowlist
+so an ordinary string matching a function name doesn't over-root. Also a docs-only correction:
+`export * from './m'` is *not* an unrooted JS form (re-exported symbols are already inline-exported in
+`m`), verified by fixture.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R86 | 3 | ✓ | full-diversity clean on the first round. Positive coverage across both arg positions, over-match guard (string to a non-builtin stays dead), `Class::method`/namespaced safely dropped, cross-language no bleed, JS `export *` independently verified non-gap. The one finding — top-level module-scope callables not covered — is the *documented* pre-existing recall gap (both array and bare-string scans run over def bodies, not `_module_uses`). |
+| R87 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Magento-style mixed array+bare-string, nested `array_map(array_filter(…))`, closures, heredoc/interpolated/constant callbacks (no crash), all 6 input guards correct, polyglot index (PHP+Rust+Java+C+++Python) zero contamination, cardinal matrix 12/12, self-dogfood on the real Python codebase unchanged, 292 regressions + 428 full. |
+
+The 2.1.8 lesson reinforces 2.1.7's: the recall release converged in **two clean rounds with zero
+code findings across both** — the only notes were pre-existing documented gaps (module-scope,
+heredoc, `preg_replace_callback_array`) and a *docs correction* (`export *`). A scoped-allowlist
+additive change is the cheapest kind to gate, because the only failure modes are over-match (bounded
+by the allowlist) and cross-language bleed (bounded by the spec flag), both settled in one thorough
+round.
 
 ## Standing themes
 

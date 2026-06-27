@@ -274,7 +274,8 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   is unlikely. A bare-string callback passed to a *non-builtin* (project) higher-order function is
   also out of scope (the builtin allowlist bounds the over-rooting).
 - **Escape hatch:** pin via `stitchgraph.toml [entry_points]` for the rare module-scope or
-  custom-dispatcher case.
+  custom-dispatcher case. (Also not covered: the `preg_replace_callback_array(['/pat/' => 'cb'])`
+  keyed-array form, where the callback is an array *value* rather than a direct argument — pin it.)
 
 ### Framework annotations/attributes/decorators are rooted (Java/C#/JS/TS)
 - **Concern:** a method/class the framework invokes by *reflection or routing* — marked by an
