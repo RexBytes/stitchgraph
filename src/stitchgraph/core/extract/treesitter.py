@@ -318,6 +318,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     file_lang: dict[str, str] = {}
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
     c_exports: dict[str, set[str]] = {}  # rel -> EXPORT_SYMBOL'd C function names (per file)
+    c_decl_exports: set[str] = set()  # project-wide: names declared with an export attr (R77 F2)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -415,6 +416,12 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 names = _export_symbol_names(src) | _c_alias_target_names(src)
                 if names:
                     c_exports[rel] = names
+                # An export attribute on a *declaration* (commonly the header) must root the
+                # matching out-of-line definition, which carries no attribute (panel R77 F2).
+                # Project-wide because declaration and definition live in different files. Byte-gate
+                # the AST walk to the rare files that mention an export attribute.
+                if b"visibility" in src or b"dllexport" in src:
+                    c_decl_exports |= _c_export_decl_names(tree.root_node, src)
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -467,6 +474,16 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 rel = n.id.split("::", 1)[0]
                 if n.name in c_exports.get(rel, ()):
                     n.roles = n.roles | {"exported"}
+
+    # An export attribute on a C/C++ *declaration* (commonly a header) roots the matching
+    # definition, whose out-of-line `.cpp` form carries no attribute (panel R77 F2). Project-wide
+    # by name (declaration and definition are in different files) and scoped to C/C++ files — the
+    # C/C++ analogue of __all__; cardinal-safe (over-roots a homonym only in the safe direction).
+    if c_decl_exports:
+        for n in nodes:
+            if n.kind in (F, M) and n.name in c_decl_exports \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"exported"}
 
     # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
     # to FUNCTION even for methods defined inside a class body (there is no separate
@@ -1920,6 +1937,40 @@ _C_ALIAS_RE = re.compile(rb"_*(?:alias|ifunc)_*\s*\(\s*\"([A-Za-z_]\w*)\"")
 def _c_alias_target_names(src: bytes) -> set[str]:
     """Function names kept live as the target of a C/C++ `alias(...)` / `ifunc(...)` attribute."""
     return {m.decode("ascii", "ignore") for m in _C_ALIAS_RE.findall(src)}
+
+
+# An export attribute on a function/method *declaration* (`visibility("default")` / `dllexport`).
+_C_EXPORT_ATTR_RE = re.compile(r"\b_*dllexport_*\b|\b_*visibility_*\s*\(\s*\"default\"")
+
+
+def _c_export_decl_names(root, src: bytes) -> set[str]:
+    """Simple names of C/C++ functions/methods *declared* (body-less) with an export attribute —
+    `__attribute__((visibility("default"))) int Widget::compute(int);` in a header, or the same on
+    an in-class member declaration. The export attribute commonly lives on the **header
+    declaration** while the out-of-line definition in the `.cpp` carries none, so the definition has
+    no in-tree caller and is false-flagged dead (panel R77 F2). Collected project-wide (declaration
+    and definition live in different files) and used to root the matching definition by name — the
+    C/C++ analogue of Python's project-wide `__all__`; cardinal-safe (over-roots a homonym only in
+    the safe direction). Gated by a cheap byte test in the caller so the AST walk is skipped on the
+    vast majority of files."""
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("declaration", "field_declaration"):
+            if any(c.type in _C_ATTR_NODES
+                   and _C_EXPORT_ATTR_RE.search(src[c.start_byte:c.end_byte].decode("utf-8", "replace"))
+                   for c in n.children):
+                for c in n.children:
+                    if c.type == "function_declarator":
+                        # _trailing_id on the function_declarator resolves to the function name
+                        # (it does not descend into the parameter list), so this works for a
+                        # qualified `Widget::compute`, a free `free_api`, and an in-class member.
+                        nm = _trailing_id(c, src)
+                        if nm:
+                            names.add(nm)
+        stack.extend(n.children)
+    return names
 
 
 def _has_public(node, src) -> bool:

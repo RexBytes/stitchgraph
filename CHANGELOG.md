@@ -4,6 +4,28 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.5] — 2026-06-27
+
+**C/C++ header-declaration export-attribute cardinal fix, from the limitation audit.** A review of
+every documented limitation (per the maintainer's "fix it, don't document it" direction) promoted
+the one genuinely-cardinal C/C++ item — flagged in panel R77 (F2) — from a documented tradeoff to a
+fix.
+
+### Fixed
+
+- **A C/C++ function/method whose export attribute is on its (header) declaration is no longer
+  flagged dead.** `__attribute__((visibility("default")))` / `__declspec(dllexport)` is commonly
+  placed on the **declaration** in a header (`struct W { __attribute__((visibility("default"))) int
+  compute(int); };` or a top-level `… int W::compute(int);`), while the out-of-line definition in
+  the `.cpp` carries no attribute. The definition therefore had no in-tree caller and was
+  false-flagged dead at confidence 0.6 — and so was everything its body reached (panel R77 F2,
+  cardinal). The names of export-attributed declarations are now collected project-wide (declaration
+  and definition live in different files) and root the matching definition by name — the C/C++
+  analogue of Python's project-wide `__all__`. Cardinal-safe (over-roots a homonym only in the safe
+  direction); `visibility("hidden")` and unattributed methods still flag. `_c_export_decl_names`
+  helper, regression + mutation pinned; the AST walk is byte-gated so it is skipped on files with no
+  export attribute.
+
 ## [2.1.4] — 2026-06-27
 
 **C/C++ attribute-entry-point cardinal fix, from doc-driven hunting** (continuing the method that

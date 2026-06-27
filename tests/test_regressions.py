@@ -6286,3 +6286,53 @@ def test_c_alias_target_names_helper():
     assert _c_alias_target_names(b'void f(void) __attribute__((ifunc(\"resolver\")));') == {"resolver"}
     assert _c_alias_target_names(b'void o() __attribute__((__alias__(\"t\")));') == {"t"}
     assert _c_alias_target_names(b'static void f(void){}') == set()
+
+
+def test_cpp_header_declaration_export_attr_roots_definition(tmp_path):
+    """R77 F2 (v2.1.5): an export attribute on a C++ *header declaration* — `__attribute__((
+    visibility("default")))` on the in-class member declaration — must root the out-of-line `.cpp`
+    definition, which carries no attribute. Otherwise the public-ABI method (and its callees) is
+    false-flagged dead at confidence 0.6 (cardinal). A non-exported sibling method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "w.h": (
+            "struct W {\n"
+            "  __attribute__((visibility(\"default\"))) int exported_m(int x);\n"
+            "  int internal_m(int x);\n"
+            "};\n"
+        ),
+        "w.cpp": (
+            "#include \"w.h\"\n"
+            "int W::exported_m(int x) { return em_help(x); }\n"
+            "static int em_help(int x) { return x; }\n"
+            "int W::internal_m(int x) { return x; }\n"
+            "__attribute__((constructor)) static void boot(void){ live(); }\n"  # keep file partly live
+            "static void live(void){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "exported_m" not in stale     # rooted via the header declaration's export attribute
+    assert "em_help" not in stale        # reached from the exported method
+    assert "internal_m" in stale         # no export attribute, no caller: correctly dead
+
+
+def test_c_export_decl_names_helper():
+    """Pin _c_export_decl_names (R77 F2): collect names of functions/methods declared with an export
+    attribute — top-level qualified, free, and in-class member; ignore non-export attrs and bodies."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_export_decl_names
+
+    def names(src: str) -> set:
+        b = src.encode()
+        return _c_export_decl_names(get_parser("cpp").parse(b).root_node, b)
+
+    assert names('__attribute__((visibility("default"))) int Widget::compute(int);') == {"compute"}
+    assert names('__attribute__((visibility("default"))) void free_api(void);') == {"free_api"}
+    assert names('struct W { __attribute__((visibility("default"))) int m(int); };') == {"m"}
+    assert names('__declspec(dllexport) int Other::run();') == {"run"}
+    assert names('__attribute__((visibility("hidden"))) void h(void);') == set()  # hidden: not export
+    assert names('int plain(void);') == set()                                     # no attribute

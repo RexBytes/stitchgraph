@@ -217,6 +217,12 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   body-less declaration). The GCC `__name__` synonyms (`__constructor__`, …) are matched too.
   Found doc-driven (the GCC/Clang/MSVC attribute reference enumerates them); panels R73/R74,
   cardinal.
+- **Export attribute on a header *declaration* (handled, v2.1.5):** the export attribute is commonly
+  placed on the **declaration** (in a header) — `struct W { __attribute__((visibility("default")))
+  int compute(int); };` or a top-level `… int W::compute(int);` — while the out-of-line `.cpp`
+  definition carries none. The names of export-attributed declarations are collected project-wide and
+  root the matching definition by name (the C/C++ analogue of `__all__`), so a public-ABI method
+  marked only in the header is no longer false-flagged dead (panel R77 F2).
 - **Rationale / scope:** rooting only ever *adds* roots (cardinal-safe). `visibility("hidden")` is
   genuinely internal and stays dead-code-eligible; a plain non-`static` function (external linkage
   but no explicit export attribute) is still **not** auto-rooted — that is the deliberate
