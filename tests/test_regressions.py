@@ -6059,6 +6059,11 @@ def test_rust_no_mangle_export_is_live(tmp_path):
             "#[export_name = \"sym\"]\n"
             "fn renamed() -> i32 { 2 }\n"
             "fn only_from_entry() -> i32 { 42 }\n"   # reached only from the non-pub export
+            # Rust 2024 edition REQUIRES the `unsafe(...)` wrapper — the mainstream spelling
+            # going forward; it must root the same as the bare form (panel R70, cardinal).
+            "#[unsafe(no_mangle)]\n"
+            "extern \"C\" fn rust_entry_2024() -> i32 { only_from_2024() }\n"
+            "fn only_from_2024() -> i32 { 7 }\n"     # reached only from the 2024-syntax export
             "#[inline]\n"
             "fn inline_dead() -> i32 { 1 }\n"        # #[inline] is NOT an export -> dead
             "fn really_dead() -> i32 { 0 }\n"
@@ -6069,14 +6074,20 @@ def test_rust_no_mangle_export_is_live(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
     assert "rust_entry" not in stale and "renamed" not in stale     # FFI exports: live
     assert "only_from_entry" not in stale                            # reached from an export
+    assert "rust_entry_2024" not in stale                            # 2024 unsafe(...) export: live
+    assert "only_from_2024" not in stale                             # reached from the 2024 export
     assert "inline_dead" in stale and "really_dead" in stale         # not exports: dead
 
 
 def test_is_rust_export_attr_helper():
-    """Pin _is_rust_export_attr (R69): only no_mangle/export_name are exports; inline/test/cfg not."""
+    """Pin _is_rust_export_attr (R69/R70): no_mangle/export_name are exports incl. the Rust-2024
+    `unsafe(...)` wrapper and `cfg_attr(<pred>, …)`; inline/test/cfg/doc-string are not."""
     from stitchgraph.core.extract.treesitter import _is_rust_export_attr
-    for a in ("#[no_mangle]", "#[export_name = \"x\"]", "#![no_mangle]"):
+    for a in ("#[no_mangle]", "#[export_name = \"x\"]", "#![no_mangle]",
+              "#[unsafe(no_mangle)]", "#[unsafe(export_name = \"x\")]",     # Rust 2024 (R70)
+              "#[cfg_attr(unix, no_mangle)]"):                              # conditionally applied
         assert _is_rust_export_attr(a), a
     for a in ("#[inline]", "#[test]", "#[cfg(test)]", "#[derive(Debug)]", "#[doc=\"no_mangle\"]",
-              "no_mangle", "", "not an attribute"):   # non-bracket strings: not attributes
+              "#[unsafe(test)]", "#[link_name = \"x\"]",   # link_name is on imports, not exports
+              "no_mangle", "", "not an attribute"):        # non-bracket strings: not attributes
         assert not _is_rust_export_attr(a), a

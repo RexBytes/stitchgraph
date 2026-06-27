@@ -28,8 +28,16 @@ confirmed it: `rust_entry dead? True` (CARDINAL false-positive). This is the Rus
 
 The extractor now recognises `#[no_mangle]` and `#[export_name]` on a function and roots it
 `exported`, exactly as it already does for `pub`. A `_is_rust_export_attr(attr_text)` helper
-isolates the attribute test (parses the attribute path out of `#[ … ]`, matches `no_mangle` /
-`export_name`), so it is unit-tested and mutation-pinned.
+isolates the attribute test (drops string-literal values, then matches `no_mangle` / `export_name`
+as a bare token anywhere in the attribute content), so it is unit-tested and mutation-pinned.
+
+The first review round (panel R70) caught that the initial path-only match missed the **wrapped**
+forms — most importantly `#[unsafe(no_mangle)]` / `#[unsafe(export_name = "…")]`, which is the
+**required** spelling in the Rust 2024 edition (the bare form is an error there), so it is the
+mainstream syntax going forward, not an edge case. A real crate compiled for the 2024 edition would
+have hit it. The token-based match now covers the `unsafe(...)` wrapper and the
+`#[cfg_attr(<pred>, no_mangle)]` conditional form as well. Dropping string literals first keeps
+`#[doc = "…no_mangle…"]` from reading as an export.
 
 Cardinal-safe: it only *adds* a root. After the fix the fixture's `rust_entry`, a renamed
 `#[export_name]` fn, and the body-only-reachable `only_from_entry` are all live, while genuinely

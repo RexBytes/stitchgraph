@@ -902,12 +902,23 @@ def _is_rust_export_attr(attr_text: str) -> bool:
     visibility, so the function is a public-ABI entry point with no in-tree caller (the Rust
     analogue of C's `EXPORT_SYMBOL`). Without this, a non-`pub` `#[no_mangle]` export — valid
     Rust, the symbol is still exported — has no `pub` to trigger export-rooting and is
-    false-flagged dead along with whatever its body reaches (doc-driven, panel R69)."""
+    false-flagged dead along with whatever its body reaches (doc-driven, panel R69).
+
+    Recognises the wrapped forms too: `#[unsafe(no_mangle)]` / `#[unsafe(export_name = "…")]`
+    (REQUIRED syntax in the Rust 2024 edition — the bare form is an error there, so this is the
+    mainstream spelling, not an edge case; panel R70) and `#[cfg_attr(<pred>, no_mangle)]`
+    (conditionally applied — still a real export on the gated targets). Cardinal-safe: matching
+    only ever *adds* an export root, so a broad match can over-root (mask dead code) but never
+    flag live code dead. We therefore match the export token anywhere in the attribute content
+    after dropping string-literal values, so `#[doc = "no_mangle"]` does NOT read as an export."""
     m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
     if not m:
         return False
-    path = re.split(r"[(\s=]", m.group(1), maxsplit=1)[0].strip()
-    return path in ("no_mangle", "export_name")
+    # Drop string-literal contents (`export_name = "sym"`, `doc = "…no_mangle…"`) so only
+    # identifier tokens remain, then look for an export attribute path as a bare word. This
+    # naturally covers the `unsafe(...)` (2024) and `cfg_attr(<pred>, …)` wrappers.
+    inner = re.sub(r"\"(?:[^\"\\]|\\.)*\"", "", m.group(1))
+    return bool(re.search(r"(?<![\w])(?:no_mangle|export_name)(?![\w])", inner))
 
 
 # Annotation/attribute names that mark a method as a test entry or framework-invoked

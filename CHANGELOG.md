@@ -21,8 +21,11 @@ cardinal false-positive (panel R69).
   of C's `EXPORT_SYMBOL`). A `pub fn` was already export-rooted, but a non-`pub`
   `#[no_mangle] extern "C" fn` (valid Rust — the symbol is still exported) had no `pub` to trigger
   that rooting, so it *and everything its body reached* were false-flagged dead (cardinal). Such
-  functions are now rooted `exported`. Cardinal-safe (only adds roots). A `_is_rust_export_attr`
-  helper isolates the attribute test; owned by a regression test and pinned by mutation.
+  functions are now rooted `exported`. Covers the bare form *and* the wrapped forms —
+  `#[unsafe(no_mangle)]` / `#[unsafe(export_name = "…")]` (the **required** spelling in the Rust
+  2024 edition; panel R70) and `#[cfg_attr(<pred>, no_mangle)]` (conditionally applied). Cardinal-safe
+  (only adds roots). A `_is_rust_export_attr` helper isolates the attribute test; owned by
+  regression tests and pinned by mutation.
 
 ## [2.1.2] — 2026-06-26
 

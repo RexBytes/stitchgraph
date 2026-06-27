@@ -196,7 +196,9 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   the linker / foreign (C) code, so it is a public-ABI entry point with no in-tree caller — the
   Rust analogue of C's `EXPORT_SYMBOL`. `pub fn` was already export-rooted; these attributes now
   root the function (role `exported`) **even without `pub`** (`#[no_mangle] extern "C" fn f()` is
-  valid Rust and still exports). Found doc-driven (the Rust reference documents the attribute
+  valid Rust and still exports). Covers the bare form and the wrapped forms: `#[unsafe(no_mangle)]`
+  / `#[unsafe(export_name = "…")]` (the **required** spelling in the Rust 2024 edition; panel R70)
+  and `#[cfg_attr(<pred>, no_mangle)]`. Found doc-driven (the Rust reference documents the attribute
   independent of visibility), since real crates almost always pair `#[no_mangle]` with `pub`
   (cdylib convention), masking the non-`pub` path (panel R69).
 - **Rationale:** rooting only ever *adds* roots (cardinal-safe); the prior gap was a genuine
