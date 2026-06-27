@@ -1123,6 +1123,16 @@
       ],
       "findings": {},
       "theme": "2.1.6 class-level export fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: real-world header-only lib, the ENTIRE v2.1.4-2.1.6 attribute surface in one project (no cross-mechanism interference/double-count/crash), namespaced exported classes, inheritance/virtual overrides, idempotence/on-disk/streaming/incremental all equal; only non-finding the documented macro-wrapped attr (preprocessor boundary). sonnet: oracle 27/27, idempotence/ordering, two-library bounded over-root, 40-class+30-dead stress EXACT (only the 30 dead flag), cross-language gated, nested-class correctly excluded (GCC visibility rules); 287 regressions + 423 full. haiku: 423, mutation 24/24, no leak (its 'blockers' were false alarms \u2014 release notes + LIMITATIONS note both present, streak-1 was just R83-not-yet-recorded). All 3 CLEAN. Tightened the macro-wrapped LIMITATIONS wording per opus (it CAN be a false-dead, just unfixable without a preprocessor)."
+    },
+    {
+      "id": "R84",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.7 recall (Rust 3rd-party test attrs + ByteBuddy/Moshi annotations) \u2014 FULL-DIVERSITY clean round 1. opus: last-segment match rejects #[my_rstest]/#[derive(rstest)]/#[cfg(feature=\"rstest\")]/#[doc=\"rstest\"], accepts #[rstest]/#[test_case(..)]/#[gtest]/#[quickcheck]/#[rstest::rstest]/#![rstest]; Java @Advice.OnMethodEnter/Exit + @ToJson/@FromJson root callback (qualified->last-segment); monkeypatch diff shows ONLY intended new roots, nothing newly dead; no cross-language bleed; determinism/streaming/incremental hold. sonnet: oracle 27/27, monkeypatch zero live<->stale either direction, existing test-attr/callback behavior intact, C# set unaffected, dual-path no double-count, 290 regressions+426 full. haiku: 426, mutation 11/11, docs, no leak. All 3 CLEAN; the only informational note is cardinal-safe over-rooting of user-defined homonym annotations."
     }
   ]
 }
