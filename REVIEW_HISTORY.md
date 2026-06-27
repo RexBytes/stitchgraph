@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.7: R84–R85. **2.1.8: R86–R87** (full diversity opus/sonnet/haiku) on the recall release (PHP bare-string callables) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/rust-test-attr/php-string-callable) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 428 passing (full extras) |
+| Multi-model review panels | 2.1.8: R86–R87. **2.1.9: R88–R89** (full diversity opus/sonnet/haiku) on the runtime/native FFI entry-point release (Rust/C#/Go) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/php-string-callable/rust-runtime-entry/go-export) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 433 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.6: R80-F1 → R81✗ → R82✓ R83✓ (streak 2). 2.1.7: recall → R84✓ R85✓ (streak 2). 2.1.8: recall → **R86✓ R87✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.7: R84✓ R85✓ (streak 2). 2.1.8: R86✓ R87✓ (streak 2). 2.1.9: runtime/native FFI entry points → **R88✓ R89✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.7 RELEASED/releasable** (maintainer tags). **2.1.8** (non-cardinal recall — PHP bare-string function callables to known callback builtins rooted; JS `export *` docs correction) **RELEASABLE** — R86+R87 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.8` tag. The full `LIMITATIONS.md` audit ("fix it, don't document it") is complete: every cardinal item fixed (through v2.1.6) and the non-cardinal recall gaps closed (v2.1.7–v2.1.8); what remains documented is fundamental (needs a type model), intentional (the contract), or unfixable (the preprocessor boundary). |
+| Verdict | **1.0.0–2.1.8 RELEASED/releasable** (maintainer tags). **2.1.9** (runtime/native FFI entry-point directives — Rust `#[panic_handler]`/`#[start]`/`#[alloc_error_handler]`, C# `[UnmanagedCallersOnly]`/`[JSInvokable]`, Go cgo `//export`; doc-driven, cardinal) **RELEASABLE** — R88+R89 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.9` tag. Beyond the `LIMITATIONS.md` audit, this extends the export-attribute work to the *runtime*-entry surface; remaining documented items are fundamental (type model), intentional (the contract), or unfixable (the preprocessor boundary). |
 
 ## Trajectory
 
@@ -1091,6 +1091,26 @@ heredoc, `preg_replace_callback_array`) and a *docs correction* (`export *`). A 
 additive change is the cheapest kind to gate, because the only failure modes are over-match (bounded
 by the allowlist) and cross-language bleed (bounded by the spec flag), both settled in one thorough
 round.
+
+## 2.1.9 — runtime / native (FFI) entry-point directives across Rust, C#, Go (R88–R89)
+
+Doc-driven hunt into each language's *runtime-entry* surface — functions a runtime or native caller
+invokes automatically, with no in-tree caller, and (unlike the already-covered `pub`/public forms)
+not necessarily public. Each candidate was probed with a minimal fixture before fixing, and the
+already-covered forms were left alone (the JS-`export*` discipline): Rust `#[proc_macro]*` require
+`pub`, C# `[JSInvokable]` on a public method, Go capitalised `//export`, and `#[global_allocator]`
+(on a `static`, never extracted) were all confirmed already-live and skipped.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R88 | 3 | ✓ | full-diversity clean on the first round. The decisive test: one index with Rust+Go+C#+Java+Python all defining `start`/`export`/`UnmanagedCallersOnly` — all 13 unattributed homonyms stayed dead, only the 3 attributed rooted (zero cross-language bleed). Wrapper syntaxes covered; name-mismatch/blank-gap/prev-None guards work; streaming==full (the Go `prev_sibling` read happens in pass 1 before the tree is freed). Non-cardinal notes: the Go regex over-roots `// export`(space) / a blank-line gap — cardinal-safe, real cgo never triggers. |
+| R89 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Real-world embedded-Rust / Go-cgo / C#-native shapes; a polyglot index exercising *every* prior cross-language fix at once (no interference); cardinal matrix 12/12; stress 36-dead-exact across three languages, 3 orderings identical; word-boundary + name-equality + csharp-only-set verified at the code level. |
+
+The 2.1.9 lesson extends the export-attribute arc to a sibling surface — *runtime*-invoked entries
+(panic handlers, native callees, cgo exports) rather than *linker*-exported symbols — and the
+cross-language bleed test became the centerpiece: as the per-language entry-point sets grow, the
+sharpest risk is one language's marker leaking into another, so the "N languages, same symbol name,
+only the right ones root" fixture is now the canonical check for any entry-point addition.
 
 ## Standing themes
 
