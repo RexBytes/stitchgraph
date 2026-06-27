@@ -1006,6 +1006,29 @@
       ],
       "findings": {},
       "theme": "2.1.3 Rust FFI-export fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: REAL-WORLD dogfood on actual serde (test_suite/no_std rust_eh_personality non-pub #[no_mangle] now correctly rooted exported; serde/src 926 nodes/29110 edges no crash, find_stale 0 confident dead); nested-paren #[cfg_attr(all(unix,target_arch=\"x86\"),no_mangle)], newline form (re.S), decoy #[cfg_attr(feature=\"export_name\",inline)]->False; malformed #[export_name]/=FOO no crash; no catastrophic backtracking (2000x nested cfg_attr 15ms); confidence proof: only truly_dead flagged 0.6, callees genuinely absent (live by reachability); pending_attrs passes full #[...] slice == helper view. sonnet: oracle suite 27/27 (streaming==full, incremental==full, graphblas==pure-py); export+SQL-in-doc-comment no spurious node; multi-file crate (mod foo; non-pub export->private_helper) live across module boundary; cross-file crate::other::g() reachable from export root (INFERRED edge, cardinal-safe); live nodes absent not threshold-filtered. haiku: suite 410, mutation 1/1 KILLED, both regression tests pass, version/changelog 2.1.3. All 3 CLEAN."
+    },
+    {
+      "id": "R73",
+      "models": [
+        "opus"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "2.1.4 DISCOVERY (doc-driven, continuing the method). Reading the GCC/Clang/MSVC function-attribute reference enumerates C/C++ implicit entry points / exports with no in-tree by-name caller. Minimal fixture confirmed a CARDINAL cluster flagged dead at conf 0.6: __attribute__((constructor))/((destructor)) (run automatically around main), ((used)), visibility(\"default\"), __declspec(dllexport) \u2014 and every helper they reach. FIX: _c_attr_roots maps these attributes to roots (callback for runtime/used, exported for visibility/dllexport); visibility(\"hidden\")/plain statics stay dead. Cardinal-safe."
+    },
+    {
+      "id": "R74",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1,
+        "MEDIUM": 1
+      },
+      "theme": "2.1.4 C/C++ attribute fix \u2014 round 1. opus found a CRITICAL CARDINAL miss: GCC accepts a __name__ synonym for every attribute (__constructor__/__used__/__visibility__ \u2014 common in system headers); the \\b-anchored match couldn't see inside (_ is a word char) so __attribute__((__constructor__)) stayed dead at 0.6. FIX: optional _* around each keyword (can't over-match inside my_constructor_helper). opus also flagged Finding 2 (recall): weak/section fns + alias(\"t\")/ifunc(\"r\") TARGETS still dead at 0.6 \u2014 user opted to fix in 2.1.4: section->callback, weak->exported, alias/ifunc target kept live by name via c_exports. sonnet: CLEAN, no v2.1.4 regression \u2014 oracle 27/27, F->M method normalization preserves roles, liveness propagates from ctor body, full==streaming==incremental; noted one pre-existing NON-cardinal structural gap (empty-body inline C++ method parses as field_declaration, attr misattributed) \u2014 documented, not introduced by 2.1.4. haiku: suite 413, truth table, docs, no model-id leak. Findings fixed; mutation 4/4."
     }
   ]
 }
