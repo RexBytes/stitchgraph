@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.1: R61–R63. **2.1.2: R64–R68** (full diversity opus/sonnet/haiku) on the C# attribute-class fix |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 408 passing (full extras) |
-| Coverage | ~86% |
-| Convergence | 2.1.0: R58✗ R59✓ → R60✓ (streak 2). 2.1.1: R61 (dogfood) → R62✓ R63✓ (streak 2). 2.1.2: R64 (dogfood — serilog attribute false-dead) → R65✓ R66✗ (sonnet: enum/delegate gap) → **R67✓ R68✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Multi-model review panels | 2.1.2: R64–R68. **2.1.3: R69–R72** (full diversity opus/sonnet/haiku) on the Rust FFI/linker-export fix (doc-driven) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 410 passing (full extras) |
+| Coverage | ~93% |
+| Convergence | 2.1.1: R61 (dogfood) → R62✓ R63✓ (streak 2). 2.1.2: R64 (dogfood) → R65✓ R66✗ (sonnet: enum/delegate gap) → R67✓ R68✓ (streak 2). 2.1.3: R69 (doc-driven discovery — Rust non-`pub` `#[no_mangle]` false-dead) → R70✗ (opus: missed the Rust-2024 `#[unsafe(no_mangle)]` + `cfg_attr` spellings) → **R71✓ R72✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.1 RELEASED/releasable** (maintainer tags). **2.1.2** (C# custom-attribute cardinal fix — `[Foo]` references class `FooAttribute`; serilog dogfood) **RELEASABLE** — R64/R66 findings fixed; R67+R68 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.2` tag |
+| Verdict | **1.0.0–2.1.2 RELEASED/releasable** (maintainer tags). **2.1.3** (Rust FFI/linker-export cardinal fix — `#[no_mangle]`/`#[export_name]`, incl. the Rust-2024 `#[unsafe(…)]` wrapper and `#[cfg_attr]`, root the fn `exported` even without `pub`; doc-driven discovery) **RELEASABLE** — R69/R70 findings fixed; R71+R72 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.3` tag |
 
 ## Trajectory
 
@@ -948,6 +948,33 @@ partial-doc-fix catches — exhaustive enumeration of cases is its edge, exactly
 done" fix hides one uncovered branch. Also: the curated framework-annotation allowlist is a
 deliberate, documented boundary (ByteBuddy/Moshi out of scope), distinct from the genuine
 extraction bug (the attribute *class* reference) that was fixed.
+
+## 2.1.3 — Rust FFI/linker-export cardinal fix, doc-driven (R69–R72)
+
+A methodological shift: instead of waiting for a repo to surface a gap, **read the language
+reference**, which enumerates the *complete* implicit-invocation surface (magic methods, operator
+overloads, FFI exports, reflection hooks). The Rust reference documents `#[no_mangle]` /
+`#[export_name]` independent of `pub` visibility — so a non-`pub` `#[no_mangle] extern "C" fn`
+exports its symbol yet has no `pub` to trigger export-rooting, leaving it (and everything its body
+reaches) false-flagged dead. No scanned crate had hit it: real crates pair `#[no_mangle]` with
+`pub` (cdylib convention), masking the non-`pub` path. A minimal fixture isolates exactly that
+combination. Fix: `_is_rust_export_attr` + role `exported` (the Rust analogue of C `EXPORT_SYMBOL`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R69 | — | discovery | doc-driven: a non-`pub` `#[no_mangle] extern "C" fn` confirmed cardinal false-dead by a minimal fixture (`rust_entry dead? True`). The reference, not a repo, exposed it. |
+| R70 | 3 | ✗ | sonnet + haiku clean, but **opus** found the path-only matcher missed `#[unsafe(no_mangle)]` / `#[unsafe(export_name=…)]` — the **required** spelling in the **Rust 2024 edition** (mainstream, not an edge case) — and `#[cfg_attr(<pred>, no_mangle)]`; a non-`pub` export in either form stayed false-dead (verified conf 0.6). Fix: drop string-literals, then match the export token anywhere in the attribute (covers the `unsafe(...)` / `cfg_attr` wrappers; keeps `#[doc="no_mangle"]` from reading as an export). |
+| R71 | 3 | ✓ | full-diversity clean on the broadened fix — raw strings/escaped quotes, interleaved doc comments, `extern "C" {}` import blocks, macros, transitive depth >1, `pub`/`#[test]` coexistence; cross-language non-regression (the `attr_export` path is structurally Rust-only); word-boundary negatives (`#[no_mangle_extra]`/`#[xno_mangle]` False). |
+| R72 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. opus dogfooded **actual serde** (`test_suite/no_std`'s non-`pub` `#[no_mangle] rust_eh_personality` now correctly rooted; no crash, no catastrophic backtracking); sonnet ran the oracle suite (27/27: streaming==full, incremental==full, graphblas==pure-python) + multi-file cross-module reachability from an export root; confidence proof shows only genuinely-dead code flagged (0.6), export callees live by reachability not threshold-filtering. |
+
+The 2.1.3 lesson reprises and sharpens the 2.1.2 one: **the doc-driven fixture found the gap, but
+the first fix was still incomplete — and again model diversity caught it.** opus (not sonnet this
+time) found the edition-mandated `unsafe(...)` wrapper the path-only matcher missed. Reading the
+reference tells you *which mechanism* exists; it does not tell you *every syntactic spelling* of
+it (the 2024-edition `unsafe(...)` wrap is itself documented elsewhere in the reference). So
+doc-driven discovery and adversarial breadth are complementary: the doc finds the missing
+mechanism, the panel finds the missing spelling. Cardinal-safety made the broadening cheap — a
+wider token match can only ever over-root (mask dead code), never flag live code dead.
 
 ## Standing themes
 
