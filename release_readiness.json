@@ -1113,6 +1113,16 @@
       ],
       "findings": {},
       "theme": "2.1.6 class-level export fix (post R81 inline/template/protected) \u2014 FULL-DIVERSITY clean round 1. opus: every member shape x access combo (declared/inline/templated/inline-templated x public/protected/private), defaulted/deleted/pure/qualified/friend/using no crash, empty-body interaction, struct/class __declspec variants, determinism, full==streaming, incremental==full; macro-wrapped class attr = documented 0.1 recall gap (no preprocessor). sonnet: oracle 27/27, monkeypatch zero collateral, realistic mixed lib, non-exported still dead, cross-language gated, header-first==source-first; 287 regressions + 423 full. haiku: 423, mutation 18/18, docs, no leak. All 3 CLEAN. Footnote (sonnet, NON-blocking): double-nested template<T> template<U> in a non-template class isn't collected (template descent is one level) -> but that is ILL-FORMED C++ rejected by gcc/clang, so it can't occur in compilable/live code; outside the cardinal invariant's practical scope."
+    },
+    {
+      "id": "R83",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.6 class-level export fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: real-world header-only lib, the ENTIRE v2.1.4-2.1.6 attribute surface in one project (no cross-mechanism interference/double-count/crash), namespaced exported classes, inheritance/virtual overrides, idempotence/on-disk/streaming/incremental all equal; only non-finding the documented macro-wrapped attr (preprocessor boundary). sonnet: oracle 27/27, idempotence/ordering, two-library bounded over-root, 40-class+30-dead stress EXACT (only the 30 dead flag), cross-language gated, nested-class correctly excluded (GCC visibility rules); 287 regressions + 423 full. haiku: 423, mutation 24/24, no leak (its 'blockers' were false alarms \u2014 release notes + LIMITATIONS note both present, streak-1 was just R83-not-yet-recorded). All 3 CLEAN. Tightened the macro-wrapped LIMITATIONS wording per opus (it CAN be a false-dead, just unfixable without a preprocessor)."
     }
   ]
 }

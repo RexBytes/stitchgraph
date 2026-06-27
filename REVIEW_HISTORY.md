@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.4: R73–R77. **2.1.5: R78–R80** (full diversity opus/sonnet/haiku) on the C/C++ header-declaration export-attribute fix (limitation audit) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export/c-attr/c-export-decl) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 420 passing (full extras) |
+| Multi-model review panels | 2.1.5: R78–R80. **2.1.6: R81–R83** (full diversity opus/sonnet/haiku) on the C/C++ class-level export-attribute fix |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export/c-attr/c-export-decl/c-class-export) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 423 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.3: R69 → R70✗ → R71✓ R72✓ (streak 2). 2.1.4: R73 (discovery) → R74✗ → R75✓→reset → R76✓ R77✓ (streak 2). 2.1.5: R77-F2 (limitation-audit discovery — C/C++ header-declaration export attr) → R78✗ (opus: pointer/reference-return declarator wrapper missed) → **R79✓ R80✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.4: R73 → R74✗ → R75✓→reset → R76✓ R77✓ (streak 2). 2.1.5: R77-F2 → R78✗ → R79✓ R80✓ (streak 2). 2.1.6: R80-F1 (class-level export attr → methods) → R81✗ (opus: inline/templated methods missed) → **R82✓ R83✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.4 RELEASED/releasable** (maintainer tags). **2.1.5** (C/C++ header-declaration export-attribute cardinal fix — an export attribute on a header declaration now roots the out-of-line definition project-wide by name; from a full `LIMITATIONS.md` audit) **RELEASABLE** — R78 finding fixed; R79+R80 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.5` tag. Next: v2.1.6 = class-level export-attribute → method propagation (R80 F1). |
+| Verdict | **1.0.0–2.1.5 RELEASED/releasable** (maintainer tags). **2.1.6** (C/C++ class-level export-attribute cardinal fix — public/protected methods of a `class __attribute__((visibility("default")))`/`__declspec(dllexport)` class are rooted; declared-only + inline + templated shapes; completes the v2.1.4→v2.1.6 export-attribute arc) **RELEASABLE** — R81 finding fixed; R82+R83 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.6` tag. Next: v2.1.7 = the non-cardinal recall gaps (Rust 3rd-party test attrs, ByteBuddy/Moshi annotations). |
 
 ## Trajectory
 
@@ -1027,6 +1027,29 @@ known gaps the way a language reference enumerates mechanisms, and triaging it c
 R78 reprised the now-familiar pattern one more time (the fix handled the common declarator, the panel
 found the wrapped one). Cardinal-safety again made the project-wide rooting cheap: over-rooting a
 homonym across libraries is bounded and safe, exactly as Python's flat `__all__` already is.
+
+## 2.1.6 — C/C++ class-level export-attribute cardinal fix (R81–R83)
+
+The last cardinal item from the limitation audit (R80 F1), completing the C/C++ export-attribute
+story (definition → header-declaration → class-level). `class __attribute__((visibility("default")))
+Foo {…}` / `__declspec(dllexport)` exports the whole public interface, so a public method with no
+per-method attribute is public ABI; its out-of-line definition carries none and was false-flagged
+dead. Fix: `_c_public_method_names` collects the public/protected method names of an
+export-attributed class body into the project-wide `c_decl_exports` set.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R81 | 3 | ✗ | opus found a CARDINAL miss: the collector iterated only `field_declaration` children, so an **inline-defined** public method (parses as `function_definition`; templated → `template_declaration`) was missed and flagged dead at 0.6. Fixed by handling all three member shapes and including `protected` (out-of-tree subclass ABI). sonnet (its long run overlapped the commit) reviewed the fixed code and confirmed clean. |
+| R82 | 3 | ✓ | full-diversity clean — every member-shape × access combination, defaulted/deleted/pure/qualified/friend/using, empty-body interaction, `struct`/`class` `__declspec` variants, determinism, full==streaming, incremental==full. Footnote (non-blocking): a *double-nested* `template<T> template<U>` member isn't collected — but that is ill-formed C++ no compiler accepts, so it is out of the cardinal invariant's practical scope. |
+| R83 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Real-world header-only lib, the entire v2.1.4–2.1.6 attribute surface in one project (no cross-mechanism interference), namespaced exported classes, inheritance/virtual overrides, 40-class+30-dead stress (exactly the 30 flag), bounded two-library over-root, cross-language gated, nested classes correctly excluded (GCC visibility rules). |
+
+The 2.1.6 lesson closes the C/C++ export-attribute arc that ran v2.1.4→v2.1.6: **the same
+find-the-common-form / panel-finds-the-other-form rhythm repeated at every level** — definition
+attrs (v2.1.4: bare → `__name__` synonyms → weak/section/alias), header declarations (v2.1.5:
+direct → pointer/reference wrappers), class-level (v2.1.6: declared-only → inline/templated). Each
+broadening was cardinal-safe, so the cost of the iterative widening was only review rounds, never a
+shipped regression. What remains documented for C/C++ is genuinely unfixable (macro-wrapped
+attributes — no preprocessor) or non-compilable (double-nested member templates).
 
 ## Standing themes
 
