@@ -1183,6 +1183,16 @@
       ],
       "findings": {},
       "theme": "2.1.9 runtime/native FFI entry points \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus: real-world embedded-Rust(#[panic_handler]+non-pub HAL)/Go-cgo/C#-native shapes (only genuinely-dead internals flag), polyglot index exercising EVERY prior cross-language fix at once (all entries root, no interference), word-boundary holds (#[panic_handlerx]/#[my_start] no match), malformed no crash, determinism/streaming/incremental. sonnet: oracle 27/27, cardinal matrix 12/12, stress 36-dead-exact across 3 langs x3 orderings identical, 297 regressions+433 full, code-level word-boundary + name-equality + csharp-only-set verified. haiku: 433, mutation 8/8, readiness RELEASABLE, docs, no leak. All 3 CLEAN. Informational (non-cardinal, pre-existing/out-of-scope): PHP variable-callable data-flow, C++ macro, Go malformed-directive, Python standalone."
+    },
+    {
+      "id": "R90",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.10 Python IPython/Jupyter display-protocol hooks (rich dogfood) \u2014 FULL-DIVERSITY clean round 1. opus: all 13 hooks + inheritance live + callees; cardinal-safety STRUCTURAL (seed edge is class->method, never self-roots the class, so a class whose only surface is a hook stays fully dead); dunder pass intact; scope discrimination (top-level fn named _repr_html_ stays dead \u2014 not a method); cross-language unaffected; rich 38->36 (exactly the 2 _repr_mimebundle_), httpx/click no crash; determinism/streaming/incremental. sonnet: oracle 27/27, monkeypatch differential (only uncovered hooks move stale->live, NONE live->stale), rich+click dogfood zero hooks flagged, MRO/override, exact-frozenset no-over-match (_repr_custom_/_repr_html_v2_ False), dunder unchanged, 299 regressions+435 full. haiku: 435, mutation 4/4, docs, no leak. All 3 CLEAN; key insight: single-underscore hooks aren't name-filtered from stale candidates (only __x__ is), so the seed edge correctly makes the hook ITSELF reachable, not just its callees."
     }
   ]
 }
