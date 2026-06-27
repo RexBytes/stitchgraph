@@ -6763,7 +6763,133 @@ def test_is_protocol_method_helper():
     from stitchgraph.core.extract.python import _is_protocol_method
     for n in ("__call__", "__getitem__", "__enter__",                      # interpreter dunders
               "_repr_html_", "_repr_mimebundle_", "_ipython_display_",      # IPython protocol
-              "_ipython_key_completions_"):
+              "_ipython_key_completions_",
+              "_missing_", "_generate_next_value_"):                        # enum machinery hooks
         assert _is_protocol_method(n), n
-    for n in ("_private", "_repr_", "render", "__x", "x__", "__", "_repr_custom_"):
+    for n in ("_private", "_repr_", "render", "__x", "x__", "__", "_repr_custom_", "_missing"):
         assert not _is_protocol_method(n), n
+
+
+# -- R93 / manual-pass (CARDINAL): enum machinery hooks tied to their class ------
+def test_enum_hooks_live_when_enum_class_reachable(tmp_path):
+    """`_missing_` / `_generate_next_value_` are invoked by name by the enum metaclass
+    (`Color(x)` lookup miss; `auto()`), never from source. A reachable enum's hooks (and
+    the helpers they alone reach) must stay live; a dead enum's hooks stay dead
+    (cardinal-safe — tied to the class, not rooted unconditionally)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "from .colors import Color as Color\n",
+        "pkg/colors.py": """
+            import enum
+
+            class Color(enum.Enum):
+                RED = 1
+                @classmethod
+                def _missing_(cls, value):
+                    return resolve_alias(value)
+                @staticmethod
+                def _generate_next_value_(name, start, count, last):
+                    return gen_value(name)
+
+            def resolve_alias(v):
+                return None
+            def gen_value(n):
+                return n
+
+            class DeadColor(enum.Enum):
+                X = 1
+                @classmethod
+                def _missing_(cls, value):
+                    return dead_helper(value)
+            def dead_helper(v):
+                return None
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Color._missing_" not in stale              # live enum's hooks: rooted via class
+    assert "Color._generate_next_value_" not in stale
+    assert "resolve_alias" not in stale and "gen_value" not in stale   # hooks' callees: live
+    assert "DeadColor._missing_" in stale              # dead enum's hook stays dead (cardinal-safe)
+    assert "dead_helper" in stale
+
+
+# -- R93 / manual-pass (CARDINAL): pytest conftest hooks rooted by name ----------
+def test_pytest_conftest_hooks_are_not_stale(tmp_path):
+    """pytest discovers and calls `pytest_*` hook functions by name from conftest.py — no
+    in-tree call site exists, so without rooting they (and their helpers) are false-flagged
+    dead. The `test`-prefix role only covers `test*`; `pytest_*` needs its own rooting."""
+    _mk(tmp_path, {
+        "app.py": "__all__ = [\"run\"]\ndef run():\n    return 1\n",
+        "tests/test_thing.py": "def test_ok():\n    assert True\n",
+        "tests/conftest.py": """
+            def pytest_configure(config):
+                register_marker(config)
+            def pytest_collection_modifyitems(items):
+                reorder(items)
+            def register_marker(c):
+                return c
+            def reorder(i):
+                return i
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "pytest_configure" not in stale
+    assert "pytest_collection_modifyitems" not in stale
+    assert "register_marker" not in stale and "reorder" not in stale   # hooks' callees: live
+
+
+def test_is_pytest_hook_helper():
+    """Pin _is_pytest_hook (R93): a `pytest_`-prefixed name with a suffix is a hook; a long
+    non-prefixed name and the bare prefix are not (pins the `and`, not `or`, in the guard)."""
+    from stitchgraph.core.extract.python import _is_pytest_hook
+    assert _is_pytest_hook("pytest_configure")
+    assert _is_pytest_hook("pytest_collection_modifyitems")
+    assert not _is_pytest_hook("pytest_")              # bare prefix, no hook name
+    assert not _is_pytest_hook("register_marker")      # long name, wrong prefix (kills or-mutant)
+    assert not _is_pytest_hook("test_thing")
+    assert not _is_pytest_hook("py")
+
+
+# -- R92 / dogfood (CARDINAL): subscripted generic base must record INHERITS -----
+def test_subscripted_generic_base_keeps_polymorphic_override_live(tmp_path):
+    """`class Sub(Base[K, V])` must record an INHERITS edge so a polymorphic override
+    of a base template method is reached, not flagged dead. The base-class expression is
+    an ast.Subscript whose `.value` is the real name; `_name_of` returned None for it, so
+    no INHERITS edge was emitted and the live override was cardinal-false-flagged
+    (confirmed on sqlalchemy / werkzeug `Mixin(Base[K, V])`)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "from .mixins import Base as Base, SubMixin as SubMixin\n",
+        "pkg/mixins.py": """
+            from typing import Generic, TypeVar
+            K = TypeVar("K"); V = TypeVar("V")
+
+            class Base(Generic[K, V]):
+                def _hook(self):
+                    return []
+                def compute(self):
+                    return list(self._hook())   # template method -> self._hook()
+
+            class SubMixin(Base[K, V]):          # subscripted generic base
+                def _hook(self):
+                    return [1, 2, 3]             # live override -- must not be stale
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "SubMixin._hook" not in stale   # reached via INHERITS + polymorphic edge
+
+
+def test_base_name_unwraps_subscripted_generic():
+    """Pin _base_name (R92): a plain/attribute base resolves to its name; a subscripted
+    generic unwraps to the underlying base name; a non-name expression is None."""
+    import ast
+    from stitchgraph.core.extract.python import _base_name
+    assert _base_name(ast.parse("Base", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("mod.Base", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("Base[K, V]", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("mod.Base[K, V]", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("(a + b)", mode="eval").body) is None

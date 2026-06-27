@@ -247,12 +247,22 @@ _IPYTHON_PROTOCOL = frozenset({
     "_ipython_display_", "_ipython_key_completions_",
 })
 
+# Enum machinery hooks: single-underscore (so NOT dunders), invoked BY NAME by the enum
+# metaclass — `_missing_` on a failed value lookup (`Color(x)` with no matching member) and
+# `_generate_next_value_` by `auto()`. Like the IPython hooks, neither has an explicit call
+# site, so a live enum's hooks (and the helpers they alone reach) are otherwise false-flagged
+# dead (sqlalchemy/werkzeug dogfood + Python manual pass, cardinal). The names are
+# enum-specific enough to tie unconditionally, matching the IPython-hook treatment.
+_ENUM_HOOKS = frozenset({"_missing_", "_generate_next_value_"})
+
 
 def _is_protocol_method(name: str) -> bool:
     """A method invoked implicitly by name, not from source: an interpreter dunder (`__call__`,
-    `__getitem__`, …) or an IPython/Jupyter rich-display hook (`_repr_html_`, `_repr_mimebundle_`)."""
+    `__getitem__`, …), an IPython/Jupyter rich-display hook (`_repr_html_`, `_repr_mimebundle_`),
+    or an Enum machinery hook (`_missing_`, `_generate_next_value_`)."""
     return (len(name) > 4 and name.startswith("__") and name.endswith("__")) \
-        or name in _IPYTHON_PROTOCOL
+        or name in _IPYTHON_PROTOCOL \
+        or name in _ENUM_HOOKS
 
 
 def _seed_protocol_dunders(proj: _Project) -> None:
@@ -530,6 +540,12 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         if is_test_file and node.name.startswith("test"):
             roles.add("test")
             kind = NodeKind.TEST
+        elif is_test_file and not parent_is_class and _is_pytest_hook(node.name):
+            # pytest plugin hooks (`pytest_configure`, `pytest_collection_modifyitems`, …) are
+            # discovered and invoked BY NAME by pytest from conftest.py / plugin modules — there
+            # is no in-tree call site, so they (and the helpers they reach) are otherwise
+            # false-flagged dead. The `pytest_` prefix is pytest's own hook-discovery convention.
+            roles.add("callback")
         # An empty body inside a Protocol/ABC or under @abstractmethod is an
         # intentional contract, not an implementation hole (design §7 caveat).
         is_stub = _is_stub(node) and not _is_abstract(node, in_abstract)
@@ -1022,7 +1038,7 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             if enclosing_id:
                 _add_ref(proj, enclosing_id, child.name, cid, rel, child.lineno)
             for base in child.bases:
-                name = _name_of(base)
+                name = _base_name(base)
                 if name:
                     _ref_edges(proj, cid, name, Relation.INHERITS, rel, child.lineno)
                     if name not in proj.class_by_name and name not in _PLAIN_BASES:
@@ -1543,6 +1559,25 @@ def _name_of(node: ast.AST) -> str | None:
     if isinstance(node, ast.Attribute):
         return node.attr
     return None
+
+
+def _base_name(node: ast.AST) -> str | None:
+    # A base class can be a subscripted generic (`class Sub(Base[K, V])`): the AST
+    # is an ast.Subscript whose `.value` holds the real base expression. Unwrap it
+    # so the INHERITS edge (and external-base detection) resolves `Base` instead of
+    # None — otherwise the subclass has no parent edge, polymorphic overrides of the
+    # base's template methods are reached by nothing, and live code is flagged dead
+    # (cardinal). Confirmed on sqlalchemy/werkzeug `Mixin(Base[K, V])` patterns.
+    if isinstance(node, ast.Subscript):
+        node = node.value
+    return _name_of(node)
+
+
+def _is_pytest_hook(name: str) -> bool:
+    """A pytest plugin hook function: pytest discovers and invokes functions named with the
+    documented `pytest_` prefix (`pytest_configure`, `pytest_collection_modifyitems`, …) by
+    name from conftest.py / plugin modules, with no in-tree call site."""
+    return name.startswith("pytest_") and len(name) > len("pytest_")
 
 
 def _is_stub(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
