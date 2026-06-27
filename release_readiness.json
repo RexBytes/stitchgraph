@@ -1049,6 +1049,16 @@
       ],
       "findings": {},
       "theme": "2.1.4 final (incl. empty-body _c_dangling_attr_texts) \u2014 FULL-DIVERSITY clean round 1. opus: 8-scenario deep attack on the dangling-attr recovery \u2014 structurally additive (only ever copies attr text onto a node, never removes a role) so it cannot manufacture a false-dead; self-attr steal harmless (victim field is never a node; deprecated/aligned aren't entry keywords), chains/last-member/first-member(prev=`{`)/non-method-field-between/nested-struct/malformed-source all no-crash, no false-dead; full==streaming byte-identical; 417+oracle27. sonnet: whole-file monkeypatch non-regression (zero collateral movement), empty-body+normal-unattributed not contaminated, templated/nested/namespaced methods, confidence proof (result.confidence 0.6, no live in stale), incremental==full, Rust/C#/Ruby regressions 25 pass; LOW non-cardinal note: alias regex matches alias(\"x\") in comments = safe over-root, same as EXPORT_SYMBOL text-scan. haiku: tree clean, 417, mutation 12/12 (all 3 C helpers), 7 regression tests, docs reconciled (empty-body now FIXED not documented), no model-id leak. All 3 CLEAN."
+    },
+    {
+      "id": "R77",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.4 C/C++ attribute fix \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). opus (fresh): K&R/old-C defs, fn-pointer-return + complex declarators, header+source w/ special-member pass, combined weak+alias/constructor+used/section/ifunc multi-attr, determinism (3x identical), dogfood w/ EXPORT_SYMBOL chains \u2014 all clean. Two non-regression findings: F1 macro-hidden attr (#define EXPORT __attribute__((...)); tree-sitter has no preprocessor) \u2014 UNFIXABLE recall gap, now noted in LIMITATIONS; F2 export attr on a C++ header *declaration* not propagated to the out-of-line def -> member flagged 0.6 \u2014 technically cardinal by the literal invariant but PRE-EXISTING/documented C recall tradeoff, not introduced by 2.1.4 (queued as the v2.1.5 lead fix). sonnet: oracle 27/27 (streaming/incremental/graphblas all hold), per-file c_exports scoping, determinism, cross-language gate, 50-fn stress (exactly 25 dead flagged), prior regressions 281 pass, empty-body recovery under streaming byte-identical; non-cardinal: alias-regex no \\b (safe over-root), cross-file C homonym REFERENCES contamination (safe precision loss). haiku: 417, mutation 12/12, readiness RELEASABLE 0.86, docs consistent, no model-id leak. All 3 CLEAN."
     }
   ]
 }

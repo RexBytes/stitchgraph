@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.2: R64–R68. **2.1.3: R69–R72** (full diversity opus/sonnet/haiku) on the Rust FFI/linker-export fix (doc-driven) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 410 passing (full extras) |
+| Multi-model review panels | 2.1.3: R69–R72. **2.1.4: R73–R77** (full diversity opus/sonnet/haiku) on the C/C++ entry-point & export attribute fix (doc-driven) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (envelope/streaming/sql/reach/ruby/csharp/rust-export/c-attr) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 417 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.1: R61 (dogfood) → R62✓ R63✓ (streak 2). 2.1.2: R64 (dogfood) → R65✓ R66✗ (sonnet: enum/delegate gap) → R67✓ R68✓ (streak 2). 2.1.3: R69 (doc-driven discovery — Rust non-`pub` `#[no_mangle]` false-dead) → R70✗ (opus: missed the Rust-2024 `#[unsafe(no_mangle)]` + `cfg_attr` spellings) → **R71✓ R72✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.2: R64 (dogfood) → R65✓ R66✗ → R67✓ R68✓ (streak 2). 2.1.3: R69 (discovery) → R70✗ (Rust-2024 `#[unsafe(no_mangle)]`) → R71✓ R72✓ (streak 2). 2.1.4: R73 (doc-driven discovery — C/C++ constructor/used/visibility cluster) → R74✗ (opus: GCC `__name__` synonyms + weak/section/alias-target) → R75✓→reset (empty-body fix landed: "fix don't document") → **R76✓ R77✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.2 RELEASED/releasable** (maintainer tags). **2.1.3** (Rust FFI/linker-export cardinal fix — `#[no_mangle]`/`#[export_name]`, incl. the Rust-2024 `#[unsafe(…)]` wrapper and `#[cfg_attr]`, root the fn `exported` even without `pub`; doc-driven discovery) **RELEASABLE** — R69/R70 findings fixed; R71+R72 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.3` tag |
+| Verdict | **1.0.0–2.1.3 RELEASED/releasable** (maintainer tags). **2.1.4** (C/C++ entry-point & export attribute cardinal fix — `__attribute__((constructor/destructor/used/section/weak/visibility))`, `__declspec(dllexport)`, alias/ifunc targets, GCC `__name__` synonyms, and empty-body-method attribute recovery; doc-driven) **RELEASABLE** — R73/R74 findings fixed, R75 empty-body fix ("fix don't document"); R76+R77 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.1.4` tag. Next: v2.1.5 leads with the header-declaration export-attribute propagation fix (R77 F2). |
 
 ## Trajectory
 
@@ -975,6 +975,35 @@ it (the 2024-edition `unsafe(...)` wrap is itself documented elsewhere in the re
 doc-driven discovery and adversarial breadth are complementary: the doc finds the missing
 mechanism, the panel finds the missing spelling. Cardinal-safety made the broadening cheap — a
 wider token match can only ever over-root (mask dead code), never flag live code dead.
+
+## 2.1.4 — C/C++ entry-point & export attribute cardinal fix, doc-driven (R73–R77)
+
+Continuing the doc-driven method into the GCC/Clang/MSVC function-attribute reference, which
+enumerates the C/C++ attributes that make a symbol an implicit entry point or public ABI with no
+in-tree by-name caller. A minimal fixture confirmed a cardinal cluster flagged dead at 0.6:
+`__attribute__((constructor))`/`((destructor))` (run automatically around `main`), `((used))`,
+`visibility("default")`, `__declspec(dllexport)` — and every helper they reach. Fix: `_c_attr_roots`
+maps these to roots (callback for runtime/used, exported for visibility/dllexport). Two follow-on
+helpers landed as the panels broadened coverage: `_c_alias_target_names` (alias/ifunc targets) and
+`_c_dangling_attr_texts` (recovering an attribute the C++ grammar mis-attaches to a preceding
+empty-body method).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R73 | — | discovery | doc-driven: the C/C++ attribute cardinal cluster confirmed by a minimal fixture (conf 0.6). |
+| R74 | 3 | ✗ | opus found a CARDINAL miss — the GCC `__name__` synonyms (`__constructor__`, …, common in system headers) the `\b`-anchored match couldn't see (`_` is a word char); fixed with optional `_*`. opus also flagged Finding 2 (recall): `weak`/`section` fns + `alias`/`ifunc` **targets** still dead — the maintainer opted to fix in-release (`section`→callback, `weak`→exported, alias/ifunc target kept live by name). sonnet CLEAN (no regression, oracle 27/27, F→M normalization preserves roles); noted the empty-body-method gap as pre-existing/non-cardinal. haiku CLEAN. |
+| R75 | 3 | ✓→reset | full-diversity clean on the weak/section/alias code — but the streak **reset**: responding to sonnet's R74 empty-body note, the maintainer said *fix limitations, don't document them*, so `_c_dangling_attr_texts` landed after this round and is re-gated by R76/R77. opus: cross-file alias is invalid C (gcc rejects cross-TU alias); sonnet: EXPORT_SYMBOL∪alias per-file scoping correct, oracle 27/27. |
+| R76 | 3 | ✓ | full-diversity clean on the final tree incl. the empty-body recovery. opus 8-scenario attack — the recovery is structurally additive (only copies attr text onto a node) so it can't manufacture a false-dead; self-attr-steal harmless, chains/nested/malformed all no-crash. sonnet whole-file monkeypatch non-regression + determinism. |
+| R77 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Fresh: K&R defs, complex declarators, header+source, 50-fn stress (exactly the 25 dead flagged), prior-release regressions 281 pass, empty-body recovery under streaming. Surfaced two non-regressions: **F1** macro-wrapped attribute (`#define EXPORT …`) is unseeable without a preprocessor — now documented (unfixable); **F2** an export attribute on a C++ *header declaration* isn't propagated to the out-of-line definition (a pre-existing, documented C recall tradeoff surfacing at 0.6) — queued as the **v2.1.5 lead fix**. |
+
+The 2.1.4 lesson sharpens the doc-driven theme into a working rule: **the reference finds the
+mechanism; the panel finds every spelling of it; the maintainer's "fix don't document" turns the
+review's *documented gap* into the *next fix*.** R74 alone added three spellings the bare-keyword
+match missed (`__name__` synonyms, the alias/ifunc target indirection, weak/section); R75→R76 turned
+sonnet's documented empty-body limitation into a fix. The only things left documented for C/C++ are
+genuinely unfixable (macro-wrapped attributes — no preprocessor) or a real refactor (header-decl
+attribute propagation, now scheduled). Cardinal-safety made every broadening cheap: a wider match
+can only over-root (mask dead code), never flag live code dead.
 
 ## Standing themes
 

@@ -222,6 +222,13 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   but no explicit export attribute) is still **not** auto-rooted — that is the deliberate
   precision/recall tradeoff for C, since otherwise no library function is ever dead. Annotate the
   public surface (or pin via `[entry_points]`) to root those.
+- **Macro-wrapped attributes are not seen (unfixable without a preprocessor):** a project that
+  hides the attribute behind a macro — `#define EXPORT __attribute__((visibility("default")))` then
+  `EXPORT void f() {}` — defeats rooting, because tree-sitter does not run the C preprocessor, so
+  `EXPORT` parses as an opaque identifier with no `attribute_specifier` node (panel R77). This is the
+  same family as every other preprocessor limitation; cardinal-safe (a recall gap, never a
+  false-dead) since the macro'd function simply isn't rooted. Pin via `[entry_points]`, or use the
+  literal attribute.
 - **Empty-body-method attribute absorption (handled, panel R75):** the tree-sitter C++ grammar
   parses an *empty-body* inline method (`void f() {}`) as a `field_declaration` and swallows the
   *following* method's leading attribute. The extractor reattaches an attribute that sits after the
