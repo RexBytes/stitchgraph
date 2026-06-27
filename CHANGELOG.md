@@ -4,6 +4,27 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.12] — 2026-06-27
+
+**Transitive framework-inheritance callback rooting (tree-sitter) — one cardinal fix clearing the
+same root cause across PHP, C#, Java, and C++.** A symmetry gap: the Python extractor's
+`_apply_callback_roles` already did a transitive INHERITS closure, but the tree-sitter extractor
+marked only the *direct* subclass of an external framework base.
+
+### Fixed
+
+- **Framework-class detection now closes transitively over the in-tree INHERITS tree.** A concrete
+  override two-or-more hops below an external framework base (via an in-tree abstract intermediary) is
+  framework-invoked but had no in-tree caller, so it was confidently flagged dead — cardinal. New
+  `_framework_classes` helper: (a) every class with a direct external base, plus (c) the transitive
+  first-party descendants of those classes (fixpoint closure). Only ever *adds* roots, so it is
+  cardinal-safe; a pure first-party chain with no external base anywhere still flags genuinely-dead
+  overrides, and same-name self-loops are not treated as their own subclass. Confirmed on real
+  Magento 2.4.7 (`Shipment::_getValidationRulesBeforeSave`,
+  `Transaction\Collection::_renderFiltersBefore`) and on the C# explicit `IDisposable.Dispose`
+  reached only via `using` through a project interface that extends the framework interface.
+  `_framework_classes` helper unit test + per-language regressions + mutation pinned.
+
 ## [2.1.11] — 2026-06-27
 
 **Python implicit-invocation surface — three cardinal fixes, found by combining real-codebase
