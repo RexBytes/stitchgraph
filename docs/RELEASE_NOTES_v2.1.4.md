@@ -55,12 +55,17 @@ The first review round found the bare-keyword match was incomplete — exactly t
   declaration (no node), but its named target had a real definition with no by-name caller and was
   flagged dead. The target is now kept live by name (the same mechanism as `EXPORT_SYMBOL`).
 
-### Known limitation (structural, pre-existing)
+### Panel R75 — empty-body-method attribute absorption (fixed, not documented)
 
-An *empty-body* inline C++ method (`void f() {}`) is parsed by the tree-sitter C++ grammar as a
-`field_declaration` rather than a `function_definition`, so an entry-point/export attribute can be
-misattributed to an adjacent member. This predates v2.1.4 (the attribute lands on a different AST
-node) and the common non-empty-body case works; pin via `[entry_points]` if hit.
+A second review round found one more spelling of the same class. The tree-sitter C++ grammar parses
+an *empty-body* inline method (`void f() {}`) as a `field_declaration` and swallows the **following**
+method's leading attribute as a trailing one — so `__attribute__((visibility("default"))) void g()`
+placed right after an empty-body method lost its attribute and `g` was false-flagged dead
+(cardinal). Rather than document it as a limitation, the extractor now reattaches an attribute that
+sits after the prior `field_declaration`'s declarator to the current function. Cardinal-safe; the
+field's own leading attribute (before its declarator) is never stolen. (The empty-body method itself
+is still not extracted as its own node — a non-cardinal navigability gap, since a node-less symbol
+can't be flagged dead.)
 
 ## Why doc-driven found it
 

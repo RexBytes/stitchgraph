@@ -222,10 +222,13 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   but no explicit export attribute) is still **not** auto-rooted — that is the deliberate
   precision/recall tradeoff for C, since otherwise no library function is ever dead. Annotate the
   public surface (or pin via `[entry_points]`) to root those.
-- **Known gap (structural, pre-existing):** an *empty-body* inline C++ method (`void f() {}`) is
-  parsed by the tree-sitter C++ grammar as a `field_declaration`, not a `function_definition`, so
-  an entry-point/export attribute can be misattributed to an adjacent member and not root it (panel
-  R74). The common non-empty-body case works; pin via `[entry_points]` if hit.
+- **Empty-body-method attribute absorption (handled, panel R75):** the tree-sitter C++ grammar
+  parses an *empty-body* inline method (`void f() {}`) as a `field_declaration` and swallows the
+  *following* method's leading attribute. The extractor reattaches an attribute that sits after the
+  prior `field_declaration`'s declarator to the current function, so an export/entry attribute on
+  the method after an empty-body one still roots it. (The empty-body method itself is still not
+  extracted as its own node — a non-cardinal navigability gap, since a node-less symbol is never
+  flagged dead.)
 
 ### PHP string callables: array form is covered; bare-string and module-scope are not (yet)
 - **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`

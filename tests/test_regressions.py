@@ -6214,6 +6214,71 @@ def test_c_alias_ifunc_target_kept_live(tmp_path):
     assert "plain_dead" in stale
 
 
+def test_cpp_empty_body_method_does_not_eat_next_attribute(tmp_path):
+    """R75: the tree-sitter C++ grammar parses an *empty-body* inline method `void f() {}` as a
+    field_declaration and absorbs the FOLLOWING method's leading attribute, so a
+    `__attribute__((visibility("default")))` method right after an empty-body one lost its
+    attribute and was false-flagged dead (cardinal). The attribute is now recovered from the prior
+    sibling."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "t.cpp": (
+            "struct T {\n"
+            "  __attribute__((constructor)) void empty_ctor() {}\n"   # empty body -> field_declaration
+            "  __attribute__((visibility(\"default\"))) void exported_me() { do_work(); }\n"
+            "  void do_work() {}\n"
+            "};\n"
+            "int main(){ return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "exported_me" not in stale     # its visibility("default") survives the prior empty-body method
+    assert "do_work" not in stale         # reached from the exported method
+
+
+def test_c_dangling_attr_texts_helper():
+    """Pin _c_dangling_attr_texts (R75): recover ONLY the trailing attribute (the next decl's,
+    after the prior field_declaration's declarator) — not the field's own leading attribute — and
+    return nothing when the prior sibling is not a mis-parsed empty-body method."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_dangling_attr_texts
+
+    def dangling(struct_src: str) -> list:
+        src = struct_src.encode()
+        root = get_parser("cpp").parse(src).root_node
+
+        def find_fn(n):
+            for c in n.children:
+                if c.type == "function_definition":
+                    return c
+                r = find_fn(c)
+                if r is not None:
+                    return r
+            return None
+
+        fn = find_fn(root)
+        return [t.decode() for t in _c_dangling_attr_texts(fn, src)]
+
+    # Empty-body method before an attributed one: recover ONLY the trailing visibility attribute.
+    got = dangling("struct T {\n"
+                   "  __attribute__((constructor)) void a() {}\n"
+                   "  __attribute__((visibility(\"default\"))) void b() { w(); }\n"
+                   "  void w() {}\n};\n")
+    assert any("visibility" in t for t in got)          # the next decl's attr is recovered
+    assert not any("constructor" in t for t in got)     # NOT the field's own leading attr
+    # A plain field (no function_declarator) before a method recovers nothing — must not steal its
+    # own trailing attribute.
+    got2 = dangling("struct U {\n"
+                    "  int x __attribute__((aligned(8)));\n"
+                    "  void m() { z(); }\n"
+                    "  void z() {}\n};\n")
+    assert got2 == []
+
+
 def test_c_alias_target_names_helper():
     """Pin _c_alias_target_names (R74): extract alias/ifunc target names, incl. dunder spelling."""
     from stitchgraph.core.extract.treesitter import _c_alias_target_names

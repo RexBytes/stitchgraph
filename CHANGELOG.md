@@ -31,13 +31,13 @@ dead (panel R73, cardinal).
   correctly stay dead-eligible. Cardinal-safe (only adds roots). `_c_attr_roots` /
   `_c_alias_target_names` helpers isolate the mapping; owned by regression tests and pinned by
   mutation.
-
-### Known limitation
-
-- An *empty-body* inline C++ method (`void f() {}`) is parsed by the tree-sitter C++ grammar as a
-  `field_declaration` rather than a `function_definition`, so an entry-point/export attribute can
-  be misattributed to an adjacent member and not root it (panel R74). Structural to the grammar
-  and pre-existing; the common non-empty-body case works. Pin via `[entry_points]` if hit.
+- **An attribute absorbed by a preceding empty-body inline C++ method is recovered.** The
+  tree-sitter C++ grammar parses an empty-body method (`void f() {}`) as a `field_declaration` and
+  swallows the *following* method's leading attribute as a trailing one — so a
+  `__attribute__((visibility("default")))` method right after an empty-body one lost its attribute
+  and was false-flagged dead (panel R75, cardinal). The extractor now reattaches an attribute that
+  sits after the prior `field_declaration`'s declarator to the current function. Cardinal-safe;
+  `_c_dangling_attr_texts` helper, regression + mutation pinned.
 
 ## [2.1.3] — 2026-06-27
 

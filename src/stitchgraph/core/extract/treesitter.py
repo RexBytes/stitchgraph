@@ -1847,6 +1847,25 @@ def _roles(node, src, name, lang, exported):
 _C_ATTR_NODES = frozenset({"attribute_specifier", "attribute_declaration", "ms_declspec_modifier"})
 
 
+def _c_dangling_attr_texts(node, src) -> list[bytes]:
+    """Recover an attribute the tree-sitter C++ grammar mis-attached to `node`'s previous sibling.
+    An *empty-body* inline method `void f() {}` is parsed as a `field_declaration` whose body is an
+    `initializer_list`, and it ABSORBS the FOLLOWING declaration's leading attribute as a trailing
+    `attribute_specifier` (after its own declarator). So `__attribute__((visibility("default")))
+    void g() {}` right after an empty-body method loses its attribute and `g` is false-flagged dead
+    (panel R75). Reattach any attribute in the prior `field_declaration` that sits AFTER its
+    declarator — the field's own (leading) attribute is before the declarator, so this can't steal
+    it. Cardinal-safe: at worst it copies an attribute onto an extra node (over-roots)."""
+    prev = node.prev_sibling
+    if prev is None or prev.type != "field_declaration":
+        return []
+    decl = next((c for c in prev.children if c.type == "function_declarator"), None)
+    if decl is None:
+        return []
+    return [src[c.start_byte:c.end_byte] for c in prev.children
+            if c.type in _C_ATTR_NODES and c.start_byte >= decl.end_byte]
+
+
 def _c_attr_roots(node, src) -> set[str]:
     """Roots for a C/C++ function carrying a GCC/Clang/MSVC attribute that makes it an implicit
     entry point or an exported symbol — there is no in-tree by-name caller, so without rooting it
@@ -1867,6 +1886,7 @@ def _c_attr_roots(node, src) -> set[str]:
             texts.append(src[c.start_byte:c.end_byte])
         elif c.type == "function_declarator":   # the GNU *trailing* form attaches to the declarator
             texts.extend(src[g.start_byte:g.end_byte] for g in c.children if g.type in _C_ATTR_NODES)
+    texts.extend(_c_dangling_attr_texts(node, src))
     if not texts:
         return set()
     blob = b" ".join(texts).decode("utf-8", "replace")
