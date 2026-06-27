@@ -1223,6 +1223,26 @@
       ],
       "findings": {},
       "theme": "2.1.11 Python implicit-invocation surface — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the polished/committed code. opus: independent dogfood across full/streaming/incremental — byte-identical stale sets, determinism holds, no cardinal violation; helper fuzzing (_base_name nested unwrap -> container name harmless, _is_pytest_hook pins the AND, _ENUM_HOOKS exact-match); lone nit = _is_abstract_class still uses _name_of (find_holes-only, cardinal-safe, tracked follow-up). haiku: full suite 441/441, oracles 27/27, ruff+mypy clean, 7 new regressions green, only 3 files touched, RELEASABLE. sonnet: real-corpus dogfood (click 8.4.1/flask 3.1.3/requests 2.34.2/httpx/werkzeug) all live-stays-live; CONFIRMED the fix also resolves a real pre-existing FALSE NEGATIVE — flask.SecureCookieSession(CallbackDict[str, t.Any]) now correctly gets the callback role; 3 'failures' all explained (pre-existing over-approx or fixture bugs). All 3 CLEAN."
+    },
+    {
+      "id": "R94",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.12 transitive framework-inheritance callback rooting (tree-sitter _framework_classes: direct external base + same-name self-loop + transitive first-party closure; clears PHP/C#/Java/C++) — FULL-DIVERSITY clean RE-GATE round 1. Note: the FIRST round-1 pass found a real BLOCKER (opus) — the port dropped python.py case (b) same-name self-loop (class Foo extends pkg.Foo), reintroducing the cardinal in a different shape; fixed to full a/b/c parity then re-gated. This R94 = the clean re-gate: opus blocker genuinely fixed (PHP/C#/Java self-loop overrides live), cycle-safe/determinism/streaming parity, one pre-existing collision MINOR + docstring NIT addressed. sonnet: 1000-iteration fuzz proves new code is a STRICT SUPERSET of prior rooting (under-rooting impossible vs pre-2.1.12); real PHP/Java/C++ dogfood live-stays-live. haiku: 446 + oracles 27 + ruff/mypy + R94 tests green. mutation over _framework_classes all-killed. All 3 CLEAN."
+    },
+    {
+      "id": "R95",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.12 transitive framework-inheritance — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete release (incl. docstring caveat). Final skeptical pass: no cardinal introduced; transitive + self-loop cases live; over-mask boundary holds (pure first-party chain still flags dead overrides); determinism/streaming/incremental parity. Residual cross-file same-name-collision-with-true-self-loop case confirmed PRE-EXISTING (sonnet superset fuzz: not introduced by this release) and tracked as a follow-up for a resolved-dst_id fix matching python.py. All 3 CLEAN."
     }
   ]
 }

@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.10: R90–R91. **2.1.11: R92–R93** (full diversity opus/sonnet/haiku) on the Python implicit-invocation surface — subscripted-generic INHERITS + enum hooks + pytest conftest hooks (dogfood + manual reference) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/ipython-protocol/base_name/protocol_method/pytest_hook) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 441 passing (full extras) |
+| Multi-model review panels | 2.1.11: R92–R93. **2.1.12: R94–R95** (full diversity opus/sonnet/haiku) on transitive framework-inheritance callback rooting in tree-sitter (clears PHP/C#/Java/C++); round 1 found + fixed a self-loop blocker, then a fresh two-round gate |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/base_name/protocol_method/pytest_hook/framework_classes) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 446 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.9: R88✓ R89✓ (streak 2). 2.1.10: R90✓ R91✓ (streak 2). 2.1.11: Python implicit-invocation surface (generics/enum/pytest hooks) → **R92✓ R93✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE, RRS 95)** |
+| Convergence | 2.1.10: R90✓ R91✓ (streak 2). 2.1.11: R92✓ R93✓ (streak 2). 2.1.12: transitive framework-inheritance (tree-sitter) → **R94✓ R95✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — after round 1 caught + fixed a self-loop cardinal blocker |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.10 RELEASED/releasable** (maintainer tags). **2.1.11** (Python implicit-invocation surface: subscripted-generic base INHERITS edge + enum `_missing_`/`_generate_next_value_` + pytest `pytest_*` conftest hooks — all cardinal, found by *combining* sqlalchemy/werkzeug dogfood with a doc-driven Python-reference manual pass) **RELEASABLE** — R92+R93 full-diversity clean (no code findings); awaiting the maintainer's manual `v2.1.11` tag. Bonus: the same INHERITS-edge fix resolves a real pre-existing false *negative* (`flask.SecureCookieSession(CallbackDict[str, t.Any])` now correctly callback-rooted). |
+| Verdict | **1.0.0–2.1.11 RELEASED/releasable** (maintainer tags). **2.1.12** (transitive framework-inheritance callback rooting in the tree-sitter extractor: a class two-or-more hops below an external framework base now gets the `callback` role via a fixpoint INHERITS closure — one fix clearing the same cardinal across PHP/C#/Java/C++; ported python.py's cases a+b+c) **RELEASABLE** — R94+R95 full-diversity clean; awaiting the maintainer's manual `v2.1.12` tag. The gate earned its keep: opus's *deeper* round-1 pass found a self-loop blocker a first look missed; sonnet's 1000-iteration fuzz then proved the fix is a strict superset of prior rooting. |
 
 ## Trajectory
 
@@ -1161,6 +1161,33 @@ proves they bite in real code (sqlalchemy/werkzeug mixins, conftest hooks) and �
 false-negative shows — the same INHERITS-edge fix that closes a cardinal gap also tightens recall.
 A single shared helper (`_base_name`) now backs the INHERITS edge and external-base detection, with a
 tracked follow-up to extend it to `_is_abstract_class` (find_holes precision, non-cardinal).
+
+## 2.1.12 — Transitive framework-inheritance callback rooting, tree-sitter (R94–R95)
+
+One cardinal fix clearing the **same root cause across PHP, C#, Java, and C++** — a symmetry gap
+where the Python extractor's `_apply_callback_roles` did a transitive INHERITS closure but the
+tree-sitter extractor marked only the *direct* subclass of an external framework base. A concrete
+override two-or-more hops below the framework base (via an in-tree abstract intermediary) is
+framework-invoked but had no in-tree caller, so it was confidently flagged dead. New
+`_framework_classes` helper: (a) direct external base + (b) same-name self-loop + (c) transitive
+first-party closure (fixpoint down the in-tree INHERITS tree). Confirmed on real Magento 2.4.7 and
+the C# explicit-`IDisposable.Dispose`-via-project-interface shape.
+
+This release is the clearest example yet of **the gate doing its job**: round 1 was clean on opus's
+*first* pass — but a deeper opus probe found a blocker (the case-(b) self-loop, `class Foo extends
+pkg.Foo`, was dropped in the port, reintroducing the same cardinal class in a different shape). Fixed
+to full python.py parity (cases a+b+c), then a fresh two-round full-diversity gate.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R94 | 3 | ✓ | re-gate round 1 (after the self-loop blocker fix). opus: blocker genuinely fixed (PHP/C#/Java self-loop overrides live), full a/b/c parity, cycle-safe, determinism + streaming parity; one pre-existing collision MINOR + a docstring NIT (both addressed/tracked). sonnet: **1000-iteration fuzz proves the change is a strict superset of prior rooting — under-rooting mathematically impossible vs pre-2.1.12**; real PHP/Java/C++ dogfood live-stays-live. haiku: 446 + oracles 27 + ruff/mypy + R94 tests green. |
+| R95 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Final confirmation on the complete release (incl. the docstring caveat); no cardinal introduced, over-mask boundary holds, residual cross-file-collision case confirmed pre-existing and tracked. |
+
+The 2.1.12 lesson: **a clean first look is not a clean gate.** opus's initial pass said RELEASABLE;
+its deeper pass found a real cardinal. Two-round, multi-model, *adversarial-not-confirmatory* review
+is what catches the port that's 90% right. The residual name-collision case (a true self-loop that
+also collides with an unrelated same-named class) is the one shape still resolved by name rather than
+`dst_id`; cardinal-safe in common shapes, pre-existing, tracked for a resolved-edge fix.
 
 ## Standing themes
 
