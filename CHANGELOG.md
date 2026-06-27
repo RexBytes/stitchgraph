@@ -4,6 +4,29 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.9] — 2026-06-27
+
+**Runtime / native (FFI) entry-point directives across Rust, C#, and Go cardinal fix** — found by
+continuing the doc-driven hunt into each language's runtime-entry surface. Each is a function the
+runtime or native code invokes automatically with no in-tree caller, and (unlike the already-covered
+`pub`/public forms) need not be public — so it and its callees were false-flagged dead at 0.6.
+
+### Fixed
+
+- **Rust `#[panic_handler]` / `#[start]` / `#[alloc_error_handler]` are rooted.** The runtime calls
+  these automatically (on panic / as the program entry / on allocation failure); a non-`pub` one had
+  no `pub` to trigger export-rooting. (`#[proc_macro]`/`#[proc_macro_derive]`/`#[proc_macro_attribute]`
+  need no handling — they require `pub`, already rooted.) `_is_rust_runtime_entry_attr` helper.
+- **C# `[UnmanagedCallersOnly]` is rooted** (added to the curated callback-attribute set, with
+  `[JSInvokable]`). A method exported to native (C-ABI) callers is invoked from unmanaged code, not
+  by a managed caller, and is typically non-public.
+- **Go cgo `//export name` is rooted.** A function with `//export` directly above it is callable from
+  C. A capitalised one was already exported by Go's rule, but a **lowercase** `//export lower_entry`
+  was flagged dead; the directive (the func's preceding `comment`) now roots it.
+
+All cardinal-safe (only add roots); `_is_rust_runtime_entry_attr` / `_go_has_export_directive`
+helpers, regression + mutation pinned.
+
 ## [2.1.8] — 2026-06-27
 
 **Recall: PHP bare-string function callables** (the last queued non-cardinal gap from the

@@ -951,6 +951,26 @@ def _is_rust_export_attr(attr_text: str) -> bool:
     return bool(re.search(r"(?<![\w])(?:no_mangle|export_name)(?![\w])", inner))
 
 
+# Rust attributes that mark a function as a RUNTIME entry point the language/runtime invokes
+# automatically — never by an in-tree call, and (unlike `#[proc_macro]`, which requires `pub`)
+# NOT necessarily `pub`, so export-rooting doesn't fire and the fn + its callees are flagged dead.
+_RUST_RUNTIME_ENTRY_ATTRS = frozenset({"panic_handler", "start", "alloc_error_handler"})
+
+
+def _is_rust_runtime_entry_attr(attr_text: str) -> bool:
+    """True for a Rust runtime-entry attribute — `#[panic_handler]`, `#[start]`,
+    `#[alloc_error_handler]`. The runtime calls these automatically (on panic / as the program
+    entry / on allocation failure), so a non-`pub` one has no in-tree caller and was false-flagged
+    dead along with what its body reaches (doc-driven, panel R88). Cardinal-safe: only adds roots.
+    Matched on the attribute path (covers `#[unsafe(...)]` / `#[cfg_attr(...)]` wrappers via the
+    last token), not a raw substring, so a `#[doc="…start…"]` can't trigger it."""
+    m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
+    if not m:
+        return False
+    inner = re.sub(r"\"(?:[^\"\\]|\\.)*\"", "", m.group(1))
+    return any(re.search(rf"(?<![\w])(?:{a})(?![\w])", inner) for a in _RUST_RUNTIME_ENTRY_ATTRS)
+
+
 # Annotation/attribute names that mark a method as a test entry or framework-invoked
 # test hook (JUnit/TestNG, xUnit/NUnit/MSTest, PHPUnit). The analog of Rust `#[test]`:
 # these decorate free-form-named methods that the test*/Test* name convention misses,
@@ -993,6 +1013,8 @@ _CALLBACK_ANNOTATIONS = {
         "ModuleInitializer",                                  # runtime module init
         "GlobalSetup", "GlobalCleanup", "IterationSetup",     # BenchmarkDotNet
         "IterationCleanup", "Benchmark",
+        "UnmanagedCallersOnly",                               # native (C-ABI) entry point
+        "JSInvokable",                                        # Blazor JS interop
     }),
 }
 
@@ -1119,6 +1141,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         decos, pending_decos = pending_decos, []
         attr_test = any(_is_rust_test_attr(a) for a in attrs)
         attr_export = any(_is_rust_export_attr(a) for a in attrs)
+        attr_runtime = any(_is_rust_runtime_entry_attr(a) for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported=True, is_test=is_test, contains=contains,
@@ -1171,6 +1194,10 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # EXPORT_SYMBOL; doc-driven panel R69).
             if attr_export:
                 roles.add("exported")
+            # A Rust `#[panic_handler]`/`#[start]`/`#[alloc_error_handler]` fn is invoked by the
+            # runtime, not by an in-tree call, and need not be `pub` — root it (panel R88).
+            if attr_runtime:
+                roles.add("callback")
             # A method carrying a framework-callback annotation (@PostConstruct,
             # [OnSerializing], …) is reflection-invoked — root it (multi-language hunt).
             if _has_callback_annotation(child, lang, src):
@@ -1892,6 +1919,20 @@ _DECLARATOR_WRAPPERS = ("function_declarator", "pointer_declarator", "reference_
                         "array_declarator", "parenthesized_declarator", "init_declarator")
 
 
+_GO_EXPORT_RE = re.compile(r"^//\s*export\s+(\w+)\s*$")
+
+
+def _go_has_export_directive(node, name: str, src) -> bool:
+    """True if the Go func `node` is immediately preceded by a `//export <name>` cgo comment
+    naming it. cgo requires the directive on the line directly above the func, which the
+    tree-sitter grammar exposes as the func's previous `comment` sibling."""
+    prev = node.prev_sibling
+    if prev is None or prev.type != "comment":
+        return False
+    m = _GO_EXPORT_RE.match(_text(prev, src).strip())
+    return m is not None and m.group(1) == name
+
+
 def _roles(node, src, name, lang, exported):
     roles = set()
     if exported:
@@ -1905,6 +1946,12 @@ def _roles(node, src, name, lang, exported):
     # method named init too.
     if lang == "go" and name == "init":
         roles.add("main")
+    # Go cgo `//export Name` directly above a func makes it callable from C — a native entry point
+    # with no in-tree caller. A *capitalised* one is already `exported` by the rule below, but a
+    # lowercase `//export name` would be flagged dead (panel R88). The directive is the func's
+    # immediately-preceding `comment` sibling. Go-gated; cardinal-safe (only adds a root).
+    if lang == "go" and name and _go_has_export_directive(node, name, src):
+        roles.add("exported")
     if lang == "rust" and any(c.type == "visibility_modifier" for c in node.children):
         roles.add("exported")
     elif lang == "go" and name[:1].isupper():        # Go: capitalised = exported

@@ -6605,3 +6605,118 @@ def test_php_string_callable_names_helper():
     assert names("array_map('mapper', $x)") == {"mapper"}
     assert names("call_user_func('Cls::method')") == set()   # static string: already-rooted public
     assert names("logmsg('notcb')") == set()                  # not a callback builtin
+
+
+def test_rust_runtime_entry_attrs_rooted(tmp_path):
+    """R88 (v2.1.9, cardinal): Rust `#[panic_handler]`/`#[start]`/`#[alloc_error_handler]` fns are
+    invoked by the runtime, not by an in-tree call, and need not be `pub`, so they (and their
+    callees) were false-flagged dead at 0.6. Now rooted. `#[proc_macro]` is already covered (it
+    requires `pub`); a plain uncalled fn still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": (
+            "#![no_std]\n"
+            "#[panic_handler]\n"
+            "fn my_panic(info: &core::panic::PanicInfo) -> ! { ph_help(); loop {} }\n"
+            "fn ph_help() {}\n"
+            "#[start]\n"
+            "fn my_start(_a: isize, _b: *const *const u8) -> isize { st_help(); 0 }\n"
+            "fn st_help() -> i32 { 1 }\n"
+            "#[alloc_error_handler]\n"
+            "fn on_oom(_l: core::alloc::Layout) -> ! { aeh_help(); loop {} }\n"
+            "fn aeh_help() {}\n"
+            "fn really_dead() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    for live in ("my_panic", "ph_help", "my_start", "st_help", "on_oom", "aeh_help"):
+        assert live not in stale, live
+    assert "really_dead" in stale
+
+
+def test_is_rust_runtime_entry_attr_helper():
+    """Pin _is_rust_runtime_entry_attr (R88): panic_handler/start/alloc_error_handler only."""
+    from stitchgraph.core.extract.treesitter import _is_rust_runtime_entry_attr
+    for a in ("#[panic_handler]", "#[start]", "#[alloc_error_handler]"):
+        assert _is_rust_runtime_entry_attr(a), a
+    for a in ("#[no_mangle]", "#[test]", "#[inline]", "#[derive(Debug)]", "#[doc=\"start\"]",
+              "panic_handler", "", "not an attr"):
+        assert not _is_rust_runtime_entry_attr(a), a
+
+
+def test_go_cgo_export_directive_rooted(tmp_path):
+    """R88 (v2.1.9, cardinal): a Go cgo `//export name` directly above a func makes it C-callable
+    (native entry point, no in-tree caller). A capitalised one is already exported by Go's rule, but
+    a LOWERCASE `//export lower_entry` was false-flagged dead. Now rooted from the directive."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.go": (
+            "package main\n"
+            "import \"C\"\n"
+            "//export lower_entry\n"
+            "func lower_entry() { lowHelp() }\n"
+            "func lowHelp() {}\n"
+            "func reallyDeadGo() {}\n"
+            "func main() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "lower_entry" not in stale and "lowHelp" not in stale
+    assert "reallyDeadGo" in stale
+
+
+def test_go_has_export_directive_helper():
+    """Pin _go_has_export_directive (R88): True only when the immediately-preceding `//export <name>`
+    comment names THIS func; False for a name mismatch, no comment, or no preceding sibling."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _go_has_export_directive
+
+    def has(src: str, fn_name: str) -> bool:
+        b = src.encode()
+        root = get_parser("go").parse(b).root_node
+
+        def find(n):
+            for c in n.children:
+                if c.type == "function_declaration":
+                    return c
+                r = find(c)
+                if r is not None:
+                    return r
+            return None
+
+        return _go_has_export_directive(find(root), fn_name, b)
+
+    assert has("package m\n//export f\nfunc f(){}", "f") is True
+    assert has("package m\n//export other\nfunc f(){}", "f") is False   # name mismatch
+    assert has("package m\nfunc f(){}", "f") is False                   # no preceding comment
+    assert has("func f(){}", "f") is False                              # no prev sibling (guard)
+
+
+def test_csharp_unmanaged_callers_only_rooted(tmp_path):
+    """R88 (v2.1.9, cardinal): a C# `[UnmanagedCallersOnly]` method is a native (C-ABI) entry point
+    invoked from unmanaged code, not by a managed caller, and is typically non-public — so it (and
+    its callees) was false-flagged dead. Now rooted `callback`. A plain uncalled method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Lib.cs": (
+            "class Lib {\n"
+            "  [UnmanagedCallersOnly(EntryPoint = \"native_entry\")]\n"
+            "  static void NativeEntry() { UceHelp(); }\n"
+            "  static void UceHelp() {}\n"
+            "  void deadCs() {}\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "NativeEntry" not in stale and "UceHelp" not in stale
+    assert "deadCs" in stale

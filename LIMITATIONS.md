@@ -206,6 +206,18 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   (cdylib convention), masking the non-`pub` path (panel R69).
 - **Rationale:** rooting only ever *adds* roots (cardinal-safe); the prior gap was a genuine
   cardinal false-positive (a non-`pub` export and everything its body reached flagged dead).
+- **Runtime entry points (v2.1.9):** `#[panic_handler]`, `#[start]`, `#[alloc_error_handler]` are
+  invoked by the runtime automatically and need not be `pub`, so they are also rooted (role
+  `callback`; panel R88). `#[proc_macro]`/`#[proc_macro_derive]`/`#[proc_macro_attribute]` require
+  `pub` and were already rooted; `#[global_allocator]` applies to a `static` (not extracted as a
+  node, so never flagged).
+
+### Go cgo `//export` and C# `[UnmanagedCallersOnly]` native entry points (v2.1.9)
+- **Go:** a function with a `//export <name>` cgo directive on the line directly above it is callable
+  from C. A capitalised name is already `exported` by Go's rule; a **lowercase** `//export` is now
+  rooted from the directive (panel R88). `//go:linkname` and other `//go:` pragmas are not modeled.
+- **C#:** `[UnmanagedCallersOnly]` (native C-ABI entry, typically non-public) and `[JSInvokable]`
+  (Blazor JS interop) are now on the curated callback-attribute set. Cardinal-safe (only add roots).
 
 ### C/C++ entry-point & export attributes are rooted (v2.1.4)
 - **Covered:** a C/C++ function carrying `__attribute__((constructor))` / `((destructor))` (incl.
