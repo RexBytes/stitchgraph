@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.11: R92–R93. **2.1.12: R94–R95** (full diversity opus/sonnet/haiku) on transitive framework-inheritance callback rooting in tree-sitter (clears PHP/C#/Java/C++); round 1 found + fixed a self-loop blocker, then a fresh two-round gate |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/base_name/protocol_method/pytest_hook/framework_classes) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 446 passing (full extras) |
+| Multi-model review panels | 2.1.12: R94–R95. **2.1.13: R96–R97** (full diversity opus/sonnet/haiku) on runtime/native entry-point attributes (C ISR `interrupt`/`interrupt_handler`, Rust `#[ctor]`/`#[dtor]`, Java `native`); round 1 found + fixed an `interrupt_handler` cardinal, then a fresh two-round gate |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/framework_classes/rust_runtime_entry_attr/c_attr_roots) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 450 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.10: R90✓ R91✓ (streak 2). 2.1.11: R92✓ R93✓ (streak 2). 2.1.12: transitive framework-inheritance (tree-sitter) → **R94✓ R95✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — after round 1 caught + fixed a self-loop cardinal blocker |
+| Convergence | 2.1.11: R92✓ R93✓ (streak 2). 2.1.12: R94✓ R95✓ (streak 2). 2.1.13: runtime/native entry-point attrs (C ISR / Rust ctor / Java native) → **R96✓ R97✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — after round 1 caught + fixed an `interrupt_handler` cardinal |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.11 RELEASED/releasable** (maintainer tags). **2.1.12** (transitive framework-inheritance callback rooting in the tree-sitter extractor: a class two-or-more hops below an external framework base now gets the `callback` role via a fixpoint INHERITS closure — one fix clearing the same cardinal across PHP/C#/Java/C++; ported python.py's cases a+b+c) **RELEASABLE** — R94+R95 full-diversity clean; awaiting the maintainer's manual `v2.1.12` tag. The gate earned its keep: opus's *deeper* round-1 pass found a self-loop blocker a first look missed; sonnet's 1000-iteration fuzz then proved the fix is a strict superset of prior rooting. |
+| Verdict | **1.0.0–2.1.12 RELEASED/releasable** (maintainer tags). **2.1.13** (runtime/native entry-point attributes — C `__attribute__((interrupt))`/`((interrupt_handler))`/AVR `((signal))` ISRs, Rust `#[ctor]`/`#[dtor]`, Java `native` JNI methods all rooted; extends the v2.1.9 FFI-entry arc) **RELEASABLE** — R96+R97 full-diversity clean; awaiting the maintainer's manual `v2.1.13` tag. Again the gate earned its keep: round 1 found a cardinal where the regex matched `interrupt` but not the real-world `interrupt_handler` spelling. |
 
 ## Trajectory
 
@@ -1188,6 +1188,32 @@ its deeper pass found a real cardinal. Two-round, multi-model, *adversarial-not-
 is what catches the port that's 90% right. The residual name-collision case (a true self-loop that
 also collides with an unrelated same-named class) is the one shape still resolved by name rather than
 `dst_id`; cardinal-safe in common shapes, pre-existing, tracked for a resolved-edge fix.
+
+## 2.1.13 — Runtime/native entry-point attributes: C ISR, Rust `#[ctor]`, Java `native` (R96–R97)
+
+Three narrow cardinal fixes batched into one release, extending the v2.1.9 runtime/native (FFI)
+entry-point arc to the attribute/modifier-marked entries the runtime or toolchain invokes
+automatically: C `__attribute__((interrupt))`/`((interrupt_handler))`/AVR `((signal))` (rooted
+`callback` via the implicit-entry regex), Rust `ctor`/`dtor` (added to `_RUST_RUNTIME_ENTRY_ATTRS`),
+and Java `native` (new `_is_java_native`). All attribute/modifier-gated, add-roots-only.
+
+Like 2.1.12, the gate paid off: the first round-1 pass found a **cardinal blocker** (opus *and*
+sonnet, independently) — the ISR regex matched `interrupt`/`signal` but not the trailing-word form
+`interrupt_handler` (after `interrupt`, the `_` is a word char so `\b` fails), so ARM/MIPS/m68k
+`__attribute__((interrupt_handler))` ISRs were flagged dead *and the changelog falsely claimed the
+form was covered*. Fixed (`interrupt(?:_handler)?|signal(?:_handler)?`) + regression, then a fresh
+two-round full-diversity gate.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R96 | 3 | ✓ | re-gate round 1 (after the `interrupt_handler` blocker fix). opus: blocker fixed (interrupt_handler/signal_handler ISR + callees live), `(?:_handler)?` neither over- nor under-matches (`interrupt_handler_foo` longer identifier stays dead; `my_interrupt_handler` attr name doesn't match), Rust/Java re-confirmed. sonnet: 11-form C ISR matrix incl. `[[gnu::interrupt]]` + GNU synonyms, Rust 9 forms, Java 10 forms — all correct; macro-wrapped ISR is the pre-existing preprocessor boundary, not new. haiku: interrupt_handler verified empirically, 450 + oracles 27 + ruff/mypy + readiness RELEASABLE. |
+| R97 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Final confirmation on the corrected release; no cardinal across all three fixes; over-mask boundary holds; determinism/streaming parity. |
+
+The 2.1.13 lesson reinforces 2.1.12's: **a regex that's right for the keyword can still be wrong for
+the keyword's real-world spellings.** `interrupt` matched but `interrupt_handler` (a genuine
+MIPS/m68k/ARM attribute) did not — and a confirmatory review that only checked the documented happy
+path would have shipped it. The adversarial probe that enumerated *toolchain spellings* found it. The
+reference/audit finds the mechanism; the adversarial panel finds the spelling.
 
 ## Standing themes
 

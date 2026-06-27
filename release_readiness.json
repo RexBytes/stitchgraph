@@ -1243,6 +1243,26 @@
       ],
       "findings": {},
       "theme": "2.1.12 transitive framework-inheritance — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete release (incl. docstring caveat). Final skeptical pass: no cardinal introduced; transitive + self-loop cases live; over-mask boundary holds (pure first-party chain still flags dead overrides); determinism/streaming/incremental parity. Residual cross-file same-name-collision-with-true-self-loop case confirmed PRE-EXISTING (sonnet superset fuzz: not introduced by this release) and tracked as a follow-up for a resolved-dst_id fix matching python.py. All 3 CLEAN."
+    },
+    {
+      "id": "R96",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.13 runtime/native entry-point attributes (C ISR interrupt/interrupt_handler/signal + Rust #[ctor]/#[dtor] + Java native; extends v2.1.9 FFI-entry arc) — FULL-DIVERSITY clean RE-GATE round 1. The FIRST round-1 pass found a CARDINAL blocker (opus AND sonnet independently): the ISR regex matched interrupt/signal but not the trailing-word form interrupt_handler (after `interrupt`, `_` is a word char so \\b fails), so ARM/MIPS/m68k __attribute__((interrupt_handler)) ISRs were flagged dead AND the changelog falsely claimed coverage. Fixed: interrupt(?:_handler)?|signal(?:_handler)? + regression. This R96 = the clean re-gate: opus blocker fixed + (?:_handler)? neither over- nor under-matches (interrupt_handler_foo longer-identifier stays dead, my_interrupt_handler attr-name doesn't match); sonnet 11-form C ISR matrix incl [[gnu::interrupt]] + GNU synonyms, Rust 9 forms, Java 10 forms all correct; haiku interrupt_handler verified empirically, 450 + oracles 27 + ruff/mypy + RELEASABLE. mutation over _c_attr_roots/_is_rust_runtime_entry_attr/_is_java_native all-killed. All 3 CLEAN."
+    },
+    {
+      "id": "R97",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.13 runtime/native entry-point attributes — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected release. Final skeptical pass: no cardinal across all three fixes (C ISR incl. interrupt_handler, Rust ctor/dtor, Java native); over-mask boundary holds (plain fn without the attr/modifier still flags dead); determinism/streaming parity. Macro-wrapped ISR noted as the pre-existing preprocessor boundary, not introduced here. All 3 CLEAN."
     }
   ]
 }
