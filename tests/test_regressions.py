@@ -6921,3 +6921,80 @@ def test_subscripted_external_base_gets_framework_callback(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
     assert "MyView.get" not in stale          # framework override rooted via external base
     assert "render_body" not in stale         # and its callee
+
+
+# -- R94 / dogfood+manual (CARDINAL): transitive external-base callback closure -----
+def test_php_transitive_framework_inheritance_keeps_override_live(tmp_path):
+    """A concrete override two+ hops below an external framework base (via an in-tree
+    abstract intermediary) is framework-invoked and must stay live. `external_base_classes`
+    only checked the DIRECT parent, so the grandchild override got no callback role and was
+    flagged dead (CARDINAL, confirmed on Magento Shipment._getValidationRulesBeforeSave)."""
+    _mk(tmp_path, {
+        "Base.php": "<?php\nabstract class Base extends ExternalFramework {\n"
+                    "    protected function handle() {}\n}\n",
+        "Child.php": "<?php\nclass Child extends Base {\n"
+                     "    protected function handle() { return $this->helper(); }\n"
+                     "    private function helper() { return 1; }\n}\n",
+        "main.php": "<?php\n$c = new Child();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Child.handle" not in stale     # framework override, rooted transitively
+    assert "Child.helper" not in stale     # reached only through the override
+
+
+def test_csharp_explicit_interface_via_project_chain_live(tmp_path):
+    """C# explicit interface impl (`void IDisposable.Dispose()`) reached only implicitly
+    (`using`) via a PROJECT interface that extends the framework interface. The project
+    interface resolves in-tree, so the implementing class was not a direct external subclass
+    and its Dispose (+ callee) were flagged dead — same root cause as the PHP case."""
+    _mk(tmp_path, {
+        "P.cs": "using System;\n"
+                "interface IHook : IDisposable { }\n"
+                "class H : IHook {\n"
+                "    void IDisposable.Dispose() { Clean(); }\n"
+                "    void Clean() { }\n"
+                "    public void Touch() { }\n}\n"
+                "class Program { static void Main() { using (IHook h = new H()) { h.Touch(); } } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "H.Dispose" not in stale
+    assert "H.Clean" not in stale
+
+
+def test_transitive_closure_does_not_overmask_pure_firstparty_chain(tmp_path):
+    """Cardinal-safety boundary: a first-party inheritance chain with NO external base must
+    NOT get framework rooting — a genuinely-dead override stays flagged."""
+    _mk(tmp_path, {
+        "Base.php": "<?php\nabstract class Base {\n    protected function handle() {}\n}\n",
+        "Child.php": "<?php\nclass Child extends Base {\n"
+                     "    protected function deadHandle() { return 1; }\n}\n",
+        "main.php": "<?php\n$c = new Child();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Child.deadHandle" in stale     # no external base anywhere -> still dead
+
+
+def test_framework_classes_helper():
+    """Pin _framework_classes (R94): direct external base, transitive descendant, plain-base
+    exclusion, and same-name self-loop (must not self-root)."""
+    from stitchgraph.core.extract.treesitter import _framework_classes
+    class_by_name = {
+        "Base": {"f::Base"}, "Child": {"f::Child"}, "Grand": {"f::Grand"},
+        "E": {"f::E"}, "S": {"f::S"},
+    }
+    inherits = [
+        ("f::Base", "Ext", "php"),       # external direct -> Base framework
+        ("f::Child", "Base", "php"),     # first-party -> transitive
+        ("f::Grand", "Child", "php"),    # first-party -> deeper transitive
+        ("f::E", "Object", "php"),       # plain base (in _PLAIN_BASES) -> not framework
+        ("f::S", "S", "php"),            # same-name self loop -> not framework
+    ]
+    result = _framework_classes(inherits, class_by_name)
+    assert result == {"f::Base", "f::Child", "f::Grand"}
+    assert "f::E" not in result and "f::S" not in result

@@ -615,20 +615,13 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                           dst_id=nested_id, weight=1.0, provenance=Provenance.EXTRACTED,
                           location=f"{nrel}:{line}:0", source="tree-sitter"))
 
-    # Build a set of class IDs that inherit from external bases (framework classes).
-    # This will be used to mark their methods as callbacks.
-    external_base_classes: set[str] = set()
+    # Class IDs that are framework (externally-subclassed) classes — their methods are
+    # framework-invoked overrides, marked `callback` below.
     class_by_name: dict[str, set[str]] = {}
     for n in nodes:
         if n.kind is C:
             class_by_name.setdefault(n.name, set()).add(n.id)
-
-    for class_id, base, _lang in inherits:
-        # Check if the base is external (not defined in this project, not a plain base).
-        # A base is external if it doesn't resolve to any project class and isn't plain.
-        project_bases = class_by_name.get(base, set())
-        if not project_bases and base not in _PLAIN_BASES:
-            external_base_classes.add(class_id)
+    external_base_classes = _framework_classes(inherits, class_by_name)
 
     _seed_callback_roles(nodes, external_base_classes)
 
@@ -863,6 +856,39 @@ def _seed_main_classes(nodes) -> None:
     for n in nodes:
         if n.kind is C and n.id in main_classes:
             n.roles = n.roles | {"main"}
+
+
+def _framework_classes(inherits, class_by_name: dict[str, set[str]]) -> set[str]:
+    """Class ids that are framework (externally-subclassed) classes: those that (a) directly
+    inherit an external base (resolves to no project class and isn't a plain base), plus (c)
+    the transitive first-party descendants of such classes.
+
+    A grandchild of a framework class is framework-driven the same way — its overrides of the
+    framework's template methods are invoked polymorphically from unindexed framework code.
+    Without the transitive step only the *direct* subclass got `callback` roots, so a deeper
+    override (live, but with no in-tree caller) was flagged dead — CARDINAL. Confirmed on
+    Magento (PHP template methods through an in-tree AbstractModel intermediary) and on a C#
+    explicit `IDisposable.Dispose` reached via a project interface that extends the framework
+    interface. Mirrors the Python extractor's `_apply_callback_roles` (case (a) + case (c)).
+    """
+    external: set[str] = set()
+    subclasses: dict[str, set[str]] = {}
+    for class_id, base, _lang in inherits:
+        project_bases = class_by_name.get(base, set())
+        if project_bases:
+            for pbase in project_bases:
+                if pbase != class_id:  # first-party base; skip same-name self loops
+                    subclasses.setdefault(pbase, set()).add(class_id)
+        elif base not in _PLAIN_BASES:
+            external.add(class_id)  # (a) direct external base
+    stack = list(external)
+    while stack:  # (c) transitive closure down the first-party INHERITS tree (only adds)
+        cid = stack.pop()
+        for sub in subclasses.get(cid, ()):
+            if sub not in external:
+                external.add(sub)
+                stack.append(sub)
+    return external
 
 
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
