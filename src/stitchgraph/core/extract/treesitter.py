@@ -1494,6 +1494,21 @@ def _php_callable_names(node, src):
     return [(meth, sval.start_point[0] + 1)] if meth else []
 
 
+def _csharp_attribute_suffix_ref(attr_node, src):
+    """The `<Name>Attribute` form of a C# `[Name]` attribute usage, or None. C# omits the
+    `Attribute` suffix when applying an attribute, so `[NoEnumeration]` references class
+    `NoEnumerationAttribute`; the bare name never resolves on its own (panel R64). Returns None
+    when the name can't be read or already ends in `Attribute` (the bare name already resolves).
+    `_trailing_id` reduces a qualified attribute (`[My.Ns.Foo]`) to its trailing name (`Foo`)."""
+    an = attr_node.child_by_field_name("name")  # reliable for C# attribute (identifier/qualified)
+    if an is None:
+        return None
+    nm = _trailing_id(an, src)
+    if not nm or nm.endswith("Attribute"):
+        return None
+    return nm + "Attribute"
+
+
 def _direct_refs(body, src, spec):
     """Identifier/type references in a def body (not crossing nested defs, excluding
     the def's own name): a symbol used by name as a value or type. Emitted as
@@ -1522,12 +1537,9 @@ def _direct_refs(body, src, spec):
                 # names class `NoEnumerationAttribute`. The generic walk already emits the bare
                 # `NoEnumeration` (which won't resolve); also emit the suffixed form so the
                 # in-tree attribute class isn't false-flagged dead (panel R64, serilog dogfood).
-                an = c.child_by_field_name("name") or next(
-                    (k for k in c.children if k.type in ("identifier", "qualified_name")), None)
-                if an is not None:
-                    nm = _trailing_id(an, src)
-                    if nm and not nm.endswith("Attribute"):
-                        out.append((nm + "Attribute", c.start_point[0] + 1))
+                suffixed = _csharp_attribute_suffix_ref(c, src)
+                if suffixed is not None:
+                    out.append((suffixed, c.start_point[0] + 1))
             rec(c, False)
 
     rec(body, True)

@@ -5991,3 +5991,29 @@ def test_csharp_attribute_class_used_via_bracket_is_live(tmp_path):
         stale = {c["id"] for c in (sg.find_stale(store).result or [])}
     assert not any(i.endswith("NoEnumerationAttribute") for i in stale)  # used via [NoEnumeration]
     assert any(i.endswith("UnusedAttribute") for i in stale)             # never applied: dead
+
+
+def test_csharp_attribute_suffix_ref_helper():
+    """Pin _csharp_attribute_suffix_ref (R64): `[Foo]` -> 'FooAttribute'; an already-suffixed
+    `[FooAttribute]` -> None (the bare name already resolves)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _csharp_attribute_suffix_ref
+    p = get_parser("csharp")
+
+    def attr_ref(code_attr):
+        src = (f"class C {{ void M([{code_attr}] int x) {{}} }}").encode()
+        tree = p.parse(src)
+        node = next(n for n in _walk(tree.root_node) if n.type == "attribute")
+        return _csharp_attribute_suffix_ref(node, src)
+
+    def _walk(n):
+        yield n
+        for c in n.children:
+            yield from _walk(c)
+
+    assert attr_ref("NoEnumeration") == "NoEnumerationAttribute"
+    assert attr_ref("Obsolete") == "ObsoleteAttribute"
+    assert attr_ref("NoEnumerationAttribute") is None    # already suffixed -> bare name resolves
