@@ -1708,7 +1708,8 @@ def _module_uses(root, src, spec):
             if spec.arrow_decls and c.type == "variable_declarator":
                 val = c.child_by_field_name("value")
                 if val is not None and val.type in (
-                        "arrow_function", "function", "function_expression"):
+                        "arrow_function", "function", "function_expression",
+                        "generator_function"):
                     continue
             if c.type in spec.call_types:
                 nm, _ = _callee(c, src, spec.call_types[c.type])

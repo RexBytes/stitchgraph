@@ -7737,3 +7737,24 @@ def test_generator_function_values_are_walked(tmp_path):
         assert "assignHelper" not in stale   # assignment-RHS generator body walked
         assert "constHelper" not in stale    # const generator initializer body walked
         assert "deadHelper" in stale         # genuinely uncalled: still flagged
+
+
+def test_module_uses_skips_generator_const_def(tmp_path):
+    """#48 (precision, panel R9): `_module_uses` (test/script files) must skip descending into a
+    `const g = function*(){…}` generator value — it is itself a def, scanned per-def — else its
+    body's calls are double-counted and over-rooted from the module even when `g` is uncalled
+    (the generator twin of the Panel-GG arrow/function skip). Cardinal-safe either way, but the
+    skip restores precision: an uncalled module-scope generator's sole callee stays flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "foo.test.ts": (
+            "const g = function*(){ reallyDead(); };\n"
+            "function reallyDead(){ return 1; }\n"
+            "test('x', () => { expect(1).toBe(1); });\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "reallyDead" in stale     # uncalled generator's callee NOT over-rooted: flagged
