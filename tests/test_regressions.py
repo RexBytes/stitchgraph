@@ -7760,13 +7760,15 @@ def test_module_uses_skips_generator_const_def(tmp_path):
         assert "reallyDead" in stale     # uncalled generator's callee NOT over-rooted: flagged
 
 
-def test_expression_shaped_value_does_not_mint_unrooted_object_methods(tmp_path):
-    """#48 (panel round 11): a variable_declarator whose value is an EXPRESSION SHAPE wrapping an
-    object (`const handlers = (init(), { mmm(){ h() } })`, chained/parenthesized assignment,
-    ternary, IIFE) is a DEFERRED #75 case — the object's helper stays flagged (a pre-existing
-    recall gap). The cardinal guard pinned here: the branch must NOT mint the object's member
-    `mmm` as an unrooted, mis-qualed module-scope node, which would escalate the recall gap into
-    a live-method-flagged-dead cardinal. So `mmm` must not appear as a node id at all."""
+def test_expression_shaped_value_object_member_is_rooted_not_dead(tmp_path):
+    """#75 (was #48/round-11): a variable_declarator whose value is an EXPRESSION SHAPE wrapping
+    an object (`const handlers = (init(), { mmm(){ h() } })`, chained/parenthesized assignment,
+    ternary, IIFE) used to be SWALLOWED (no descent), so `h` — called only from the member `mmm`
+    — was flagged dead (cardinal). The old round-11 guard avoided minting `mmm` as an UNROOTED
+    node (the worse failure); #75 now routes the literal through `_object_members` so `mmm` is
+    minted ROOTED (callback, module-scope dispatch-table idiom) and its body walked. The cardinal
+    invariant is preserved the right way: `h` is LIVE (reachable through `mmm`), and `mmm` itself
+    is never flagged dead."""
     pytest.importorskip("tree_sitter")
     pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
@@ -7778,10 +7780,91 @@ def test_expression_shaped_value_does_not_mint_unrooted_object_methods(tmp_path)
     })
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
-        ids = set(store.all_node_ids())
-        # No spurious unrooted method node for the expression-shaped object member.
-        assert not any(i.split("::")[-1].split(".")[-1] == "mmm" for i in ids), \
-            "object member of an expression-shaped value must not be minted as a bare node"
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        # The helper reached only through the expression-shaped object member is LIVE.
+        assert "h" not in stale, "helper called only from an expression-shaped object member must be live"
+        # The member itself is rooted (dispatch-table idiom), never confidently flagged dead.
+        assert "mmm" not in stale, "expression-shaped object member must be rooted, not flagged dead"
+
+
+@pytest.mark.parametrize("decl", [
+    # call argument                              (register/freeze/configure idioms)
+    "function reg(x){ return x; }\nreg({ run(){ return helper(); } });",
+    "export const C = Object.freeze({ run(){ return helper(); } });",
+    # array element
+    "export const C = [ { run(){ return helper(); } } ];",
+    # ternary / logical branch / nullish
+    "const cond = true;\nexport const C = cond ? { run(){ return helper(); } } : null;",
+    "const opts = null;\nexport const C = opts || { run(){ return helper(); } };",
+    "const opts = null;\nexport const C = opts ?? { run(){ return helper(); } };",
+    # IIFE returning an object
+    "export const C = (() => ({ run(){ return helper(); } }))();",
+    # chained / parenthesized assignment
+    "const m = {};\nexport const routes = m.exports = { run(){ return helper(); } };",
+    # sequence expression
+    "function init(){ return 1; }\nconst C = (init(), { run(){ return helper(); } });",
+    # TS wrapper around an expression-position object
+    "export const C = ({ run(){ return helper(); } } as const);",
+])
+def test_expression_position_object_literal_helper_is_live(tmp_path, decl):
+    """#75 (cardinal): a JS/TS object literal reached only through an EXPRESSION shape — call
+    argument, array element, ternary/`||`/`??` branch, IIFE return, sequence, chained/parenthesized
+    assignment, TS wrapper — has its function-valued members extracted and bodies walked, so a
+    helper called ONLY from such a member is LIVE (not confidently flagged dead). These shapes were
+    previously swallowed (declarator) or minted unrooted (statement), the round-11 cardinal."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": "function helper(){ return 1; }\n" + decl + "\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale, \
+            f"helper reached only via expression-position object must be live; decl={decl!r}"
+
+
+def test_expression_position_anonymous_class_helper_is_live(tmp_path):
+    """#75 (cardinal): an anonymous CLASS expression in an expression position
+    (`reg(class { run(){ helper() } })`, `[ class {…} ]`) is modeled as a class and its body
+    walked, so a helper called only from a method is live. The bare `class` keyword token inside a
+    regular `class X {}` must NOT be mistaken for a class expression (it has no body) — verified by
+    the suite's existing dead-class tests staying green."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # NON-exported const: the class is reachable only by being modeled as a class (which roots
+    # its public methods) — there is no `export` flag to propagate liveness down generic descent,
+    # so this genuinely exercises the class-interception branch.
+    _mk(tmp_path, {"m.ts": (
+        "function helper(){ return 1; }\n"
+        "function reg(x){ return x; }\n"
+        "const C = reg(class { run(){ return helper(); } });\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale, "helper reached via an expression-position class must be live"
+        # The method itself must be rooted (the class is modeled + public-method-rescued), never
+        # minted as an unrooted module-scope node that is then flagged dead (round-11 cardinal).
+        assert "run" not in stale, "expression-position class method must be rooted, not flagged dead"
+
+
+def test_expression_position_does_not_overroot_regular_dead_class(tmp_path):
+    """#75 over-rooting guard: routing expression-position literals through member extraction must
+    NOT change a regular top-level `class X {}` / `function f(){}` — a genuinely-dead class and a
+    genuinely-dead function still flag. (Pins that the `class` keyword-token guard and the object
+    interception don't bleed into ordinary declarations.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "export class Live { use(){ return 1; } }\n"
+        "class DeadCls { gone(){ return 2; } }\n"
+        "function deadFn(){ return 3; }\n"
+        "export function entry(){ return new Live().use(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "DeadCls" in stale, "a genuinely-dead top-level class must still flag"
+        assert "deadFn" in stale, "a genuinely-dead top-level function must still flag"
 
 
 def test_const_class_expression_is_modeled(tmp_path):

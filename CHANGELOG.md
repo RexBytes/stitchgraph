@@ -4,6 +4,45 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.20] — 2026-06-28
+
+**JS/TS object & class literals in EXPRESSION positions — cardinal fix (#75).**
+An object (or class) literal reached only through an *expression shape* — a call argument
+(`register({ onInit(){ helper() } })`, `Object.freeze({…})`), an array element (`[ {…} ]`), a
+ternary / `||` / `??` branch, an IIFE return (`(() => ({…}))()`), a sequence
+(`(init(), {…})`), or a chained/parenthesized assignment (`const r = m.exports = {…}`) — had its
+members invisible. A `variable_declarator` whose value was such a shape was SWALLOWED (no descent),
+so a helper called only from a member was flagged dead; a bare statement form descended generically
+and minted the member as an UNROOTED node — the live method itself flagged dead. This closes the
+last broad object/class extraction gap behind the v2.1.11/2.1.18/2.1.19 line.
+
+### Fixed
+
+- **Expression-position object literals** are now routed through `_object_members` (the same pass
+  that backs `const obj = {…}` and `module.exports = {…}`) wherever generic descent reaches one, so
+  their function-valued members are extracted and their bodies walked. Members at module scope take
+  the `callback` role (dispatch-table idiom — over-rooting is the precision-over-recall, cardinal-safe
+  direction); members nested in a function body stay reachability-gated via a CONTAINS edge. A
+  position-synthesized qual (`<obj@line_col>`) keeps an anonymous object's members from colliding
+  with a same-named real module function.
+- **Anonymous/expression-position class literals** (`reg(class {…})`, `[ class {…} ]`) are modeled
+  as CLASS nodes with INHERITS edges and their bodies walked, mirroring the `const X = class {…}`
+  (#80) and `obj.X = class {…}` paths. At module scope the class takes the `exported` role so its
+  public methods are rescued; nested in a function it is reachability-gated and its methods gated to
+  the class (the round-3/4 rule). A `body`-field guard skips the bare `class` *keyword token* (also
+  typed `class`) inside a regular `class X {}`, so ordinary class declarations are unaffected.
+- The `variable_declarator` branch now **descends** into non-arrow/object/class values (call,
+  array, ternary, logical, IIFE, chained assignment) instead of swallowing them — made safe by the
+  interception above, which roots any literal it finds rather than letting raw descent mint
+  unrooted methods (the round-11 cardinal the old no-else guarded against).
+
+### Known limitations (unchanged)
+
+`this.#m()` private dispatch (#76), `#private`/computed-key methods inside a class body dropped by
+`_name_of` (#78), and bare-identifier function reassignment (`g = function(){…}`, #81) remain
+pre-existing and deferred. Private-method dead-eligibility on *anonymous* expression-position
+classes is cardinal-safe (over-rooting only).
+
 ## [2.1.19] — 2026-06-28
 
 **JS/TS `const X = class {…}` class-expression bound to a const — cardinal fix (#80).**

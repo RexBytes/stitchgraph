@@ -1371,15 +1371,20 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains,
                          enclosing_func=(cid if enclosing_func is not None else None))
-            # NOTE: deliberately NO `else` fallthrough. A blanket `_collect(child)` for other
-            # value forms (chained/parenthesized assignment `const routes = module.exports =
-            # {…}`, sequence/ternary/IIFE, a class expression) lets generic descent reach an
-            # inner object/class and mint its method_definitions as UNROOTED, mis-qualed
-            # module-scope nodes — escalating the pre-existing "object reached via an expression
-            # shape" recall gap (#75) into a CARDINAL (the live method itself flagged dead;
-            # panel round 11). Those shapes stay in the deferred #75 family (helper-recall only,
-            # no spurious node), to be closed by one principled "route every object literal
-            # through _object_members" pass in its own release.
+            else:
+                # The value wraps an object/class literal in an EXPRESSION shape:
+                # `const x = f({…})` (call arg), `[ {…} ]` (array), `cond ? {…} : y` (ternary),
+                # `a || {…}` / `a ?? {…}` (logical), `(() => ({…}))()` (IIFE),
+                # `const routes = m.exports = {…}` (chained/parenthesized assignment). The
+                # declarator previously SWALLOWED these (no descent), so the inner literal was
+                # never reached and a helper called only from its members was flagged dead (#75,
+                # cardinal). Descend generically so the literal is reached — this is now SAFE
+                # because the main-loop `object`/`class_expression` interception routes any
+                # literal it finds through proper member rooting, instead of letting raw descent
+                # mint its method_definitions as UNROOTED module-scope nodes (the round-11
+                # cardinal the old no-else guarded against, before that interception existed).
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         exported, is_test, contains=contains, enclosing_func=enclosing_func)
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
             # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
@@ -1454,6 +1459,49 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             else:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          exported, is_test, contains=contains, enclosing_func=enclosing_func)
+        elif spec.arrow_decls and t == "object":
+            # An object literal reached via generic descent — i.e. in an EXPRESSION position
+            # (call argument, array element, ternary/logical branch, IIFE return, sequence,
+            # parenthesized/chained-assignment RHS), NOT as a `const`/member VALUE (those are
+            # consumed by the declarator/assignment branches above, which never descend here).
+            # Route it through _object_members so its function-valued members are ROOTED
+            # (callback/exported at module scope, CONTAINS-gated inside a function body) and
+            # their bodies walked — else raw descent would mint the method_definitions as
+            # UNROOTED module-scope nodes (the live method itself flagged dead — the round-11
+            # cardinal) and a helper called only from a member would be flagged dead (#75,
+            # cardinal). A position-synthesized qual keeps the anonymous object's members from
+            # colliding with a same-named real module function.
+            _object_members(child, src, rel, spec, lang,
+                            _join(parent, f"<obj@{child.start_point[0] + 1}_{child.start_point[1]}>"),
+                            nodes, defs, inherits, contains, is_test, enclosing_func)
+        elif spec.arrow_decls and t in ("class", "class_expression") \
+                and child.child_by_field_name("body") is not None:
+            # An anonymous/expression-position class literal (`reg(class {…})`, `[ class {…} ]`,
+            # `cond ? class {…} : null`). The `body`-field guard skips the bare `class` KEYWORD
+            # token (also type "class", but bodyless) that sits inside every class_declaration —
+            # without it, descending into a regular `class X {}` would mint a spurious
+            # `X.<class@…>` node that masks X (the class would never flag dead). Named class
+            # expressions bound to a const/member are
+            # consumed by the declarator/assignment branches and never reach here. Model it as a
+            # CLASS and walk its body so its methods (and their private callees) aren't flagged
+            # dead — same round-11 reasoning as the object case. At module scope it takes the
+            # `exported` role so `_seed_exported_class_methods` rescues its public methods (a
+            # class handed to a function is instantiated/invoked externally); nested in a
+            # function it is reachability-gated via CONTAINS and its methods gated to the class
+            # (round-3/4 rule). A position-synthesized qual keeps it uniquely ided.
+            qual = _join(parent, f"<class@{child.start_point[0] + 1}_{child.start_point[1]}>")
+            roles = {"exported"} if enclosing_func is None else set()
+            cid = f"{rel}::{qual}"
+            nodes.append(Node(id=cid, kind=C, name="<anonymous>", location=_loc(rel, child),
+                              end_line=child.end_point[0] + 1, roles=frozenset(roles)))
+            defs.append((rel, cid, child, lang))
+            for base in _bases(child, src, spec):
+                inherits.append((cid, base, lang))
+            if enclosing_func is not None:
+                contains.append((enclosing_func, cid, "<anonymous>", child.start_point[0] + 1))
+            _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
+                     False, is_test, contains=contains,
+                     enclosing_func=(cid if enclosing_func is not None else None))
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)
