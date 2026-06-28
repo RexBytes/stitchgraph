@@ -7234,3 +7234,64 @@ def test_bash_callback_helpers():
         tree = parser.parse(src)
         got = [n for n, _ in ts._bash_callback_refs(tree.root_node, src)]
         assert got == expected, f"{code!r} -> {got}, expected {expected}"
+
+
+# -- R104 / dogfood (CARDINAL): Ruby &:symbol / enum_for / &method dispatch --------
+def test_ruby_symbol_dispatch_rooted(tmp_path):
+    """Ruby names a method via a literal symbol the call graph can't see: `xs.map(&:upcase)`
+    (Symbol#to_proc), `enum_for(:m)` (lazy enumerator), `&method(:m)`. Each must root the named
+    method; genuinely-dead methods still flag (cardinal-safe — only project methods rooted)."""
+    _mk(tmp_path, {
+        "lib.rb": (
+            "class Token\n"
+            "  def initialize(v); @v = v; end\n"
+            "  def upcase; @v.upcase; end\n"        # via &:upcase
+            "  def valid?; !@v.empty?; end\n"       # via &:valid? (note the ? suffix)
+            "  def really_dead; nuked; end\n"       # genuinely dead
+            "  def nuked; 1; end\n"
+            "end\n"
+            "class Stream\n"
+            "  def filter_tokens(t); t; end\n"      # via enum_for(:filter_tokens)
+            "  def run(t); enum_for(:filter_tokens, t); end\n"
+            "end\n"
+            "toks = [Token.new(\"a\"), Token.new(\"\")]\n"
+            "res = toks.select(&:valid?).map(&:upcase)\n"
+            "Stream.new.run([1])\n"
+            "puts res\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Token.upcase" not in stale and "Token.valid?" not in stale   # &:symbol handlers
+    assert "Stream.filter_tokens" not in stale                          # enum_for(:m) target
+    assert "Token.really_dead" in stale and "Token.nuked" in stale      # genuinely dead -> flagged
+
+
+def test_ruby_symbol_refs_helper():
+    """Pin _ruby_symbol_refs (R104): &:sym, enum_for/to_enum/method/instance_method literal-symbol
+    args; method names with ?/! suffix; NOT send/public_send; dynamic/operator symbols skipped."""
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from stitchgraph.core.extract import treesitter as ts
+    parser = Parser(get_language("ruby"))
+    cases = {
+        "xs.map(&:upcase)": ["upcase"],
+        "xs.select(&:valid?)": ["valid?"],
+        "xs.each(&:save!)": ["save!"],
+        "enum_for(:filter_tokens, a)": ["filter_tokens"],
+        "to_enum(:each_line)": ["each_line"],
+        "xs.map(&method(:transform))": ["transform"],
+        "instance_method(:foo)": ["foo"],
+        "obj.send(:step)": [],                 # send: documented dynamic dispatch, not covered
+        "obj.public_send(:go)": [],            # same
+        "xs.map(&blk)": [],                    # &var (not a symbol) -> nothing
+        "define_method(:gen) { 1 }": [],       # define_method body walked elsewhere; not a target
+    }
+    for code, expected in cases.items():
+        src = (code + "\n").encode()
+        tree = parser.parse(src)
+        got = [n for n, _ in ts._ruby_symbol_refs(tree.root_node, src)]
+        assert got == expected, f"{code!r} -> {got}, expected {expected}"

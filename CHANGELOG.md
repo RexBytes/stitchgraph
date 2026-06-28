@@ -4,6 +4,21 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.17] — 2026-06-28
+
+**Ruby `&:symbol` / `enum_for` / `&method(:m)` symbol dispatch — cardinal fix (Ruby dogfood).**
+Ruby names a method via a literal symbol in idioms the name-based call graph can't see, so the named
+method (and its callees) was false-flagged dead.
+
+### Fixed
+
+- **New `_ruby_symbol_refs` pass** roots the method named by `xs.map(&:upcase)` (`Symbol#to_proc`),
+  `enum_for(:m)` / `to_enum(:m)`, and `method(:m)` / `instance_method(:m)` (commonly `&method(:m)`).
+  Each literal symbol is routed through `_ref` so it is rooted only if it resolves to a project
+  method (cardinal-safe). Ruby method-name suffixes handled (`:valid?`, `:save!`, `:name=`).
+  `send`/`public_send` are deliberately not covered (documented dynamic-dispatch limitation). A
+  genuinely-dead method still flags.
+
 ## [2.1.16] — 2026-06-28
 
 **Bash callback/invocation argument recognition — cardinal/recall fixes (doc-driven + dogfood manual

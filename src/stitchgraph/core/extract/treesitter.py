@@ -433,6 +433,10 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 # FUNC, export -f FUNC, time FUNC) — the generic command scan keys on the head
                 # and misses these, so root the named functions too.
                 calls = calls + _bash_callback_refs(tree.root_node, src)
+            elif lang == "ruby":
+                # Ruby idioms naming a method via a literal symbol the call graph can't see
+                # (`xs.map(&:upcase)`, `enum_for(:m)`, `&method(:m)`) — root those methods too.
+                calls = calls + _ruby_symbol_refs(tree.root_node, src)
             module_tests.append((mod_id, rel, lang, calls, refs))
             _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                      defs=defs, inherits=inherits, exported=False, is_test=is_test,
@@ -1563,6 +1567,55 @@ def _module_uses(root, src, spec):
 
     rec(root)
     return calls, refs
+
+
+_RUBY_SYMBOL_DISPATCH = frozenset({"enum_for", "to_enum", "method", "instance_method"})
+# A Ruby method name: an identifier with an optional `?`/`!`/`=` suffix (`valid?`, `save!`,
+# `name=`). Operator-method symbols (`:+`, `:[]`) are not matched — rare and not the target here.
+_RUBY_METHOD_NAME_RE = re.compile(r"[A-Za-z_]\w*[?!=]?$")
+
+
+def _ruby_symbol_name(node, src):
+    """`:upcase` -> "upcase", `:valid?` -> "valid?"; None for a non-method-name or dynamic symbol."""
+    t = _text(node, src)
+    if t.startswith(":"):
+        name = t[1:]
+        if _RUBY_METHOD_NAME_RE.fullmatch(name):
+            return name
+    return None
+
+
+def _ruby_symbol_refs(root, src):
+    """Ruby idioms that name a method via a literal SYMBOL the call graph otherwise can't see, so
+    the method (and its callees) is false-flagged dead (Ruby dogfood, cardinal):
+      * `xs.map(&:upcase)` — `Symbol#to_proc` turns `:upcase` into a block that calls `upcase`.
+      * `enum_for(:m, …)` / `to_enum(:m)` — wrap method `m` as a lazy enumerator (invoked later).
+      * `method(:m)` / `instance_method(:m)` — a (bound/unbound) Method for `m`, commonly invoked
+        as `&method(:m)`.
+    Yield (name, line) for each literal symbol so `_ref` roots it iff it names a project method
+    (cardinal-safe; over-rooting a same-named method is the precision-over-recall direction). NOT
+    `send`/`public_send` — those remain the documented dynamic-dispatch limitation."""
+    out: list[tuple[str, int]] = []
+
+    def rec(n):
+        for c in n.children:
+            if c.type == "block_argument":
+                s = next((k for k in c.children if k.type == "simple_symbol"), None)
+                if s is not None:
+                    name = _ruby_symbol_name(s, src)
+                    if name:
+                        out.append((name, s.start_point[0] + 1))
+            elif c.type == "call" and _field_text(c, "method", src) in _RUBY_SYMBOL_DISPATCH:
+                al = c.child_by_field_name("arguments")
+                s = next((k for k in al.children if k.type == "simple_symbol"), None) if al else None
+                if s is not None:
+                    name = _ruby_symbol_name(s, src)
+                    if name:
+                        out.append((name, s.start_point[0] + 1))
+            rec(c)
+
+    rec(root)
+    return out
 
 
 def _bash_callback_refs(root, src):
