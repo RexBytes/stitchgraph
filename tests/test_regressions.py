@@ -7676,3 +7676,30 @@ def test_member_assigned_class_nested_in_function_is_gated(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "deadF" in stale             # never called: dead
         assert "secret" in stale            # reached only via a method of a dead-gated class: dead
+
+
+def test_ts_wrapped_value_in_assignment_and_const(tmp_path):
+    """#48 (cardinal, panel R6): TS value wrappers (`as T` / `satisfies T` / `(…)`) must be
+    peeled on the assignment-RHS fn/class value (`obj.X = (class {…}) satisfies T`) and on the
+    arrow/function variable_declarator value (`export const f = (() => h()) as any`) — not only
+    on object values. Without the unwrap the wrapped def is dropped, its body unwalked, and a
+    helper it alone calls is flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "export function setup() {}\n"
+            "function classHelper() {}\n"
+            "function fnHelper() {}\n"
+            "function arrowHelper() { return 1; }\n"
+            "obj.Parser = (class { run() { classHelper(); } }) satisfies any;\n"
+            "obj.h = (function(){ fnHelper(); }) as SomeType;\n"
+            "export const f = (() => arrowHelper()) as any;\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "classHelper" not in stale    # wrapped class assignment body walked: live
+        assert "fnHelper" not in stale        # wrapped function assignment body walked: live
+        assert "arrowHelper" not in stale     # wrapped arrow const body walked: live

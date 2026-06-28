@@ -1313,7 +1313,11 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
                      False, is_test, contains=contains, enclosing_func=child_func)
         elif spec.arrow_decls and t == "variable_declarator":
-            val = child.child_by_field_name("value")
+            # Peel TS value wrappers up front (`as const`/`as T`/`satisfies T`/`(…)`) so a
+            # wrapped arrow/function/object value is still modeled — `export const f =
+            # (() => helper()) as any` otherwise never becomes a node and `helper` is flagged
+            # dead (cardinal). Applies uniformly to the arrow/function and the object branch.
+            val = _unwrap_ts_value(child.child_by_field_name("value"))
             name = _field_text(child, "name", src)
             if name and val and val.type in ("arrow_function", "function", "function_expression"):
                 qual = _join(parent, name)
@@ -1334,12 +1338,12 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # regular-def branch above already does this; this is its arrow twin).
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=cid)
-            elif name and val is not None and (ov := _unwrap_ts_value(val)) is not None \
-                    and ov.type == "object":
-                # `const obj = { run() {…}, h: () => {…} }` (also `{…} as const` / `satisfies T`)
-                # — extract the object's function-valued members so their bodies are walked
-                # (else a helper called only there is flagged dead; cardinal). See _object_members.
-                _object_members(ov, src, rel, spec, lang, _join(parent, name),
+            elif name and val is not None and val.type == "object":
+                # `const obj = { run() {…}, h: () => {…} }` (also `{…} as const` / `satisfies T`,
+                # already unwrapped above) — extract the object's function-valued members so
+                # their bodies are walked (else a helper called only there is flagged dead;
+                # cardinal). See _object_members.
+                _object_members(val, src, rel, spec, lang, _join(parent, name),
                                 nodes, defs, inherits, contains, is_test, enclosing_func)
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
@@ -1350,7 +1354,12 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # module-private helper it alone calls (Express `tryRender`/`logerror`, jQuery
             # internals) was then flagged dead. Model it and walk the body.
             left = child.child_by_field_name("left")
-            val = child.child_by_field_name("right")
+            # Peel TS value wrappers on the RHS (`obj.X = (class {…}) satisfies T`,
+            # `obj.f = (() => …) as any`) before the type check — else a wrapped function/class
+            # assignment is dropped and a helper it alone calls is flagged dead (cardinal). The
+            # object-literal RHS path below is unwrapped too (via the variable_declarator-style
+            # walrus on `_unwrap_ts_value`).
+            val = _unwrap_ts_value(child.child_by_field_name("right"))
             prop = left.child_by_field_name("property") if left is not None \
                 and left.type == "member_expression" else None
             name = _text(prop, src) if prop is not None else None
@@ -1399,13 +1408,13 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                          False, is_test, contains=contains,
                          enclosing_func=(cid if (kind is M or enclosing_func is not None)
                                          else None))
-            elif left is not None and val is not None and (
-                    ov := _unwrap_ts_value(val)) is not None and ov.type == "object":
+            elif left is not None and val is not None and val.type == "object":
                 # An object literal assigned to a member or name — `module.exports = {…}`,
-                # `exports = {…}`, `Foo.prototype = { m(){…} }` (also `{…} as const`). Extract
+                # `exports = {…}`, `Foo.prototype = { m(){…} }` (also `{…} as const`, already
+                # unwrapped above). Extract
                 # its function-valued members so their bodies are walked (else a helper called
                 # only there is flagged dead; cardinal). The full LHS keeps the qual unique.
-                _object_members(ov, src, rel, spec, lang, _join(parent, _text(left, src)),
+                _object_members(val, src, rel, spec, lang, _join(parent, _text(left, src)),
                                 nodes, defs, inherits, contains, is_test, enclosing_func)
             else:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
