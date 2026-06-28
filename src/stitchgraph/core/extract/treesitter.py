@@ -346,6 +346,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
     c_exports: dict[str, set[str]] = {}  # rel -> EXPORT_SYMBOL'd C function names (per file)
     c_decl_exports: set[str] = set()  # project-wide: names declared with an export attr (R77 F2)
+    c_macro_refs: set[str] = set()  # project-wide: fn names referenced in C/C++ #define bodies (#59)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -454,6 +455,11 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 # the AST walk to the rare files that mention an export attribute.
                 if b"visibility" in src or b"dllexport" in src:
                     c_decl_exports |= _c_export_decl_names(tree.root_node, src)
+                # A function called/named ONLY inside a `#define` macro body is invisible to the
+                # AST call scan (the body is raw `preproc_arg` text) and was false-flagged dead
+                # (#59). Byte-gate the walk to files that actually contain a `#define`.
+                if b"#define" in src:
+                    c_macro_refs |= _macro_body_ref_names(tree.root_node, src)
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -516,6 +522,19 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
             if n.kind in (F, M) and n.name in c_decl_exports \
                     and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
                 n.roles = n.roles | {"exported"}
+
+    # A C/C++ function called or named ONLY inside a `#define` macro body is invoked indirectly
+    # wherever the macro expands; the macro body is raw preproc text the AST call scan never sees,
+    # so the function was false-flagged dead (#59 — `#define LOG(m) log_impl(m)`, function-pointer
+    # macros, helper-wrapping macros). Root every C/C++ F/M whose name appears in a macro body
+    # `callback`. Project-wide (a header macro routinely wraps a function defined in a `.c`) and
+    # scoped to C/C++ files. Cardinal-safe over-approximation (the C analogue of the EXPORT_SYMBOL
+    # text-scan): a homonym or a macro parameter sharing a name only over-roots, never false-deads.
+    if c_macro_refs:
+        for n in nodes:
+            if n.kind in (F, M) and n.name in c_macro_refs \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"callback"}
 
     # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
     # to FUNCTION even for methods defined inside a class body (there is no separate
@@ -1696,6 +1715,33 @@ def _export_symbol_names(src: bytes) -> set[str]:
     `__all__` / `module.exports`). Text-scanned: the macro doesn't parse as a call expression
     in the grammar, and a byte regex is robust to the surrounding declaration context."""
     return {m.decode("ascii", "ignore") for m in _EXPORT_SYMBOL_RE.findall(src)}
+
+
+_MACRO_IDENT_RE = re.compile(rb"[A-Za-z_]\w*")
+
+
+def _macro_body_ref_names(root, src) -> set[str]:
+    """Identifiers appearing in C/C++ `#define` macro BODIES — a function called or named inside a
+    macro body (`#define LOG(m) log_impl(m)`, `#define DEFAULT handler`, `#define BOTH() (a()+b())`).
+    Tree-sitter parses a macro body as a single raw-text `preproc_arg`, so the call/reference inside
+    is invisible to the normal AST call scan; a function reached ONLY through a macro is then
+    false-flagged dead (#59). Every identifier in the body text is returned and later rooted
+    `callback` (the function is invoked indirectly wherever the macro expands) — the C analogue of
+    the EXPORT_SYMBOL text-scan. Cardinal-safe over-approximation: rooting resolves by name against
+    project F/M nodes only, so a macro parameter or a keyword that happens to share a name merely
+    over-roots (keeps a genuinely-dead function live), never flags live code dead."""
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("preproc_function_def", "preproc_def"):
+            val = n.child_by_field_name("value")
+            if val is not None:
+                body = src[val.start_byte:val.end_byte]
+                names.update(m.decode("ascii", "ignore") for m in _MACRO_IDENT_RE.findall(body))
+        else:
+            stack.extend(n.children)
+    return names
 
 
 def _reexport_names(root, src):

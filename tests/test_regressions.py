@@ -8149,3 +8149,74 @@ def test_named_class_method_still_flags_when_dead(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"] for c in sg.find_stale(store).result}
         assert "M.java::M.deadHelper" in stale, "a genuinely-dead named-class method must still flag"
+
+
+@pytest.mark.parametrize("fn,code,live,dead", [
+    # function-like macro body wraps a static helper called only via the macro
+    ("m.c",
+     'static void log_impl(const char *m){}\n#define LOG(x) log_impl(x)\n'
+     'int main(void){ LOG("hi"); return 0; }\n',
+     "log_impl", None),
+    # object-like macro names a function pointer (no call syntax)
+    ("m.c",
+     'static int handler(void){return 1;}\n#define DEFAULT handler\n'
+     'typedef int (*fn)(void);\nint main(void){ fn f = DEFAULT; return f(); }\n',
+     "handler", None),
+    # macro body calls two helpers
+    ("m.c",
+     'static int a(void){return 1;}\nstatic int b(void){return 2;}\n#define BOTH() (a()+b())\n'
+     'int main(void){ return BOTH(); }\n',
+     "a", None),
+    # C++ macro body
+    ("m.cpp",
+     'static int helper(){return 1;}\n#define CALL() helper()\nint main(){ return CALL(); }\n',
+     "helper", None),
+])
+def test_c_macro_body_call_keeps_function_live(tmp_path, fn, code, live, dead):
+    """#59 (cardinal): a C/C++ function called or named ONLY inside a `#define` macro body is
+    invisible to the AST call scan (the body is raw `preproc_arg` text), so it was false-flagged
+    dead. Macro-body identifiers are now rooted `callback`, keeping the indirectly-invoked function
+    live (the C analogue of the EXPORT_SYMBOL text-scan)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {fn: code})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert live not in stale, f"{live} reached only via a macro body must be live"
+
+
+def test_c_macro_body_cross_file_function_is_live(tmp_path):
+    """#59: a header macro routinely wraps a function defined in a separate `.c` — the macro-ref
+    rooting is project-wide across the C/C++ bucket, so the cross-file target stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "util.h": "#define LOG(m) log_impl(m)\nvoid log_impl(const char *m);\n",
+        "util.c": "void log_impl(const char *m){}\n",
+        "main.c": '#include "util.h"\nint main(void){ LOG("hi"); return 0; }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "log_impl" not in stale, "a function wrapped by a header macro must be live cross-file"
+
+
+def test_c_macro_rooting_does_not_overroot_unrelated_dead(tmp_path):
+    """#59 guard: rooting macro-body identifiers must not keep a genuinely-dead function live when
+    its name does NOT appear in any macro body. A numeric/string macro yields no identifiers and
+    must not crash."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.c": (
+        "static void used_via_macro(void){}\n"
+        "static void genuinely_dead(void){}\n"   # name not in any macro -> dead
+        "#define MAX 100\n"                        # numeric macro -> no identifiers
+        "#define USE() used_via_macro()\n"
+        "int main(void){ USE(); return MAX; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "genuinely_dead" in stale, "a dead fn not referenced by any macro must still flag"
+        assert "used_via_macro" not in stale

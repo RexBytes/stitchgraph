@@ -4,6 +4,33 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.24] — 2026-06-28
+
+**C/C++ function called only inside a `#define` macro body — cardinal fix (#59).**
+A function called or named *only* inside a preprocessor macro body — `#define LOG(m) log_impl(m)`,
+a function-pointer macro `#define DEFAULT handler`, a helper-wrapping macro `#define BOTH() (a()+b())`
+— was confidently flagged dead. Tree-sitter parses a macro body as a single raw-text `preproc_arg`
+node, so the call/reference inside it is invisible to the AST call scan and the function loses its
+only caller.
+
+### Fixed
+
+- A new text-scan (`_macro_body_ref_names`) collects every identifier appearing in C/C++ `#define`
+  bodies; any project C/C++ function/method whose name matches is rooted `callback` (it is invoked
+  indirectly wherever the macro expands). This is the direct analogue of the existing
+  `EXPORT_SYMBOL` text-scan for constructs the grammar doesn't model as calls. Project-wide across
+  the unified C/C++ resolution bucket (a header macro routinely wraps a function defined in a `.c`),
+  byte-gated to files that contain `#define`. Cardinal-safe over-approximation: matching resolves by
+  name to F/M nodes only, so a macro parameter or a keyword sharing a name merely over-roots (keeps
+  a genuinely-dead function live) — it never flags live code dead. A function whose name appears in
+  no macro body still flags dead; numeric/string macros yield no identifiers.
+
+### Known limitations (unchanged)
+
+The C cross-TU global function-table promotion (#69) and JS/TS implicit-dispatch surface (#54) remain
+pre-existing and deferred to their own reviews. A function over-rooted because its name happens to
+appear in an *unused* macro body is a bounded, cardinal-safe precision cost.
+
 ## [2.1.23] — 2026-06-28
 
 **Java anonymous-inner-class override in a class-scope initializer — cardinal fix (#62).**
