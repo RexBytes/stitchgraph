@@ -1739,6 +1739,38 @@
             ],
             "findings": {},
             "theme": "v2.1.30 (#89) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus (mechanism): rooting a class `callback` does NOT rescue its methods \u2014 LIVENESS_RELATIONS excludes CONTAINS, _seed_exported* key on `exported` not `callback`, so a dead method of a type-rooted class still flags (verified); .h/.cpp/.c unification cross-bucket; sizeof/cast/fn-ptr-typedef type uses rooted; 2000-struct + recursive typedef reindex 0.3s no crash; streaming==in-memory parity. sonnet: realistic C allocator + C++ inheritance/templates/namespaces, precision boundary (TrulyDeadStruct flags), transitive type liveness, mixed-language isolation, body-filter unit test. haiku: full 558 + oracles 27, downstream ops crash-free on struct nodes, idempotent, 9 pathological scenarios. Cardinal-safe recall note (non-blocking): C++ bare type names without the struct/class keyword parse as type_identifier and aren't collected \u2014 rescued by the REFERENCES edge when the using code is live, correct-dead when dead; never a cardinal."
+        },
+        {
+            "id": "R144",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "CRITICAL": 2
+            },
+            "theme": "v2.1.31 (#73) initial panel \u2014 R1 all clean but R2 found TWO in-scope cardinals: (1) opus \u2014 split flags `declare -f -x FUNC` / `declare -x -f FUNC` (bash treats split and combined flags identically; the combined-token check `\"f\" in flags and \"x\" in flags` missed the split spelling, flagging a live exported function dead); (2) haiku \u2014 nested `time { { fn; }; }` mis-parses so time's first word arg is the multi-char token `{ {`, which an exact `{`/`}` skip missed, flagging the timed function dead. Fixed: `_bash_export_decl` accumulates seen_f/seen_x ACROSS the leading flag words; `_bash_time_target` takes the first bare-identifier word (robust to any brace token). Streak reset."
+        },
+        {
+            "id": "R145",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.31 (#73) fresh round 1 on FINAL code \u2014 CLEAN, full diversity. opus: every split/combined/mixed flag form roots; verified against bash POSIX options-then-operands semantics that NO valid export form places the flag after the name, so the leading-run accumulation has no under-rooting gap; `time` all depths; 3000-case fuzz crash-free; parity; `t.startswith('-')` guard keeps `export xf target` (var) from tripping f/x. sonnet (9 groups): all 4 split orderings, 2x/3x nested time, realistic CI lib, precision 7-live/4-dead, regression bundle, over-root guard. haiku: both prior cardinals confirmed fixed, triple-nested time, 571+27 green."
+        },
+        {
+            "id": "R146",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.31 (#73) fresh round 2 \u2014 CLEAN, second consecutive full-diversity \u2192 gate met, RELEASABLE. CLOSES the #70-#89 follow-up backlog. opus: comprehensive single script (every bash rooting mechanism at once) flags exactly the dead set; interaction (exported+called, trap+timed) no double-issue; cross-file sourced-lib liveness; 10-file dogfood streaming==in-memory parity; subtle under-rooting probe (`time { m1; m2; }` \u2014 m2 still live via normal call edges, time helper is additive belt-and-suspenders); deferrals (#72/#84/#79/#82) re-confirmed cardinal-safe; 571 tests. sonnet: 7 fixtures + 4 edge probes (over-rooting guard, time arg non-collection). haiku: 571+27, downstream ops + idempotency + 2000-fn stress, additive-only."
         }
     ]
 }

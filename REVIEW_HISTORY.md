@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.28: R138–R139 on TS class-member resolution cardinals (#76/#78). 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). **2.1.30: R142–R143** (full diversity opus/sonnet/haiku) on C/C++ struct-used-as-a-type (#89) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_c_type_ref_names` 4/4 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 558 passing (full extras) |
+| Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_bash_time_target` killed; `_bash_export_decl` functional behavior pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 571 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.28: TS `#private` + dynamic-keyed class methods → R138✓ R139✓. 2.1.29: Python abstract/Protocol interface methods → R140✓ R141✓. 2.1.30: C/C++ struct-used-as-a-type → **R142✓ R143✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.29: Python abstract/Protocol interface methods → R140✓ R141✓. 2.1.30: C/C++ struct-used-as-a-type → R142✓ R143✓. 2.1.31: Bash function-export recall → R144 (2 cardinals found, fixed) → **R145✓ R146✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.26 RELEASED/releasable** (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27** (a function referenced via object-literal SHORTHAND in an exported object — `export const handlers = { onClick }`, incl. the canonical `… as const` / `satisfies` / parens forms — is public API but was flagged dead because a `shorthand_property_identifier` is never modeled as a reference; `_reexport_names` now collects an exported declaration's object-literal member names, unwrapping TS value wrappers, into the reexport→`exported` path) **RELEASABLE** — R136–R137 full-diversity clean; awaiting the maintainer's manual `v2.1.27` tag. This is the first of the post-sweep **cardinal-safe follow-up backlog** (#70–#89): #74 fixed; #77/#81/#83 resolved without code change (deliberate precision boundary / already-covered for exported modules). Remaining follow-ups deferred. |
+| Verdict | **1.0.0–2.1.26 RELEASED/releasable** (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). One newly-discovered pre-existing recall gap filed for later: Bash `PROMPT_COMMAND=fn` / `var=fn; $var` indirect invocation not rooted. |
 
 ## Trajectory
 
@@ -1619,6 +1619,29 @@ recall backstop gap noted by the panel (cardinal-safe, deferred): a C++ bare typ
 `struct`/`class` keyword (`Config c;`) parses as `type_identifier`, so `_c_type_ref_names` doesn't
 collect it — but when the using code is live the `REFERENCES` edge already rescues the type, and when
 the using code is dead the type being dead is correct, so it is never a false-dead.
+
+### 2.1.31 — Bash function-export recall (#73); closes the #70–#89 backlog
+
+A function exported for subshells via `declare -fx` / `typeset -fx` (the ksh/bash spellings of
+`export -f`) or invoked under `time { fn; }` was flagged dead though live. `_bash_export_decl` now
+accumulates the `f`/`x` flag characters across the leading flag words (so the split spellings
+`declare -f -x` / `declare -x -f` work as well as combined `declare -fx`); `_bash_time_target` takes
+the first bare-identifier word (robust to any brace token, incl. nested `time { { fn; }; }`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R144 | 3 | ✗ | initial panel — R1 all clean, but R2 found TWO in-scope cardinals: opus, split flags `declare -f -x` (the combined-token check missed the split spelling); haiku, nested `time { { fn; }; }` (first word arg is the multi-char token `{ {`, which an exact `{`/`}` skip missed). **Fixed** by accumulating `f`/`x` across flag words and taking the first identifier word. Streak reset. |
+| R145 | 3 | ✓ | fresh round 1 on the final code. opus verified against bash POSIX options-then-operands semantics that NO valid export form places the flag after the name (so the leading-run accumulation has no under-rooting gap) + 3000-case fuzz; sonnet 9 groups; haiku both cardinals fixed + triple-nested time. |
+| R146 | 3 | ✓ | fresh round 2 — **streak 2, gate met, RELEASABLE; closes the #70–#89 follow-up backlog.** opus comprehensive all-mechanisms script + cross-file + 10-file dogfood parity + deferral re-confirmation; sonnet 7 fixtures + over-root guard; haiku 571+27 + 2000-fn stress + idempotency. |
+
+The 2.1.31 lesson: **the panel earns its keep even on the last release.** A clean round 1 on the
+obvious forms, then round 2 surfaced two valid-bash spellings the first fix didn't cover
+(`declare -f -x` split flags; nested `time { { } }`). The corrected accumulate-across-flag-words
+model was then validated against actual bash option-parsing semantics — there is no valid form that
+places the exporting flag after the name, so the recall is complete, not just patched for the cases
+seen. With this, the post-sweep follow-up backlog (#70–#89) is closed: #70/#74/#76/#78/#86/#89/#73
+fixed behind the full gate; the remainder resolved without code change, documented as deliberate
+cardinal-safe boundaries, or coverage-only.
 
 ## Standing themes
 
