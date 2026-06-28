@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.16: R102–R103. **2.1.17: R104–R105** (full diversity opus/sonnet/haiku) on Ruby `&:symbol`/`enum_for`/`&method` symbol dispatch; round 1 found + fixed a setter-symbol cardinal (`:name=` key mismatch) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/c_attr_roots/bash_flag_arg/ruby_symbol_refs) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 456 passing (full extras) |
+| Multi-model review panels | 2.1.17: R104–R105. **2.1.18: R106–R118** (full diversity opus/sonnet/haiku) on JS/TS object-literal function-member bodies (#48) — the campaign's deepest single surface: 13 rounds, 10 distinct cardinal classes, one over-reaching fix caught + reverted (R116), closing R117✓ R118✓ |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_object_members`/`_obj_key_name`/`_unwrap_ts_value` all-killed; the 2 justified survivors are the class-member INHERITS edge + the redundant identifier-key branch) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 473 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.15: R100✓ R101✓ (streak 2). 2.1.16: R102✓ R103✓ (streak 2). 2.1.17: Ruby symbol dispatch → **R104✓ R105✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — round 1 caught + fixed a setter-symbol (`:name=`) cardinal |
-| Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.16 RELEASED/releasable** (maintainer tags). **2.1.17** (Ruby `&:symbol`/`enum_for`/`to_enum`/`method`/`instance_method` literal-symbol dispatch rooted via the new `_ruby_symbol_refs` pass; `send`/`public_send` remain the documented dynamic-dispatch limitation) **RELEASABLE** — R104+R105 full-diversity clean; awaiting the maintainer's manual `v2.1.17` tag. The diverse panel earned its keep again: the one reviewer that tested a setter caught a cardinal the other two missed. |
+| Convergence | 2.1.16: R102✓ R103✓. 2.1.17: R104✓ R105✓. 2.1.18: JS/TS object-literal members → **R117✓ R118✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** — 10 cardinal classes fixed across R106–R116; R116 caught + reverted a fix that escalated a pre-existing recall gap into a cardinal |
+| Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
+| Verdict | **1.0.0–2.1.17 RELEASED/releasable** (maintainer tags). **2.1.18** (JS/TS object-literal function-member bodies extracted via the new `_object_members` pass — method shorthand, arrow/function/generator/class-valued members, nested objects, computed/string keys, TS-wrapper unwrap, module + function scope) **RELEASABLE** — R117+R118 full-diversity clean; awaiting the maintainer's manual `v2.1.18` tag. Objects reached only via an EXPRESSION shape (IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment) and `const X = class {…}` are PRE-EXISTING (byte-identical on the 5cb47bc baseline), documented, and deferred to a focused next release. The diverse panel earned its keep repeatedly: sonnet found the fn-scoped-class and chained-assignment cardinals; opus found the member-value-wrapper, generator, and the R116 over-reach regression. |
 
 ## Trajectory
 
@@ -1294,6 +1294,45 @@ The 2.1.17 lesson: **emit the key the def side uses, not the source spelling.** 
 Ruby method name (kept) but `=` is stripped from setter def keys — so the symbol side had to match.
 The single diverse reviewer who tested a *setter* found a cardinal two others, testing only
 getters/predicates, called clean. Diversity of *test inputs* across the panel is the safeguard.
+
+### 2.1.18 — JS/TS object-literal function-member bodies (#48)
+
+A top-level function called only inside an object-literal member (`const obj = { run(){ helper() } }`,
+method shorthand / function-valued property / nested object) was false-flagged dead: the object value
+was never traversed, so the member body's calls were invisible. The fix grew a new `_object_members`
+pass (members extracted as nodes, bodies walked, module-scope members rooted `callback`; class
+members `exported`; fn-scoped members CONTAINS-gated). This was the **deepest single surface of the
+campaign** — thirteen rounds, ten distinct cardinal classes — because every round of the diverse
+panel exposed one more {value-kind × wrapper × scope × branch} combination the extraction had to
+cover, and once because a fix over-reached.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R106 | 3 | — | core #48; round-1 cardinals: dynamically-dispatched underscore members (`handlers["_"+x]()`), computed-key member body walk, string-key members (opus found the underscore-dynamic one). |
+| R107 | 3 | — | member-VALUE wrappers (`run: (() => h())`, `(fn satisfies T)`) and class-valued members (`{ Parser: class {} }`) dropped the member body (opus, 3). |
+| R108 | 3 | — | fn-scoped class-valued member orphaned its methods (`enclosing_func=None` walked the class body as module-scope) — sonnet; gated methods to the class. |
+| R109 | 3 | — | the `assignment_expression` branch carried the identical fn-scoped class orphaning (`obj.X = class{}` in a fn) — sonnet; same one-liner gate. opus clean. |
+| R110 | 3 | ✓ | CLEAN. opus noted one MINOR pre-existing parity item (assignment-branch underscore gate vs object path) → deferred #77. |
+| R111 | 3 | — | TS wrappers not peeled on the fn/class assignment RHS (`obj.X = (class{}) satisfies T`) nor the arrow-const value — sonnet+opus; `_unwrap_ts_value` applied uniformly. |
+| R112 | 3 | ✓ | CLEAN. opus noted the `_unwrap_ts_value` `seen<8` cap under 9+ literal parens (LOW/theoretical) → deferred #79. |
+| R113 | 3 | — | `generator_function` values omitted from the function-value tuples (opus); a **delayed** round-8 sonnet additionally found the chained/parenthesized-assignment value gap (`const routes = module.exports = {}`). |
+| R114 | 3 | ✓ | completed `generator_function` in the 4th tuple (the multi-line `_module_uses` def-skip the round-8 edit missed). Cardinal-SAFE precision; both reviewers clean on cardinals. |
+| R115 | 3 | ✓ | CLEAN on the generator-complete code; full matrix + real-world objects (Redux/Vuex/Express/RxJS). |
+| R116 | 3 | — | **REGRESSION caught + reverted.** The round-8 chained-assignment `else` fallthrough escalated the pre-existing #75 expression-shape family (helper-recall) into a CARDINAL by minting object/class methods as *unrooted, mis-qualed* nodes (opus). Reverted; chained-assignment + expression-position objects deferred to #75. |
+| R117 | 3 | ✓ | CLEAN — opus+sonnet `FINDINGS: none`; haiku surfaced only the **verified-pre-existing** #75/#80 family (proven byte-identical on the `5cb47bc` baseline). First of two consecutive clean on the final HEAD. |
+| R118 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** All three clean; ~45/35 differential fixtures HEAD-vs-`5cb47bc`, zero new flags, no crash. Direct object-literal member surface fully hardened. |
+
+The 2.1.18 lessons — three of them: (1) **a partial fix can be worse than the gap.** R116's `else`
+fallthrough "fixed" a pre-existing helper-recall (#75) but escalated it to a live-*method*-flagged-dead
+cardinal by letting generic descent mint object members as unrooted nodes; reverting and deferring the
+whole family to one principled pass was correct. (2) **wait for every reviewer.** The delayed round-8
+sonnet (22 min) found the chained-assignment cardinal after the round had been prematurely concluded
+on opus+haiku — concluding a round before its slowest model returns hides findings. (3) **distinct
+test names matter:** a self-probe was masked when a fixture's method (`m`) collided with the module
+node id (`m.ts::m`); the panel's `svc.ts`/`mmm` naming exposed it. The expression-position family
+(#75: IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment), `const X = class {…}`
+(#80), and a few others are **pre-existing** (identical on `5cb47bc`) and deferred to a focused next
+release that routes every object literal through `_object_members`.
 
 ## Standing themes
 

@@ -1212,7 +1212,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.11 Python implicit-invocation surface (subscripted-generic INHERITS + enum _missing_/_generate_next_value_ + pytest_* conftest hooks) — FULL-DIVERSITY clean round 1. Found by combining sqlalchemy/werkzeug dogfood with a doc-driven Python-reference manual pass. opus: all three fixes strictly reachability-adding (no edge diversion possible — the subscripted base previously produced NEITHER edge nor external-base entry); Generic[T]/Protocol[T] in _PLAIN_BASES so not framework-misclassified (dead private method still flagged); enum/pytest hooks class-scoped or test-file+prefix scoped, dead variants stay dead; minor/nit (nested-subscript one-level, pytest in any test-tree file, comment wording) all cardinal-safe — addressed in polish. haiku: 304 regressions + clean. sonnet: 37 adversarial cases, dead-stays-dead across Generic/Protocol/non-enum/method-pytest, only pre-existing _propagate_overrides over-approx (shared w/ v2.1.10 IPython) noted. All 3 CLEAN. Polish applied post-round-1: _base_name while-loop (nested), scope-accurate comment, external-base + nested-subscript tests."
+      "theme": "2.1.11 Python implicit-invocation surface (subscripted-generic INHERITS + enum _missing_/_generate_next_value_ + pytest_* conftest hooks) \u2014 FULL-DIVERSITY clean round 1. Found by combining sqlalchemy/werkzeug dogfood with a doc-driven Python-reference manual pass. opus: all three fixes strictly reachability-adding (no edge diversion possible \u2014 the subscripted base previously produced NEITHER edge nor external-base entry); Generic[T]/Protocol[T] in _PLAIN_BASES so not framework-misclassified (dead private method still flagged); enum/pytest hooks class-scoped or test-file+prefix scoped, dead variants stay dead; minor/nit (nested-subscript one-level, pytest in any test-tree file, comment wording) all cardinal-safe \u2014 addressed in polish. haiku: 304 regressions + clean. sonnet: 37 adversarial cases, dead-stays-dead across Generic/Protocol/non-enum/method-pytest, only pre-existing _propagate_overrides over-approx (shared w/ v2.1.10 IPython) noted. All 3 CLEAN. Polish applied post-round-1: _base_name while-loop (nested), scope-accurate comment, external-base + nested-subscript tests."
     },
     {
       "id": "R93",
@@ -1222,7 +1222,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.11 Python implicit-invocation surface — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the polished/committed code. opus: independent dogfood across full/streaming/incremental — byte-identical stale sets, determinism holds, no cardinal violation; helper fuzzing (_base_name nested unwrap -> container name harmless, _is_pytest_hook pins the AND, _ENUM_HOOKS exact-match); lone nit = _is_abstract_class still uses _name_of (find_holes-only, cardinal-safe, tracked follow-up). haiku: full suite 441/441, oracles 27/27, ruff+mypy clean, 7 new regressions green, only 3 files touched, RELEASABLE. sonnet: real-corpus dogfood (click 8.4.1/flask 3.1.3/requests 2.34.2/httpx/werkzeug) all live-stays-live; CONFIRMED the fix also resolves a real pre-existing FALSE NEGATIVE — flask.SecureCookieSession(CallbackDict[str, t.Any]) now correctly gets the callback role; 3 'failures' all explained (pre-existing over-approx or fixture bugs). All 3 CLEAN."
+      "theme": "2.1.11 Python implicit-invocation surface \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the polished/committed code. opus: independent dogfood across full/streaming/incremental \u2014 byte-identical stale sets, determinism holds, no cardinal violation; helper fuzzing (_base_name nested unwrap -> container name harmless, _is_pytest_hook pins the AND, _ENUM_HOOKS exact-match); lone nit = _is_abstract_class still uses _name_of (find_holes-only, cardinal-safe, tracked follow-up). haiku: full suite 441/441, oracles 27/27, ruff+mypy clean, 7 new regressions green, only 3 files touched, RELEASABLE. sonnet: real-corpus dogfood (click 8.4.1/flask 3.1.3/requests 2.34.2/httpx/werkzeug) all live-stays-live; CONFIRMED the fix also resolves a real pre-existing FALSE NEGATIVE \u2014 flask.SecureCookieSession(CallbackDict[str, t.Any]) now correctly gets the callback role; 3 'failures' all explained (pre-existing over-approx or fixture bugs). All 3 CLEAN."
     },
     {
       "id": "R94",
@@ -1232,7 +1232,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.12 transitive framework-inheritance callback rooting (tree-sitter _framework_classes: direct external base + same-name self-loop + transitive first-party closure; clears PHP/C#/Java/C++) — FULL-DIVERSITY clean RE-GATE round 1. Note: the FIRST round-1 pass found a real BLOCKER (opus) — the port dropped python.py case (b) same-name self-loop (class Foo extends pkg.Foo), reintroducing the cardinal in a different shape; fixed to full a/b/c parity then re-gated. This R94 = the clean re-gate: opus blocker genuinely fixed (PHP/C#/Java self-loop overrides live), cycle-safe/determinism/streaming parity, one pre-existing collision MINOR + docstring NIT addressed. sonnet: 1000-iteration fuzz proves new code is a STRICT SUPERSET of prior rooting (under-rooting impossible vs pre-2.1.12); real PHP/Java/C++ dogfood live-stays-live. haiku: 446 + oracles 27 + ruff/mypy + R94 tests green. mutation over _framework_classes all-killed. All 3 CLEAN."
+      "theme": "2.1.12 transitive framework-inheritance callback rooting (tree-sitter _framework_classes: direct external base + same-name self-loop + transitive first-party closure; clears PHP/C#/Java/C++) \u2014 FULL-DIVERSITY clean RE-GATE round 1. Note: the FIRST round-1 pass found a real BLOCKER (opus) \u2014 the port dropped python.py case (b) same-name self-loop (class Foo extends pkg.Foo), reintroducing the cardinal in a different shape; fixed to full a/b/c parity then re-gated. This R94 = the clean re-gate: opus blocker genuinely fixed (PHP/C#/Java self-loop overrides live), cycle-safe/determinism/streaming parity, one pre-existing collision MINOR + docstring NIT addressed. sonnet: 1000-iteration fuzz proves new code is a STRICT SUPERSET of prior rooting (under-rooting impossible vs pre-2.1.12); real PHP/Java/C++ dogfood live-stays-live. haiku: 446 + oracles 27 + ruff/mypy + R94 tests green. mutation over _framework_classes all-killed. All 3 CLEAN."
     },
     {
       "id": "R95",
@@ -1242,7 +1242,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.12 transitive framework-inheritance — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete release (incl. docstring caveat). Final skeptical pass: no cardinal introduced; transitive + self-loop cases live; over-mask boundary holds (pure first-party chain still flags dead overrides); determinism/streaming/incremental parity. Residual cross-file same-name-collision-with-true-self-loop case confirmed PRE-EXISTING (sonnet superset fuzz: not introduced by this release) and tracked as a follow-up for a resolved-dst_id fix matching python.py. All 3 CLEAN."
+      "theme": "2.1.12 transitive framework-inheritance \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete release (incl. docstring caveat). Final skeptical pass: no cardinal introduced; transitive + self-loop cases live; over-mask boundary holds (pure first-party chain still flags dead overrides); determinism/streaming/incremental parity. Residual cross-file same-name-collision-with-true-self-loop case confirmed PRE-EXISTING (sonnet superset fuzz: not introduced by this release) and tracked as a follow-up for a resolved-dst_id fix matching python.py. All 3 CLEAN."
     },
     {
       "id": "R96",
@@ -1252,7 +1252,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.13 runtime/native entry-point attributes (C ISR interrupt/interrupt_handler/signal + Rust #[ctor]/#[dtor] + Java native; extends v2.1.9 FFI-entry arc) — FULL-DIVERSITY clean RE-GATE round 1. The FIRST round-1 pass found a CARDINAL blocker (opus AND sonnet independently): the ISR regex matched interrupt/signal but not the trailing-word form interrupt_handler (after `interrupt`, `_` is a word char so \\b fails), so ARM/MIPS/m68k __attribute__((interrupt_handler)) ISRs were flagged dead AND the changelog falsely claimed coverage. Fixed: interrupt(?:_handler)?|signal(?:_handler)? + regression. This R96 = the clean re-gate: opus blocker fixed + (?:_handler)? neither over- nor under-matches (interrupt_handler_foo longer-identifier stays dead, my_interrupt_handler attr-name doesn't match); sonnet 11-form C ISR matrix incl [[gnu::interrupt]] + GNU synonyms, Rust 9 forms, Java 10 forms all correct; haiku interrupt_handler verified empirically, 450 + oracles 27 + ruff/mypy + RELEASABLE. mutation over _c_attr_roots/_is_rust_runtime_entry_attr/_is_java_native all-killed. All 3 CLEAN."
+      "theme": "2.1.13 runtime/native entry-point attributes (C ISR interrupt/interrupt_handler/signal + Rust #[ctor]/#[dtor] + Java native; extends v2.1.9 FFI-entry arc) \u2014 FULL-DIVERSITY clean RE-GATE round 1. The FIRST round-1 pass found a CARDINAL blocker (opus AND sonnet independently): the ISR regex matched interrupt/signal but not the trailing-word form interrupt_handler (after `interrupt`, `_` is a word char so \\b fails), so ARM/MIPS/m68k __attribute__((interrupt_handler)) ISRs were flagged dead AND the changelog falsely claimed coverage. Fixed: interrupt(?:_handler)?|signal(?:_handler)? + regression. This R96 = the clean re-gate: opus blocker fixed + (?:_handler)? neither over- nor under-matches (interrupt_handler_foo longer-identifier stays dead, my_interrupt_handler attr-name doesn't match); sonnet 11-form C ISR matrix incl [[gnu::interrupt]] + GNU synonyms, Rust 9 forms, Java 10 forms all correct; haiku interrupt_handler verified empirically, 450 + oracles 27 + ruff/mypy + RELEASABLE. mutation over _c_attr_roots/_is_rust_runtime_entry_attr/_is_java_native all-killed. All 3 CLEAN."
     },
     {
       "id": "R97",
@@ -1262,7 +1262,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.13 runtime/native entry-point attributes — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected release. Final skeptical pass: no cardinal across all three fixes (C ISR incl. interrupt_handler, Rust ctor/dtor, Java native); over-mask boundary holds (plain fn without the attr/modifier still flags dead); determinism/streaming parity. Macro-wrapped ISR noted as the pre-existing preprocessor boundary, not introduced here. All 3 CLEAN."
+      "theme": "2.1.13 runtime/native entry-point attributes \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected release. Final skeptical pass: no cardinal across all three fixes (C ISR incl. interrupt_handler, Rust ctor/dtor, Java native); over-mask boundary holds (plain fn without the attr/modifier still flags dead); determinism/streaming parity. Macro-wrapped ISR noted as the pre-existing preprocessor boundary, not introduced here. All 3 CLEAN."
     },
     {
       "id": "R98",
@@ -1272,7 +1272,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.14 Ruby implicit conversion/coercion + Enumerable/Hash-key/marshalling protocol methods added to _IMPLICIT_HOOKS[ruby] (the Ruby analogue of Python dunder rooting) — FULL-DIVERSITY clean round 1. opus: all names genuine Ruby protocol (no wrong member), Ruby-gated (no bleed into Python/JS each/to_s/hash), callee cascade live, genuinely-dead non-protocol methods still flag; NIT top-level free fn named to_s also rooted (safe over-root, consistent w/ existing hooks). sonnet: 54 fixtures incl. real Rack/Money/ActiveRecord-style gems + before/after patch proving FPs were real; flagged to_f/to_r omission (same cardinal class as to_i). haiku: cross-language bleed empirically negative, 451 + oracles 27 + ruff/mypy + RELEASABLE. All 3 CLEAN."
+      "theme": "2.1.14 Ruby implicit conversion/coercion + Enumerable/Hash-key/marshalling protocol methods added to _IMPLICIT_HOOKS[ruby] (the Ruby analogue of Python dunder rooting) \u2014 FULL-DIVERSITY clean round 1. opus: all names genuine Ruby protocol (no wrong member), Ruby-gated (no bleed into Python/JS each/to_s/hash), callee cascade live, genuinely-dead non-protocol methods still flag; NIT top-level free fn named to_s also rooted (safe over-root, consistent w/ existing hooks). sonnet: 54 fixtures incl. real Rack/Money/ActiveRecord-style gems + before/after patch proving FPs were real; flagged to_f/to_r omission (same cardinal class as to_i). haiku: cross-language bleed empirically negative, 451 + oracles 27 + ruff/mypy + RELEASABLE. All 3 CLEAN."
     },
     {
       "id": "R99",
@@ -1282,7 +1282,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.14 Ruby implicit protocol — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete set after adding to_f/to_r (numeric coercion: Integer(obj)/Float(obj) call Integer/Float, not the object's hook, so a coercion-only hook had no textual caller). Final pass: no cardinal across the complete 24-name set, no cross-language bleed, over-mask boundary holds, determinism. Conversion family now complete. All 3 CLEAN."
+      "theme": "2.1.14 Ruby implicit protocol \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the complete set after adding to_f/to_r (numeric coercion: Integer(obj)/Float(obj) call Integer/Float, not the object's hook, so a coercion-only hook had no textual caller). Final pass: no cardinal across the complete 24-name set, no cross-language bleed, over-mask boundary holds, determinism. Conversion family now complete. All 3 CLEAN."
     },
     {
       "id": "R100",
@@ -1292,7 +1292,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.15 C++ range-based-for begin()/end() customization points rooted via a new _IMPLICIT_HOOKS[cpp] entry (for(x:r) desugars to r.begin()/r.end(), no textual call site) — FULL-DIVERSITY clean round 1. opus: core fix works (begin/end + callees live, genuinely-dead still flag), pre-existing cardinal confirmed, const begin() const extracts to name begin (rooted), no cross-language bleed, no C-file over-rooting; flagged a DOC inaccuracy (the .h-as-C boundary claim is wrong: _header_lang content-sniffs C++ .h headers to cpp so their begin/end ARE rooted — better coverage, cardinal-safe). sonnet: real C++ lib dogfood (Span/SmallVec/FilterView in .hpp) all live, rbegin/rend correctly NOT rooted (called explicitly), same doc finding. haiku: C-file bleed negative, 452 + oracles 27 + RELEASABLE. No functional/cardinal defect; doc-only finding. All 3 CLEAN."
+      "theme": "2.1.15 C++ range-based-for begin()/end() customization points rooted via a new _IMPLICIT_HOOKS[cpp] entry (for(x:r) desugars to r.begin()/r.end(), no textual call site) \u2014 FULL-DIVERSITY clean round 1. opus: core fix works (begin/end + callees live, genuinely-dead still flag), pre-existing cardinal confirmed, const begin() const extracts to name begin (rooted), no cross-language bleed, no C-file over-rooting; flagged a DOC inaccuracy (the .h-as-C boundary claim is wrong: _header_lang content-sniffs C++ .h headers to cpp so their begin/end ARE rooted \u2014 better coverage, cardinal-safe). sonnet: real C++ lib dogfood (Span/SmallVec/FilterView in .hpp) all live, rbegin/rend correctly NOT rooted (called explicitly), same doc finding. haiku: C-file bleed negative, 452 + oracles 27 + RELEASABLE. No functional/cardinal defect; doc-only finding. All 3 CLEAN."
     },
     {
       "id": "R101",
@@ -1302,7 +1302,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.15 C++ range-for begin/end — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) after correcting the .h-scope doc wording (the comment/CHANGELOG/release-notes now state _header_lang sniffs C++ .h headers to cpp so their begin/end are rooted; only a pure-C .h stays C). Final pass across .cpp/.hpp/.h-C++/pure-C-.h/.c: no cardinal, no bleed, over-mask boundary holds, determinism. All 3 CLEAN."
+      "theme": "2.1.15 C++ range-for begin/end \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) after correcting the .h-scope doc wording (the comment/CHANGELOG/release-notes now state _header_lang sniffs C++ .h headers to cpp so their begin/end are rooted; only a pure-C .h stays C). Final pass across .cpp/.hpp/.h-C++/pure-C-.h/.c: no cardinal, no bleed, over-mask boundary holds, determinism. All 3 CLEAN."
     },
     {
       "id": "R102",
@@ -1312,7 +1312,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.16 Bash callback/invocation argument recognition (_bash_callback_refs: trap incl. function bodies + complete -F/compgen -F + export -f + time FUNC; each routed through _ref so only project functions root) — FULL-DIVERSITY clean RE-GATE round 1 (after the first round's recall/precision fixes: quote-strip in _bash_command_words for time \"bench\"/complete -F \"_c\"; _bash_flag_arg rewritten to take the immediate slot after -F so complete -F ${VAR} cmd stops grabbing cmd). opus + haiku clean; sonnet confirmed both prior fixes + found 3 pre-existing LOW gaps. mutation over the new parsers all-killed. All 3 CLEAN."
+      "theme": "2.1.16 Bash callback/invocation argument recognition (_bash_callback_refs: trap incl. function bodies + complete -F/compgen -F + export -f + time FUNC; each routed through _ref so only project functions root) \u2014 FULL-DIVERSITY clean RE-GATE round 1 (after the first round's recall/precision fixes: quote-strip in _bash_command_words for time \"bench\"/complete -F \"_c\"; _bash_flag_arg rewritten to take the immediate slot after -F so complete -F ${VAR} cmd stops grabbing cmd). opus + haiku clean; sonnet confirmed both prior fixes + found 3 pre-existing LOW gaps. mutation over the new parsers all-killed. All 3 CLEAN."
     },
     {
       "id": "R103",
@@ -1322,7 +1322,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.16 Bash callback-arg recognition — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). The one pathological cardinal from R102 (complete -F f1 -F f2 rooting only the first -> live last handler flagged dead) fixed: _bash_flag_arg now roots EVERY -F slot (cardinal-safe over-rooting). Final pass: no cardinal across all four mechanisms; trap precision intact; genuinely-dead still flags; no cross-language bleed; determinism. Pre-existing LOW follow-ups tracked: bare trap EXIT one-word reset, time { group; } brace form, declare -xf/typeset -fx synonyms. All 3 CLEAN."
+      "theme": "2.1.16 Bash callback-arg recognition \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). The one pathological cardinal from R102 (complete -F f1 -F f2 rooting only the first -> live last handler flagged dead) fixed: _bash_flag_arg now roots EVERY -F slot (cardinal-safe over-rooting). Final pass: no cardinal across all four mechanisms; trap precision intact; genuinely-dead still flags; no cross-language bleed; determinism. Pre-existing LOW follow-ups tracked: bare trap EXIT one-word reset, time { group; } brace form, declare -xf/typeset -fx synonyms. All 3 CLEAN."
     },
     {
       "id": "R104",
@@ -1332,7 +1332,7 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.17 Ruby &:symbol / enum_for / &method literal-symbol dispatch (new _ruby_symbol_refs pass; routed through _ref so only project methods root) — FULL-DIVERSITY clean RE-GATE round 1. The FIRST round-1 pass found a CARDINAL blocker (opus only; sonnet+haiku missed it): _ruby_symbol_name kept the `=` for setter symbols (:name= -> name=) but setter defs are keyed WITHOUT the = (name), so method(:name=) flagged the live setter dead at 0.6. Fixed (strip trailing =, keep ?/!). This R104: opus re-confirmed; sonnet ran a full symbol-name surface audit (operators :[]/:[]=/:+/:<=>/:-@ skipped here + pre-rooted by _is_ruby_operator_method; setter was the only def-key mismatch); haiku verified the setter end-to-end. 456 + oracles 27 + ruff/mypy. All 3 CLEAN."
+      "theme": "2.1.17 Ruby &:symbol / enum_for / &method literal-symbol dispatch (new _ruby_symbol_refs pass; routed through _ref so only project methods root) \u2014 FULL-DIVERSITY clean RE-GATE round 1. The FIRST round-1 pass found a CARDINAL blocker (opus only; sonnet+haiku missed it): _ruby_symbol_name kept the `=` for setter symbols (:name= -> name=) but setter defs are keyed WITHOUT the = (name), so method(:name=) flagged the live setter dead at 0.6. Fixed (strip trailing =, keep ?/!). This R104: opus re-confirmed; sonnet ran a full symbol-name surface audit (operators :[]/:[]=/:+/:<=>/:-@ skipped here + pre-rooted by _is_ruby_operator_method; setter was the only def-key mismatch); haiku verified the setter end-to-end. 456 + oracles 27 + ruff/mypy. All 3 CLEAN."
     },
     {
       "id": "R105",
@@ -1342,7 +1342,151 @@
         "haiku"
       ],
       "findings": {},
-      "theme": "2.1.17 Ruby symbol dispatch — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected code. Final pass: no cardinal across all dispatch forms (&:sym incl. ?/!/=, enum_for/to_enum/method/instance_method, &method); setters via method(:name=) live; genuinely-dead flags; send/public_send excluded (documented limitation); operators not falsely flagged; no cross-language bleed; determinism. All 3 CLEAN."
+      "theme": "2.1.17 Ruby symbol dispatch \u2014 FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected code. Final pass: no cardinal across all dispatch forms (&:sym incl. ?/!/=, enum_for/to_enum/method/instance_method, &method); setters via method(:name=) live; genuinely-dead flags; send/public_send excluded (documented limitation); operators not falsely flagged; no cross-language bleed; determinism. All 3 CLEAN."
+    },
+    {
+      "id": "R106",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 3
+      },
+      "theme": "v2.1.18 round 1 \u2014 JS/TS object-literal function-member bodies (#48 core). Cardinal fixes: dynamically-dispatched underscore members (handlers[\"_\"+x]()), computed-key member body walk, string-key members. opus found the underscore-dynamic cardinal the others missed."
+    },
+    {
+      "id": "R107",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 3
+      },
+      "theme": "v2.1.18 round 2 \u2014 member-VALUE wrappers (run:(()=>h()), (fn satisfies T)) and class-valued members ({Parser:class{}}) not handled -> member bodies dropped. opus found 3."
+    },
+    {
+      "id": "R108",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "v2.1.18 round 3 \u2014 fn-scoped class-valued member orphaned its methods (enclosing_func=None walked the class body as module-scope). sonnet found it; gated methods to the class."
+    },
+    {
+      "id": "R109",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "v2.1.18 round 4 \u2014 the assignment_expression branch carried the identical fn-scoped class orphaning (obj.X=class{} in a fn). sonnet found it; same one-liner gate. opus clean."
+    },
+    {
+      "id": "R110",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.18 round 5 \u2014 CLEAN (all 3). opus noted one MINOR pre-existing parity item (assignment-branch underscore gate vs object path, dynamic dispatch) -> deferred #77."
+    },
+    {
+      "id": "R111",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "v2.1.18 round 6 \u2014 TS wrappers not peeled on the fn/class assignment RHS (obj.X=(class{}) satisfies T) nor the arrow-const value (const f=(()=>h()) as any). sonnet+opus; _unwrap_ts_value applied uniformly."
+    },
+    {
+      "id": "R112",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.18 round 7 \u2014 CLEAN (all 3). opus noted the _unwrap_ts_value seen<8 cap under 9+ literal parens (LOW/theoretical) -> deferred #79."
+    },
+    {
+      "id": "R113",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 2
+      },
+      "theme": "v2.1.18 round 8 \u2014 generator_function values ({gen:function*(){}}, exports.h=function*, const g=function*) omitted from the function-value tuples (opus). A delayed round-8 sonnet additionally found the chained/parenthesized-assignment value gap (const routes=module.exports={})."
+    },
+    {
+      "id": "R114",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.18 round 9 \u2014 completed generator_function in the 4th tuple (the _module_uses def-skip; the round-8 edit missed the multi-line one). Cardinal-SAFE precision (test-file over-rooting) \u2014 both reviewers CLEAN on cardinals."
+    },
+    {
+      "id": "R115",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.18 round 10 \u2014 CLEAN (all 3) on the generator-complete code; full {value-kind}x{scope}x{wrapper} matrix + real-world objects (Redux/Vuex/Express/RxJS)."
+    },
+    {
+      "id": "R116",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "CRITICAL": 1
+      },
+      "theme": "v2.1.18 round 11 \u2014 REGRESSION caught: the round-8 chained-assignment `else` fallthrough escalated the pre-existing #75 expression-shape family (helper-recall) into a CARDINAL by minting object/class methods as unrooted, mis-qualed nodes (opus). REVERTED; chained-assignment + expression-position objects deferred to #75."
+    },
+    {
+      "id": "R117",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.18 round 12 \u2014 CLEAN (opus+sonnet FINDINGS none; haiku surfaced only the verified-PRE-EXISTING #75/#80 family, proven byte-identical on the 5cb47bc baseline -> out of scope). First of two consecutive clean on the final HEAD."
+    },
+    {
+      "id": "R118",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.18 round 13 \u2014 CLEAN (all 3, unanimous; ~45/35 differential fixtures HEAD-vs-5cb47bc, zero new flags, no crash). Second consecutive clean -> gate met. Direct object-literal member surface fully hardened; expression-position #75/#80 explicitly deferred to the next release."
     }
   ]
 }

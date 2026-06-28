@@ -62,6 +62,28 @@ and regression-pinned:
 - **Functions defined inside a member body** (`run() { function inner(){…} }`) are now extracted via
   `_collect` recursion with a CONTAINS edge — pass 2 skips nested defs, so a helper such a nested
   fn alone calls was previously flagged dead. Members nested in a dead function stay gated.
+- **Function-scoped class-valued members** (`function f(){ const o = { K: class { run(){…} } } }`,
+  `function f(){ obj.X = class {…} }`) gate their methods to the class node (chain enclosing-fn →
+  class → methods) instead of orphaning them; module-scope class members keep the `exported` rescue
+  (private methods stay dead-eligible, R46A).
+- **Member-value wrappers** (`run: (() => h())`, `go: (fn satisfies T)`) and the fn/class
+  **assignment RHS** (`obj.X = (class {…}) satisfies T`, `const f = (() => h()) as any`) are
+  unwrapped uniformly — `_unwrap_ts_value` is applied at every value position, not just the object.
+- **Generator values** (`{ gen: function*(){…} }`, `async function*`, `exports.h = function*(){…}`,
+  `const g = function*(){…}`) are handled across all four function-value tuples.
+
+## Known limitations (pre-existing, deferred)
+
+These flag identically on the pre-v2.1.18 extractor (not regressions) and are deferred to a focused
+next release that routes every object literal through `_object_members`: an object reached **only via
+an expression shape** — IIFE return, ternary/`||`/`&&`/`??` operand, `Object.freeze(…)`, a call
+argument to an external function, an array element, a `sequence` expression, or a chained/
+parenthesized assignment value (`const routes = module.exports = {…}`) — leaves its member's helper
+flagged; `const X = class {…}` (a class expression bound to a `const`) is not modeled; a TS `#private`
+method via `this.#m()` and a bare-identifier function reassignment (`g = function(){…}`) are likewise
+pre-existing. (An `else` fallthrough that tried to fix the chained-assignment case instead minted the
+object's methods as *unrooted* nodes — escalating a recall gap into a live-method-flagged-dead
+cardinal — and was reverted; the family is closed properly in the next release.)
 
 ## Compatibility
 
@@ -71,9 +93,15 @@ the same trade as the member-assignment handler. A genuinely-uncalled top-level 
 
 ## Quality gate
 
-Full suite (incl. end-to-end regressions for method-shorthand, function-valued property,
-nested-object, CommonJS `module.exports = {…}`, the non-exported arrow-property path, string-keyed
-members, and the underscore-private gate — each asserting live-stays-live and dead-stays-dead) + ruff
-+ mypy clean; differential oracle suite green; mutation meta-oracle over both new helpers
-(`_object_members`, `_obj_key_name` — all mutants killed); two-round full-diversity multi-model
-adversarial review.
+Full suite — 473 tests (end-to-end regressions for method-shorthand, function-valued property,
+nested-object, CommonJS `module.exports = {…}`, non-exported arrow-property, string/computed keys,
+the dynamically-dispatched underscore member, member-value wrappers, class-valued members,
+fn-scoped class gating, member-assigned class in a function, generator values, and the
+`_module_uses` generator skip — each asserting live-stays-live and dead-stays-dead, plus a guard
+that an expression-shaped object member is NOT minted as a bare node) + ruff + mypy clean;
+differential oracle suite (27) green; mutation meta-oracle over `_object_members`/`_obj_key_name`/
+`_unwrap_ts_value` (all mutants killed bar two justified — the class-member INHERITS edge and the
+identifier-key branch that is redundant with the synthesized-name fallback). The adversarial review
+ran **thirteen full-diversity rounds** (opus/sonnet/haiku) — the campaign's deepest single surface —
+finding ten distinct cardinal classes (each fixed) and one over-reaching fix (caught + reverted),
+closing on two consecutive clean panels (R117, R118).
