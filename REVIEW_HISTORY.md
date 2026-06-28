@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.23: R127–R128 on Java anonymous-inner-class class-scope overrides (#62). 2.1.24: R129–R130 on C/C++ `#define` macro-body call sites (#59). **2.1.25: R131–R132** (full diversity opus/sonnet/haiku) on C/C++ function-pointer table / vtable promotion (#69) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_c_global_init_fn_refs` + `_collect_init_idents` killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 521 passing (full extras) |
+| Multi-model review panels | 2.1.24: R129–R130 on C/C++ `#define` macro-body call sites (#59). 2.1.25: R131–R132 on C/C++ function-pointer table / vtable promotion (#69). **2.1.26: R133–R134** (full diversity opus/sonnet/haiku) on JS/TS implicit-dispatch class members (#54) — clean in 2 rounds; **closes the per-language cardinal sweep** |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_is_js_implicit_dispatch_method` 7/7 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 532 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.23: Java anon-inner-class class-scope overrides → R127✓ R128✓. 2.1.24: C/C++ macro-body call sites → R129✓ R130✓. 2.1.25: C/C++ function-pointer table promotion → **R131✓ R132✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.24: C/C++ macro-body call sites → R129✓ R130✓. 2.1.25: C/C++ function-pointer table promotion → R131✓ R132✓. 2.1.26: JS/TS implicit-dispatch class members → **R133✓ R134✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.24 RELEASED/releasable** (maintainer tags). **2.1.25** (a C/C++ function whose address is taken in a global function-pointer table / vtable struct / designated-init / scalar is invoked indirectly, possibly cross-TU — globals aren't graph nodes — and was flagged dead when its TU had no entry point; a new `_c_global_init_fn_refs` scan roots matching F/M nodes `callback`, collecting only function-VALUE `identifier`s, not designated-init field names) **RELEASABLE** — R131–R132 full-diversity clean; awaiting the maintainer's manual `v2.1.25` tag. The panel drove a field-designator precision fix and established that collecting global-lambda-body callees is cardinal-NECESSARY (not to be "fixed" away). **The cardinal sweep is now down to one item: JS/TS implicit-dispatch (#54).** Cardinal-safe precision/coverage follow-ups #70–#89 remain, all deferred. |
+| Verdict | **1.0.0–2.1.25 RELEASED/releasable** (maintainer tags). **2.1.26** (a JS/TS class member the runtime invokes IMPLICITLY — a well-known-Symbol computed key `[Symbol.iterator]`/`[Symbol.toPrimitive]`/… run by for-of/spread/coercion/instanceof, a `get`/`set` accessor run by a property read/write, or a `toJSON`/`toString`/`valueOf` coercion hook — is never reached by a plain `obj.method()` by-name call, so in a non-exported class the member and the private helpers it alone calls were flagged dead though live; a new `_is_js_implicit_dispatch_method` recognizes the three forms and the JS/TS method path roots them `callback`) **RELEASABLE** — R133–R134 full-diversity clean; awaiting the maintainer's manual `v2.1.26` tag. **This CLOSES the entire per-language cardinal sweep** (all 10 languages swept; v2.1.1–v2.1.26 each shipped a gated cardinal fix). Cardinal-safe precision/coverage follow-ups #70–#89 remain, all deferred. |
 
 ## Trajectory
 
@@ -1502,6 +1502,33 @@ are live *only* because the initializer scan collects them — skip it and a fun
 never less, for indirect-dispatch text the grammar doesn't model) is the whole discipline. The
 collect-`identifier`-only fix threads it: it drops non-value designators (pure precision) while
 keeping every value and every body callee (cardinal-safety preserved).
+
+### 2.1.26 — JS/TS implicit-dispatch class members (#54) — closes the cardinal sweep
+
+A JS/TS class member the runtime invokes *implicitly* is never reached by a plain `obj.method()`
+by-name call, so the by-name resolver finds no caller and — in a non-exported (but instantiated)
+class — the member and the private helpers it alone calls were confidently flagged dead though live.
+Three forms: a well-known-Symbol computed key (`[Symbol.iterator]`/`[Symbol.asyncIterator]`/
+`[Symbol.toPrimitive]`/`[Symbol.hasInstance]`/`[Symbol.toStringTag]`, run by `for…of`/spread/`+`
+coercion/`instanceof`/`Object.prototype.toString`); a `get`/`set` accessor (run by a property
+read/write, which the graph models as a member access, not a call); and a serialization/coercion hook
+by name (`toJSON` via `JSON.stringify`, `toString`/`valueOf` via string & numeric coercion). Closed by
+`_is_js_implicit_dispatch_method` (a `computed_property_name` containing `Symbol.`, a `get`/`set`
+child node, or a name in `{toJSON, toString, valueOf}`), language-gated to javascript/typescript/tsx,
+rooting the member `callback`. Exported-class members were already rescued by
+`_seed_exported_class_methods`, so the gap surfaced on non-exported classes.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R133 | 3 | ✓ | round 1 on the final code. All three FINDINGS: none. opus: rooting purely additive (`roles.add` only, never deletes; Node id/kind independent of roles), helper cannot raise on malformed/unicode/empty-child nodes, single call site, streaming==in-memory, plain uncalled method still flags dead. sonnet (empiricist, 14 fixtures across .ts/.tsx/.js/.jsx/.mjs): every branch keeps member+private callee live, genuinely-dead members still flag, no crash. haiku (42 crash-robustness checks): empty/malformed bodies, non-UTF-8 bytes, backwards byte ranges, `Symbol.` substring false-positives — all over-root-or-no-op, zero crashes. |
+| R134 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE; closes the entire per-language cardinal sweep.** opus (interaction angles): adding `callback` can't change `cid`/kind; same-name collapse (`get value()`/`set value()`, `[Symbol.iterator]` vs plain method) unions roles via #61 `ON CONFLICT` so no live member/callee lost under collision (streaming + in-memory); helper `name` never diverges from the qual; TS overload sigs+impl collapse correctly; 396 regression tests pass. sonnet (deep transitive chains): 4-deep iterator→_a→_b→_c, getter→private→module-free-fn, toString→static-field-init→builder, cross-class iterator→helper — all live; dead methods in a live-iterator class still flag. haiku (stress): 50+ implicit-dispatch members, deep nesting, huge `Symbol.` expressions, mixed valid/broken tree, empty/ctor-only classes — no crash. |
+
+The 2.1.26 close: **the same precision-over-recall instinct that built `_seed_exported_class_methods`,
+generalized to the implicit-dispatch surface that rescue couldn't reach.** With this the per-language
+cardinal sweep is complete — v2.1.1 through v2.1.26 each shipped one gated cardinal fix across all ten
+supported languages (Python, JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, Bash). What remains (#70–#89)
+is entirely cardinal-*safe* precision/coverage follow-ups — over-rooting to tighten and recall gaps to
+widen, none of which can flag live code dead — all deferred.
 
 ## Standing themes
 
