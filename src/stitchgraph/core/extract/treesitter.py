@@ -1618,21 +1618,23 @@ def _bash_command_words(call, cn, src):
 
 
 def _bash_flag_arg(call, cn, src, out, flag):
-    """Root the function named in the slot DIRECTLY after `flag` (e.g. `complete -F FUNC`). The
-    immediate next argument is the completion handler regardless of its node type — so a dynamic
-    form (`complete -F ${VAR} cmd`, `-F $(f) cmd`) consumes the slot and roots nothing rather than
-    falling through to a later word (the command being completed). A quoted bare identifier
-    (`-F "_comp"`) is unwrapped; only a static identifier is rooted."""
+    """Root the function named in the slot DIRECTLY after each `flag` occurrence (e.g.
+    `complete -F FUNC`). The immediate next argument is the completion handler regardless of its
+    node type — so a dynamic form (`complete -F ${VAR} cmd`, `-F $(f) cmd`) consumes the slot and
+    roots nothing rather than falling through to a later word (the command being completed). A
+    quoted bare identifier (`-F "_comp"`) is unwrapped; only a static identifier is rooted.
+
+    Bash uses the LAST `-F` when several appear on one command, so every `-F` slot is rooted —
+    over-rooting an overwritten handler is cardinal-safe and guarantees the effective one stays
+    live (rooting only the first would flag the live last handler dead)."""
     args = [c for c in call.children if c is not cn]
     for i, c in enumerate(args):
-        if c.type == "word" and _text(c, src) == flag:
-            if i + 1 < len(args):
-                nxt = args[i + 1]
-                if nxt.type in ("word", "string", "raw_string"):
-                    name = _text(nxt, src).strip().strip("\"'`")
-                    if name.isidentifier():
-                        out.append((name, nxt.start_point[0] + 1))
-            return
+        if c.type == "word" and _text(c, src) == flag and i + 1 < len(args):
+            nxt = args[i + 1]
+            if nxt.type in ("word", "string", "raw_string"):
+                name = _text(nxt, src).strip().strip("\"'`")
+                if name.isidentifier():
+                    out.append((name, nxt.start_point[0] + 1))
 
 
 def _bash_export_decl(call, src, out):

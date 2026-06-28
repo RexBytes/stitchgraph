@@ -7216,6 +7216,7 @@ def test_bash_callback_helpers():
         "complete -F ${VAR} cmd": [],            # dynamic handler -> consume slot, don't grab cmd
         "compgen -F $(f) word": [],              # command-substitution handler -> nothing
         "complete -A dir -F _c cmd": ["_c"],     # flag not first; still found
+        "complete -F f1 -F f2 cmd": ["f1", "f2"],  # bash uses last; root all (cardinal-safe)
         "complete -o default mytool": [],        # no -F, no handler
         "export -f worker": ["worker"],
         "export -f a b": ["a", "b"],
