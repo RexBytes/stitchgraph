@@ -8420,3 +8420,99 @@ def test_c_designated_init_field_name_does_not_overroot(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "on_unused" in stale, "a fn colliding with an uncalled designated-init FIELD name must stay dead"
         assert "real_unused" not in stale, "the function-pointer VALUE in the table must be live"
+
+
+@pytest.mark.parametrize("member,helper", [
+    # well-known Symbol methods (invoked by for-of / coercion / instanceof)
+    ("[Symbol.iterator]() { return emit(); }", "emit"),
+    ("[Symbol.toPrimitive](h: string) { return emit(); }", "emit"),
+    ("[Symbol.asyncIterator]() { return emit(); }", "emit"),
+    # accessors (invoked by property read/write)
+    ("get value() { return emit(); }", "emit"),
+    ("set value(x: number) { emit(); }", "emit"),
+    # serialization / coercion hooks by name
+    ("toJSON() { return emit(); }", "emit"),
+    ("toString() { return emit(); }", "emit"),
+    ("valueOf() { return emit(); }", "emit"),
+])
+def test_js_implicit_dispatch_method_and_callee_live(tmp_path, member, helper):
+    """#54 (cardinal): a JS/TS class member invoked only IMPLICITLY by the runtime — a well-known
+    Symbol method (`[Symbol.iterator]` etc.), a `get`/`set` accessor, or a serialization/coercion
+    hook (`toJSON`/`toString`/`valueOf`) — is never reached by a plain `obj.method()` by-name call,
+    so in a NON-exported (but used) class it and its private callees were flagged dead. Now rooted
+    `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "function emit() { return 1; }\n"
+        "class C {\n  " + member + "\n}\n"
+        "export function go() { const c = new C(); return c; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert helper not in stale, "a helper reached only via the implicit-dispatch member must be live"
+
+
+def test_js_implicit_dispatch_does_not_overroot_plain_method(tmp_path):
+    """#54 guard: only IMPLICIT-dispatch members are rooted — a plain by-name method of the same
+    (non-exported) class that is genuinely uncalled must STILL flag dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "class C {\n"
+        "  regularDead() { return 1; }\n"          # plain, uncalled -> dead
+        "  [Symbol.iterator]() { return 0; }\n"    # implicit -> live
+        "}\n"
+        "export function go() { const c = new C(); for (const x of c) {} return c; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "regularDead" in stale, "a plain uncalled method must still flag dead"
+        assert "iterator" not in stale, "the Symbol.iterator method must be live"
+
+
+def test_js_implicit_dispatch_is_language_gated(tmp_path):
+    """#54 guard: the implicit-dispatch rooting is JS/TS-only. A Python method named `toJSON` is
+    NOT a JS runtime hook and must stay dead-eligible (the `lang in (js,ts,tsx)` gate)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.py": "class C:\n    def toJSON(self):\n        return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "toJSON" in stale, "a Python toJSON is not a JS hook and must stay dead-eligible"
+
+
+def test_is_js_implicit_dispatch_method_unit():
+    """#54 unit-pins `_is_js_implicit_dispatch_method`: True for well-known-Symbol computed keys,
+    get/set accessors, and toJSON/toString/valueOf; False for a NON-Symbol computed key and a plain
+    method. (Pins the Symbol-specific `and` — a non-Symbol computed key must NOT be treated as
+    implicit dispatch by this helper; that general case is a separate concern, #78.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _is_js_implicit_dispatch_method, _name_of
+    src = (b"class C {\n"
+           b"  [Symbol.iterator]() {}\n"
+           b"  [CONFIG_KEY]() {}\n"
+           b"  get value() {}\n"
+           b"  set value(x) {}\n"
+           b"  toJSON() {}\n"
+           b"  regular() {}\n"
+           b"}\n")
+    root = get_parser("typescript").parse(src).root_node
+    got = {}
+    def walk(n):
+        if n.type == "method_definition":
+            got[_name_of(n, src)] = _is_js_implicit_dispatch_method(n, _name_of(n, src), src)
+        for c in n.children:
+            walk(c)
+    walk(root)
+    assert got["iterator"] is True       # well-known Symbol
+    assert got["value"] is True          # get/set accessor
+    assert got["toJSON"] is True         # serialization hook
+    assert got["CONFIG_KEY"] is False    # non-Symbol computed key -> NOT this helper's concern
+    assert got["regular"] is False       # plain method

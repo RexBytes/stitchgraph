@@ -4,6 +4,33 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.26] — 2026-06-28
+
+**JS/TS implicit-dispatch class members — cardinal fix (#54).**
+A class member invoked only IMPLICITLY by the JS/TS runtime — a well-known-Symbol method
+(`[Symbol.iterator]`, `[Symbol.asyncIterator]`, `[Symbol.toPrimitive]`, `[Symbol.hasInstance]`, …,
+run by `for…of` / spread / coercion / `instanceof`), a `get`/`set` accessor (run by a property
+read/write), or a serialization/coercion hook (`toJSON` via `JSON.stringify`, `toString`/`valueOf`
+via string & numeric coercion) — is never reached by a plain `obj.method()` by-name call. In a
+non-exported (but instantiated) class, the member and the private helpers it alone calls were
+confidently flagged dead. (Exported-class members were already rescued by
+`_seed_exported_class_methods`, which masked the gap.)
+
+### Fixed
+
+- A new `_is_js_implicit_dispatch_method` recognizes these three forms (a `computed_property_name`
+  containing `Symbol.`; a `get`/`set` accessor; the names `toJSON`/`toString`/`valueOf`) and the
+  JS/TS method-extraction path roots them `callback`. Language-gated to javascript/typescript/tsx
+  (a Python `toJSON` is not a JS hook). Cardinal-safe over-approximation: rooting only adds a root,
+  so a genuinely-unused accessor/hook is over-rooted (bounded, one per member) but live code is
+  never flagged dead. A plain by-name method that is genuinely uncalled still flags.
+
+### Known limitations (unchanged)
+
+A general (non-`Symbol`) computed-key class method (`[CONFIG_KEY]() {}`) is a separate dynamic-
+dispatch concern (#78) and is out of this change's scope. The remaining cardinal-safe precision/
+coverage follow-ups (#70–#89) stay deferred.
+
 ## [2.1.25] — 2026-06-28
 
 **C/C++ function-pointer table / vtable promotion — cardinal fix (#69).**

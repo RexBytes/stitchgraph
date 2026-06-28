@@ -1337,6 +1337,16 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # the in-method case stays containment-gated, preserving its precision.
             if enclosing_func is None and _is_anonymous_class_member(child):
                 roles.add("callback")
+            # JS/TS: a class member invoked IMPLICITLY by the runtime — a well-known-Symbol method
+            # (`[Symbol.iterator]`/`[Symbol.toPrimitive]`/…, run by for-of / spread / coercion /
+            # instanceof), a `get`/`set` accessor (run by property read/write), or a serialization/
+            # coercion hook (`toJSON` via JSON.stringify, `toString`/`valueOf` via string & numeric
+            # coercion). None is ever reached by a plain `obj.method()` by-name call, so in a
+            # non-exported class the member — and the private helpers it alone calls — was flagged
+            # dead though live (#54). Root it `callback`. Cardinal-safe (only adds a root).
+            if lang in ("javascript", "typescript", "tsx") \
+                    and _is_js_implicit_dispatch_method(child, name, src):
+                roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
             nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, child),
@@ -1684,6 +1694,32 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, co
         _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                  False, is_test, contains=contains,
                  enclosing_func=(cid if (kind is M or enclosing_func is not None) else None))
+
+
+_JS_IMPLICIT_DISPATCH_NAMES = frozenset({"toJSON", "toString", "valueOf"})
+
+
+def _is_js_implicit_dispatch_method(node, name, src) -> bool:
+    """True for a JS/TS class member the runtime invokes IMPLICITLY — never by a plain
+    `obj.method()` by-name call — so it (and the private helpers it alone calls) would be
+    false-flagged dead in a non-exported class (#54). Three forms:
+
+      * a well-known-Symbol computed key — `[Symbol.iterator]`, `[Symbol.asyncIterator]`,
+        `[Symbol.toPrimitive]`, `[Symbol.hasInstance]`, `[Symbol.toStringTag]`, … — run by
+        `for…of` / spread / `+`coercion / `instanceof` / `Object.prototype.toString`;
+      * a `get`/`set` accessor — run by a property read/write (`obj.x` / `obj.x = …`), which the
+        graph models as a member access, not a call;
+      * a serialization/coercion hook by name — `toJSON` (JSON.stringify), `toString` / `valueOf`
+        (string & numeric coercion, template literals, `String(x)`).
+
+    Cardinal-safe over-approximation: rooting only ADDS a root, so a genuinely-unused accessor/
+    hook is over-rooted (bounded, one per member) but live code is never flagged dead."""
+    for c in node.children:
+        if c.type in ("get", "set"):
+            return True
+        if c.type == "computed_property_name" and b"Symbol." in src[c.start_byte:c.end_byte]:
+            return True
+    return name in _JS_IMPLICIT_DISPATCH_NAMES
 
 
 def _is_anonymous_class_member(node) -> bool:
