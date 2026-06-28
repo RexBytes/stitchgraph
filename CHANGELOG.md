@@ -47,10 +47,32 @@ its sole caller was invisible to the graph.
   role so its public methods (and their private callees) are rescued — `_unwrap_ts_value` was
   applied to the whole object but not to individual member values, and class members weren't
   handled, so each dropped a live member's body (cardinal — panel round 2).
+- A function-scoped class-valued member (`function f(){ const o = { K: class { run(){ h() } } } }`,
+  `function f(){ obj.X = class {…} }`) gates its methods to the class node (chain enclosing-fn →
+  class → methods) instead of leaving them orphaned and confidently flagged dead (cardinal —
+  panels round 3/4); module-scope class members keep the `exported` rescue (private methods stay
+  dead-eligible, R46A).
+- `generator_function` values (`{ gen: function*(){…} }`, `async function*`, `exports.h =
+  function*(){…}`, `const g = function*(){…}`) are handled across all four function-value tuples,
+  so a generator member's body is walked like any other function value (cardinal — panel round 8).
 
-Object literals reached only through other expression shapes (IIFE, ternary, `||`/`&&`/`??`,
-`Object.freeze(…)`, call arguments to external functions, array elements) remain a documented
-pre-existing limitation — not a regression of this release — tracked for a focused follow-up.
+### Known limitations (pre-existing, deferred to a focused follow-up)
+
+These flag identically on the pre-v2.1.18 extractor — they are NOT regressions of this release; they
+are the broad "object literal reached through an EXPRESSION shape" family, which the next release
+will close with a single principled "route every object literal through `_object_members`" pass:
+
+- An object literal reached only via an expression shape — an IIFE return, a ternary/`||`/`&&`/`??`
+  operand, `Object.freeze(…)`/`Object.assign(…)`, a call argument to an external function, an array
+  element, a `sequence` expression, or a chained/parenthesized assignment value
+  (`const routes = module.exports = {…}`) — is not member-extracted, so a helper called only from
+  such a member is flagged. (A naive generic fallthrough that "fixed" this instead minted the
+  members as unrooted nodes and flagged the live methods themselves — a worse cardinal — so it was
+  reverted; the family stays a recall gap until the principled pass lands.)
+- `const X = class {…}` (a class expression bound to a `const`) is not modeled (the
+  `variable_declarator` branch handles arrow/function/generator/object values, not `class`).
+- A TS `#private` method invoked via `this.#m()`, and a bare-identifier function reassignment
+  (`g = function(){…}`), are likewise pre-existing and tracked.
 
 ## [2.1.17] — 2026-06-28
 
