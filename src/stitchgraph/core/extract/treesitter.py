@@ -1464,12 +1464,16 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, co
     not mint live roots. Recurses into nested object values so `{ a: { onClick(){…} } }` is
     covered too."""
     for child in obj.children:
+        kind = M
         if child.type == "method_definition":
             key = child.child_by_field_name("name")
             val = child
         elif child.type == "pair":
             key = child.child_by_field_name("key")
-            val = child.child_by_field_name("value")
+            # Peel TS wrappers on the MEMBER VALUE too (`run: (() => h())`,
+            # `run: (fn satisfies T)`, `run: ({…} as const)`) — not just the whole object —
+            # or a wrapped function/object member is dropped and its body never walked (cardinal).
+            val = _unwrap_ts_value(child.child_by_field_name("value"))
             if val is None:
                 continue
             if val.type == "object":
@@ -1480,7 +1484,13 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, co
                     _object_members(val, src, rel, spec, lang, _join(parent, nm),
                                     nodes, defs, inherits, contains, is_test, enclosing_func)
                 continue
-            if val.type not in _OBJ_FN_VALUES:
+            if val.type in ("class", "class_expression"):
+                # A class-valued member (`{ Parser: class {…} }`) is public API — model it as a
+                # CLASS and recurse its body so its methods (and their private callees) aren't
+                # flagged dead; it takes the `exported` role so `_seed_exported_class_methods`
+                # rescues its public methods (mirrors the assignment_expression branch, R46A).
+                kind = C
+            elif val.type not in _OBJ_FN_VALUES:
                 continue
         else:
             continue
@@ -1494,21 +1504,29 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, co
         qual = _join(parent, name)
         roles: set[str] = set()
         # Module scope (not nested in a function body): dynamically invoked, root it
-        # unconditionally (see the docstring — underscore/computed members included).
+        # unconditionally (see the docstring — underscore/computed members included). A class
+        # member takes `exported` (public API → its public methods are rescued); a function/
+        # method member takes `callback`.
         if enclosing_func is None:
-            roles.add("callback")
+            roles.add("exported" if kind is C else "callback")
         cid = f"{rel}::{qual}"
-        nodes.append(Node(id=cid, kind=M, name=name, location=_loc(rel, val),
+        nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, val),
                           end_line=val.end_point[0] + 1, roles=frozenset(roles)))
         defs.append((rel, cid, val, lang))
+        if kind is C:
+            for base in _bases(val, src, spec):
+                inherits.append((cid, base, lang))
         if enclosing_func is not None:
             contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
         # Walk the member BODY so a def nested inside it (`run() { function inner(){…} }`)
         # becomes a real node with a CONTAINS edge to this member — without this, pass 2's
         # `_direct_calls` skips the nested def, its body is never walked, and a helper called
         # only from it is flagged dead (cardinal). Mirrors the arrow-decl path's body recursion.
+        # A class member's methods are NOT function-scope-gated (enclosing_func=None) — they are
+        # rescued via the `exported` role, like the assignment_expression class branch.
         _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
-                 False, is_test, contains=contains, enclosing_func=cid)
+                 False, is_test, contains=contains,
+                 enclosing_func=(cid if kind is M else None))
 
 
 def _bases(node, src, spec):

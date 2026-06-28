@@ -7543,3 +7543,57 @@ def test_object_literal_member_nested_in_dead_function_stays_gated(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "deadSetup" in stale         # never called: dead
         assert "secret" in stale            # reached only from a def inside a dead member: dead
+
+
+def test_object_literal_wrapped_and_class_member_values(tmp_path):
+    """#48 (cardinal, panel R-opus round 2): a member VALUE that is itself wrapped — a
+    parenthesized arrow `run: (() => h())`, a `satisfies`/`as`-wrapped function — or a
+    `class` (`{ Parser: class {…} }`) was dropped: `_unwrap_ts_value` was applied to the whole
+    object but not to individual member values, and class-valued members weren't handled. Each
+    left a live member's body unwalked, flagging a helper called only there dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # paren-wrapped + satisfies-wrapped function-valued members
+    _mk(tmp_path, {
+        "mod.ts": (
+            "function parenHelper(){ return 1; }\n"
+            "function satHelper(){ return 2; }\n"
+            "type Fn = () => number;\n"
+            "export const handlers = {\n"
+            "  run: (() => parenHelper()),\n"
+            "  go: ((() => satHelper()) satisfies Fn)\n"
+            "};\n"
+        ),
+        "app.ts": "import { handlers } from './mod';\nhandlers.run(); handlers.go();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "parenHelper" not in stale     # paren-wrapped arrow member body walked: live
+        assert "satHelper" not in stale       # satisfies-wrapped arrow member body walked: live
+
+
+def test_object_literal_class_valued_member(tmp_path):
+    """#48 (cardinal, panel R-opus round 2): a class-valued member (`{ Parser: class {…} }`) is
+    public API — modeled as a CLASS with the `exported` role so its public methods (and their
+    private callees) are rescued. A genuinely-unused private method of that class still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "reg.ts": (
+            "function tok(){ return 1; }\n"
+            "function deadHelper(){ return 2; }\n"
+            "export const registry = {\n"
+            "  Parser: class {\n"
+            "    parse(){ return tok(); }\n"
+            "    _priv(){ return deadHelper(); }\n"
+            "  }\n"
+            "};\n"
+        ),
+        "main.ts": "import { registry } from './reg';\nnew registry.Parser().parse();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tok" not in stale         # reached from the public class method: live
+        assert "deadHelper" in stale      # reached only from an unused private method: flagged

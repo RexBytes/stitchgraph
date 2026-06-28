@@ -42,6 +42,15 @@ its sole caller was invisible to the graph.
   (`run() { function inner(){…} }`) is extracted as a node and reached through a CONTAINS edge —
   pass 2 skips nested defs, so without this a helper that nested fn alone calls was flagged dead
   (cardinal — panel). Members nested in a dead function stay reachability-gated.
+- A member VALUE is itself unwrapped (`run: (() => h())`, `go: (fn satisfies T)`, `x: ({…} as const)`)
+  and a `class`-valued member (`{ Parser: class {…} }`) is modeled as a CLASS with the `exported`
+  role so its public methods (and their private callees) are rescued — `_unwrap_ts_value` was
+  applied to the whole object but not to individual member values, and class members weren't
+  handled, so each dropped a live member's body (cardinal — panel round 2).
+
+Object literals reached only through other expression shapes (IIFE, ternary, `||`/`&&`/`??`,
+`Object.freeze(…)`, call arguments to external functions, array elements) remain a documented
+pre-existing limitation — not a regression of this release — tracked for a focused follow-up.
 
 ## [2.1.17] — 2026-06-28
 
