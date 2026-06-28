@@ -429,9 +429,10 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
             # top level of an exported module isn't flagged dead (panel R12, cardinal).
             calls, refs = _module_uses(tree.root_node, src, spec)
             if is_bash_script:
-                # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
-                # scan would miss the function arg of; root those too.
-                calls = calls + _bash_trap_handlers(tree.root_node, src)
+                # Commands that invoke a function via an ARGUMENT (trap HANDLER, complete -F
+                # FUNC, export -f FUNC, time FUNC) — the generic command scan keys on the head
+                # and misses these, so root the named functions too.
+                calls = calls + _bash_callback_refs(tree.root_node, src)
             module_tests.append((mod_id, rel, lang, calls, refs))
             _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                      defs=defs, inherits=inherits, exported=False, is_test=is_test,
@@ -1564,29 +1565,94 @@ def _module_uses(root, src, spec):
     return calls, refs
 
 
-def _bash_trap_handlers(root, src):
-    """`trap cleanup EXIT` registers `cleanup` to run on a signal — a real use the
-    generic command scan misses (it sees the `trap` command, not its function argument).
-    Yield the **handler** of each top-level trap as (name, line) so `_ref` roots it if it
-    names a project function. Issue #22. Only the handler (the first non-option argument)
-    is rooted — never a trailing signal word — so a function sharing a signal's name isn't
-    spuriously kept live (panels XX/YY/ZZ). Top-level scope only (skips function bodies),
-    matching `_module_uses`."""
+def _bash_callback_refs(root, src):
+    """Bash commands that invoke a project function whose name sits in an ARGUMENT position,
+    not the command head — so the generic command scan (which keys on the head) misses it.
+    Yield each such function name as (name, line) so `_ref` roots it IFF it resolves to a
+    project function (cardinal-safe: a non-matching name roots nothing; over-rooting a
+    shell-invoked entry point is the documented precision-over-recall direction):
+      * `trap HANDLER SIGNAL…` — HANDLER runs on the signal (issue #22). Only the handler
+        (first non-option arg) is taken, never a trailing signal word.
+      * `complete -F FUNC cmd` / `compgen -F FUNC …` — FUNC is the completion callback the
+        shell invokes on TAB.
+      * `export -f FUNC…` — each FUNC is exported for subshells (a strong invoked-elsewhere
+        signal; `bash -c 'FUNC'` in a child shell is otherwise invisible).
+      * `time FUNC` — the `time` keyword runs FUNC, but tree-sitter parses `time` as the
+        command and FUNC as a plain word, so the call is otherwise lost.
+    Descends function bodies too (unlike the old trap-only top-level pass): a trap/complete
+    handler registered inside a function is still shell-invoked, so rooting it regardless of
+    the enclosing function's own liveness is correct."""
     out: list[tuple[str, int]] = []
 
     def rec(n):
         for c in n.children:
-            if c.type == "function_definition":
-                continue  # top-level body only
             if c.type == "command":
                 cn = next((k for k in c.children if k.type == "command_name"), None)
                 head = _text(cn.children[0] if cn and cn.children else cn, src) if cn else ""
                 if head == "trap":
                     _trap_handler(c, cn, src, out)
+                elif head in ("complete", "compgen"):
+                    _bash_flag_arg(c, cn, src, out, "-F")
+                elif head == "time":
+                    _bash_time_target(c, cn, src, out)
+            elif c.type == "declaration_command":
+                _bash_export_decl(c, src, out)   # `export -f FUNC` (parses as a declaration)
             rec(c)
 
     rec(root)
     return out
+
+
+def _bash_command_words(call, cn, src):
+    """The `word`/string children of a bash `command`, in order, paired with their 1-based
+    line — skipping the command name itself. The unit the callback-arg parsers below scan."""
+    for arg in call.children:
+        if arg is cn:
+            continue
+        if arg.type in ("word", "string", "raw_string"):
+            yield _text(arg, src), arg.start_point[0] + 1
+
+
+def _bash_flag_arg(call, cn, src, out, flag):
+    """Root the function named immediately after `flag` (e.g. `complete -F FUNC`): the word
+    following `-F` is the completion handler. Only a bare identifier is taken."""
+    take_next = False
+    for w, line in _bash_command_words(call, cn, src):
+        if take_next:
+            if w.isidentifier():
+                out.append((w, line))
+            return
+        if w == flag:
+            take_next = True
+
+
+def _bash_export_decl(call, src, out):
+    """`export -f FUNC…` exports each named function for subshells (invoked via `bash -c
+    'FUNC'` in a child shell — otherwise invisible). It parses as a `declaration_command`
+    (`export`, word `-f`, then `variable_name` FUNC), so root each FUNC once `-f` is seen.
+    A plain `export VAR=…` (no `-f`) roots nothing."""
+    if not call.children or _text(call.children[0], src) != "export":
+        return
+    seen_f = False
+    for ch in call.children[1:]:
+        t = _text(ch, src)
+        if not seen_f:
+            if ch.type == "word" and t == "-f":
+                seen_f = True
+            continue
+        if ch.type in ("variable_name", "word") and t.isidentifier():
+            out.append((t, ch.start_point[0] + 1))
+
+
+def _bash_time_target(call, cn, src, out):
+    """`time FUNC` runs FUNC under the `time` keyword. Root the first non-option word when it
+    is a bare identifier (a project function); `time -p FUNC` skips the `-p` option."""
+    for w, line in _bash_command_words(call, cn, src):
+        if w.startswith("-"):
+            continue
+        if w.isidentifier():
+            out.append((w, line))
+        return
 
 
 def _trap_handler(call, cn, src, out):

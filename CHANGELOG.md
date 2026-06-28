@@ -4,6 +4,21 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.16] — 2026-06-28
+
+**Bash callback/invocation argument recognition — cardinal/recall fixes (doc-driven + dogfood manual
+pass).** Commands that invoke a function via an *argument* (not the command head) were missed by the
+head-keyed command scan, so the function (and its callees) was false-flagged dead.
+
+### Fixed
+
+- **`_bash_trap_handlers` generalized to `_bash_callback_refs`**, now rooting the function named by:
+  `trap HANDLER` **including inside function bodies** (was top-level only); `complete -F FUNC` /
+  `compgen -F FUNC` completion callbacks; `export -f FUNC…` (subshell-invoked, parses as a
+  `declaration_command`); and `time FUNC` (the `time` keyword's target, which tree-sitter parses as a
+  plain word). Each is routed through `_ref` → rooted only if it resolves to a project function
+  (cardinal-safe); a genuinely-dead function and a plain `export VAR=…` still flag.
+
 ## [2.1.15] — 2026-06-27
 
 **C++ range-based-`for` `begin()`/`end()` customization points — cardinal fix (doc-driven manual

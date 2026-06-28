@@ -2838,7 +2838,7 @@ def test_bash_trap_handler_parsing_matrix(tmp_path):
     for code, expected in cases.items():
         src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
         tree = parser.parse(src)
-        got = [n for n, _ in ts._bash_trap_handlers(tree.root_node, src)]
+        got = [n for n, _ in ts._bash_callback_refs(tree.root_node, src)]
         assert got == expected, f"{code!r} -> {got}, expected {expected}"
 
 
@@ -7164,3 +7164,68 @@ def test_cpp_range_for_begin_end_rooted(tmp_path):
     assert "Range.begin" not in stale and "Range.end" not in stale   # range-for CPOs rooted
     assert "Range.helper" not in stale                               # reached via begin()
     assert "Range.truly_dead" in stale                               # genuinely dead -> still flagged
+
+
+# -- R102 / manual-pass (CARDINAL): Bash callback/invocation arg recognition --------
+def test_bash_callback_arg_invocations_rooted(tmp_path):
+    """Bash commands that invoke a function via an ARGUMENT (the generic command scan keys on
+    the head and misses these): a trap registered INSIDE a function body, `complete -F FUNC`
+    completion handlers, `export -f FUNC` (subshell-invoked), and `time FUNC`. Each must root
+    FUNC; a genuinely-dead function and a plain `export VAR=…` must NOT be rooted (cardinal-
+    safe — only names matching a project function are rooted)."""
+    _mk(tmp_path, {
+        "s.sh": (
+            "#!/bin/bash\n"
+            "cleanup() { echo c; }\n"                       # trap handler inside main()
+            "_mycomp() { COMPREPLY=(a b); }\n"              # complete -F handler
+            "worker() { echo w; }\n"                         # export -f for subshells
+            "bench() { echo b; }\n"                          # time target
+            "dead() { echo d; }\n"                           # genuinely dead
+            "main() {\n"
+            "  trap cleanup EXIT\n"
+            "  time bench\n"
+            "}\n"
+            "complete -F _mycomp mytool\n"
+            "export -f worker\n"
+            "export PATH=/x\n"                               # plain export: roots nothing
+            "main\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "cleanup" not in stale     # trap handler registered inside a function body
+    assert "_mycomp" not in stale     # complete -F completion handler
+    assert "worker" not in stale      # export -f (subshell-invoked)
+    assert "bench" not in stale       # time FUNC
+    assert "dead" in stale            # genuinely dead -> still flagged (cardinal-safe)
+
+
+def test_bash_callback_helpers():
+    """Pin the Bash callback-arg parsers (R102) directly: complete -F / export -f / time."""
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from stitchgraph.core.extract import treesitter as ts
+    parser = Parser(get_language("bash"))
+    cases = {
+        "complete -F _comp mytool": ["_comp"],
+        "compgen -F _gen": ["_gen"],
+        "complete -o default mytool": [],        # no -F, no handler
+        "export -f worker": ["worker"],
+        "export -f a b": ["a", "b"],
+        "export PATH=/x": [],                    # plain var export, no -f
+        "export -p worker": [],                  # -p (print) is not -f -> no root
+        "export -f foo=bar": [],                 # non-identifier after -f -> no root
+        "export -f 2bad": [],                     # variable_name but not an identifier -> no root
+        "declare -f foo": [],                    # non-export declaration -> ignored entirely
+        "time bench": ["bench"],
+        "time -p bench": ["bench"],              # -p option skipped
+        "time": [],                              # bare keyword, no target
+    }
+    for code, expected in cases.items():
+        src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
+        tree = parser.parse(src)
+        got = [n for n, _ in ts._bash_callback_refs(tree.root_node, src)]
+        assert got == expected, f"{code!r} -> {got}, expected {expected}"
