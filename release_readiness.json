@@ -1699,6 +1699,26 @@
             ],
             "findings": {},
             "theme": "v2.1.28 (#76/#78) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus: other _trailing_id/_name_of consumers (_reexport_names/_bases/_callee/imports) unaffected (private_property_identifier grammatically confined); #private in exported class correctly NOT rescued by _seed_exported_class_methods (line excludes `#`-prefix) so uncalled #private still flags; `.`/`::`-containing dyn-key ids cause no crash + no under-rooting (dyn-key rooted callback directly); DOGFOOD streaming==in-memory parity; 550 tests. sonnet: realistic 6-file library, inheritance (base #private not confused with sub), plain-JS ES2022, regression bundle (#54/#74/exported-rescue) no regression, free-fn-via-#private transitive live. haiku: full 550 + oracles 27; downstream ops (get_callers/get_callees/impact_of/trace_path/orient/scan) crash-free on #private + dyn-key nodes; pathological key text (::,.,quotes) ids intact; reindex idempotent. Cosmetic-only over-root notes (dyn-key id with `.`/`::` may confuse class-membership queries \u2014 no liveness impact)."
+        },
+        {
+            "id": "R140",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.29 (#70/#86) round 1 \u2014 CLEAN, full diversity. opus: change is strictly ADDITIVE to liveness \u2014 `is_stub`/`is_abstract` never feed reachability (verified by grep of entrypoints.py/reach.py), so broadening `_is_abstract_class` affects only find_holes/scan; `_is_abstract_class` still matches ONLY the literal {Protocol,ABC,ABCMeta} set so a user class named `Base` is unaffected; #71 deferral reasoning confirmed cardinal-safe (`_framework_classes` only adds callback roots, un-masking would risk the cardinal). sonnet (6 fixture suites): Protocol[T]/ABC,Generic[T]/ABCMeta stubs spared, concrete-dead methods still flag, non-abstract subscripted bases unaffected, find_stale not a no-op. haiku: 24 edge cases no crash, 417+27 green, parity. Precision exact: bodyless contract rooted callback, concrete real-body uncalled method + its helper still flag."
+        },
+        {
+            "id": "R141",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.29 (#70/#86) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus: inheritance+override end-to-end (subscripted-Protocol abstract decl live, override-via-base-type live, dead override flags), cross-file Protocol/impl/consumer, #51 subscripted-base INHERITS coexists with abstract detection, no metric inflation, DOGFOOD streaming==in-memory parity (only pre-existing supported_languages flagged). sonnet: plugin ABC architecture, DI Protocols across 5 files, @runtime_checkable/@abstractmethod @property/abstract @classmethod, precision (concrete-dead in ABC still flags). haiku: full 553 + oracles 27; find_holes correctly does NOT report bodyless abstract methods as stub-holes; reindex idempotent; downstream ops crash-free. Cardinal-safe note: a bare pass-bodied non-@abstractmethod method in an ABC is also callback-rooted (in_abstract+is_stub) \u2014 suppresses a dead finding, never flags live dead."
         }
     ]
 }

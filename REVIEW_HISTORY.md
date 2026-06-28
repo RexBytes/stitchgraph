@@ -8,11 +8,11 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.26: R133–R134 on JS/TS implicit-dispatch class members (#54) — closed the per-language cardinal sweep. 2.1.27: R135 (found an in-scope cardinal) → R136–R137 on JS/TS exported-object shorthand (#74). **2.1.28: R138–R139** (full diversity opus/sonnet/haiku) on TS class-member resolution cardinals (#76 `#private`, #78 dynamic-keyed) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_trailing_id` private leaf pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 551 passing (full extras) |
+| Multi-model review panels | 2.1.27: R135→R136–R137 on JS/TS exported-object shorthand (#74). 2.1.28: R138–R139 on TS class-member resolution cardinals (#76/#78). **2.1.29: R140–R141** (full diversity opus/sonnet/haiku) on Python abstract/Protocol interface methods (#70/#86) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_is_abstract_class` 2/2 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 553 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.26: JS/TS implicit-dispatch class members → R133✓ R134✓ (closed the sweep). 2.1.27: JS/TS exported-object shorthand → R135 (cardinal found, fixed) → R136✓ R137✓. 2.1.28: TS `#private` + dynamic-keyed class methods → **R138✓ R139✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.27: JS/TS exported-object shorthand → R135 (cardinal found, fixed) → R136✓ R137✓. 2.1.28: TS `#private` + dynamic-keyed class methods → R138✓ R139✓. 2.1.29: Python abstract/Protocol interface methods → **R140✓ R141✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **1.0.0–2.1.26 RELEASED/releasable** (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27** (a function referenced via object-literal SHORTHAND in an exported object — `export const handlers = { onClick }`, incl. the canonical `… as const` / `satisfies` / parens forms — is public API but was flagged dead because a `shorthand_property_identifier` is never modeled as a reference; `_reexport_names` now collects an exported declaration's object-literal member names, unwrapping TS value wrappers, into the reexport→`exported` path) **RELEASABLE** — R136–R137 full-diversity clean; awaiting the maintainer's manual `v2.1.27` tag. This is the first of the post-sweep **cardinal-safe follow-up backlog** (#70–#89): #74 fixed; #77/#81/#83 resolved without code change (deliberate precision boundary / already-covered for exported modules). Remaining follow-ups deferred. |
 
@@ -1577,6 +1577,26 @@ A pre-existing, cardinal-SAFE note the panel surfaced: two classes with an ident
 `#private` method share a by-name bucket, so a `this.#m()` call resolves AMBIGUOUSLY to both — an
 over-root in the safe direction, and a net correctness *gain* over the prior state (where the
 `#private` node didn't exist at all and the called method was a false-dead).
+
+### 2.1.29 — Python abstract / Protocol interface methods (#70, #86)
+
+A bodyless interface-method declaration is a contract fulfilled by overrides, never called by name —
+so it should not be reported as dead code. Two compounding gaps: `_is_abstract_class` used `_name_of`
+on each base, returning None for an `ast.Subscript` (`Protocol[T]`, `Generic[T]`), so a subscripted-
+base abstract class wasn't recognized (#70); and a bodyless abstract/Protocol method had no root, so
+an uncalled one was flagged dead (#86). Closed by (a) `_is_abstract_class` unwrapping subscripted
+bases via `_base_name`, and (b) rooting a bodyless `_is_abstract` method `callback`. Cardinal-safe: a
+concrete (real-body) uncalled method in an ABC and its private helper still flag dead.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R140 | 3 | ✓ | round 1. opus: change is strictly ADDITIVE to liveness (`is_stub`/`is_abstract` never feed reachability — verified by grep; `_is_abstract_class` still matches only the literal Protocol/ABC set); #71 deferral confirmed cardinal-safe. sonnet (6 fixture suites): Protocol[T]/ABC,Generic[T]/ABCMeta stubs spared, concrete-dead still flags, non-abstract subscripted bases unaffected, find_stale not a no-op. haiku: 24 edge cases no crash, parity. |
+| R141 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: inheritance+override end-to-end, cross-file Protocol, #51 subscripted-base INHERITS coexistence, no metric inflation, DOGFOOD streaming==in-memory parity. sonnet: plugin ABC architecture, DI Protocols, @runtime_checkable/@abstractmethod @property/abstract @classmethod, precision intact. haiku: 553 + oracles 27; find_holes correctly spares bodyless abstract methods (contracts, not holes); reindex idempotent; downstream ops crash-free. |
+
+#71 (`_framework_classes` name-collision over-masks) was resolved WITHOUT a code change: over-masking
+is the cardinal-SAFE direction (it keeps a possibly-framework-reachable class live), and tightening
+it would *un-mask* — risking a live framework-only-reachable class flagged dead. A deliberate
+precision boundary, left intentionally; the panel independently confirmed the reasoning.
 
 ## Standing themes
 
