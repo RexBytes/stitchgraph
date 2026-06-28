@@ -1567,6 +1567,26 @@
       ],
       "findings": {},
       "theme": "v2.1.22 (#61) round 2 — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus attacked the round-1 proof on five fronts and it held: NO role gates out of liveness anywhere; the post-extraction seed passes (_seed_exported_class_methods/_seed_callback_roles/_seed_test_classes/_set_exported_roles/override-propagation) all run on in-memory frozensets BEFORE add_node, never on the joined string; every joined-string reader splits-and-dedups; no role is a substring of another so the nodes_with_role LIKE is safe; no `roles == value` exact-match exists; kind/is_stub newest-row can only move a node OUT of candidacy (safe); streaming+incremental byte-parity. sonnet 15+ fixtures incl. duplicated-role strings, runtime carry through replace_file, mixed-language repo, all downstream ops (scan/impact_of/get_matrix/summarize_subsystem/trace_path) crash-free, truly-dead private still flags. haiku 33 tests (stub/kind collisions, 100-overload stress, SQL-injection attempt). No newly-introduced cardinal, no crash in either round."
+    },
+    {
+      "id": "R127",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.23 (#62) round 1 — CLEAN, all three FINDINGS: none (cardinal). A Java anonymous-inner-class override in a CLASS-scope initializer (field / static / instance-init block) is invoked only polymorphically (the class has no name) and has no enclosing function to root it via containment, so a protected/package-private override — and the private helper it alone calls — was flagged dead though live (public overrides were masked by `exported`). Fixed: a def directly in an anonymous class body (class_body child of object_creation_expression) is rooted `callback` at class scope. opus structural proof (additive/monotonic, cross-checked vs #61 no-role-gates-out) + 165k-invocation crash fuzz (0 exceptions) + base-vs-HEAD differential + streaming parity. sonnet 15 fixtures (Swing/Runnable/Comparator/TimerTask/custom base) + quantified the bounded cardinal-safe precision masking (~1 dead private per class-scope anon class, never leaks to named classes). haiku 12 crash cases incl. enum constants. Precision/under-rooting follow-up filed (#87: anon dead-member masking + enum-constant-body override gap). Streak resets (new fix)."
+    },
+    {
+      "id": "R128",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.23 (#62) round 2 — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus attacked the additive/monotonic proof on fresh corners and it held: lambda-in-field (lambda is not a def scope so enclosing_func stays None — correct rooting, no flip), incremental replace_file byte-equal to a fresh reindex across edits, streaming parity on a 2101-file tree, base-vs-HEAD strict-SUBSET (numeric monotonicity), enum-constant bodies unchanged from base (pre-existing, not a regression). sonnet 15 fixtures + all downstream ops (scan/impact_of/get_matrix/summarize_subsystem/orient/get_callers) crash-free + confirmed the masking is bounded to anon-class members (named-class methods in the same file still flag) + no conflict with _seed_callback_roles/exported seeding. haiku 200+ fuzz files + 5-deep nesting. No newly-introduced cardinal, no crash in either round."
     }
   ]
 }

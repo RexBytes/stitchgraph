@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.20: R121–R122 on object/class literals in EXPRESSION positions (#75). 2.1.21: R123–R124 on Go method value/expression selectors (#49). **2.1.22: R125–R126** (full diversity opus/sonnet/haiku) on same-name method-overload role clobber (#61) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (role-union logic in SQL string — pinned by non-vacuous regression tests, 4/5 fail on old REPLACE) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 498 passing (full extras) |
+| Multi-model review panels | 2.1.21: R123–R124 on Go method value/expression selectors (#49). 2.1.22: R125–R126 on same-name method-overload role clobber (#61). **2.1.23: R127–R128** (full diversity opus/sonnet/haiku) on Java anonymous-inner-class class-scope overrides (#62) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_is_anonymous_class_member` 5/5 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 503 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.20: object/class literals in EXPRESSION positions → R121✓ R122✓. 2.1.21: Go method value/expression selectors → R123✓ R124✓. 2.1.22: same-name method-overload role clobber → **R125✓ R126✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.21: Go method value/expression selectors → R123✓ R124✓. 2.1.22: same-name method-overload role clobber → R125✓ R126✓. 2.1.23: Java anon-inner-class class-scope overrides → **R127✓ R128✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.21 RELEASED/releasable** (maintainer tags). **2.1.22** (same-name method overloads collapse to one node id; `Store.add_node` now upserts with `ON CONFLICT(id) DO UPDATE` that UNIONS roles instead of `INSERT OR REPLACE` clobbering them, so a public/`exported` or framework-`callback` method overloaded with a roleless same-name overload declared after it keeps its root — store-level, covers Java/C#/C++) **RELEASABLE** — R125–R126 full-diversity clean; awaiting the maintainer's manual `v2.1.22` tag. opus proved liveness is monotonic in roles (no role gates out → an additive role-union cannot strand a live node); sonnet quantified the bounded, cardinal-safe precision masking (1 dead overload per rooted same-id sibling, inherent to the arity-less id scheme). Remaining cardinals: Java anon-inner-class JDK overrides (#62), C/C++ macro-body call sites (#59) / cross-TU function tables (#69); pre-existing, deferred. |
+| Verdict | **1.0.0–2.1.22 RELEASED/releasable** (maintainer tags). **2.1.23** (a Java anonymous-inner-class override in a class-scope field/static/instance initializer is invoked only polymorphically and has no enclosing function to root it; a def directly in an anonymous class body is now rooted `callback` at class scope, so a non-`public` override and its private callees stay live — the in-method case keeps its containment gating) **RELEASABLE** — R127–R128 full-diversity clean; awaiting the maintainer's manual `v2.1.23` tag. opus proved the change additive/monotonic (cross-checked vs #61's no-role-gates-out) with a 165k-invocation crash fuzz and streaming/incremental parity; sonnet bounded the cardinal-safe precision masking (#87). Remaining cardinals: C/C++ macro-body call sites (#59), cross-TU function tables (#69), JS/TS implicit-dispatch (#54); pre-existing, deferred. |
 
 ## Trajectory
 
@@ -1426,6 +1426,31 @@ is never dropped. The fix is store-level, so it covers C#/C++ overloads, not onl
 | R126 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus attacked the proof on five fronts and it held: no role gates out; the post-extraction seed passes all run on in-memory frozensets BEFORE `add_node` (never on the joined string); every joined-string reader splits-and-dedups; no role is a substring of another (LIKE-safe); no `roles == value` exact-match exists; `kind`/`is_stub` newest-row can only move a node OUT of candidacy (safe); streaming+incremental byte-parity. sonnet 15+ fixtures (duplicated-role strings, `runtime` carry through `replace_file`, mixed-language repo, all downstream ops crash-free, truly-dead private still flags). haiku 33 (stub/kind collisions, 100-overload stress, SQL-injection attempt). |
 
 The 2.1.22 lesson: **when two defs must share an id, merge their liveness signal — never let last-writer-wins decide it.** The id scheme deliberately omits arity (so a call `f(x)` resolves to *the* method `f` without arity inference — adding arity to ids would risk resolving a call to the wrong overload and flagging the real one dead, a worse cardinal). Given that merge, the node row must UNION the rooting signal, not replace it. The diverse panel's value this round was opus's *monotonicity* proof (an additive role change cannot strand a live node, because no role gates out) — the strongest possible evidence for a store-level change — backed by sonnet's enumeration that no role is a substring of another and the bounded precision cost.
+
+### 2.1.23 — Java anonymous-inner-class override in a class-scope initializer (#62)
+
+An anonymous inner class (`new Base(){ … }`) has no name, so its overriding method can never be
+resolved by a `Class.method` by-name call — it is invoked only polymorphically through the base type.
+Inside a method body the enclosing-function containment edge already keeps the override live; but in a
+**field / static / instance initializer** (class scope, no enclosing function) nothing rooted it, so a
+non-`public` override — and the private helper it alone calls — was flagged dead though live. (Public
+overrides were masked by the `exported` role; the gap surfaced on `protected`/package-private
+overrides of a custom abstract base.) Closed by rooting a def that sits directly in an anonymous class
+body (`class_body` child of `object_creation_expression`) as `callback` when at class scope; the
+in-method case stays containment-gated, preserving its precision.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R127 | 3 | ✓ | round 1. All three FINDINGS: none (cardinal). opus structural proof (additive/monotonic, cross-checked vs #61's no-role-gates-out) + 165k-invocation crash fuzz (0 exceptions) + base-vs-HEAD differential + streaming parity. sonnet 15 framework fixtures (Swing/`Runnable`/`Comparator`/`TimerTask`/custom base) + quantified the bounded cardinal-safe precision masking (~1 dead private per class-scope anon class, never leaks to named classes). haiku 12 crash cases incl. enum constants. → precision/under-rooting follow-up **#87** (anon dead-member masking + enum-constant-body override gap). |
+| R128 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus attacked the proof on fresh corners and it held: lambda-in-field (a Java lambda is not a def scope, so `enclosing_func` stays None → correct rooting, no flip), incremental `replace_file` byte-equal to a fresh reindex across edits, streaming parity on a 2101-file tree, base-vs-HEAD strict-SUBSET (numeric monotonicity), enum-constant bodies unchanged from base. sonnet all downstream ops crash-free + masking bounded to anon-class members + no conflict with `_seed_callback_roles`/exported seeding. haiku 200+ fuzz files + 5-deep nesting. |
+
+The 2.1.23 lesson: **an anonymous class has no name, so name-resolution can never reach its
+overrides — they must be rooted structurally.** The two reachability paths for a nameless override
+are the containment edge (in a method body) and polymorphic dispatch (everywhere); only the former
+was modeled, leaving class-scope initializers orphaned. Rooting anon-class members `callback` at
+class scope closes it, gated by `enclosing_func is None` so the in-method case keeps its precise
+containment gating. The diverse panel again leaned on the *monotonicity* proof (additive role ⇒ can't
+strand a live node) and a large crash-fuzz, with sonnet bounding the precision cost.
 
 ## Standing themes
 
