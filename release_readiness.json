@@ -1679,6 +1679,26 @@
             ],
             "findings": {},
             "theme": "v2.1.27 (#74) fresh round 2 \u2014 CLEAN, second consecutive full-diversity \u2192 gate met, RELEASABLE. opus: all four reexport forms (`export {A}`/`export default {B}`/`module.exports={C}`/`export const d={D} as const`) coexist and root independently; dual-name + double-export lose no liveness (over-root only); TSX/.mts/.cts root; DOGFOOD on stitchgraph/src shows streaming==in-memory stale parity and 0 public-API symbols newly flagged. sonnet: 5-level transitive chain across 3 files live, cross-language isolation (JS rooting doesn't leak to Python/Go), 7 genuinely-dead siblings still flagged (no blanket-root). haiku: full suite 543 + oracles 27 green; pathological inputs (1000 members, unicode/keyword member names, chained wrappers) no crash; mixed valid+broken-syntax tree completes. Pre-existing cardinal-safe recall notes (not introduced): `<const>{\u2026}` angle-bracket assertion + `{\u2026}!` non-null not in _TS_VALUE_WRAPPERS; >8 nested parens; bare-identifier alias-export `export const x = f` \u2014 all deferred."
+        },
+        {
+            "id": "R138",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.28 (#76/#78) round 1 \u2014 CLEAN, full diversity. opus: `_trailing_id` private_property_identifier addition is strictly ADDITIVE (former None -> #name, no misroute possible; #-prefix unique so no public/private collision; inert at other call sites by grammar), #78 dyn-key modeling additive with id-collision safety (`[\"run\"]` vs `run` distinct), parity. sonnet (12 fixtures): private state machines, #private static/getter/arrow-field, Redux `[\"ACTION\"]` maps, #54 Symbol coexistence, mixed precision \u2014 all live chains live, uncalled #private + plain-dead still flag. haiku: crash sweep (only-#private class, hex/unicode/escaped string keys, numeric keys, 200+ dyn methods, broken syntax, multilingual) zero crashes, 441 tests. Note (pre-existing, cardinal-safe): cross-class same-named #private collision -> AMBIGUOUS over-root (a correctness GAIN vs the prior false-dead)."
+        },
+        {
+            "id": "R139",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.28 (#76/#78) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus: other _trailing_id/_name_of consumers (_reexport_names/_bases/_callee/imports) unaffected (private_property_identifier grammatically confined); #private in exported class correctly NOT rescued by _seed_exported_class_methods (line excludes `#`-prefix) so uncalled #private still flags; `.`/`::`-containing dyn-key ids cause no crash + no under-rooting (dyn-key rooted callback directly); DOGFOOD streaming==in-memory parity; 550 tests. sonnet: realistic 6-file library, inheritance (base #private not confused with sub), plain-JS ES2022, regression bundle (#54/#74/exported-rescue) no regression, free-fn-via-#private transitive live. haiku: full 550 + oracles 27; downstream ops (get_callers/get_callees/impact_of/trace_path/orient/scan) crash-free on #private + dyn-key nodes; pathological key text (::,.,quotes) ids intact; reindex idempotent. Cosmetic-only over-root notes (dyn-key id with `.`/`::` may confuse class-membership queries \u2014 no liveness impact)."
         }
     ]
 }

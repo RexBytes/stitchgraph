@@ -8,11 +8,11 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.25: R131–R132 on C/C++ function-pointer table / vtable promotion (#69). 2.1.26: R133–R134 on JS/TS implicit-dispatch class members (#54) — closed the per-language cardinal sweep. **2.1.27: R135 (found an in-scope cardinal) → R136–R137** (full diversity opus/sonnet/haiku) on JS/TS shorthand member of an exported object (#74) — clean in 2 fresh rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_reexport_names` new branch pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 543 passing (full extras) |
+| Multi-model review panels | 2.1.26: R133–R134 on JS/TS implicit-dispatch class members (#54) — closed the per-language cardinal sweep. 2.1.27: R135 (found an in-scope cardinal) → R136–R137 on JS/TS exported-object shorthand (#74). **2.1.28: R138–R139** (full diversity opus/sonnet/haiku) on TS class-member resolution cardinals (#76 `#private`, #78 dynamic-keyed) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_trailing_id` private leaf pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 551 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.25: C/C++ function-pointer table promotion → R131✓ R132✓. 2.1.26: JS/TS implicit-dispatch class members → R133✓ R134✓ (closed the sweep). 2.1.27: JS/TS exported-object shorthand member → R135 (cardinal found, fixed) → **R136✓ R137✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.26: JS/TS implicit-dispatch class members → R133✓ R134✓ (closed the sweep). 2.1.27: JS/TS exported-object shorthand → R135 (cardinal found, fixed) → R136✓ R137✓. 2.1.28: TS `#private` + dynamic-keyed class methods → **R138✓ R139✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **1.0.0–2.1.26 RELEASED/releasable** (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27** (a function referenced via object-literal SHORTHAND in an exported object — `export const handlers = { onClick }`, incl. the canonical `… as const` / `satisfies` / parens forms — is public API but was flagged dead because a `shorthand_property_identifier` is never modeled as a reference; `_reexport_names` now collects an exported declaration's object-literal member names, unwrapping TS value wrappers, into the reexport→`exported` path) **RELEASABLE** — R136–R137 full-diversity clean; awaiting the maintainer's manual `v2.1.27` tag. This is the first of the post-sweep **cardinal-safe follow-up backlog** (#70–#89): #74 fixed; #77/#81/#83 resolved without code change (deliberate precision boundary / already-covered for exported modules). Remaining follow-ups deferred. |
 
@@ -1554,6 +1554,29 @@ surfaced in round 2 — and the fix was the one-line unwrap the def branches alr
 member-assign), #81, and #83 in the same cluster were resolved WITHOUT a code change: #77 is a deliberate
 precision boundary (a statically-named underscore member that is actually called resolves by name —
 verified), and #81/#83 are already covered for exported modules via `_module_uses` + def-body recursion.
+
+### 2.1.28 — TS class-member resolution cardinals (#76, #78)
+
+Two ways a genuinely-live TS class method (and the private helpers it alone calls) was confidently
+flagged dead. #76: a `#private` method called via `this.#m()` — `_name_of` and `_callee` both
+returned None for `private_property_identifier`, so the `#m` def was dropped (body unwalked → helper
+dead) and the call edge was lost. #78: a class method with a dynamic key (string `"k"(){}`,
+computed-string `["k"](){}`, numeric `42(){}`) — `_name_of` returned None, dropping the def. Closed
+by (a) adding `private_property_identifier` to `_trailing_id`'s leaf set so the def name and the call
+site resolve to the same `#m`, and (b) modeling a dynamic-keyed class method as a node (named from
+the raw key) with its body walked, rooted `callback` (reachable only via a dynamic subscript). A
+`#private` method resolves by name, so an UNCALLED one still flags dead (precision preserved); the
+dynamic-key rooting is the class-body analogue of the object-literal computed-key rule.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R138 | 3 | ✓ | round 1. opus: the `_trailing_id` change is strictly ADDITIVE (former None → `#name`, no misroute; `#`-prefix unique so no public/private collision; inert at other call sites by grammar); #78 modeling additive with id-collision safety (`["run"]` vs `run` distinct). sonnet (12 fixtures): private state machines, static/getter/arrow-field `#private`, Redux `["ACTION"]` maps, #54 Symbol coexistence — all live, uncalled #private + plain-dead still flag. haiku: crash sweep (hex/unicode/escaped keys, 200+ dyn methods, broken syntax) zero crashes, 441 tests. |
+| R139 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: other `_trailing_id`/`_name_of` consumers unaffected; a `#private` in an exported class is correctly NOT rescued (so uncalled still flags); `.`/`::` dyn-key ids cause no crash + no under-rooting; DOGFOOD streaming==in-memory parity; 550 tests. sonnet: 6-file library, inheritance, plain-JS ES2022, regression bundle (#54/#74) no regression, free-fn-via-#private transitive live. haiku: 550 + oracles 27; downstream ops crash-free on #private/dyn-key nodes; reindex idempotent. |
+
+A pre-existing, cardinal-SAFE note the panel surfaced: two classes with an identically-named
+`#private` method share a by-name bucket, so a `this.#m()` call resolves AMBIGUOUSLY to both — an
+over-root in the safe direction, and a net correctness *gain* over the prior state (where the
+`#private` node didn't exist at all and the called method was a false-dead).
 
 ## Standing themes
 
