@@ -30,6 +30,14 @@ C# method groups, JS `arr.forEach(obj.handler)` — is pre-existing and tracked 
 its own per-language review. Bare function/arrow expressions in JS/TS expression positions (#83) and
 `this.#m()` private dispatch (#76/#78) remain deferred.
 
+Precision note (cardinal-safe): because a plain Go struct-field read (`w.run`) is syntactically
+identical to a method value, its field name is emitted as a reference too — so a genuinely-dead
+function/method whose name *exactly* collides with a struct field name is over-rooted (kept live).
+This never produces a false-dead (it is the precision-over-recall, cardinal-safe direction, and is
+strictly better than the pre-fix state where the method value itself was false-dead), and is bounded
+to exact-name collisions. A follow-up (#84) will narrow selector-field references to method-kind
+resolution to recover that recall.
+
 ## [2.1.20] — 2026-06-28
 
 **JS/TS object & class literals in EXPRESSION positions — cardinal fix (#75).**

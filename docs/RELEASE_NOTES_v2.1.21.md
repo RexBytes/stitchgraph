@@ -57,6 +57,14 @@ The same "method named as a value, not called" shape in other grammars — Rust 
 tracked separately; each warrants its own per-language review. JS/TS bare function/arrow expressions
 in expression positions (#83) and `this.#m()` private dispatch (#76/#78) remain deferred.
 
+**Precision note (cardinal-safe).** A plain struct-field read (`w.run`) is syntactically identical to
+a method value, so its field name is emitted as a reference too. A genuinely-dead function/method
+whose name *exactly* collides with a struct field is therefore over-rooted (kept live). This is never
+a false-dead — it is the precision-over-recall, cardinal-safe direction, and strictly better than the
+pre-fix state where the method value itself was false-dead — and it is bounded to exact-name
+collisions. A follow-up (#84) will narrow selector-field references to method-kind resolution to
+recover the lost recall.
+
 ## Quality gate
 
 Full suite — 493 tests (Go method value / method expression / struct-field value parametrized,

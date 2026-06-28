@@ -1527,6 +1527,26 @@
       ],
       "findings": {},
       "theme": "v2.1.20 (#75) round 2 — CLEAN, second consecutive full-diversity clean → gate met, RELEASABLE. Fresh angles, not a rerun. opus: multi-file homonym resolution over-approximates to ALL same-named candidates (a synthetic <obj@..>.go never evicts a real Foo.go); getter/setter id-collision loses a node ROW but not its call edges (reachability keys adjacency by edge src, dst-existence only) so nothing real goes stale; positional per-file synthetic ids cannot collide with real symbols; body-field guard distinguishes the bare `class` keyword token from a class expression. sonnet 25+ scenarios (Angular @Component/NgRx/Pinia this-dispatch/class-field initializers/default-param objects/JSX/40-symbol mixed live+dead — all 5 genuinely-dead still flag, 20+ live retained); the 2 apparent violations confirmed PRE-EXISTING on base (function-reference-as-argument liveness, #83 family). haiku 100+ cases incl. empty/spread-only/deeply-nested. No newly-introduced cardinal, no crash; full suite 487 + 27 oracles green."
+    },
+    {
+      "id": "R123",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.21 (#49) round 1 — CLEAN, all three FINDINGS: none. Go method value (`reg(v.run)`) / method expression (`use(t.run)`) / struct-field value (`cfg{onRun: v.run}`): `_direct_refs` now emits a Go selector_expression's trailing field name as a by-name REFERENCES edge, so an UNEXPORTED method reached only as a value is live (capitalized/exported methods were already rooted, which had masked the gap). opus gave a structural proof: the branch is strictly additive and `find_stale` reachability is weight-AGNOSTIC boolean BFS (reach.py), so it can only over-root (safe) — and a base-commit dump confirms HEAD fixes a real cardinal (`m.go::run` was false-dead before). sonnet 24 fixtures (cobra/gin/k8s/goroutine/defer/embedding/dispatch-map/25-symbol mixed); haiku 68. Genuinely-dead unexported method still flags; no crash. Streak resets (new fix)."
+    },
+    {
+      "id": "R124",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.21 (#49) round 2 — CLEAN on the cardinal invariant, second consecutive full-diversity → gate met, RELEASABLE. opus attacked the edges of round 1's additive argument: confirmed selector_expression is Go-UNIQUE across all 12 grammars (no cross-language effect), streaming==in-memory parity (the `_precompute_def` refs path), CALLS/REFERENCES double-dedup (in-function called-set skip + `_dedup_edges`), base-vs-HEAD differential. sonnet quantified the over-rooting blast radius: a struct-field read (`w.run`) shares the selector shape with a method value, so a dead function whose name EXACTLY collides with a struct field is kept live (synthetic worst case 22/25) — cardinal-SAFE precision-over-recall, bounded to exact-name matches, strictly better than the pre-fix false-dead; tracked as precision follow-up #84. haiku 66 cases (pathological selectors, truncated Go, cross-language sanity) crash-free. No newly-introduced cardinal in either round."
     }
   ]
 }

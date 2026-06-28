@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.18: R106–R118 (object-literal members, 13 rounds). 2.1.19: R119–R120 on `const X = class {…}` (#80). **2.1.20: R121–R122** (full diversity opus/sonnet/haiku) on object/class literals in EXPRESSION positions (#75) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_collect` cardinal site killed; survivors pre-existing or cardinal-safe) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 487 passing (full extras) |
+| Multi-model review panels | 2.1.19: R119–R120 on `const X = class {…}` (#80). 2.1.20: R121–R122 on object/class literals in EXPRESSION positions (#75). **2.1.21: R123–R124** (full diversity opus/sonnet/haiku) on Go method value/expression selectors (#49) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_direct_refs` selector site killed; survivors pre-existing) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 493 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.18: object-literal members → R117✓ R118✓ (13 rounds). 2.1.19: `const X = class {…}` → R119✓ R120✓. 2.1.20: object/class literals in EXPRESSION positions → **R121✓ R122✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.19: `const X = class {…}` → R119✓ R120✓. 2.1.20: object/class literals in EXPRESSION positions → R121✓ R122✓. 2.1.21: Go method value/expression selectors → **R123✓ R124✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.19 RELEASED/releasable** (maintainer tags). **2.1.20** (JS/TS object & class literals reached via an EXPRESSION shape — call argument / array element / ternary / `||`/`??` / IIFE return / sequence / chained-or-parenthesized assignment — now routed through `_object_members` / anonymous-class modeling, with a now-safe descending declarator `else`) **RELEASABLE** — R121–R122 full-diversity clean; awaiting the maintainer's manual `v2.1.20` tag. This closes the broad #75 family that 2.1.18/2.1.19 had documented as deferred. opus's round-1 base-vs-HEAD differential gave a structural proof the change is reachability-monotonic (purely additive → cannot introduce a false-dead). Remaining JS/TS gaps are bare *function/arrow* expressions in expression position (#83, the function analogue) and `this.#m()` private dispatch (#76/#78) — pre-existing, deferred. |
+| Verdict | **1.0.0–2.1.20 RELEASED/releasable** (maintainer tags). **2.1.21** (Go method value `reg(v.run)` / method expression `use(t.run)` / struct-field value `cfg{onRun: v.run}`: `_direct_refs` now emits the Go `selector_expression` field name as a by-name REFERENCES edge, so an unexported method reached only as a value is live) **RELEASABLE** — R123–R124 full-diversity clean; awaiting the maintainer's manual `v2.1.21` tag. opus proved the change is reachability-monotonic (additive edges + weight-agnostic boolean BFS → cannot strand a live node); sonnet quantified a bounded, cardinal-safe over-rooting from struct-field/function name collisions, scoped to precision follow-up #84. Remaining cardinals are in other languages — Java (#61/#62), C/C++ (#59/#69) — and the JS/TS function-expression analogue (#83); pre-existing, deferred. |
 
 ## Trajectory
 
@@ -1382,6 +1382,32 @@ at the point generic descent reaches it and route it through proper member rooti
 finally descend. The diverse panel's value this round was the **structural / differential** argument
 (opus's monotonicity proof + base-vs-HEAD harness) over fixture enumeration — the strongest evidence
 that an *additive* change cannot introduce a false-dead.
+
+### 2.1.21 — Go method value / method expression references (#49, cobra dogfood)
+
+An **unexported** Go method reached only as a *method value* (`reg(v.run)`), *method expression*
+(`use(t.run)`), or struct-literal field value (`cfg{onRun: v.run}`) was flagged dead. These are
+references, not calls: `_direct_calls` sees only `v.run()` call sites, and `_direct_refs` collected
+`identifier`/`type_identifier`/`constant`/`name` nodes but not the selector's `field_identifier`, so
+the method got no inbound edge. (Capitalized/exported methods are rooted as public API — that masked
+the gap until it was probed with unexported receivers, the methodical lesson: *test the unexported
+surface, because the exported one is auto-live.*) Closed by emitting the trailing `field` name of a
+Go `selector_expression` as a by-name REFERENCES edge in `_direct_refs` (Go-scoped — that node type
+is unique to the Go grammar).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R123 | 3 | ✓ | round 1. All three FINDINGS: none. opus structural proof — the branch is strictly additive and `find_stale` is weight-agnostic boolean BFS, so it can only over-root (cardinal-safe); base-commit dump confirms HEAD fixes a real false-dead. sonnet 24 framework fixtures (cobra/gin/k8s/goroutine/defer/embedding/dispatch-map/25-symbol mixed live+dead); haiku 68. Genuinely-dead unexported method still flags; no crash. |
+| R124 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus confirmed Go-uniqueness of `selector_expression` across all 12 grammars (no cross-language effect), streaming==in-memory parity, CALLS/REFERENCES double-dedup, base-vs-HEAD differential. sonnet quantified the over-rooting blast radius (a struct-field read shares the selector shape, so a dead function whose name *exactly* collides with a struct field is kept live — synthetic worst case 22/25; cardinal-SAFE precision-over-recall, bounded to exact-name matches, strictly better than the pre-fix false-dead) → precision follow-up **#84**. haiku 66 crash/edge cases clean. |
+
+The 2.1.21 lesson: **a reference is not a call, and a method value is a reference.** The selector
+field that names a method handed off as a value never appears in the call scan; emitting it as a
+REFERENCES edge (the same closing move the Python `_direct_names` / the JS bare-name refs use) keeps
+the live target live. The diverse panel's value this round was twofold: opus's *weight-agnostic-BFS*
+structural proof (an additive edge change cannot strand a live node), and sonnet's *blast-radius
+quantification* — naming the precision cost precisely (exact-name field/function collisions) and
+scoping the safe-but-real recall loss into its own follow-up rather than letting it block a
+cardinal-clean release.
 
 ## Standing themes
 
