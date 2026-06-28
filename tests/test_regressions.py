@@ -7303,3 +7303,128 @@ def test_ruby_symbol_refs_helper():
         tree = parser.parse(src)
         got = [n for n, _ in ts._ruby_symbol_refs(tree.root_node, src)]
         assert got == expected, f"{code!r} -> {got}, expected {expected}"
+
+
+def test_object_literal_method_bodies_are_walked(tmp_path):
+    """#48 (cardinal): a top-level function called ONLY inside an object-literal member —
+    `const obj = { run() { reach() } }` (method shorthand), `{ a: () => inner() }`
+    (function-valued property), or a nested object — was flagged dead, because the object
+    value was never traversed and the call was never seen. Object-literal function members
+    at module scope are dynamically invoked (passed as callbacks, spread into config), so
+    they're rooted `callback` and their bodies walked. A genuinely-uncalled top-level fn
+    must STILL be flagged (no over-rooting of the world)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "export const obj = {\n"
+            "  run() { return reach(); },\n"
+            "  arrow: () => inner(),\n"
+            "  nested: { onClick() { deep(); } }\n"
+            "};\n"
+            "obj.run();\n"
+            "function reach(){ return 1; }\n"
+            "function inner(){ return 2; }\n"
+            "function deep(){ return 3; }\n"
+            "function trulyDead(){ return 99; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "reach" not in stale       # called from a method-shorthand body: live
+        assert "inner" not in stale       # called from a function-valued property: live
+        assert "deep" not in stale        # called from a nested object's method: live
+        assert "trulyDead" in stale       # genuinely uncalled module fn: still flagged
+
+
+def test_commonjs_module_exports_object_methods_are_walked(tmp_path):
+    """#48: the CommonJS `module.exports = { handler() {...} }` object form must also have
+    its member bodies walked, so a helper called only there stays live; a sibling never
+    reached stays flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "c.js": (
+            "function used(){ return 1; }\n"
+            "function alsoDead(){ return 2; }\n"
+            "module.exports = {\n"
+            "  handler() { return used(); }\n"
+            "};\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "used" not in stale        # reached from the exported object's method: live
+        assert "alsoDead" in stale        # never reached: flagged
+
+
+def test_object_literal_private_member_not_rooted(tmp_path):
+    """#48 underscore gate (mirrors the member-assignment precedent): an underscore-private
+    object member opts out of the module-scope callback root. If it's uncalled it's flagged,
+    and a helper reached only from it is flagged too — a recall choice, cardinal-safe (the
+    flagged member really is unreferenced here)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "p.ts": (
+            "const obj = {\n"
+            "  _secret() { return hidden(); }\n"
+            "};\n"
+            "function hidden(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "obj._secret" in ids        # underscore-private, uncalled: flagged
+        assert "hidden" in ids             # reached only from the dead member: flagged
+
+
+def test_object_literal_function_property_non_exported_helper_is_live(tmp_path):
+    """#48: a function-VALUED property (`{ a: () => helper() }`) on a NON-exported object —
+    where _module_uses can't rescue the call because the module isn't a load root — must
+    still have its body walked via the extracted member node. Pins the pair / arrow path
+    independently of module-scope rooting."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "a.ts": (
+            "const obj = { a: () => helper() };\n"
+            "function helper(){ return 1; }\n"
+            "function deadHelper(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale       # called from the arrow-valued property: live
+        assert "deadHelper" in stale       # never reached: flagged
+
+
+def test_object_literal_string_keyed_method_body_is_walked(tmp_path):
+    """#48: a string-KEYED method (`{ "do-it"() { reach() } }`) — `_name_of` returns None for
+    a string key, which would silently drop the member and leave its body unwalked (cardinal).
+    `_obj_key_name` reads the unquoted fragment so the member is extracted, rooted (module-scope,
+    non-underscore), and its body walked. The id carries the clean (unquoted) name."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "s.ts": (
+            "const handlers = {\n"
+            "  \"do-it\"() { return reach(); },\n"
+            "  \"_hidden\"() { return secret(); }\n"
+            "};\n"
+            "function reach(){ return 1; }\n"
+            "function secret(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        names = {i.split(".")[-1] for i in ids}
+        assert "reach" not in names              # string-keyed public method body walked: live
+        assert "handlers.do-it" not in ids       # public string-keyed member: rooted, clean id
+        assert "handlers._hidden" in ids         # underscore string-keyed member: flagged, clean id
+        assert "secret" in names                 # reached only from the dead _hidden member: flagged

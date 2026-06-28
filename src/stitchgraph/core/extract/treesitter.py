@@ -1334,6 +1334,12 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # regular-def branch above already does this; this is its arrow twin).
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=cid)
+            elif name and val is not None and val.type == "object":
+                # `const obj = { run() {…}, h: () => {…} }` — extract the object's
+                # function-valued members so their bodies are walked (else a helper
+                # called only there is flagged dead; cardinal). See _object_members.
+                _object_members(val, src, rel, spec, lang, _join(parent, name),
+                                nodes, defs, contains, enclosing_func)
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
             # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
@@ -1384,12 +1390,88 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains,
                          enclosing_func=(cid if kind is M else None))
+            elif left is not None and val is not None and val.type == "object":
+                # An object literal assigned to a member or name — `module.exports = {…}`,
+                # `exports = {…}`, `Foo.prototype = { m(){…} }`. Extract its function-valued
+                # members so their bodies are walked (else a helper called only there is
+                # flagged dead; cardinal). The full LHS keeps the qual unique.
+                _object_members(val, src, rel, spec, lang, _join(parent, _text(left, src)),
+                                nodes, defs, contains, enclosing_func)
             else:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          exported, is_test, contains=contains, enclosing_func=enclosing_func)
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)
+
+
+_OBJ_FN_VALUES = ("arrow_function", "function", "function_expression")
+
+
+def _obj_key_name(key, src):
+    """The static name of an object-literal member key, or None. A plain
+    `property_identifier`/`identifier` is its text; a string key (`"on-click"() {…}`,
+    `"k": fn`) is the unquoted fragment — `_name_of` returns None for a string-keyed
+    method, which would silently drop the member and leave its body unwalked (cardinal).
+    A computed key (`[Symbol.iterator]`, `[expr]`) or number key has no static name → None
+    (computed-symbol dispatch is its own concern)."""
+    if key is None:
+        return None
+    if key.type == "string":
+        frag = next((c for c in key.children if c.type == "string_fragment"), None)
+        return _text(frag, src) if frag is not None else None
+    if key.type in ("property_identifier", "identifier", "private_property_identifier"):
+        return _text(key, src)
+    return None
+
+
+def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, contains,
+                    enclosing_func):
+    """Extract the function-valued members of a JS/TS object literal as METHOD nodes so
+    their bodies are walked in pass 2 — without this, a module-private function called
+    ONLY inside `const obj = { run() { helper() } }` (method shorthand) or
+    `{ run: () => helper() }` (function-valued property) is flagged dead, because the
+    object value is never traversed and the call to `helper` is never seen (cardinal;
+    rxjs/lodash-style config objects). A module-scope, non-underscore member is invoked
+    dynamically/externally — passed as a callback, spread into config, or looked up by a
+    computed key — never by a plain local name, so root it `callback` (mirrors the
+    member-assignment precedent at the `assignment_expression` branch; over-rooting a
+    member is the precision-over-recall, cardinal-safe direction). A member nested in a
+    function body stays reachability-gated via the CONTAINS edge below — a dead
+    initializer must not mint live roots. Recurses into nested object values so
+    `{ a: { onClick(){…} } }` is covered too."""
+    for child in obj.children:
+        if child.type == "method_definition":
+            name = _obj_key_name(child.child_by_field_name("name"), src)
+            val = child
+        elif child.type == "pair":
+            name = _obj_key_name(child.child_by_field_name("key"), src)
+            val = child.child_by_field_name("value")
+            if val is None:
+                continue
+            if val.type == "object":
+                if name:
+                    _object_members(val, src, rel, spec, lang, _join(parent, name),
+                                    nodes, defs, contains, enclosing_func)
+                continue
+            if val.type not in _OBJ_FN_VALUES:
+                continue
+        else:
+            continue
+        if not name:
+            continue
+        qual = _join(parent, name)
+        roles: set[str] = set()
+        # Module-scope (not nested in a function body) public member: dynamically invoked,
+        # root it. Underscore-private members opt out, matching the member-assignment gate.
+        if enclosing_func is None and not name.startswith("_"):
+            roles.add("callback")
+        cid = f"{rel}::{qual}"
+        nodes.append(Node(id=cid, kind=M, name=name, location=_loc(rel, val),
+                          end_line=val.end_point[0] + 1, roles=frozenset(roles)))
+        defs.append((rel, cid, val, lang))
+        if enclosing_func is not None:
+            contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
 
 
 def _bases(node, src, spec):

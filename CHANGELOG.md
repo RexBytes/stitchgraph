@@ -4,6 +4,33 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.18] — 2026-06-28
+
+**JS/TS object-literal function-member bodies — cardinal fix (rxjs/lodash-style config objects).**
+A top-level function called ONLY inside an object-literal member — `const obj = { run() { helper() } }`
+(method shorthand), `{ run: () => helper() }` (function-valued property), or a nested object — was
+false-flagged dead: the object value was never traversed, so the call to `helper` was never seen and
+its sole caller was invisible to the graph.
+
+### Fixed
+
+- **New `_object_members` pass** extracts the function-valued members of a JS/TS object literal
+  (method shorthand, `arrow`/`function`/`function_expression`-valued properties, and members of
+  nested object values) as METHOD nodes, so pass 2 walks their bodies and the calls inside become
+  visible. Wired into both the `variable_declarator` branch (`const obj = {…}`) and the
+  `assignment_expression` branch (`module.exports = {…}`, `Foo.prototype = {…}`).
+- A module-scope, non-underscore member is invoked dynamically/externally (passed as a callback,
+  spread into config, looked up by a computed key), never by a plain local name, so it takes the
+  `callback` role — mirroring the existing member-assignment precedent. Over-rooting a member is the
+  precision-over-recall, cardinal-safe direction. A member nested inside a function body stays
+  reachability-gated via a CONTAINS edge (a dead initializer must not mint live roots). An
+  underscore-private member opts out of the root, matching the member-assignment gate.
+- **New `_obj_key_name` helper** reads a member key's static name including STRING keys
+  (`{ "do-it"() {…} }`, `{ "k": fn }`) — `_name_of` returns None for a string-keyed method, which
+  would silently drop the member and leave its body unwalked (the same cardinal class). Computed
+  keys (`[Symbol.iterator]`) and number keys have no static name and are left to their own concern.
+  A genuinely-uncalled top-level function still flags.
+
 ## [2.1.17] — 2026-06-28
 
 **Ruby `&:symbol` / `enum_for` / `&method(:m)` symbol dispatch — cardinal fix (Ruby dogfood).**
