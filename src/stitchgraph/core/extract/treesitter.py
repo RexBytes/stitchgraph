@@ -1288,6 +1288,17 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             if lang in ("javascript", "typescript", "tsx") \
                     and _has_callback_decorator(child, src, decos):
                 roles.add("callback")
+            # A def inside an ANONYMOUS class body (`new Base(){ void m(){…} }`) is reachable
+            # only polymorphically through the base type — the class has no name, so its
+            # override can never be resolved by a `Class.m` by-name call. Inside a method body
+            # the enclosing-function containment edge already keeps it live; at CLASS scope (a
+            # field / static initializer, enclosing_func is None) nothing roots it, so the
+            # override — and the private helpers it alone calls — was flagged dead though live
+            # (#62, cardinal; Java `new Runnable(){…}` / `new Comparator(){…}` / a custom
+            # abstract base in a field). Root it `callback`. Cardinal-safe (only adds a root);
+            # the in-method case stays containment-gated, preserving its precision.
+            if enclosing_func is None and _is_anonymous_class_member(child):
+                roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
             nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, child),
@@ -1635,6 +1646,21 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, co
         _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                  False, is_test, contains=contains,
                  enclosing_func=(cid if (kind is M or enclosing_func is not None) else None))
+
+
+def _is_anonymous_class_member(node) -> bool:
+    """True if `node` (a def) sits directly in an ANONYMOUS class body — a Java
+    `new Base(){ … }` whose body is a `class_body` child of an `object_creation_expression`.
+    Such a class has no name, so an overriding method in it can never be resolved by a
+    `Class.method` by-name call; it is invoked only polymorphically through the base type
+    (Runnable.run, Comparator.compare, a custom abstract base). Used to root those members
+    `callback` when they sit at CLASS scope (a field / static initializer), where — unlike an
+    anonymous class inside a method body — there is no enclosing-function containment edge to
+    keep them live (#62, cardinal)."""
+    body = node.parent
+    return (body is not None and body.type == "class_body"
+            and body.parent is not None
+            and body.parent.type == "object_creation_expression")
 
 
 def _bases(node, src, spec):

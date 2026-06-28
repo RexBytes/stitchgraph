@@ -4,6 +4,35 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.23] — 2026-06-28
+
+**Java anonymous-inner-class override in a class-scope initializer — cardinal fix (#62).**
+An anonymous inner class (`new Base() { … }`) has no name, so its overriding method can never be
+resolved by a `Class.method` by-name call — it is invoked only polymorphically through the base type
+(`Runnable.run`, `Comparator.compare`, a custom abstract base). When the anonymous class sits in a
+**method body** the enclosing-function containment edge already keeps its override live; but in a
+**field / static initializer** (class scope, no enclosing function) nothing rooted it, so a
+non-`public` override — and the private helpers it alone calls — was confidently flagged dead though
+live. (Public overrides were masked by the `exported` role; the gap shows on `protected`/
+package-private overrides of a custom abstract base.)
+
+### Fixed
+
+- A def that sits directly in an anonymous class body (a `class_body` child of an
+  `object_creation_expression`) is now rooted `callback` when it is at class scope
+  (`enclosing_func is None`) — it is polymorphically invoked and unreachable by name. An anonymous
+  class inside a method body stays reachability-gated via the existing containment edge, preserving
+  its precision (an override in a genuinely-dead method still flags). Cardinal-safe: only ever adds
+  a root. A normal (named) class is untouched (the check requires the `object_creation_expression`
+  parent), so a genuinely-dead named-class method still flags.
+
+### Known limitations (unchanged / newly documented)
+
+Abstract/interface method *declarations* (no body) are still flagged dead even when concrete
+implementations are reached (#86) — pre-existing, general, and not a true live-code cardinal (a
+bodyless contract slot). The C/C++ macro-body call sites (#59) and cross-TU function-table promotion
+(#69) remain deferred to their own reviews.
+
 ## [2.1.22] — 2026-06-28
 
 **Same-name method-overload role clobber — cardinal fix (#61, store-level, all languages).**

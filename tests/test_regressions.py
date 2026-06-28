@@ -8058,3 +8058,94 @@ def test_overload_role_union_does_not_overroot_unrelated(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"] for c in sg.find_stale(store).result}
         assert "Api.java::Api.secret" in stale, "a genuinely-dead private method must still flag"
+
+
+def test_anon_class_protected_override_in_field_initializer_is_live(tmp_path):
+    """#62 (cardinal): an anonymous-inner-class override in a CLASS-scope field initializer is
+    invoked only polymorphically (the class has no name, so the override can't be called by a
+    `Class.m` by-name call) and has no enclosing function to root it via containment. A protected
+    override (NOT `exported`) of a custom abstract base — and the private helper it alone calls —
+    was flagged dead though live. Anonymous-class members at class scope are now rooted `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"M.java": (
+        "abstract class Handler { protected abstract void handle(); }\n"
+        "public class M {\n"
+        "  static final Handler H = new Handler() {\n"
+        "    protected void handle() { work(); }\n"
+        "  };\n"
+        "  private static void work() {}\n"
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "M.java::M.handle" not in stale, "anon-class override in a field initializer must be live"
+        assert "M.java::M.work" not in stale, "a helper called only by the anon override must be live"
+
+
+@pytest.mark.parametrize("body", [
+    # JDK Runnable in a static field, never called by name
+    "static final Runnable R = new Runnable() { public void run() { tick(); } };\n"
+    "  private static void tick() {}",
+    # custom abstract base, protected override
+    "static final Task T = new Task() { protected void exec() { step(); } };\n"
+    "  private static void step() {}",
+])
+def test_anon_class_member_rooted_at_class_scope(tmp_path, body):
+    """#62: members of an anonymous class in a class-scope initializer are rooted so a helper
+    reached only through the override stays live, across JDK and custom bases."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"M.java": (
+        "abstract class Task { protected abstract void exec(); }\n"
+        "public class M {\n  " + body + "\n}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tick" not in stale and "step" not in stale
+
+
+def test_anon_class_in_dead_method_stays_dead(tmp_path):
+    """#62 precision guard: an anonymous-class override inside a genuinely-DEAD method must stay
+    dead — it is reachability-gated to the enclosing function via the containment edge, NOT rooted
+    `callback` (that rooting is only for the class-scope case with no enclosing function). The
+    callback rooting must not leak into method-body anonymous classes and over-root a dead path."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # A PROTECTED override (not `exported`) of a custom abstract base — so liveness depends purely
+    # on containment, not the public->exported rooting that would mask the gating behaviour.
+    _mk(tmp_path, {"M.java": (
+        "abstract class Task { protected abstract void exec(); }\n"
+        "public class M {\n"
+        "  public static void main(String[] a) {}\n"          # never calls deadCreator
+        "  private static void deadCreator() {\n"
+        "    Task t = new Task() { protected void exec() { helper(); } };\n"
+        "  }\n"
+        "  private static void helper() {}\n"
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "M.java::M.deadCreator" in stale, "a genuinely-dead method must still flag"
+        assert "M.java::M.helper" in stale, "a helper reached only via a dead method's anon class must stay dead"
+
+
+def test_named_class_method_still_flags_when_dead(tmp_path):
+    """#62 guard: the anonymous-class rooting must not affect a NORMAL (named) class — a
+    genuinely-unused private method of a named class still flags dead (the check requires an
+    `object_creation_expression` parent, so named class members are untouched)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"M.java": (
+        "public class M {\n"
+        "  public static void main(String[] a) {}\n"
+        "  private static void deadHelper() {}\n"   # named class, never called -> dead
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "M.java::M.deadHelper" in stale, "a genuinely-dead named-class method must still flag"
