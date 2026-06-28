@@ -1719,6 +1719,26 @@
             ],
             "findings": {},
             "theme": "v2.1.29 (#70/#86) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus: inheritance+override end-to-end (subscripted-Protocol abstract decl live, override-via-base-type live, dead override flags), cross-file Protocol/impl/consumer, #51 subscripted-base INHERITS coexists with abstract detection, no metric inflation, DOGFOOD streaming==in-memory parity (only pre-existing supported_languages flagged). sonnet: plugin ABC architecture, DI Protocols across 5 files, @runtime_checkable/@abstractmethod @property/abstract @classmethod, precision (concrete-dead in ABC still flags). haiku: full 553 + oracles 27; find_holes correctly does NOT report bodyless abstract methods as stub-holes; reindex idempotent; downstream ops crash-free. Cardinal-safe note: a bare pass-bodied non-@abstractmethod method in an ABC is also callback-rooted (in_abstract+is_stub) \u2014 suppresses a dead finding, never flags live dead."
+        },
+        {
+            "id": "R142",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.30 (#89) round 1 \u2014 CLEAN, full diversity. opus: post-pass is purely additive (`n.roles |= {callback}`, no removal/abort), parent commit has zero refs to c_type_refs; precision preserved (DeadNeverUsed/OnlyDefined/unused-template all still flag); body-is-None guard excludes the definition; cross-language gate (_canon_lang==cpp) blocks bleed to Java/C#/TS homonyms; _trailing_id safe on ns::Inner/Box<T>/enum class/A::B::C; cross-file header->.c rooting works; parity. sonnet (6 fixtures): header/source split, field/typedef/enum/union type uses, C++ class/enum-class/namespace/template, #69 fn-table + #59 macro coexistence, dead C functions still caught. haiku: 12 crash/edge cases (anon struct, enum class with base, self-referential, 500-field, broken syntax) no crash, 422+27 green, parity."
+        },
+        {
+            "id": "R143",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.30 (#89) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus (mechanism): rooting a class `callback` does NOT rescue its methods \u2014 LIVENESS_RELATIONS excludes CONTAINS, _seed_exported* key on `exported` not `callback`, so a dead method of a type-rooted class still flags (verified); .h/.cpp/.c unification cross-bucket; sizeof/cast/fn-ptr-typedef type uses rooted; 2000-struct + recursive typedef reindex 0.3s no crash; streaming==in-memory parity. sonnet: realistic C allocator + C++ inheritance/templates/namespaces, precision boundary (TrulyDeadStruct flags), transitive type liveness, mixed-language isolation, body-filter unit test. haiku: full 558 + oracles 27, downstream ops crash-free on struct nodes, idempotent, 9 pathological scenarios. Cardinal-safe recall note (non-blocking): C++ bare type names without the struct/class keyword parse as type_identifier and aren't collected \u2014 rescued by the REFERENCES edge when the using code is live, correct-dead when dead; never a cardinal."
         }
     ]
 }

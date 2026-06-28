@@ -8,11 +8,11 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.27: R135→R136–R137 on JS/TS exported-object shorthand (#74). 2.1.28: R138–R139 on TS class-member resolution cardinals (#76/#78). **2.1.29: R140–R141** (full diversity opus/sonnet/haiku) on Python abstract/Protocol interface methods (#70/#86) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_is_abstract_class` 2/2 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 553 passing (full extras) |
+| Multi-model review panels | 2.1.28: R138–R139 on TS class-member resolution cardinals (#76/#78). 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). **2.1.30: R142–R143** (full diversity opus/sonnet/haiku) on C/C++ struct-used-as-a-type (#89) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_c_type_ref_names` 4/4 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 558 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.27: JS/TS exported-object shorthand → R135 (cardinal found, fixed) → R136✓ R137✓. 2.1.28: TS `#private` + dynamic-keyed class methods → R138✓ R139✓. 2.1.29: Python abstract/Protocol interface methods → **R140✓ R141✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.28: TS `#private` + dynamic-keyed class methods → R138✓ R139✓. 2.1.29: Python abstract/Protocol interface methods → R140✓ R141✓. 2.1.30: C/C++ struct-used-as-a-type → **R142✓ R143✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **1.0.0–2.1.26 RELEASED/releasable** (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27** (a function referenced via object-literal SHORTHAND in an exported object — `export const handlers = { onClick }`, incl. the canonical `… as const` / `satisfies` / parens forms — is public API but was flagged dead because a `shorthand_property_identifier` is never modeled as a reference; `_reexport_names` now collects an exported declaration's object-literal member names, unwrapping TS value wrappers, into the reexport→`exported` path) **RELEASABLE** — R136–R137 full-diversity clean; awaiting the maintainer's manual `v2.1.27` tag. This is the first of the post-sweep **cardinal-safe follow-up backlog** (#70–#89): #74 fixed; #77/#81/#83 resolved without code change (deliberate precision boundary / already-covered for exported modules). Remaining follow-ups deferred. |
 
@@ -1597,6 +1597,28 @@ concrete (real-body) uncalled method in an ABC and its private helper still flag
 is the cardinal-SAFE direction (it keeps a possibly-framework-reachable class live), and tightening
 it would *un-mask* — risking a live framework-only-reachable class flagged dead. A deliberate
 precision boundary, left intentionally; the panel independently confirmed the reasoning.
+
+### 2.1.30 — C/C++ struct used only as a type (#89)
+
+A struct/union/enum used only as a TYPE — `struct Config g;`, `void f(struct Config *p)`, a field or
+return type — is a live data-model definition, but C/C++ has no constructor call to edge it, so it had
+no inbound edge and was false-flagged dead. Closed by `_c_type_ref_names`, which collects the names of
+bodyless (type-use) struct/union/enum/class specifiers (the body-bearing definition is skipped); the
+post-pass roots every matching C/C++ class node `callback`. Project-wide, scoped to C/C++.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R142 | 3 | ✓ | round 1. opus: post-pass purely additive, body-is-None guard excludes the definition, cross-language gate blocks Java/C#/TS homonyms, `_trailing_id` safe on qualified/template/scoped-enum shapes, cross-file rooting works. sonnet (6 fixtures): header/source split, field/typedef/enum/union uses, C++ class/enum-class/namespace/template, #69+#59 coexistence, dead C functions still caught. haiku: 12 crash/edge cases no crash, 422+27 green, parity. |
+| R143 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus (mechanism): rooting a class `callback` does NOT rescue its methods (LIVENESS_RELATIONS excludes CONTAINS; `_seed_exported*` key on `exported`), so a dead method of a type-rooted class still flags; .h/.cpp/.c unification; sizeof/cast/fn-ptr-typedef uses rooted; 2000-struct + recursive typedef reindex 0.3s; parity. sonnet: realistic C allocator + C++ inheritance/templates, precision boundary, transitive type liveness, mixed-language isolation. haiku: 558 + oracles 27, downstream ops crash-free, idempotent, 9 pathological scenarios. |
+
+Cardinal-safe boundaries the panel confirmed (left intentionally): **#88** (the C/C++ module walk
+treats a `#define` parameter name as a reference) is over-rooting — un-masking would risk a cardinal.
+**#87** (enum-constant-body overrides) is already handled — a Java enum constant's override and its
+helpers stay live; the companion class-scope anon-class over-rooting is the cardinal-safe direction. A
+recall backstop gap noted by the panel (cardinal-safe, deferred): a C++ bare type name without the
+`struct`/`class` keyword (`Config c;`) parses as `type_identifier`, so `_c_type_ref_names` doesn't
+collect it — but when the using code is live the `REFERENCES` edge already rescues the type, and when
+the using code is dead the type being dead is correct, so it is never a false-dead.
 
 ## Standing themes
 
