@@ -1292,7 +1292,23 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=enclosing_func)
                 continue
+            # A JS/TS class method with a DYNAMIC key — a string (`"do-it"(){}`), a computed key
+            # (`["do-it"](){}`, `[EXPR](){}`), or a number (`42(){}`) — is reached only via a
+            # dynamic subscript (`obj["do-it"]()` / `obj[k]()`), never a static `.name` call. Two
+            # problems (#78): `_name_of` returns None for a string/computed-string/number key, so
+            # the method def was silently DROPPED and a helper it alone calls was flagged dead; and
+            # even when named (`[IDENT]`), nothing roots it, so in a NON-exported class it was
+            # flagged dead though reachable. Synthesize a stable name from the raw key text and mark
+            # it for `callback` rooting below — the class-body analogue of the object-literal
+            # computed-key rule. Cardinal-safe (only adds a root).
+            dyn_key = False
+            if lang in ("javascript", "typescript", "tsx") and t == "method_definition":
+                _kf = child.child_by_field_name("name")
+                if _kf is not None and _kf.type in ("computed_property_name", "string", "number"):
+                    dyn_key = True
             name = _name_of(child, src)
+            if not name and dyn_key:
+                name = _text(child.child_by_field_name("name"), src)  # raw key text, e.g. ["k"]
             if not name:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=enclosing_func)
@@ -1346,6 +1362,12 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # dead though live (#54). Root it `callback`. Cardinal-safe (only adds a root).
             if lang in ("javascript", "typescript", "tsx") \
                     and _is_js_implicit_dispatch_method(child, name, src):
+                roles.add("callback")
+            # JS/TS: a class method with a DYNAMIC key (string / computed / numeric — detected
+            # above) is reached only via `obj["k"]()` / `obj[expr]()`, never a static `.name`
+            # call, so root it `callback` — the class-body analogue of the object-literal
+            # computed-key rule (#78). Cardinal-safe (only adds a root).
+            if dyn_key:
                 roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
@@ -2440,7 +2462,12 @@ def _trailing_id(node, src):
     if node is None:
         return None
     if node.type in ("identifier", "type_identifier", "field_identifier",
-                     "property_identifier", "word", "name", "constant"):
+                     "property_identifier", "private_property_identifier",
+                     "word", "name", "constant"):
+        # `private_property_identifier` is a JS/TS `#name` (ECMAScript private field/method).
+        # Both the def name (`#impl(){}`) and the call site (`this.#impl()`) flow through here,
+        # so handling it once makes them resolve to the SAME `#impl` and the private method (plus
+        # the helpers it alone calls) is no longer false-flagged dead (#76).
         return _text(node, src)
     # C++ operator/destructor/conversion names (`operator+`, `~Class`, `operator bool`) are
     # leaf-ish multi-token nodes; take their literal text so an out-of-line def gets a real

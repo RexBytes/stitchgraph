@@ -8639,3 +8639,91 @@ def test_js_commonjs_wrapped_object_members_live(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "cjsFn" not in stale and "cjsHelper" not in stale
+
+
+# -- #76 (cardinal): TS #private method via this.#m() --------------------------
+def test_ts_private_method_via_this_resolves(tmp_path):
+    """#76 (cardinal): a `#private` method called via `this.#m()` was unresolved — `_name_of` and
+    `_callee` both returned None for `private_property_identifier`, so the method def was dropped
+    (body unwalked -> helper dead) AND the call edge was lost. Now both flow through `_trailing_id`
+    and resolve to the same `#m`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "export class Svc {\n"
+        "  run() { return this.#impl(); }\n"
+        "  #impl() { return implHelper(); }\n"
+        "}\n"
+        "function implHelper() { return 1; }\n"
+        "export function go() { return new Svc().run(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "implHelper" not in stale, "a helper reached only via a #private method must be live"
+
+
+def test_ts_uncalled_private_method_still_flags(tmp_path):
+    """#76 precision: a `#private` method resolves by name, so an UNCALLED one (and the helper it
+    alone calls) must STILL flag dead — the fix must not blanket-root #private members."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "class Worker {\n"
+        "  go() { return 1; }\n"
+        "  #neverCalled() { return orphanHelper(); }\n"
+        "}\n"
+        "function orphanHelper() { return 2; }\n"
+        "export function make() { return new Worker().go(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "orphanHelper" in stale, "a helper reached only via an uncalled #private method stays dead"
+
+
+# -- #78 (cardinal): string / computed / numeric-keyed class methods -----------
+@pytest.mark.parametrize("member", [
+    '["do it"]() { return kHelper(); }',         # computed string key
+    '"do it"() { return kHelper(); }',           # plain string key
+    '[DYN_KEY]() { return kHelper(); }',         # computed identifier key
+    '42() { return kHelper(); }',                # numeric key
+])
+def test_ts_dynamic_keyed_class_method_body_walked(tmp_path, member):
+    """#78 (cardinal): a class method with a dynamic key (string/computed/number) was dropped by
+    `_name_of`->None, so its body was never walked and a helper it alone calls was flagged dead.
+    Now the def is modeled (named from the raw key) and rooted `callback` (dynamic dispatch), even
+    in a NON-exported class."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "const DYN_KEY = 'k';\n"
+        "class Bag {\n  " + member + "\n}\n"
+        "function kHelper() { return 1; }\n"
+        "export function use() { return new Bag(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "kHelper" not in stale, "a helper reached only via a dynamic-keyed method must be live"
+
+
+def test_ts_dynamic_keyed_method_does_not_overroot_plain_dead(tmp_path):
+    """#78 guard: only dynamic-keyed methods are rooted. A plain by-name method that is genuinely
+    uncalled must still flag dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "class Bag {\n"
+        "  plainDead() { return deadHelper(); }\n"     # plain, uncalled -> dead
+        '  ["dyn"]() { return liveHelper(); }\n'        # dynamic -> live
+        "}\n"
+        "function deadHelper() { return 1; }\n"
+        "function liveHelper() { return 2; }\n"
+        "export function use() { return new Bag(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "deadHelper" in stale, "a plain uncalled method's helper must still flag dead"
+        assert "liveHelper" not in stale

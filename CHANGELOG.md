@@ -4,6 +4,30 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.28] — 2026-06-28
+
+**TS class-member resolution cardinals (#76, #78).** Two ways a class method that is genuinely
+live was confidently flagged dead:
+
+- **#76 — `#private` method via `this.#m()`.** `_name_of` and `_callee` both returned None for a
+  `private_property_identifier`, so a `#m(){…}` def was dropped (its body unwalked → a helper it
+  alone calls flagged dead) AND the `this.#m()` call edge was lost.
+- **#78 — string / computed / numeric-keyed class methods.** `_name_of` returned None for a string
+  key (`"do it"(){}`), a computed-string key (`["do it"](){}`), or a numeric key (`42(){}`), so the
+  method def was silently dropped and the helper it alone calls was flagged dead. A computed
+  *identifier* key (`[NAME](){}`) was named but, in a non-exported class, never rooted.
+
+### Fixed
+
+- `_trailing_id` now handles `private_property_identifier`, so the `#m` def name and the
+  `this.#m()` call site resolve to the SAME `#m`. A `#private` method resolves by name, so an
+  UNCALLED one (and its private helper) still flags dead — precision preserved.
+- A JS/TS class method with a dynamic key (string / computed / numeric) is now modeled as a node
+  (named from the raw key text) with its body walked, and rooted `callback` — the class-body
+  analogue of the object-literal computed-key rule, since such a method is reachable only via a
+  dynamic `obj["k"]()` / `obj[expr]()` subscript. Cardinal-safe (only adds a root); a plain
+  by-name method that is genuinely uncalled still flags dead.
+
 ## [2.1.27] — 2026-06-28
 
 **JS/TS shorthand member of an exported object literal — cardinal fix (#74).**
