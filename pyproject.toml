@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitchgraph"
-version = "2.1.29"
+version = "2.1.30"
 description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
 readme = "README.md"
 license = "MIT"

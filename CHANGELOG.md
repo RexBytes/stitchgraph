@@ -4,6 +4,30 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.30] — 2026-06-28
+
+**C/C++ struct used only as a type (#89).** A struct/union/enum used only as a TYPE —
+`struct Config g;`, `void f(struct Config *p)`, a field or return type — is a live data-model
+definition, but C/C++ has no constructor call to edge it, so it had no inbound edge and was
+false-flagged dead.
+
+### Fixed
+
+- A new `_c_type_ref_names` collects the names of bodyless (type-use) `struct`/`union`/`enum`/`class`
+  specifiers — the definition carries a `body` field and is skipped — and the post-pass roots every
+  matching C/C++ class node `callback`. Project-wide (a type is defined in a header and used in a
+  `.c`), scoped to C/C++. Cardinal-safe over-approximation: a struct genuinely never used as a type
+  (and never instantiated) still flags dead — verified.
+
+### Resolved without code change
+
+- **#88** (`_module_uses` treats `#define` parameter names as references): this is over-rooting —
+  the cardinal-SAFE direction. Tightening it would *un-mask*, risking a live macro-referenced
+  symbol being flagged dead, so it is left as a deliberate precision boundary.
+- **#87** (enum-constant-body overrides): confirmed already handled — a Java enum constant with a
+  method-override body and the helpers it calls are kept live (no reproduction). The companion
+  class-scope anon-class over-rooting is the cardinal-SAFE direction and is left intentionally.
+
 ## [2.1.29] — 2026-06-28
 
 **Python abstract / Protocol interface methods (#70, #86).** A bodyless interface-method

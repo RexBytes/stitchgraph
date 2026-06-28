@@ -348,6 +348,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     c_decl_exports: set[str] = set()  # project-wide: names declared with an export attr (R77 F2)
     c_macro_refs: set[str] = set()  # project-wide: fn names referenced in C/C++ #define bodies (#59)
     c_table_refs: set[str] = set()  # project-wide: fn addresses taken in C/C++ global initializers (#69)
+    c_type_refs: set[str] = set()   # project-wide: struct/union/enum names USED as a type in C/C++ (#89)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -465,6 +466,12 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 # struct is invoked indirectly through that global, possibly cross-TU (#69). Cheap
                 # shallow walk (top-level declarations only), so no byte-gate.
                 c_table_refs |= _c_global_init_fn_refs(tree.root_node, src)
+                # A struct/union/enum used only as a TYPE (`struct Config g;`, `void f(struct
+                # Config*)`, a field of that type) is a live data-model definition, but C has no
+                # constructor call to edge it, so it was false-flagged dead (#89). Collect the
+                # names of bodyless (type-use) struct/union/enum specifiers and root the matching
+                # definitions below.
+                c_type_refs |= _c_type_ref_names(tree.root_node, src)
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -552,6 +559,19 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     if c_table_refs:
         for n in nodes:
             if n.kind in (F, M) and n.name in c_table_refs \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"callback"}
+
+    # A C/C++ struct/union/enum used only as a TYPE (`struct Config g;`, `f(struct Config*)`, a
+    # field/return type) is a live data-model definition, but C has no constructor call to edge it,
+    # so the type was false-flagged dead though the code using it is live (#89). Root every C/C++
+    # CLASS whose name appears as a bodyless type-use specifier `callback`. Project-wide (a type is
+    # routinely defined in a header and used in a `.c`) and scoped to C/C++. Cardinal-safe
+    # over-approximation: a type named anywhere as a type is part of the data model; a struct that
+    # is genuinely never used as a type (and never instantiated) still flags dead.
+    if c_type_refs:
+        for n in nodes:
+            if n.kind is C and n.name in c_type_refs \
                     and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
                 n.roles = n.roles | {"callback"}
 
@@ -1895,6 +1915,34 @@ def _collect_init_idents(node, src, out: set[str]) -> None:
         return
     for c in node.children:
         _collect_init_idents(c, src, out)
+
+
+_C_TYPE_SPECIFIERS = ("struct_specifier", "union_specifier", "enum_specifier", "class_specifier")
+
+
+def _c_type_ref_names(root, src) -> set[str]:
+    """Names of C/C++ struct/union/enum/class types USED as a type rather than defined — a bodyless
+    specifier: `struct Config g;` (variable type), `void f(struct Config *p)` (parameter type), a
+    field `struct Inner inner;`, a `sizeof(struct X)`, a cast. The DEFINITION carries a `body` field
+    (`struct Config { … }`) and is skipped; only a name-bearing, body-less specifier is a use. C/C++
+    has no constructor call to edge a plain struct type, so a struct used only as a type had no
+    inbound edge and was false-flagged dead though it is a live data-model definition (#89). Walks
+    the whole tree (a type is used in function bodies, params, fields, and globals alike). Rooted
+    `callback` by name below — cardinal-safe over-approximation (a homonym only over-roots)."""
+    names: set[str] = set()
+
+    def visit(node):
+        if node.type in _C_TYPE_SPECIFIERS and node.child_by_field_name("body") is None:
+            nm = node.child_by_field_name("name")
+            if nm is not None:
+                t = _trailing_id(nm, src)
+                if t:
+                    names.add(t)
+        for c in node.children:
+            visit(c)
+
+    visit(root)
+    return names
 
 
 def _reexport_names(root, src):

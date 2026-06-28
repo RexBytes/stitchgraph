@@ -8787,3 +8787,57 @@ def test_is_abstract_class_subscripted_base_unit():
     )
     got = {c.name: _is_abstract_class(c) for c in mod.body if isinstance(c, _ast.ClassDef)}
     assert got == {"A": True, "B": True, "C": True, "D": False}
+
+
+# -- #89 (C/C++): a struct used only as a type is not flagged dead -------------
+@pytest.mark.parametrize("ext,use", [
+    ("c",   "struct Config g;\nint get(void){ return g.port; }\nint main(void){ return get(); }"),
+    ("c",   "int f(struct Config *p){ return p->port; }\nint main(void){ struct Config c; c.port=1; return f(&c); }"),
+    ("cpp", "Config make(){ Config c; return c; }\nint main(){ return make().port; }"),
+])
+def test_c_struct_used_as_type_not_dead(tmp_path, ext, use):
+    """#89: a C/C++ struct used only as a TYPE (variable/param/return/field) is a live data-model
+    definition, but C has no constructor call to edge it, so it was false-flagged dead. A bodyless
+    (type-use) struct specifier now roots the matching definition `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {f"s.{ext}": "struct Config { int port; };\n" + use + "\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Config" not in stale, "a struct used as a type must not flag dead"
+
+
+def test_c_unused_struct_still_flags_dead(tmp_path):
+    """#89 precision: a struct that is NEVER used as a type and never instantiated must STILL flag
+    dead — the fix must not blanket-root every struct."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"t.cpp": (
+        "struct Used { int x; };\n"
+        "struct DeadStruct { int y; };\n"        # never used as a type
+        "Used make() { Used u; return u; }\n"
+        "int main() { return make().x; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "DeadStruct" in stale, "a struct never used as a type must still flag dead"
+        assert "Used" not in stale
+
+
+def test_c_type_ref_names_unit(tmp_path):
+    """#89 unit-pin: `_c_type_ref_names` collects bodyless type-use specifier names, NOT the
+    body-bearing definition."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_type_ref_names
+    src = (b"struct Config { int port; };\n"      # definition (body) -> NOT a type-use
+           b"struct Config g;\n"                   # type use
+           b"int f(struct Other *p);\n"            # type use (Other)
+           b"enum Color c;\n")                      # type use (Color)
+    root = get_parser("c").parse(src).root_node
+    names = _c_type_ref_names(root, src)
+    assert "Config" in names and "Other" in names and "Color" in names
