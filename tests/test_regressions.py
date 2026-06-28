@@ -8220,3 +8220,48 @@ def test_c_macro_rooting_does_not_overroot_unrelated_dead(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "genuinely_dead" in stale, "a dead fn not referenced by any macro must still flag"
         assert "used_via_macro" not in stale
+
+
+def test_c_macro_body_line_continuation_identifier_is_live(tmp_path):
+    """#59 (cardinal, panel R-found): a C preprocessor `\\<newline>` line continuation that splits a
+    function name inside a macro body (`#define M f\\<nl>n()`) must be spliced out before scanning —
+    otherwise the identifier reads as two fragments (`f`, `n`), the real call target `fn` is missed,
+    and it is flagged dead though live. Mirrors the preprocessor, which splices continuations before
+    tokenizing. Normal (non-splitting) multi-line macros must keep working, and a dead fn still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.c": (
+        "static void fn(void){}\n"
+        "static void gn(void){}\n"
+        "static void dead(void){}\n"          # not in any macro body -> dead
+        "#define SPLIT f\\\nn() + g\\\nn()\n"   # both fn and gn split across continuations
+        "int main(void){ SPLIT; return 0; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "fn" not in stale and "gn" not in stale, "continuation-split macro call targets must be live"
+        assert "dead" in stale, "a fn named in no macro must still flag"
+
+
+def test_macro_body_ref_names_helper_excludes_params_and_splices_continuations():
+    """#59 unit-pins `_macro_body_ref_names`: it returns BODY identifiers (call targets / function
+    pointers) and (a) EXCLUDES the macro's own parameters — `#define MIN(a,b) ((a)<(b)?…)` must not
+    yield `a`/`b` (placeholders bound at the call site, not project functions; rooting them would
+    over-keep dead helpers named like common params), and (b) SPLICES `\\<newline>` continuations so a
+    name split across lines is read whole. (The find_stale-level effect of the param exclusion is
+    currently masked by a separate pre-existing module-walk over-rooting, #88, so this asserts the
+    helper directly.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _macro_body_ref_names
+    src = (b"#define MIN(a,b) ((a)<(b)?(a):(b))\n"      # params a,b excluded; no body call
+           b"#define LOG(msg) log_impl(msg)\n"          # log_impl kept, param msg excluded
+           b"#define DEFAULT handler\n"                 # bare function-pointer ref kept
+           b"#define SPLIT f\\\nn()\n")                 # continuation-split -> 'fn'
+    root = get_parser("c").parse(src).root_node
+    names = _macro_body_ref_names(root, src)
+    assert "log_impl" in names and "handler" in names and "fn" in names
+    assert "a" not in names and "b" not in names and "msg" not in names

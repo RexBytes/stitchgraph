@@ -1718,6 +1718,7 @@ def _export_symbol_names(src: bytes) -> set[str]:
 
 
 _MACRO_IDENT_RE = re.compile(rb"[A-Za-z_]\w*")
+_LINE_CONT_RE = re.compile(rb"\\\r?\n")
 
 
 def _macro_body_ref_names(root, src) -> set[str]:
@@ -1737,8 +1738,22 @@ def _macro_body_ref_names(root, src) -> set[str]:
         if n.type in ("preproc_function_def", "preproc_def"):
             val = n.child_by_field_name("value")
             if val is not None:
-                body = src[val.start_byte:val.end_byte]
-                names.update(m.decode("ascii", "ignore") for m in _MACRO_IDENT_RE.findall(body))
+                # Splice out C preprocessor line continuations first: a `\<newline>` that splits an
+                # identifier (`#define M f\<nl>n()`) would otherwise read as two identifiers
+                # (`f`, `n`) and miss the real call target `fn`, leaving it flagged dead. The
+                # preprocessor itself splices these out before tokenizing, so we do the same.
+                body = _LINE_CONT_RE.sub(b"", src[val.start_byte:val.end_byte])
+                found = {m.decode("ascii", "ignore") for m in _MACRO_IDENT_RE.findall(body)}
+                # Drop the macro's own PARAMETERS — `#define MIN(a,b) ((a)<(b)?…)` mentions `a`/`b`
+                # in the body, but those are placeholders bound at the call site, NOT project
+                # functions. Including them rooted any dead static fn named `a`/`b`/`x`/`cb`/…
+                # (the dominant over-rooting source — common short param names collide often). The
+                # actual argument a caller passes is already scanned at the call site, so dropping
+                # params loses no real reference (panel-quantified precision fix).
+                params = n.child_by_field_name("parameters")
+                if params is not None:
+                    found -= {_text(c, src) for c in params.children if c.type == "identifier"}
+                names.update(found)
         else:
             stack.extend(n.children)
     return names
