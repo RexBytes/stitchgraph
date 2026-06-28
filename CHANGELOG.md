@@ -4,6 +4,33 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.19] — 2026-06-28
+
+**JS/TS `const X = class {…}` class-expression bound to a const — cardinal fix (#80).**
+A class expression assigned to a `const` (`export const Widget = class extends Component {
+render(){ helper() } }`) was never modeled: the `variable_declarator` branch handled
+arrow/function/generator/object values but not `class`/`class_expression`, so the class was not a
+node and a helper called only from its methods was flagged dead. (The sibling
+`assignment_expression` branch already handled `obj.X = class {…}`; this closes the asymmetry.)
+
+### Fixed
+
+- The `variable_declarator` branch now models a `class`/`class_expression` value as a CLASS node,
+  mirroring the assignment-expression class handling: it emits INHERITS edges for the heritage,
+  walks the class body, and (when the const is `export`ed) takes the `exported` role so
+  `_seed_exported_class_methods` rescues its public methods — private methods stay dead-eligible
+  (R46A). A class nested in a function body gates its methods to the class (chain enclosing-fn →
+  class → methods, the round-3/4 rule); at module scope they rely on the exported rescue / call
+  resolution. Behaviour is now at **parity with a regular `class X {}`** declaration. TS value
+  wrappers on the value (`class {…} as const`) are peeled via the existing `_unwrap_ts_value`.
+
+### Known limitations (unchanged from 2.1.18)
+
+The broad "object literal reached only via an EXPRESSION shape" family (#75 — IIFE / ternary /
+`||`/`&&`/`??` / `Object.freeze` / array element / sequence / chained-or-parenthesized assignment),
+`this.#m()` private dispatch (#76), and bare-identifier function reassignment (#81) remain
+pre-existing and deferred to a focused follow-up.
+
 ## [2.1.18] — 2026-06-28
 
 **JS/TS object-literal function-member bodies — cardinal fix (rxjs/lodash-style config objects).**

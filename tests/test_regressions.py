@@ -7782,3 +7782,66 @@ def test_expression_shaped_value_does_not_mint_unrooted_object_methods(tmp_path)
         # No spurious unrooted method node for the expression-shaped object member.
         assert not any(i.split("::")[-1].split(".")[-1] == "mmm" for i in ids), \
             "object member of an expression-shaped value must not be minted as a bare node"
+
+
+def test_const_class_expression_is_modeled(tmp_path):
+    """#80 (cardinal): `export const Widget = class extends Base { render(){ helper() } }` — a
+    class expression bound to a const. The variable_declarator branch handled arrow/fn/object
+    values but not `class`, so the class was never a node and its methods' callees were flagged
+    dead. Now modeled as a CLASS (mirroring the assignment_expression class branch): INHERITS
+    edges, body walked, `exported` role rescuing public methods (private stay dead-eligible).
+    Parity with a regular `class W {}` — exported+consumed → clean; a genuinely-dead private
+    method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "w.ts": (
+            "export class Base {}\n"
+            "function tok(){ return 1; }\n"
+            "function deadHelper(){ return 2; }\n"
+            "export const Widget = class extends Base {\n"
+            "  render(){ tok(); }\n"
+            "  _priv(){ deadHelper(); }\n"
+            "};\n"
+        ),
+        "u.ts": "import { Widget } from './w'; new Widget().render();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tok" not in stale         # reached from the public class method: live
+        assert "Base" not in stale        # extends base referenced via INHERITS: live
+        assert "deadHelper" in stale      # reached only from an unused private method: flagged
+
+
+def test_const_class_expression_nested_in_function_is_gated(tmp_path):
+    """#80: a `const X = class {…}` inside a function body gates its methods to the class
+    (chain enclosing-fn → class → methods); live when the fn is reachable, all dead when it
+    isn't (no orphaned-but-flagged methods, no dead-initializer live roots)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "live.ts": (
+            "export function f(){ const W = class { render(){ h(); } }; return new W(); }\n"
+            "function h(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "h" not in stale            # reachable: f -> W.render -> h: live
+    # Distinct symbol names + a separate subdir so the live file above can't by-name-collide
+    # (`new W()` resolving across files is the cardinal-SAFE #71 over-rooting family, unrelated).
+    dead_dir = tmp_path / "deadpkg"
+    _mk(dead_dir, {
+        "dead.ts": (
+            "function deadFactory(){ const Renderer = class { paint(){ secretPaint(); } };"
+            " return new Renderer(); }\n"
+            "function secretPaint(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(dead_dir))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadFactory" in stale       # never called: dead
+        assert "secretPaint" in stale       # reached only via a method of a dead-gated class: dead

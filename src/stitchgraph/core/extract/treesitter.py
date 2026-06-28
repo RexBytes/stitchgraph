@@ -1345,6 +1345,32 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # cardinal). See _object_members.
                 _object_members(val, src, rel, spec, lang, _join(parent, name),
                                 nodes, defs, inherits, contains, is_test, enclosing_func)
+            elif name and val is not None and val.type in ("class", "class_expression"):
+                # `export const Widget = class extends Base { render() {…} }` — a class
+                # expression bound to a const. The declarator branch handled arrow/fn/object
+                # but not `class`, so the class was never a node and its methods' callees were
+                # flagged dead (cardinal, #80). Mirror the assignment_expression class branch:
+                # model it as a CLASS, emit INHERITS edges, walk the body. An `export`ed const
+                # class takes the `exported` role so `_seed_exported_class_methods` rescues its
+                # public methods (private methods stay dead-eligible, R46A); a non-exported one
+                # is reached by name / `new X()` like any class. The body recursion gates the
+                # methods to the class when nested in a function (round-3/4 rule), else None
+                # (module scope — exported rescue / call resolution).
+                qual = _join(parent, name)
+                roles = {"exported"} if exported else set()
+                if _is_test_name(name):
+                    roles.add("test")
+                cid = f"{rel}::{qual}"
+                nodes.append(Node(id=cid, kind=C, name=name, location=_loc(rel, val),
+                                  end_line=val.end_point[0] + 1, roles=frozenset(roles)))
+                defs.append((rel, cid, val, lang))
+                for base in _bases(val, src, spec):
+                    inherits.append((cid, base, lang))
+                if enclosing_func is not None:
+                    contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                         False, is_test, contains=contains,
+                         enclosing_func=(cid if enclosing_func is not None else None))
             # NOTE: deliberately NO `else` fallthrough. A blanket `_collect(child)` for other
             # value forms (chained/parenthesized assignment `const routes = module.exports =
             # {…}`, sequence/ternary/IIFE, a class expression) lets generic descent reach an
