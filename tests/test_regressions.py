@@ -7212,6 +7212,10 @@ def test_bash_callback_helpers():
     cases = {
         "complete -F _comp mytool": ["_comp"],
         "compgen -F _gen": ["_gen"],
+        'complete -F "_comp" mytool': ["_comp"],  # quoted handler unwrapped (parity w/ trap)
+        "complete -F ${VAR} cmd": [],            # dynamic handler -> consume slot, don't grab cmd
+        "compgen -F $(f) word": [],              # command-substitution handler -> nothing
+        "complete -A dir -F _c cmd": ["_c"],     # flag not first; still found
         "complete -o default mytool": [],        # no -F, no handler
         "export -f worker": ["worker"],
         "export -f a b": ["a", "b"],

@@ -1604,26 +1604,35 @@ def _bash_callback_refs(root, src):
 
 
 def _bash_command_words(call, cn, src):
-    """The `word`/string children of a bash `command`, in order, paired with their 1-based
-    line — skipping the command name itself. The unit the callback-arg parsers below scan."""
+    """The `word`/string children of a bash `command`, in order, paired with their 1-based line —
+    skipping the command name itself. A quoted argument (`string`/`raw_string`) yields its
+    quote-stripped text so a quoted bare identifier (`time "bench"`) is recognised, matching
+    `_trap_handler`. The unit the callback-arg parsers below scan."""
     for arg in call.children:
         if arg is cn:
             continue
-        if arg.type in ("word", "string", "raw_string"):
+        if arg.type == "word":
             yield _text(arg, src), arg.start_point[0] + 1
+        elif arg.type in ("string", "raw_string"):
+            yield _text(arg, src).strip().strip("\"'`"), arg.start_point[0] + 1
 
 
 def _bash_flag_arg(call, cn, src, out, flag):
-    """Root the function named immediately after `flag` (e.g. `complete -F FUNC`): the word
-    following `-F` is the completion handler. Only a bare identifier is taken."""
-    take_next = False
-    for w, line in _bash_command_words(call, cn, src):
-        if take_next:
-            if w.isidentifier():
-                out.append((w, line))
+    """Root the function named in the slot DIRECTLY after `flag` (e.g. `complete -F FUNC`). The
+    immediate next argument is the completion handler regardless of its node type — so a dynamic
+    form (`complete -F ${VAR} cmd`, `-F $(f) cmd`) consumes the slot and roots nothing rather than
+    falling through to a later word (the command being completed). A quoted bare identifier
+    (`-F "_comp"`) is unwrapped; only a static identifier is rooted."""
+    args = [c for c in call.children if c is not cn]
+    for i, c in enumerate(args):
+        if c.type == "word" and _text(c, src) == flag:
+            if i + 1 < len(args):
+                nxt = args[i + 1]
+                if nxt.type in ("word", "string", "raw_string"):
+                    name = _text(nxt, src).strip().strip("\"'`")
+                    if name.isidentifier():
+                        out.append((name, nxt.start_point[0] + 1))
             return
-        if w == flag:
-            take_next = True
 
 
 def _bash_export_decl(call, src, out):
