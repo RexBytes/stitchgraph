@@ -7703,3 +7703,37 @@ def test_ts_wrapped_value_in_assignment_and_const(tmp_path):
         assert "classHelper" not in stale    # wrapped class assignment body walked: live
         assert "fnHelper" not in stale        # wrapped function assignment body walked: live
         assert "arrowHelper" not in stale     # wrapped arrow const body walked: live
+
+
+def test_generator_function_values_are_walked(tmp_path):
+    """#48 (cardinal, panel R8): a generator (`function*(){}` / `async function*(){}`) used as a
+    function VALUE — an object-literal pair value, an assignment RHS, or a const initializer —
+    parses as `generator_function`, which the function-value tuples (`_OBJ_FN_VALUES`, the
+    variable_declarator and assignment_expression checks) omitted, so the generator was dropped,
+    its body unwalked, and a helper it alone calls flagged dead. (Method-shorthand `{ *gen(){} }`
+    is a method_definition and was already handled.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "function objHelper(){ return 1; }\n"
+            "function asyncHelper(){ return 2; }\n"
+            "function assignHelper(){ return 3; }\n"
+            "function constHelper(){ return 4; }\n"
+            "function deadHelper(){ return 9; }\n"
+            "export const obj = {\n"
+            "  gen: function*(){ yield objHelper(); },\n"
+            "  agen: async function*(){ yield asyncHelper(); }\n"
+            "};\n"
+            "exports.h = function*(){ yield assignHelper(); };\n"
+            "export const g = function*(){ constHelper(); };\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "objHelper" not in stale      # object-literal generator pair value body walked
+        assert "asyncHelper" not in stale    # async-generator pair value body walked
+        assert "assignHelper" not in stale   # assignment-RHS generator body walked
+        assert "constHelper" not in stale    # const generator initializer body walked
+        assert "deadHelper" in stale         # genuinely uncalled: still flagged

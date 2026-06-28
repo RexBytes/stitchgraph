@@ -1319,7 +1319,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # dead (cardinal). Applies uniformly to the arrow/function and the object branch.
             val = _unwrap_ts_value(child.child_by_field_name("value"))
             name = _field_text(child, "name", src)
-            if name and val and val.type in ("arrow_function", "function", "function_expression"):
+            if name and val and val.type in ("arrow_function", "function", "function_expression", "generator_function"):
                 qual = _join(parent, name)
                 roles = {"exported"} if exported else set()
                 if _is_test_name(name):
@@ -1365,7 +1365,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             name = _text(prop, src) if prop is not None else None
             if name and val is not None and val.type in (
                     "arrow_function", "function", "function_expression",
-                    "class", "class_expression"):
+                    "generator_function", "class", "class_expression"):
                 qual = _join(parent, _text(left, src))   # full LHS keeps ids distinct
                 kind = C if val.type in ("class", "class_expression") else M
                 roles = {"exported"} if exported else set()
@@ -1424,7 +1424,7 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)
 
 
-_OBJ_FN_VALUES = ("arrow_function", "function", "function_expression")
+_OBJ_FN_VALUES = ("arrow_function", "function", "function_expression", "generator_function")
 _TS_VALUE_WRAPPERS = ("as_expression", "satisfies_expression", "parenthesized_expression")
 
 
