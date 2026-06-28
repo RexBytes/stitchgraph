@@ -4,6 +4,38 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.25] — 2026-06-28
+
+**C/C++ function-pointer table / vtable promotion — cardinal fix (#69).**
+A C/C++ function whose address is taken in a global function-pointer table (`int (*ops[])(int) =
+{op_a, op_b}`), a plugin/vtable struct (`struct ops P = {init, teardown}`), a designated-initializer
+table (`{[0]=on_start}`), or a scalar (`cb h = handler`) is invoked **indirectly** through that
+global — which may be consumed in a different translation unit via `extern`. Globals aren't graph
+nodes, so that cross-TU use is untrackable, and the address-taken functions were confidently flagged
+dead whenever their own TU had no entry point of its own (the passive registration-unit pattern).
+
+### Fixed
+
+- A new `_c_global_init_fn_refs` scan walks C/C++ module scope (top-level declarations, plus
+  `namespace {…}` / `extern "C" {…}` bodies; never descending into function bodies) and collects the
+  function identifiers in global-variable initializers — matching the `initializer_list` node
+  directly, which is the common denominator across dialects (C parses the global as a `declaration`,
+  but C++ mis-parses `int (*tab[])() = {…}` as an `expression_statement`/`assignment_expression`
+  whose right side is still an `initializer_list`). Matching project C/C++ F/M nodes are rooted
+  `callback`, mirroring the object-literal / macro-body indirect-dispatch rooting. Project-wide (the
+  table and its target routinely live in different files). Cardinal-safe over-approximation: resolves
+  by name to F/M nodes only — a non-function initializer identifier (a global const, an enum value)
+  merely over-roots a homonym, never flags live code dead. Local (in-function) function-pointer
+  assignments are unchanged (already covered by `_direct_refs`).
+
+### Known limitations (newly documented)
+
+A C `struct` used only as the type of a global/extern variable is still flagged dead (#89) — a
+bodyless data type, not executable code (a precision nit, like the abstract-method-declaration
+case). A function over-rooted because its name happens to appear in an *unused* global initializer is
+a bounded, cardinal-safe precision cost. The JS/TS implicit-dispatch surface (#54) remains
+pre-existing and deferred.
+
 ## [2.1.24] — 2026-06-28
 
 **C/C++ function called only inside a `#define` macro body — cardinal fix (#59).**

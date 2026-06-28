@@ -8265,3 +8265,134 @@ def test_macro_body_ref_names_helper_excludes_params_and_splices_continuations()
     names = _macro_body_ref_names(root, src)
     assert "log_impl" in names and "handler" in names and "fn" in names
     assert "a" not in names and "b" not in names and "msg" not in names
+
+
+@pytest.mark.parametrize("files,live", [
+    # same-file function-pointer table; the table's TU has no entry point of its own
+    ({"reg.c": "int op_a(int x){return x+1;}\nint op_b(int x){return x-1;}\n"
+               "int (*ops[])(int) = { op_a, op_b };\n",
+      "main.c": "extern int (*ops[])(int);\nint main(void){ return ops[0](5); }\n"},
+     ("op_a", "op_b")),
+    # plugin/vtable struct of static handlers, consumed cross-TU
+    ({"plugin.c": "static int init(void){return 1;}\nstatic int teardown(void){return 0;}\n"
+                  "struct ops { int (*i)(void); int (*t)(void); };\nstruct ops PLUGIN = { init, teardown };\n",
+      "host.c": "struct ops { int (*i)(void); int (*t)(void); };\nextern struct ops PLUGIN;\n"
+                "int main(void){ return PLUGIN.i(); }\n"},
+     ("init", "teardown")),
+    # designated-initializer table
+    ({"m.c": "typedef void (*cb)(void);\nstatic void on_start(void){}\nstatic void on_stop(void){}\n"
+             "static cb handlers[] = { [0]=on_start, [1]=on_stop };\nint main(void){ handlers[0](); return 0; }\n"},
+     ("on_start", "on_stop")),
+])
+def test_c_global_function_table_promotes_handlers(tmp_path, files, live):
+    """#69 (cardinal): a C/C++ function whose address is taken in a global function-pointer table /
+    vtable struct is invoked indirectly through that global — possibly in another translation unit
+    (globals are not graph nodes, so the cross-TU `extern` use is untrackable). It was false-flagged
+    dead whenever its own TU had no entry point. Such functions are now rooted `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, files)
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        for name in live:
+            assert name not in stale, f"{name} address-taken in a global table must be live"
+
+
+def test_c_global_table_does_not_overroot_unrelated_dead(tmp_path):
+    """#69 guard: rooting global-initializer function references must not keep a genuinely-dead
+    function live when its address is NOT taken in any global initializer. A scalar non-function
+    initializer (`int N = 5;`) roots nothing."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.c": (
+        "static int used(int x){return x;}\n"
+        "static int dead(void){return 0;}\n"     # address never taken -> dead
+        "int N = 5;\n"                            # scalar init, no function identifiers
+        "int (*t[])(int) = { used };\n"
+        "int main(void){ return t[0](1); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "dead" in stale, "a function whose address is in no global table must still flag"
+        assert "used" not in stale
+
+
+def test_c_global_init_fn_refs_skips_function_bodies():
+    """#69 unit-pins `_c_global_init_fn_refs`: it scans only TOP-LEVEL (module-scope) initializers,
+    NOT function-local ones (those are already covered by `_direct_refs`). A local `cb x = local_fn;`
+    inside a function body must not be collected by this scan."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_global_init_fn_refs
+    src = (b"typedef void (*cb)(void);\n"
+           b"void g_a(void){}\nvoid g_b(void){}\n"
+           b"cb GLOBAL = g_a;\n"                       # top-level -> collected
+           b"cb TABLE[] = { g_b };\n"                  # top-level -> collected
+           b"void f(void){ cb local = local_only; }\n")  # in-body -> NOT collected here
+    root = get_parser("c").parse(src).root_node
+    names = _c_global_init_fn_refs(root, src)
+    assert "g_a" in names and "g_b" in names
+    assert "local_only" not in names
+
+
+@pytest.mark.parametrize("code,helper", [
+    # function table inside a C++ namespace (still module scope)
+    ("namespace reg {\n  int handler_x(){ return 1; }\n  int (*table[])() = { handler_x };\n}\n"
+     "int main(){ return reg::table[0](); }\n", "handler_x"),
+    # function table inside an extern \"C\" linkage block
+    ('extern "C" {\n  int chandler(){ return 1; }\n  int (*ctab[])() = { chandler };\n}\n'
+     "int main(){ return ctab[0](); }\n", "chandler"),
+])
+def test_cpp_namespace_global_table_promotes_handler(tmp_path, code, helper):
+    """#69: a global function-pointer table declared inside a C++ `namespace {…}` or `extern "C" {…}`
+    block is still module scope — `_c_global_init_fn_refs` descends into those containers so the
+    address-taken handler is rooted `callback` and stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.cpp": code})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert helper not in stale, f"{helper} in a namespace/extern-C global table must be live"
+
+
+def test_cpp_global_table_cross_tu_rootless_promotes_handler(tmp_path):
+    """#69 (cardinal, C++): the C++ grammar mis-parses a function-pointer table
+    `int (*tab[])() = {hx}` as an expression_statement/assignment_expression (not a declaration),
+    so the only reliable signal is the `initializer_list` node. When the table lives in a ROOTLESS
+    TU (consumed cross-TU), the handler is live ONLY via `_c_global_init_fn_refs`' initializer_list
+    branch — there is no same-file entry point to seed the module node. Pins that branch."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "reg.cpp": "namespace reg {\n  int hx(){ return 1; }\n  int (*tab[])() = { hx };\n}\n",
+        "main.cpp": "namespace reg { extern int (*tab[])(); }\nint main(){ return reg::tab[0](); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "hx" not in stale, "a C++ function-pointer table handler in a rootless TU must be live"
+
+
+def test_cpp_rootless_table_does_not_overroot_sibling_static(tmp_path):
+    """#69 precision guard: the global-initializer scan must collect ONLY from initializers — not
+    from arbitrary module-scope nodes. In a rootless C++ TU (no entry point to seed the module
+    node), a static `secret()` that sits beside a function-pointer table but is NOT named in any
+    initializer must stay dead, while the table's target `hx` is live. (Pins that the scan keys on
+    `initializer_list` / `init_declarator` values, not a blanket walk of the namespace.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "reg.cpp": "namespace reg {\n  static int secret(){ return 0; }\n"
+                   "  int hx(){ return 1; }\n  int (*tab[])() = { hx };\n}\n",
+        "main.cpp": "namespace reg { extern int (*tab[])(); }\nint main(){ return reg::tab[0](); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "hx" not in stale, "the table's target must be live"
+        assert "secret" in stale, "a static sibling not in any initializer must still flag dead"

@@ -347,6 +347,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     c_exports: dict[str, set[str]] = {}  # rel -> EXPORT_SYMBOL'd C function names (per file)
     c_decl_exports: set[str] = set()  # project-wide: names declared with an export attr (R77 F2)
     c_macro_refs: set[str] = set()  # project-wide: fn names referenced in C/C++ #define bodies (#59)
+    c_table_refs: set[str] = set()  # project-wide: fn addresses taken in C/C++ global initializers (#69)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -460,6 +461,10 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 # (#59). Byte-gate the walk to files that actually contain a `#define`.
                 if b"#define" in src:
                     c_macro_refs |= _macro_body_ref_names(tree.root_node, src)
+                # A function whose address is taken in a global function-pointer table / vtable
+                # struct is invoked indirectly through that global, possibly cross-TU (#69). Cheap
+                # shallow walk (top-level declarations only), so no byte-gate.
+                c_table_refs |= _c_global_init_fn_refs(tree.root_node, src)
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -533,6 +538,20 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     if c_macro_refs:
         for n in nodes:
             if n.kind in (F, M) and n.name in c_macro_refs \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"callback"}
+
+    # A C/C++ function whose address is taken in a global function-pointer table / vtable struct
+    # (`int (*ops[])(int) = {op_a, op_b}`, `struct ops P = {init, teardown}`) is invoked indirectly
+    # through that global — which may be consumed in another translation unit via `extern`. Globals
+    # aren't graph nodes, so that cross-TU use is invisible and the function was false-flagged dead
+    # whenever its own TU had no entry point (#69, the passive registration-unit pattern). Root every
+    # C/C++ F/M whose name appears in a global initializer `callback`. Project-wide (the table and the
+    # function it points at routinely live in different files) and scoped to C/C++. Cardinal-safe
+    # over-approximation, mirroring the macro-body / object-literal indirect-dispatch rooting.
+    if c_table_refs:
+        for n in nodes:
+            if n.kind in (F, M) and n.name in c_table_refs \
                     and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
                 n.roles = n.roles | {"callback"}
 
@@ -1757,6 +1776,59 @@ def _macro_body_ref_names(root, src) -> set[str]:
         else:
             stack.extend(n.children)
     return names
+
+
+def _c_global_init_fn_refs(root, src) -> set[str]:
+    """Function names whose address is taken in a C/C++ MODULE-SCOPE (global) variable initializer —
+    a dispatch / function-pointer table `int (*ops[])(int) = {op_a, op_b}`, a plugin/vtable struct
+    `struct ops P = {init, teardown}`, a designated-initializer table `{[0]=on_start}`, or a scalar
+    `cb h = handler`. Such a function is invoked INDIRECTLY through the global, which may be consumed
+    ANYWHERE — including a different translation unit (a C global is shared via `extern`, but globals
+    are not graph nodes, so that cross-TU use is untrackable). Without rooting, a function whose
+    address is taken only in a global table is false-flagged dead whenever its OWN TU has no
+    entry point (#69 — the table's file is a passive registration unit). Local (in-function)
+    function-pointer assignments are already covered by `_direct_refs`; this scans ONLY top-level
+    declarations (never descends into a function body). Rooted `callback` — the C analogue of the
+    object-literal / macro-body indirect-dispatch rooting. Cardinal-safe over-approximation:
+    resolves by name to C/C++ F/M nodes only, so a non-function initializer identifier (a global
+    const, an enum value) merely over-roots a homonym, never flags live code dead."""
+    names: set[str] = set()
+
+    def visit(node):
+        for c in node.children:
+            if c.type == "function_definition":
+                continue  # never descend into a function body — locals are _direct_refs' job
+            if c.type == "initializer_list":
+                # A brace table `{op_a, op_b}` / `{[0]=on_start}` at module scope — the common
+                # denominator across dialects. C parses the global as `declaration` ->
+                # `init_declarator`, but C++ MIS-parses `int (*tab[])() = {…}` (and the same inside
+                # `namespace {…}` / `extern "C" {…}`) as an `expression_statement` ->
+                # `assignment_expression` whose right side is still an `initializer_list`, so
+                # matching the list directly catches every dialect.
+                _collect_init_idents(c, src, names)
+            elif c.type == "init_declarator":
+                # Scalar function-pointer global `cb h = handler;` (C) — the value is a bare
+                # identifier, not a brace list.
+                val = c.child_by_field_name("value")
+                if val is not None:
+                    _collect_init_idents(val, src, names)
+            else:
+                visit(c)  # recurse through declarations / expression_statements / namespaces /
+                          # extern "C" / declaration_list — all still module scope (bodies skipped)
+
+    visit(root)
+    return names
+
+
+def _collect_init_idents(node, src, out: set[str]) -> None:
+    """Collect identifier names inside a global-initializer value (`{op_a, op_b}`, `handler`,
+    `{[0]=on_start}`, `&op_c`). Includes call-position names too (a fn CALLED in a static
+    initializer runs at program start, so it is live as well)."""
+    if node.type in ("identifier", "field_identifier"):
+        out.add(_text(node, src))
+        return
+    for c in node.children:
+        _collect_init_idents(c, src, out)
 
 
 def _reexport_names(root, src):
