@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.21: R123–R124 on Go method value/expression selectors (#49). 2.1.22: R125–R126 on same-name method-overload role clobber (#61). **2.1.23: R127–R128** (full diversity opus/sonnet/haiku) on Java anonymous-inner-class class-scope overrides (#62) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_is_anonymous_class_member` 5/5 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 503 passing (full extras) |
+| Multi-model review panels | 2.1.22: R125–R126 on same-name method-overload role clobber (#61). 2.1.23: R127–R128 on Java anonymous-inner-class class-scope overrides (#62). **2.1.24: R129–R130** (full diversity opus/sonnet/haiku) on C/C++ `#define` macro-body call sites (#59) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_macro_body_ref_names` 4/4 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 511 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.21: Go method value/expression selectors → R123✓ R124✓. 2.1.22: same-name method-overload role clobber → R125✓ R126✓. 2.1.23: Java anon-inner-class class-scope overrides → **R127✓ R128✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.22: same-name method-overload role clobber → R125✓ R126✓. 2.1.23: Java anon-inner-class class-scope overrides → R127✓ R128✓. 2.1.24: C/C++ macro-body call sites → **R129✓ R130✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.22 RELEASED/releasable** (maintainer tags). **2.1.23** (a Java anonymous-inner-class override in a class-scope field/static/instance initializer is invoked only polymorphically and has no enclosing function to root it; a def directly in an anonymous class body is now rooted `callback` at class scope, so a non-`public` override and its private callees stay live — the in-method case keeps its containment gating) **RELEASABLE** — R127–R128 full-diversity clean; awaiting the maintainer's manual `v2.1.23` tag. opus proved the change additive/monotonic (cross-checked vs #61's no-role-gates-out) with a 165k-invocation crash fuzz and streaming/incremental parity; sonnet bounded the cardinal-safe precision masking (#87). Remaining cardinals: C/C++ macro-body call sites (#59), cross-TU function tables (#69), JS/TS implicit-dispatch (#54); pre-existing, deferred. |
+| Verdict | **1.0.0–2.1.23 RELEASED/releasable** (maintainer tags). **2.1.24** (a C/C++ function called or named only inside a `#define` macro body is invisible to the AST call scan — the body is raw `preproc_arg` text — and was flagged dead; a new `_macro_body_ref_names` text-scan roots matching project F/M nodes `callback`, with line-continuation splicing and macro-parameter exclusion) **RELEASABLE** — R129–R130 full-diversity clean; awaiting the maintainer's manual `v2.1.24` tag. The round-1 panel drove the line-continuation + param refinements and cleanly attributed the residual param over-rooting to a pre-existing separate mechanism (#88, `_module_uses` walking `preproc_params`). Remaining cardinals: C cross-TU function tables (#69), JS/TS implicit-dispatch (#54); pre-existing, deferred. |
 
 ## Trajectory
 
@@ -1451,6 +1451,31 @@ was modeled, leaving class-scope initializers orphaned. Rooting anon-class membe
 class scope closes it, gated by `enclosing_func is None` so the in-method case keeps its precise
 containment gating. The diverse panel again leaned on the *monotonicity* proof (additive role ⇒ can't
 strand a live node) and a large crash-fuzz, with sonnet bounding the precision cost.
+
+### 2.1.24 — C/C++ function called only inside a `#define` macro body (#59)
+
+A function called or named *only* inside a preprocessor macro body — `#define LOG(m) log_impl(m)`, a
+function-pointer macro `#define DEFAULT handler`, a helper-wrapping macro — was confidently flagged
+dead. Tree-sitter parses a macro body as a single raw-text `preproc_arg`, so the call inside it is
+invisible to the AST call scan. Closed by `_macro_body_ref_names` (a text-scan of macro bodies, the
+direct analogue of the `EXPORT_SYMBOL` scan) rooting matching project C/C++ F/M nodes `callback`,
+project-wide across the unified C/C++ bucket. The first review round drove two refinements in: splice
+`\<newline>` line continuations before scanning (a continuation splitting an identifier was read as
+two fragments, missing the target — a found cardinal-recall gap), and exclude the macro's own
+`preproc_params` from the body scan.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R129 | 3 | ✓ | round 1 on the FINAL code. All three FINDINGS: none (cardinal). opus structural proof (additive/monotonic, base-vs-HEAD differential) + crash hunt (20k-deep nesting, garbage bytes, `#undef`/conditionals). sonnet attributed precision cleanly: #59 body-token over-rooting vs the SEPARATE pre-existing #88 module-walk param-reference over-rooting (distinguished by the `callback` role). haiku 200+ fuzz files. Cross-language gate holds; streaming parity. (The pre-fix round-1 that found the line-continuation + param-precision issues is folded into this fix, not counted as a clean panel.) |
+| R130 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: incremental `replace_file`/reindex (no stale-state leak), streaming byte-parity on a ≥2000-file tree, real-world `util.h` (X-macros/`container_of`/`##`), #59-vs-#88 boundary nailed by disabling the pass in-process, monotonicity gained=0, crash corners (1MB body, recursive `#define A A`). sonnet multi-file C library + all downstream ops crash-free + variadic macros + C++ `::`-qualified names + quantified both precision sources (~2/fixture each). haiku 250+ fuzz + independently pinpointed #88's source (`_module_uses` `preproc_params`, ~line 1890). |
+
+The 2.1.24 lesson: **scan the text the grammar refuses to parse — but scan it the way the
+preprocessor would.** The macro body is opaque `preproc_arg` text, so a byte-scan (the EXPORT_SYMBOL
+move) is the right tool; the round-1 panel's value was catching that a faithful scan must also splice
+line continuations (as the preprocessor does) and exclude parameter placeholders, and — sharply —
+*attributing* the residual param over-rooting to a pre-existing, separate mechanism (`_module_uses`
+walking `preproc_params`, #88) rather than to this change, by keying on the `callback` role. Knowing
+which code owns a symptom is as valuable as the fix.
 
 ## Standing themes
 

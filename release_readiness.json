@@ -1587,6 +1587,26 @@
       ],
       "findings": {},
       "theme": "v2.1.23 (#62) round 2 — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus attacked the additive/monotonic proof on fresh corners and it held: lambda-in-field (lambda is not a def scope so enclosing_func stays None — correct rooting, no flip), incremental replace_file byte-equal to a fresh reindex across edits, streaming parity on a 2101-file tree, base-vs-HEAD strict-SUBSET (numeric monotonicity), enum-constant bodies unchanged from base (pre-existing, not a regression). sonnet 15 fixtures + all downstream ops (scan/impact_of/get_matrix/summarize_subsystem/orient/get_callers) crash-free + confirmed the masking is bounded to anon-class members (named-class methods in the same file still flag) + no conflict with _seed_callback_roles/exported seeding. haiku 200+ fuzz files + 5-deep nesting. No newly-introduced cardinal, no crash in either round."
+    },
+    {
+      "id": "R129",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.24 (#59) round 1 (final code) — CLEAN, all three FINDINGS: none (cardinal). C/C++ function called/named ONLY inside a `#define` macro body was false-flagged dead (the body is raw `preproc_arg` text the AST call scan never sees). Fixed by `_macro_body_ref_names` text-scan rooting matching project F/M nodes `callback` (the EXPORT_SYMBOL analogue), now with two refinements an earlier review round drove in: splice `\\<newline>` line continuations (a continuation splitting an identifier was read as two fragments, missing the call target) and exclude the macro's own `preproc_params`. opus structural proof (additive/monotonic, base-vs-HEAD differential, crash hunt incl. 20k-deep nesting / garbage bytes). sonnet attributed precision cleanly (#59 body-token over-rooting vs the SEPARATE pre-existing #88 module-walk param-reference over-rooting — distinguished by the `callback` role). haiku 200+ fuzz files. Cross-language gate holds; streaming parity. Streak resets (new fix)."
+    },
+    {
+      "id": "R130",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.24 (#59) round 2 (final code) — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus: incremental `replace_file`/reindex (no stale `c_macro_refs` leak, role re-pointed exactly), streaming byte-parity on a >=2000-file tree, real-world `util.h` (X-macros/`container_of`/`##`), #59-vs-#88 boundary nailed by in-process disabling the pass, monotonicity gained=0 across 8 fixtures, crash corners (1MB body, recursive `#define A A`). sonnet realistic multi-file C library + downstream ops (scan/find_holes/impact_of/get_callers all crash-free, no misleading presentation of macro-rooted dead fns) + variadic macros (`...` ignored) + C++ `::`-qualified names (namespace/class names match no F/M node) + quantified both precision sources (~2/fixture each). haiku 250+ fuzz incl. 1MB bodies + independently pinpointed #88's source (`_module_uses` preproc_params, ~line 1890). No newly-introduced cardinal, no crash in either round."
     }
   ]
 }
