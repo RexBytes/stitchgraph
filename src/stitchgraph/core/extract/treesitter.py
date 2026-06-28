@@ -1576,12 +1576,16 @@ _RUBY_METHOD_NAME_RE = re.compile(r"[A-Za-z_]\w*[?!=]?$")
 
 
 def _ruby_symbol_name(node, src):
-    """`:upcase` -> "upcase", `:valid?` -> "valid?"; None for a non-method-name or dynamic symbol."""
+    """`:upcase` -> "upcase", `:valid?` -> "valid?", `:name=` -> "name"; None for a non-method-name
+    or dynamic symbol. A setter def (`def name=`) is keyed WITHOUT the trailing `=` (the def-name
+    extractor strips the `=` operator), while `?`/`!` are part of the name and kept — so drop a
+    trailing `=` here too, or `method(:name=)` would emit `name=` and match no def (the live setter
+    would stay flagged dead)."""
     t = _text(node, src)
     if t.startswith(":"):
         name = t[1:]
         if _RUBY_METHOD_NAME_RE.fullmatch(name):
-            return name
+            return name[:-1] if name.endswith("=") else name
     return None
 
 

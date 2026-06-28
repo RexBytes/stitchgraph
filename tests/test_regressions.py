@@ -7254,9 +7254,14 @@ def test_ruby_symbol_dispatch_rooted(tmp_path):
             "  def filter_tokens(t); t; end\n"      # via enum_for(:filter_tokens)
             "  def run(t); enum_for(:filter_tokens, t); end\n"
             "end\n"
+            "class Box\n"
+            "  def value=(x); @v = x; end\n"        # setter: def keyed 'value' (no '='), reached
+            "  def setter_ref; method(:value=); end\n"   # via method(:value=) -> must root 'value='
+            "end\n"
             "toks = [Token.new(\"a\"), Token.new(\"\")]\n"
             "res = toks.select(&:valid?).map(&:upcase)\n"
             "Stream.new.run([1])\n"
+            "Box.new.setter_ref\n"
             "puts res\n"
         ),
     })
@@ -7265,6 +7270,7 @@ def test_ruby_symbol_dispatch_rooted(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
     assert "Token.upcase" not in stale and "Token.valid?" not in stale   # &:symbol handlers
     assert "Stream.filter_tokens" not in stale                          # enum_for(:m) target
+    assert "Box.value" not in stale                                    # setter (keyed w/o `=`) via method(:value=)
     assert "Token.really_dead" in stale and "Token.nuked" in stale      # genuinely dead -> flagged
 
 
@@ -7285,6 +7291,8 @@ def test_ruby_symbol_refs_helper():
         "to_enum(:each_line)": ["each_line"],
         "xs.map(&method(:transform))": ["transform"],
         "instance_method(:foo)": ["foo"],
+        "obj.method(:name=)": ["name"],        # setter symbol -> def is keyed without the `=`
+        "xs.map(&:name=)": ["name"],           # setter via &: too
         "obj.send(:step)": [],                 # send: documented dynamic dispatch, not covered
         "obj.public_send(:go)": [],            # same
         "xs.map(&blk)": [],                    # &var (not a symbol) -> nothing
