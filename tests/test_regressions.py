@@ -7760,30 +7760,25 @@ def test_module_uses_skips_generator_const_def(tmp_path):
         assert "reallyDead" in stale     # uncalled generator's callee NOT over-rooted: flagged
 
 
-def test_variable_declarator_chained_assignment_value_is_traversed(tmp_path):
-    """#48 (cardinal, panel R8 sonnet): a variable_declarator whose value is a chained or
-    parenthesized ASSIGNMENT — `const routes = module.exports = { GET(){ handler() } }`,
-    `const _ = (obj.x = { run(){ helper() } })` — must still be traversed. The v2.1.18
-    variable_declarator branch consumes the child but handles only arrow/fn/object values; with
-    no `else` fallthrough the inner assignment (and its member-assigned object's members) was
-    dropped, flagging the members' callees dead. The branch now recurses generically for any
-    other value form (the pre-v2.1.18 behavior)."""
+def test_expression_shaped_value_does_not_mint_unrooted_object_methods(tmp_path):
+    """#48 (panel round 11): a variable_declarator whose value is an EXPRESSION SHAPE wrapping an
+    object (`const handlers = (init(), { mmm(){ h() } })`, chained/parenthesized assignment,
+    ternary, IIFE) is a DEFERRED #75 case — the object's helper stays flagged (a pre-existing
+    recall gap). The cardinal guard pinned here: the branch must NOT mint the object's member
+    `mmm` as an unrooted, mis-qualed module-scope node, which would escalate the recall gap into
+    a live-method-flagged-dead cardinal. So `mmm` must not appear as a node id at all."""
     pytest.importorskip("tree_sitter")
     pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
-        "a.js": (
-            "function handler(){ return 1; }\n"
-            "export const routes = module.exports = { GET(){ handler(); } };\n"
-        ),
-        "b.ts": (
-            "function helper(){ return 1; }\n"
-            "function deadOne(){ return 9; }\n"
-            "export const _x = (obj.x = { run(){ helper(); } });\n"
+        "svc.ts": (
+            "function h(){ return 1; }\n"
+            "const handlers = (init(), { mmm(){ h(); } });\n"
+            "export function dispatch(name){ return handlers[name](); }\n"
         ),
     })
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
-        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
-        assert "handler" not in stale    # chained `const = module.exports = {…}` member walked
-        assert "helper" not in stale     # parenthesized `const = (obj.x = {…})` member walked
-        assert "deadOne" in stale        # genuinely uncalled: still flagged
+        ids = set(store.all_node_ids())
+        # No spurious unrooted method node for the expression-shaped object member.
+        assert not any(i.split("::")[-1].split(".")[-1] == "mmm" for i in ids), \
+            "object member of an expression-shaped value must not be minted as a bare node"

@@ -1345,16 +1345,15 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # cardinal). See _object_members.
                 _object_members(val, src, rel, spec, lang, _join(parent, name),
                                 nodes, defs, inherits, contains, is_test, enclosing_func)
-            else:
-                # Any OTHER value form must still be traversed — a chained/parenthesized
-                # assignment (`const routes = module.exports = {…}`, `const _ = (obj.x = {…})`),
-                # an IIFE, a class expression, a nested object in an array, etc. The
-                # variable_declarator branch consumes this child, so without recursing here it
-                # would never reach the inner `assignment_expression`/`object` handling and a
-                # member-assigned object's members (and their callees) would be flagged dead
-                # (cardinal; panel round 8). This restores the pre-v2.1.18 generic fallthrough.
-                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
-                         exported, is_test, contains=contains, enclosing_func=enclosing_func)
+            # NOTE: deliberately NO `else` fallthrough. A blanket `_collect(child)` for other
+            # value forms (chained/parenthesized assignment `const routes = module.exports =
+            # {…}`, sequence/ternary/IIFE, a class expression) lets generic descent reach an
+            # inner object/class and mint its method_definitions as UNROOTED, mis-qualed
+            # module-scope nodes — escalating the pre-existing "object reached via an expression
+            # shape" recall gap (#75) into a CARDINAL (the live method itself flagged dead;
+            # panel round 11). Those shapes stay in the deferred #75 family (helper-recall only,
+            # no spurious node), to be closed by one principled "route every object literal
+            # through _object_members" pass in its own release.
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
             # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
