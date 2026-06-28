@@ -1821,10 +1821,18 @@ def _c_global_init_fn_refs(root, src) -> set[str]:
 
 
 def _collect_init_idents(node, src, out: set[str]) -> None:
-    """Collect identifier names inside a global-initializer value (`{op_a, op_b}`, `handler`,
-    `{[0]=on_start}`, `&op_c`). Includes call-position names too (a fn CALLED in a static
-    initializer runs at program start, so it is live as well)."""
-    if node.type in ("identifier", "field_identifier"):
+    """Collect the function-VALUE identifiers inside a global-initializer (`{op_a, op_b}`,
+    `handler`, `{[0]=on_start}`, `&op_c`, `{.run=do_run}`). A function pointer named in an
+    initializer is always a plain `identifier` (the value side). We deliberately collect ONLY
+    `identifier`, NOT `field_identifier`: in a designated initializer `{.open=my_open}` the FIELD
+    NAME `open` is a `field_identifier` (under `field_designator`) — collecting it rooted any dead
+    static fn named `open`/`read`/`write`/`free`/… (the most common C names — `file_operations` /
+    GObject / VFS ops structs are full of them; panel-quantified, ~N spurious per N-field struct),
+    while the actual value `my_open` is the `identifier` we want. Member-access components
+    (`x.field`) are `field_identifier` too and equally not function-pointer values, so skipping
+    `field_identifier` tightens both. Call-position names are still collected (a fn CALLED in a
+    static initializer runs at program start, so it is live)."""
+    if node.type == "identifier":
         out.add(_text(node, src))
         return
     for c in node.children:

@@ -8396,3 +8396,27 @@ def test_cpp_rootless_table_does_not_overroot_sibling_static(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "hx" not in stale, "the table's target must be live"
         assert "secret" in stale, "a static sibling not in any initializer must still flag dead"
+
+
+def test_c_designated_init_field_name_does_not_overroot(tmp_path):
+    """#69 precision (panel R1): a designated initializer `{.on_unused = real_unused}` must collect
+    only the VALUE `real_unused` (a function pointer), NOT the FIELD designator `on_unused`. Field
+    names in ops/vtable structs (`open`/`read`/`write`/`free`/`init`/…) are the most common C
+    function names, so collecting them masked real dead code. A dead static fn named like an
+    UNCALLED field must stay dead; the table's value stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "ops.c": ("static int real_init(void){return 1;}\n"
+                  "static int real_unused(void){return 2;}\n"
+                  "struct cfg { int (*on_init)(void); int (*on_unused)(void); };\n"
+                  "struct cfg C = { .on_init = real_init, .on_unused = real_unused };\n"),
+        "dead.c": "static int on_unused(void){ return 0; }\n",   # collides with the .on_unused FIELD
+        "main.c": ("struct cfg { int (*on_init)(void); int (*on_unused)(void); };\n"
+                   "extern struct cfg C;\nint main(void){ return C.on_init(); }\n"),  # never calls on_unused
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "on_unused" in stale, "a fn colliding with an uncalled designated-init FIELD name must stay dead"
+        assert "real_unused" not in stale, "the function-pointer VALUE in the table must be live"
