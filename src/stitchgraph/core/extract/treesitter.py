@@ -1388,9 +1388,17 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                         inherits.append((cid, base, lang))
                 if enclosing_func is not None:
                     contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                # Same containment rule as the object-literal member path: a member-assigned
+                # CLASS nested in a FUNCTION (`function f(){ obj.X = class { run(){…} } }`) is not
+                # exported-rooted — it's gated to the enclosing fn via the CONTAINS edge above —
+                # so its methods must be gated to the CLASS (cid), or they are orphaned and
+                # confidently flagged dead while live (cardinal; panel round 4). A module-scope
+                # member-assigned class keeps enclosing_func=None so the `exported` rescue leaves
+                # its private methods dead-eligible (R46A). A function value (kind M) is cid-gated.
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains,
-                         enclosing_func=(cid if kind is M else None))
+                         enclosing_func=(cid if (kind is M or enclosing_func is not None)
+                                         else None))
             elif left is not None and val is not None and (
                     ov := _unwrap_ts_value(val)) is not None and ov.type == "object":
                 # An object literal assigned to a member or name — `module.exports = {…}`,

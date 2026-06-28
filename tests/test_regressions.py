@@ -7636,3 +7636,43 @@ def test_object_literal_class_member_nested_in_function_is_gated(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "deadSetup" in stale        # never called: dead
         assert "secret" in stale           # reached only via a method of a dead-gated class: dead
+
+
+def test_member_assigned_class_nested_in_function_is_gated(tmp_path):
+    """#48 (cardinal, panel R-sonnet round 4): the `assignment_expression` branch had the same
+    function-scoped class-member orphaning bug — `function f(){ obj.X = class { run(){ _h() } } }`
+    walked the class body with enclosing_func=None, orphaning its methods (no role, no
+    containment) and confidently flagging them — and their callees — dead while live. Now gated
+    to the class (chain: enclosing fn -> class -> methods), mirroring the object-literal path. A
+    member-assigned class in a DEAD function stays flagged (gating preserved)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "live.ts": (
+            "export function f() {\n"
+            "  const obj: any = {};\n"
+            "  obj.X = class { run() { _h(); } };\n"
+            "  return obj;\n"
+            "}\n"
+            "function _h() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "_h" not in stale            # reachable: f -> obj.X.run -> _h: live
+    _mk(tmp_path, {
+        "dead.ts": (
+            "function deadF() {\n"
+            "  const obj: any = {};\n"
+            "  obj.X = class { run() { secret(); } };\n"
+            "  return obj;\n"
+            "}\n"
+            "function secret() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadF" in stale             # never called: dead
+        assert "secret" in stale            # reached only via a method of a dead-gated class: dead
