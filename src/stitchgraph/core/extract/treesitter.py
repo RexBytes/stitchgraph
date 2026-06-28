@@ -2238,18 +2238,30 @@ def _bash_flag_arg(call, cn, src, out, flag):
 
 
 def _bash_export_decl(call, src, out):
-    """`export -f FUNC…` exports each named function for subshells (invoked via `bash -c
-    'FUNC'` in a child shell — otherwise invisible). It parses as a `declaration_command`
-    (`export`, word `-f`, then `variable_name` FUNC), so root each FUNC once `-f` is seen.
-    A plain `export VAR=…` (no `-f`) roots nothing."""
-    if not call.children or _text(call.children[0], src) != "export":
+    """A function exported for subshells (invoked via `bash -c 'FUNC'` in a child shell —
+    otherwise invisible) parses as a `declaration_command`. Three equivalent forms (#73):
+      * `export -f FUNC…`       — the `-f` flag exports the named function(s);
+      * `declare -fx FUNC…` / `declare -xf FUNC…` — declare with BOTH `f` (function) and `x`
+        (export) exports it; the flag combines in either order;
+      * `typeset -fx FUNC…`     — the ksh-compatible spelling of the same.
+    Root each named FUNC once the exporting flag is seen. A plain `export VAR=…`,
+    `declare -r VAR`, or `declare -f FUNC` (print only, no `x`) roots nothing."""
+    if not call.children:
         return
-    seen_f = False
+    head = _text(call.children[0], src)
+    if head not in ("export", "declare", "typeset"):
+        return
+    seen_export_fn = False
     for ch in call.children[1:]:
         t = _text(ch, src)
-        if not seen_f:
-            if ch.type == "word" and t == "-f":
-                seen_f = True
+        if not seen_export_fn:
+            if ch.type == "word" and t.startswith("-"):
+                flags = t[1:]
+                # `export -f`: the `-f` flag alone exports a function. `declare`/`typeset`: need
+                # BOTH `f` and `x` (function + export) — `declare -f` alone only prints.
+                if (head == "export" and "f" in flags) or \
+                        (head in ("declare", "typeset") and "f" in flags and "x" in flags):
+                    seen_export_fn = True
             continue
         if ch.type in ("variable_name", "word") and t.isidentifier():
             out.append((t, ch.start_point[0] + 1))
@@ -2257,9 +2269,12 @@ def _bash_export_decl(call, src, out):
 
 def _bash_time_target(call, cn, src, out):
     """`time FUNC` runs FUNC under the `time` keyword. Root the first non-option word when it
-    is a bare identifier (a project function); `time -p FUNC` skips the `-p` option."""
+    is a bare identifier (a project function); `time -p FUNC` skips the `-p` option. A brace
+    group `time { FUNC; }` mis-parses (tree-sitter makes `{` a plain word arg of `time`), so skip
+    a leading `{`/`}` token and take the first real word inside — else the grouped command is
+    never seen and a function timed only this way is flagged dead (#73)."""
     for w, line in _bash_command_words(call, cn, src):
-        if w.startswith("-"):
+        if w.startswith("-") or w in ("{", "}"):
             continue
         if w.isidentifier():
             out.append((w, line))

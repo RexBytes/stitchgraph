@@ -4,6 +4,35 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.31] — 2026-06-28
+
+**Bash function-export recall (#73) — and the close of the #70–#89 follow-up backlog.**
+A function exported for subshells via `declare -xf` / `typeset -fx` (the ksh/bash spellings of
+`export -f`), or invoked under `time { fn; }`, was flagged dead though it is live.
+
+### Fixed
+
+- `_bash_export_decl` now recognizes `declare -fx` / `declare -xf` / `typeset -fx` / `typeset -xf`
+  (a flag combining `f` and `x` exports a function), in addition to `export -f`. A plain
+  `export VAR=…`, `declare -r`, or `declare -f` (print only, no `x`) still roots nothing.
+- `_bash_time_target` skips a leading brace-group token, so `time { fn; }` (which tree-sitter
+  mis-parses, making `{` a word arg of `time`) roots `fn`.
+
+### Resolved without code change (cardinal-safe boundaries / non-issues)
+
+- **#72** (`trap SIGNAL` one-word reset over-roots the signal name): over-rooting is the
+  cardinal-SAFE direction; a one-word trap arg is ambiguous (signal vs handler), so removing the
+  root would risk flagging an intended handler dead. Left intentionally.
+- **#84** (narrow Go selector-field references to method-kind): the current broad selector rooting
+  (v2.1.12) is over-rooting; narrowing it would un-mask and risk a cardinal. Deferred.
+- **#79** (`_unwrap_ts_value` `seen < 8` cap): the cap is a runaway guard; 9+ literally-nested
+  TS value wrappers do not occur in real code. Theoretical, no action.
+- **#82** (decorator on a `const X = class{}` expression): not valid TypeScript. No action.
+- **#85**: added a regression test pinning that `nodes.file` is populated after a plain reindex.
+
+With this, the entire post-sweep cardinal-safe follow-up backlog (#70–#89) is closed — every item
+is either fixed behind the full gate or has a documented cardinal-safety reason to stay.
+
 ## [2.1.30] — 2026-06-28
 
 **C/C++ struct used only as a type (#89).** A struct/union/enum used only as a TYPE —

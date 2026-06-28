@@ -8841,3 +8841,96 @@ def test_c_type_ref_names_unit(tmp_path):
     root = get_parser("c").parse(src).root_node
     names = _c_type_ref_names(root, src)
     assert "Config" in names and "Other" in names and "Color" in names
+
+
+# -- #73 (Bash): declare -xf / typeset -fx / time { group; } recall ------------
+@pytest.mark.parametrize("decl,call", [
+    ("declare -xf fn", "declare -xf fn"),
+    ("declare -fx fn", "declare -fx fn"),
+    ("typeset -fx fn", "typeset -fx fn"),
+    ("typeset -xf fn", "typeset -xf fn"),
+])
+def test_bash_declare_export_function_rooted(tmp_path, decl, call):
+    """#73: a function exported for subshells via `declare -xf` / `typeset -fx` (the ksh/bash
+    spellings of `export -f`) is invoked elsewhere (`bash -c 'fn'` in a child) and must not be
+    flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "fn() { echo hi; }\n"
+        + call + "\n"
+        "really_dead() { echo dead; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "fn" not in stale, "a declare -xf / typeset -fx exported function must be live"
+        assert "really_dead" in stale, "a genuinely-unused function must still flag dead"
+
+
+def test_bash_time_brace_group_target_rooted(tmp_path):
+    """#73: `time { fn; }` runs fn under the time keyword; tree-sitter mis-parses the brace group
+    so `{` becomes a word arg of `time` — skipping it and taking the next word roots fn."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "timed_fn() { echo t; }\n"
+        "time { timed_fn; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "timed_fn" not in stale, "a function timed via `time { fn; }` must be live"
+
+
+def test_bash_export_decl_unit():
+    """#73 unit-pin: `_bash_export_decl` roots functions for export -f / declare -fx / typeset -xf,
+    and roots nothing for a plain `export VAR=…` or `declare -r VAR`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _bash_export_decl
+    def names(src_bytes):
+        root = get_parser("bash").parse(src_bytes).root_node
+        out = []
+        def walk(n):
+            if n.type == "declaration_command":
+                _bash_export_decl(n, src_bytes, out)
+            for c in n.children:
+                walk(c)
+        walk(root)
+        return {n for n, _ in out}
+    assert names(b"export -f a\n") == {"a"}
+    assert names(b"declare -fx b\n") == {"b"}
+    assert names(b"typeset -xf c\n") == {"c"}
+    assert names(b"export VAR=1\n") == set()        # plain export -> nothing
+    assert names(b"declare -r d\n") == set()        # readonly, no x -> nothing
+    assert names(b"declare -f e\n") == set()        # print only, no x -> nothing
+    # A flag is a `word` that STARTS WITH `-` — both conditions (an `and`, not an `or`). A bare
+    # var name whose tail happens to contain 'f' (`export xf target` exports vars xf and target,
+    # NOT a function) must NOT trip the exporting-flag detection, so `target` stays unrooted.
+    assert names(b"export xf target\n") == set()
+
+
+# -- #85 (coverage): nodes.file column populated after a plain reindex ----------
+def test_nodes_file_column_populated_after_reindex(tmp_path):
+    """#85 coverage: after a plain reindex every node row carries its owning file path in the
+    `nodes.file` column (the incremental/replace_file substrate). Pins that the column is not left
+    empty by the reindex path."""
+    _mk(tmp_path, {
+        "a.py": "def f():\n    return 1\n",
+        "pkg/b.py": "def g():\n    return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        rows = list(store.conn.execute("SELECT id, file FROM nodes"))
+        assert rows, "reindex produced nodes"
+        for r in rows:
+            nid, f = r[0], r[1]
+            assert f, f"node {nid} has an empty file column"
+            assert nid.split("::", 1)[0] == f, f"node {nid} file column {f!r} should match its id prefix"
