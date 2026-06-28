@@ -1487,6 +1487,26 @@
       ],
       "findings": {},
       "theme": "v2.1.18 round 13 \u2014 CLEAN (all 3, unanimous; ~45/35 differential fixtures HEAD-vs-5cb47bc, zero new flags, no crash). Second consecutive clean -> gate met. Direct object-literal member surface fully hardened; expression-position #75/#80 explicitly deferred to the next release."
+    },
+    {
+      "id": "R119",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.19 #80 (`const X = class {\u2026}` class-expression declarator) round 1. opus+haiku CLEAN with full parity tables vs regular `class X {}` (const-class is frequently SAFER in fn-scope \u2014 gates methods to the class rather than orphaning). sonnet's lone finding (`@Injectable() const Service = class{}`) is INVALID TypeScript (decorating a const is a parse-ERROR node, decorator semantically unreachable) \u2014 out of scope, tracked LOW #82; valid decorator patterns (method decorators inside, framework-base extends) work at parity. No in-scope cardinal."
+    },
+    {
+      "id": "R120",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.19 #80 round 2 \u2014 streak 2, gate met, RELEASABLE. opus+haiku CLEAN (haiku 64 custom + 475 pytest; opus full parity incl. const-extends-const, regular-extends-const, cross-file INHERITS, mixins, re-export). sonnet CLEAN on the cardinal invariant across 20 scenarios; one LOW cardinal-SAFE precision note (S6: a fn-nested const-class over-roots its genuinely-dead methods) \u2014 by design (round-3/4 over-rooting; required by the gating regression). No in-scope cardinal; no crashes."
     }
   ]
 }

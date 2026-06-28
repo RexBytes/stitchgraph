@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.17: R104–R105. **2.1.18: R106–R118** (full diversity opus/sonnet/haiku) on JS/TS object-literal function-member bodies (#48) — the campaign's deepest single surface: 13 rounds, 10 distinct cardinal classes, one over-reaching fix caught + reverted (R116), closing R117✓ R118✓ |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_object_members`/`_obj_key_name`/`_unwrap_ts_value` all-killed; the 2 justified survivors are the class-member INHERITS edge + the redundant identifier-key branch) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 473 passing (full extras) |
+| Multi-model review panels | 2.1.18: R106–R118 (object-literal members, 13 rounds). **2.1.19: R119–R120** (full diversity opus/sonnet/haiku) on `const X = class {…}` (#80) — parity verification vs regular `class X {}`, clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (object-literal helpers all-killed bar 2 justified) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 475 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.16: R102✓ R103✓. 2.1.17: R104✓ R105✓. 2.1.18: JS/TS object-literal members → **R117✓ R118✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** — 10 cardinal classes fixed across R106–R116; R116 caught + reverted a fix that escalated a pre-existing recall gap into a cardinal |
+| Convergence | 2.1.17: R104✓ R105✓. 2.1.18: object-literal members → R117✓ R118✓ (13 rounds, 10 cardinal classes). 2.1.19: `const X = class {…}` → **R119✓ R120✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.17 RELEASED/releasable** (maintainer tags). **2.1.18** (JS/TS object-literal function-member bodies extracted via the new `_object_members` pass — method shorthand, arrow/function/generator/class-valued members, nested objects, computed/string keys, TS-wrapper unwrap, module + function scope) **RELEASABLE** — R117+R118 full-diversity clean; awaiting the maintainer's manual `v2.1.18` tag. Objects reached only via an EXPRESSION shape (IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment) and `const X = class {…}` are PRE-EXISTING (byte-identical on the 5cb47bc baseline), documented, and deferred to a focused next release. The diverse panel earned its keep repeatedly: sonnet found the fn-scoped-class and chained-assignment cardinals; opus found the member-value-wrapper, generator, and the R116 over-reach regression. |
+| Verdict | **1.0.0–2.1.17 RELEASED/releasable** (maintainer tags). **2.1.18** (JS/TS object-literal function-member bodies via the new `_object_members` pass) + **2.1.19** (`const X = class {…}` class-expression declarator modeled as a CLASS, at parity with a regular `class X {}`) **RELEASABLE** — R117–R120 full-diversity clean; awaiting the maintainer's manual `v2.1.18`/`v2.1.19` tags. Object literals reached only via an EXPRESSION shape (IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment) remain PRE-EXISTING (byte-identical on the 5cb47bc baseline), documented, deferred to a focused next release (#75). The diverse panel keeps earning its keep: in 2.1.19 sonnet caught the invalid-TS decorator edge + the cardinal-safe fn-nested precision note while opus/haiku verified parity. |
 
 ## Trajectory
 
@@ -1333,6 +1333,26 @@ node id (`m.ts::m`); the panel's `svc.ts`/`mmm` naming exposed it. The expressio
 (#75: IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment), `const X = class {…}`
 (#80), and a few others are **pre-existing** (identical on `5cb47bc`) and deferred to a focused next
 release that routes every object literal through `_object_members`.
+
+### 2.1.19 — `const X = class {…}` class-expression declarator (#80)
+
+A class expression bound to a const (`export const Widget = class extends Component {
+render(){ helper() } }`) was never modeled — the `variable_declarator` branch handled
+arrow/function/generator/object values but not `class`/`class_expression` — so a helper called
+only from its methods was flagged dead. Closed by adding a class branch that mirrors the
+`assignment_expression` class handling (CLASS node, INHERITS edges, body walk, `exported` rescue,
+round-3/4 fn-scope gating). Now at parity with a regular `class X {}`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R119 | 3 | ✓ | round 1. opus+haiku clean with full parity tables vs regular `class X {}` (const-class is frequently *safer* in fn-scope — gates methods to the class rather than orphaning). sonnet's lone finding `@Injectable() const Service = class{}` is **invalid TypeScript** (decorating a const → parse-ERROR node, decorator unreachable) → out of scope, tracked LOW #82; the valid decorator patterns (method decorators inside, framework-base `extends`) work at parity. |
+| R120 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus+haiku clean (haiku 64 custom + 475 pytest; opus const-extends-const / regular-extends-const / cross-file INHERITS / mixins / re-export). sonnet clean on the cardinal invariant across 20 scenarios; one LOW *cardinal-safe* precision note (a fn-nested const-class over-roots its genuinely-dead methods) — by design (the round-3/4 over-rooting, required by the gating regression). |
+
+The 2.1.19 lesson: **a const-bound class expression is a class, so give it the class treatment.**
+The fix is a near-verbatim mirror of the `assignment_expression` class branch; the diverse panel's
+job here was parity verification (run the regular-`class` control for every fixture and report only
+a delta). The one "delta" found was the const-class being *more* cardinal-safe than a regular nested
+class — the right direction.
 
 ## Standing themes
 
