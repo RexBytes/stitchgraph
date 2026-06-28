@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.14: R98–R99. **2.1.15: R100–R101** (full diversity opus/sonnet/haiku) on C++ range-for `begin()`/`end()` customization points; round 1 flagged a `.h`-scope doc inaccuracy, corrected in round 2 |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/framework_classes/rust_runtime_entry_attr/c_attr_roots) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 452 passing (full extras) |
+| Multi-model review panels | 2.1.15: R100–R101. **2.1.16: R102–R103** (full diversity opus/sonnet/haiku) on Bash callback/invocation argument recognition (trap-in-function, complete -F, export -f, time FUNC); two rounds nailed the real-world `-F` spellings (quoted, dynamic, duplicate) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/rust_runtime_entry_attr/c_attr_roots/bash_flag_arg) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 454 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.13: R96✓ R97✓ (streak 2). 2.1.14: R98✓ R99✓ (streak 2). 2.1.15: C++ range-for begin/end → **R100✓ R101✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — round 1 corrected a `.h`-scope doc inaccuracy |
+| Convergence | 2.1.14: R98✓ R99✓ (streak 2). 2.1.15: R100✓ R101✓ (streak 2). 2.1.16: Bash callback-arg recognition → **R102✓ R103✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — rounds fixed quoted/dynamic/duplicate `-F` handling |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.14 RELEASED/releasable** (maintainer tags). **2.1.15** (C++ range-based-`for` `begin()`/`end()` customization points rooted via a new `_IMPLICIT_HOOKS["cpp"]` entry — `for (x:r)` desugars to `r.begin()`/`r.end()` with no textual call site) **RELEASABLE** — R100+R101 full-diversity clean; awaiting the maintainer's manual `v2.1.15` tag. |
+| Verdict | **1.0.0–2.1.15 RELEASED/releasable** (maintainer tags). **2.1.16** (Bash callback/invocation argument recognition — `trap HANDLER` incl. in function bodies, `complete -F`/`compgen -F`, `export -f`, `time FUNC` rooted via the generalized `_bash_callback_refs`; each routed through `_ref` so only project functions are rooted) **RELEASABLE** — R102+R103 full-diversity clean; awaiting the maintainer's manual `v2.1.16` tag. |
 
 ## Trajectory
 
@@ -1252,6 +1252,30 @@ The 2.1.15 lesson: **the docs are part of the diff.** The code was correct and c
 comment/CHANGELOG/release-notes asserted a `.h` "out of scope" boundary that the `_header_lang`
 content-sniffer had already removed — the panel checked the *claim against the code* and caught it. A
 factually-wrong comment that understates coverage is still a defect worth fixing.
+
+## 2.1.16 — Bash callback/invocation argument recognition (R102–R103)
+
+Commands that invoke a function via an *argument* (not the command head) are missed by the
+head-keyed command scan. `_bash_trap_handlers` generalized to `_bash_callback_refs`, now rooting the
+function named by `trap HANDLER` (incl. inside function bodies), `complete -F`/`compgen -F`,
+`export -f` (a `declaration_command`), and `time FUNC` — each routed through `_ref` so only project
+functions are rooted (cardinal-safe).
+
+Two adversarial rounds drove the parser to correctness on the messy real-world spellings:
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R102 | 3 | ✓ | re-gate round 1 (after the first round's recall/precision fixes: quote-strip in `_bash_command_words` for `time "bench"`/`complete -F "_c"`; `_bash_flag_arg` rewritten to take the immediate slot after `-F` so `complete -F ${VAR} cmd` stops grabbing `cmd`). opus + haiku clean; sonnet confirmed both fixes and found three pre-existing LOW gaps. |
+| R103 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. The one pathological cardinal from R102 (`complete -F f1 -F f2` rooting only the first, flagging the live last handler dead) fixed — `_bash_flag_arg` now roots every `-F` slot (cardinal-safe over-rooting of the overwritten one). Final confirmation: no cardinal across all four mechanisms; trap precision intact; genuinely-dead still flags; no cross-language bleed. |
+
+Pre-existing LOW gaps left as tracked follow-ups (cardinal-safe / rare): bare `trap EXIT` one-word
+reset rooting the signal name; `time { group; }` brace form (tree-sitter grammar limitation);
+`declare -xf`/`typeset -fx` export-f synonyms.
+
+The 2.1.16 lesson: **an argument parser meets the shell's real grammar, not the tidy form.** The tidy
+`complete -F _c cmd` worked first try; the rounds found `-F "_c"` (quoted), `-F ${VAR} cmd` (dynamic,
+grabbed the wrong word), and `-F f1 -F f2` (last wins) — each a different real spelling. Routing every
+candidate through `_ref` kept all of them cardinal-safe while the spellings were nailed down.
 
 ## Standing themes
 

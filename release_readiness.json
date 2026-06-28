@@ -1303,6 +1303,26 @@
       ],
       "findings": {},
       "theme": "2.1.15 C++ range-for begin/end — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) after correcting the .h-scope doc wording (the comment/CHANGELOG/release-notes now state _header_lang sniffs C++ .h headers to cpp so their begin/end are rooted; only a pure-C .h stays C). Final pass across .cpp/.hpp/.h-C++/pure-C-.h/.c: no cardinal, no bleed, over-mask boundary holds, determinism. All 3 CLEAN."
+    },
+    {
+      "id": "R102",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.16 Bash callback/invocation argument recognition (_bash_callback_refs: trap incl. function bodies + complete -F/compgen -F + export -f + time FUNC; each routed through _ref so only project functions root) — FULL-DIVERSITY clean RE-GATE round 1 (after the first round's recall/precision fixes: quote-strip in _bash_command_words for time \"bench\"/complete -F \"_c\"; _bash_flag_arg rewritten to take the immediate slot after -F so complete -F ${VAR} cmd stops grabbing cmd). opus + haiku clean; sonnet confirmed both prior fixes + found 3 pre-existing LOW gaps. mutation over the new parsers all-killed. All 3 CLEAN."
+    },
+    {
+      "id": "R103",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.16 Bash callback-arg recognition — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). The one pathological cardinal from R102 (complete -F f1 -F f2 rooting only the first -> live last handler flagged dead) fixed: _bash_flag_arg now roots EVERY -F slot (cardinal-safe over-rooting). Final pass: no cardinal across all four mechanisms; trap precision intact; genuinely-dead still flags; no cross-language bleed; determinism. Pre-existing LOW follow-ups tracked: bare trap EXIT one-word reset, time { group; } brace form, declare -xf/typeset -fx synonyms. All 3 CLEAN."
     }
   ]
 }
