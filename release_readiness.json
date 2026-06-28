@@ -1323,6 +1323,26 @@
       ],
       "findings": {},
       "theme": "2.1.16 Bash callback-arg recognition — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE). The one pathological cardinal from R102 (complete -F f1 -F f2 rooting only the first -> live last handler flagged dead) fixed: _bash_flag_arg now roots EVERY -F slot (cardinal-safe over-rooting). Final pass: no cardinal across all four mechanisms; trap precision intact; genuinely-dead still flags; no cross-language bleed; determinism. Pre-existing LOW follow-ups tracked: bare trap EXIT one-word reset, time { group; } brace form, declare -xf/typeset -fx synonyms. All 3 CLEAN."
+    },
+    {
+      "id": "R104",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.17 Ruby &:symbol / enum_for / &method literal-symbol dispatch (new _ruby_symbol_refs pass; routed through _ref so only project methods root) — FULL-DIVERSITY clean RE-GATE round 1. The FIRST round-1 pass found a CARDINAL blocker (opus only; sonnet+haiku missed it): _ruby_symbol_name kept the `=` for setter symbols (:name= -> name=) but setter defs are keyed WITHOUT the = (name), so method(:name=) flagged the live setter dead at 0.6. Fixed (strip trailing =, keep ?/!). This R104: opus re-confirmed; sonnet ran a full symbol-name surface audit (operators :[]/:[]=/:+/:<=>/:-@ skipped here + pre-rooted by _is_ruby_operator_method; setter was the only def-key mismatch); haiku verified the setter end-to-end. 456 + oracles 27 + ruff/mypy. All 3 CLEAN."
+    },
+    {
+      "id": "R105",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "2.1.17 Ruby symbol dispatch — FULL-DIVERSITY clean round 2 (streak 2, gate met, RELEASABLE) on the corrected code. Final pass: no cardinal across all dispatch forms (&:sym incl. ?/!/=, enum_for/to_enum/method/instance_method, &method); setters via method(:name=) live; genuinely-dead flags; send/public_send excluded (documented limitation); operators not falsely flagged; no cross-language bleed; determinism. All 3 CLEAN."
     }
   ]
 }

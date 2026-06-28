@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.15: R100–R101. **2.1.16: R102–R103** (full diversity opus/sonnet/haiku) on Bash callback/invocation argument recognition (trap-in-function, complete -F, export -f, time FUNC); two rounds nailed the real-world `-F` spellings (quoted, dynamic, duplicate) |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/rust_runtime_entry_attr/c_attr_roots/bash_flag_arg) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 454 passing (full extras) |
+| Multi-model review panels | 2.1.16: R102–R103. **2.1.17: R104–R105** (full diversity opus/sonnet/haiku) on Ruby `&:symbol`/`enum_for`/`&method` symbol dispatch; round 1 found + fixed a setter-symbol cardinal (`:name=` key mismatch) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (…/c_attr_roots/bash_flag_arg/ruby_symbol_refs) all-killed ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 456 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.14: R98✓ R99✓ (streak 2). 2.1.15: R100✓ R101✓ (streak 2). 2.1.16: Bash callback-arg recognition → **R102✓ R103✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — rounds fixed quoted/dynamic/duplicate `-F` handling |
+| Convergence | 2.1.15: R100✓ R101✓ (streak 2). 2.1.16: R102✓ R103✓ (streak 2). 2.1.17: Ruby symbol dispatch → **R104✓ R105✓ full-diversity, no code findings (streak 2, gate met, readiness RELEASABLE)** — round 1 caught + fixed a setter-symbol (`:name=`) cardinal |
 | Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.15 RELEASED/releasable** (maintainer tags). **2.1.16** (Bash callback/invocation argument recognition — `trap HANDLER` incl. in function bodies, `complete -F`/`compgen -F`, `export -f`, `time FUNC` rooted via the generalized `_bash_callback_refs`; each routed through `_ref` so only project functions are rooted) **RELEASABLE** — R102+R103 full-diversity clean; awaiting the maintainer's manual `v2.1.16` tag. |
+| Verdict | **1.0.0–2.1.16 RELEASED/releasable** (maintainer tags). **2.1.17** (Ruby `&:symbol`/`enum_for`/`to_enum`/`method`/`instance_method` literal-symbol dispatch rooted via the new `_ruby_symbol_refs` pass; `send`/`public_send` remain the documented dynamic-dispatch limitation) **RELEASABLE** — R104+R105 full-diversity clean; awaiting the maintainer's manual `v2.1.17` tag. The diverse panel earned its keep again: the one reviewer that tested a setter caught a cardinal the other two missed. |
 
 ## Trajectory
 
@@ -1276,6 +1276,24 @@ The 2.1.16 lesson: **an argument parser meets the shell's real grammar, not the 
 `complete -F _c cmd` worked first try; the rounds found `-F "_c"` (quoted), `-F ${VAR} cmd` (dynamic,
 grabbed the wrong word), and `-F f1 -F f2` (last wins) — each a different real spelling. Routing every
 candidate through `_ref` kept all of them cardinal-safe while the spellings were nailed down.
+
+## 2.1.17 — Ruby `&:symbol` / `enum_for` / `&method(:m)` symbol dispatch (R104–R105)
+
+Ruby names a method via a literal symbol in idioms the name-based call graph can't see, so the method
+(and its callees) was false-flagged dead. New `_ruby_symbol_refs` pass roots the method named by
+`&:sym` block arguments and by the first symbol arg of `enum_for`/`to_enum`/`method`/`instance_method`
+— each routed through `_ref` so only project methods are rooted (cardinal-safe). `send`/`public_send`
+stay the documented dynamic-dispatch limitation.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R104 | 3 | ✓ | re-gate round 1 (after a CARDINAL fix). opus's *first* round found the blocker — `_ruby_symbol_name` kept the `=` for setter symbols (`:name=` → `name=`), but setter defs are keyed without the `=` (`name`), so `method(:name=)` flagged the live setter dead; sonnet and haiku both missed it. Fixed (strip a trailing `=`, keep `?`/`!`). This R104: opus re-confirmed the fix; sonnet ran a full symbol-name surface audit (operators `:[]`/`:[]=`/`:+`/`:<=>`/`:-@` correctly skipped here and pre-rooted by `_is_ruby_operator_method`; setter was the *only* def-key mismatch); haiku verified the setter end-to-end. |
+| R105 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Final confirmation across all dispatch forms; setters live; genuinely-dead flags; `send` excluded; no cross-language bleed; determinism. |
+
+The 2.1.17 lesson: **emit the key the def side uses, not the source spelling.** `?`/`!` are part of a
+Ruby method name (kept) but `=` is stripped from setter def keys — so the symbol side had to match.
+The single diverse reviewer who tested a *setter* found a cardinal two others, testing only
+getters/predicates, called clean. Diversity of *test inputs* across the panel is the safeguard.
 
 ## Standing themes
 
