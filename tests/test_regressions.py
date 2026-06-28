@@ -8727,3 +8727,63 @@ def test_ts_dynamic_keyed_method_does_not_overroot_plain_dead(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "deadHelper" in stale, "a plain uncalled method's helper must still flag dead"
         assert "liveHelper" not in stale
+
+
+# -- #70 / #86 (Python): abstract/Protocol interface methods not flagged dead ---
+def test_py_protocol_subscripted_base_interface_methods_not_dead(tmp_path):
+    """#70+#86: a method of a SUBSCRIPTED-base Protocol (`class Repo(Protocol[T])`) — recognized as
+    abstract only once `_is_abstract_class` uses `_base_name` — and any bodyless abstract/Protocol
+    method is an interface contract fulfilled by overrides, never called by name, so it must not be
+    flagged dead."""
+    _mk(tmp_path, {"m.py": (
+        "from typing import Protocol, TypeVar\n"
+        "T = TypeVar('T')\n"
+        "class Repo(Protocol[T]):\n"
+        "    def get(self, i: int) -> T: ...\n"
+        "    def put(self, x: T) -> None: ...\n"        # uncalled Protocol method
+        "def consume(r: Repo) -> None: r.get(1)\n"
+        "__all__ = ['consume']\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Repo.put" not in stale, "an uncalled Protocol interface method must not flag dead"
+
+
+def test_py_abstract_interface_methods_spared_concrete_dead_still_flags(tmp_path):
+    """#86 precision: only BODYLESS abstract/Protocol contracts are spared. A CONCRETE method with a
+    real body inside an ABC that is genuinely uncalled (and the helper it alone calls) must STILL
+    flag dead — the fix must not blanket-root every method of an abstract class."""
+    _mk(tmp_path, {"m.py": (
+        "from abc import ABC, abstractmethod\n"
+        "class Base(ABC):\n"
+        "    @abstractmethod\n"
+        "    def required(self) -> int: ...\n"          # contract -> spared
+        "    def concrete_dead(self) -> int:\n"         # real body, uncalled -> dead
+        "        return secret()\n"
+        "def secret() -> int: return 1\n"
+        "def live_entry() -> int: return 2\n"
+        "__all__ = ['live_entry']\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Base.required" not in stale, "a bodyless @abstractmethod is an interface contract"
+        assert "Base.concrete_dead" in stale, "a concrete uncalled method in an ABC must still flag"
+        assert "secret" in stale, "a helper reached only from dead concrete code must still flag"
+
+
+def test_is_abstract_class_subscripted_base_unit():
+    """#70 unit-pin: `_is_abstract_class` recognizes a subscripted Protocol/ABC base via _base_name."""
+    import ast as _ast
+
+    from stitchgraph.core.extract.python import _is_abstract_class
+    mod = _ast.parse(
+        "from typing import Protocol, Generic, TypeVar\n"
+        "class A(Protocol[int]): ...\n"          # subscripted Protocol
+        "class B(ABC, Generic[int]): ...\n"      # ABC + subscripted Generic
+        "class C(Protocol): ...\n"               # plain Protocol
+        "class D(object): ...\n"                 # not abstract
+    )
+    got = {c.name: _is_abstract_class(c) for c in mod.body if isinstance(c, _ast.ClassDef)}
+    assert got == {"A": True, "B": True, "C": True, "D": False}

@@ -548,6 +548,13 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
             # prefix (pytest's own hook-discovery convention); over-rooting a stray dead
             # `pytest_*` in a test-tree helper is cardinal-safe.
             roles.add("callback")
+        # A bodyless abstract / Protocol interface method (`def m(self): ...` under
+        # @abstractmethod or inside a Protocol/ABC) is an API contract fulfilled by overrides,
+        # never called by name — so it was false-flagged dead though it defines live interface
+        # surface (#86). Root it `callback`. Cardinal-safe (only adds a root); a method with a
+        # real body (a concrete default in an ABC) stays dead-eligible.
+        if _is_abstract(node, in_abstract) and _is_stub(node):
+            roles.add("callback")
         # An empty body inside a Protocol/ABC or under @abstractmethod is an
         # intentional contract, not an implementation hole (design §7 caveat).
         is_stub = _is_stub(node) and not _is_abstract(node, in_abstract)
@@ -1607,7 +1614,11 @@ def _is_abstract(func: ast.FunctionDef | ast.AsyncFunctionDef, in_abstract: bool
 
 
 def _is_abstract_class(node: ast.ClassDef) -> bool:
-    bases = {_name_of(b) for b in node.bases}
+    # Use _base_name (not _name_of) so a SUBSCRIPTED base is recognized: `class Repo(Protocol[T])`
+    # / `class C(ABC, Generic[T])` — the base is an ast.Subscript whose `_name_of` is None, so the
+    # class was not detected as abstract and its bodyless members were treated as implementation
+    # stubs / flagged dead instead of interface contracts (#70). _base_name unwraps the subscript.
+    bases = {_base_name(b) for b in node.bases}
     keywords = {kw.arg: _name_of(kw.value) for kw in node.keywords}
     return bool(bases & {"Protocol", "ABC", "ABCMeta"}) or keywords.get("metaclass") == "ABCMeta"
 

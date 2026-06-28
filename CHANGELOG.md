@@ -4,6 +4,29 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.29] — 2026-06-28
+
+**Python abstract / Protocol interface methods (#70, #86).** A bodyless interface-method
+declaration is a contract fulfilled by overrides, never called by name — so it should not be
+reported as dead code.
+
+### Fixed
+
+- `_is_abstract_class` now resolves a SUBSCRIPTED base via `_base_name`, so `class Repo(Protocol[T])`
+  / `class C(ABC, Generic[T])` is recognized as abstract (it was missed when the base was an
+  `ast.Subscript`, whose `_name_of` is None) — #70.
+- A bodyless abstract / Protocol method (`def m(self): ...` under `@abstractmethod` or inside a
+  Protocol/ABC) is now rooted `callback`, so it is no longer false-flagged dead — #86. Cardinal-safe
+  (only adds a root). A method with a real body (a concrete default in an ABC) that is genuinely
+  uncalled still flags dead, as does the private helper it alone reaches — precision preserved.
+
+### Resolved without code change
+
+- **#71** (`_framework_classes` name-based cross-file collision over-masks): over-masking is the
+  cardinal-SAFE direction — it keeps a possibly-framework-reachable class live. Tightening it would
+  *un-mask*, risking a live framework-only-reachable class being flagged dead (the cardinal sin), so
+  the current behavior is a deliberate precision boundary, left intentionally.
+
 ## [2.1.28] — 2026-06-28
 
 **TS class-member resolution cardinals (#76, #78).** Two ways a class method that is genuinely
