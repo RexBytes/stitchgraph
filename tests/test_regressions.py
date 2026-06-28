@@ -7597,3 +7597,42 @@ def test_object_literal_class_valued_member(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "tok" not in stale         # reached from the public class method: live
         assert "deadHelper" in stale      # reached only from an unused private method: flagged
+
+
+def test_object_literal_class_member_nested_in_function_is_gated(tmp_path):
+    """#48 (cardinal, panel R-sonnet round 3): a class-valued member inside a FUNCTION body must
+    have its methods reachability-gated to the class (chain: enclosing fn -> class -> methods).
+    The class is not `exported`-rooted there (it's gated to the enclosing fn), so walking its
+    body with enclosing_func=None orphaned the methods — confidently flagged dead while live.
+    Now gated to the class. A class member in a DEAD function stays dead (gating preserved)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # live enclosing function -> the class member's method (and its callee) live
+    _mk(tmp_path, {
+        "live.ts": (
+            "export function setup() {\n"
+            "  const handlers = { Parser: class { parse() { _helper(); } } };\n"
+            "  return handlers;\n"
+            "}\n"
+            "function _helper() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "_helper" not in stale     # reachable: setup -> Parser.parse -> _helper: live
+    # dead enclosing function -> the class, its method, and the callee all stay flagged
+    _mk(tmp_path, {
+        "dead.ts": (
+            "function deadSetup() {\n"
+            "  const handlers = { Parser: class { parse() { secret(); } } };\n"
+            "  return handlers;\n"
+            "}\n"
+            "function secret() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadSetup" in stale        # never called: dead
+        assert "secret" in stale           # reached only via a method of a dead-gated class: dead

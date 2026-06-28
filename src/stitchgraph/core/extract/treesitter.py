@@ -1522,11 +1522,19 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, co
         # becomes a real node with a CONTAINS edge to this member — without this, pass 2's
         # `_direct_calls` skips the nested def, its body is never walked, and a helper called
         # only from it is flagged dead (cardinal). Mirrors the arrow-decl path's body recursion.
-        # A class member's methods are NOT function-scope-gated (enclosing_func=None) — they are
-        # rescued via the `exported` role, like the assignment_expression class branch.
+        # Containment for the recursion:
+        #   * method member (kind M): gate its nested defs to the method (cid).
+        #   * class member at MODULE scope (kind C, enclosing_func is None): pass None — the
+        #     class is `exported`-rooted and `_seed_exported_class_methods` rescues its PUBLIC
+        #     methods, keeping a private method dead-eligible (R46A precision).
+        #   * class member NESTED IN A FUNCTION (kind C, enclosing_func not None): the class is
+        #     NOT exported-rooted (it's reachability-gated to the enclosing func via the CONTAINS
+        #     edge above), so its methods must be gated to the CLASS (cid) — else they are
+        #     orphaned (no role, no containment) and confidently flagged dead while live (the
+        #     cardinal sin; panel round 3). Chain: enclosing func -> class -> methods.
         _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                  False, is_test, contains=contains,
-                 enclosing_func=(cid if kind is M else None))
+                 enclosing_func=(cid if (kind is M or enclosing_func is not None) else None))
 
 
 def _bases(node, src, spec):
