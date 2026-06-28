@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.24: R129–R130 on C/C++ `#define` macro-body call sites (#59). 2.1.25: R131–R132 on C/C++ function-pointer table / vtable promotion (#69). **2.1.26: R133–R134** (full diversity opus/sonnet/haiku) on JS/TS implicit-dispatch class members (#54) — clean in 2 rounds; **closes the per-language cardinal sweep** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_is_js_implicit_dispatch_method` 7/7 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 532 passing (full extras) |
+| Multi-model review panels | 2.1.25: R131–R132 on C/C++ function-pointer table / vtable promotion (#69). 2.1.26: R133–R134 on JS/TS implicit-dispatch class members (#54) — closed the per-language cardinal sweep. **2.1.27: R135 (found an in-scope cardinal) → R136–R137** (full diversity opus/sonnet/haiku) on JS/TS shorthand member of an exported object (#74) — clean in 2 fresh rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_reexport_names` new branch pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 543 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.24: C/C++ macro-body call sites → R129✓ R130✓. 2.1.25: C/C++ function-pointer table promotion → R131✓ R132✓. 2.1.26: JS/TS implicit-dispatch class members → **R133✓ R134✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.25: C/C++ function-pointer table promotion → R131✓ R132✓. 2.1.26: JS/TS implicit-dispatch class members → R133✓ R134✓ (closed the sweep). 2.1.27: JS/TS exported-object shorthand member → R135 (cardinal found, fixed) → **R136✓ R137✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.25 RELEASED/releasable** (maintainer tags). **2.1.26** (a JS/TS class member the runtime invokes IMPLICITLY — a well-known-Symbol computed key `[Symbol.iterator]`/`[Symbol.toPrimitive]`/… run by for-of/spread/coercion/instanceof, a `get`/`set` accessor run by a property read/write, or a `toJSON`/`toString`/`valueOf` coercion hook — is never reached by a plain `obj.method()` by-name call, so in a non-exported class the member and the private helpers it alone calls were flagged dead though live; a new `_is_js_implicit_dispatch_method` recognizes the three forms and the JS/TS method path roots them `callback`) **RELEASABLE** — R133–R134 full-diversity clean; awaiting the maintainer's manual `v2.1.26` tag. **This CLOSES the entire per-language cardinal sweep** (all 10 languages swept; v2.1.1–v2.1.26 each shipped a gated cardinal fix). Cardinal-safe precision/coverage follow-ups #70–#89 remain, all deferred. |
+| Verdict | **1.0.0–2.1.26 RELEASED/releasable** (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27** (a function referenced via object-literal SHORTHAND in an exported object — `export const handlers = { onClick }`, incl. the canonical `… as const` / `satisfies` / parens forms — is public API but was flagged dead because a `shorthand_property_identifier` is never modeled as a reference; `_reexport_names` now collects an exported declaration's object-literal member names, unwrapping TS value wrappers, into the reexport→`exported` path) **RELEASABLE** — R136–R137 full-diversity clean; awaiting the maintainer's manual `v2.1.27` tag. This is the first of the post-sweep **cardinal-safe follow-up backlog** (#70–#89): #74 fixed; #77/#81/#83 resolved without code change (deliberate precision boundary / already-covered for exported modules). Remaining follow-ups deferred. |
 
 ## Trajectory
 
@@ -1529,6 +1529,31 @@ cardinal sweep is complete — v2.1.1 through v2.1.26 each shipped one gated car
 supported languages (Python, JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, Bash). What remains (#70–#89)
 is entirely cardinal-*safe* precision/coverage follow-ups — over-rooting to tighten and recall gaps to
 widen, none of which can flag live code dead — all deferred.
+
+### 2.1.27 — JS/TS shorthand member of an exported object (#74) — first of the follow-up backlog
+
+The post-sweep backlog (#70–#89) is cardinal-*safe* in aggregate, but a few entries are themselves
+pre-existing cardinals worth closing. #74 is one: a function referenced via object-literal SHORTHAND
+in an exported object — `export const handlers = { onClick, onHover }` — is public API (an importer
+reaches `handlers.onClick`), but a `shorthand_property_identifier` is never modeled as a reference, so
+the named function and the private helpers it alone calls were false-flagged dead. The CJS/default
+forms (`module.exports = { onClick }`, `export default { onClick }`) were already handled by
+`_reexport_names`; the named-const-export form was the gap. Closed by collecting an exported
+declaration's object-literal member names (shorthand idents + `pair` value idents) into the same
+reexport→`exported` path.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R135 | 3 | ✗ | initial panel — round 1 clean (3/3) but round 2 haiku found an IN-SCOPE CARDINAL: the canonical TS idiom `export const handlers = { onClick } as const` wraps the object in an `as_expression` (also `satisfies`/parens), not a bare `object`, so the new branch's `v.type == "object"` check missed it and the member stayed dead. **Fixed** by unwrapping TS value wrappers via `_unwrap_ts_value` on both the named-export object and the `module.exports = …` RHS (mirroring the declarator/assignment def branches). Streak reset. |
+| R136 | 3 | ✓ | fresh round 1 on the final code. All three FINDINGS: none. opus: unwrap additive, `v.type=="object"` gate rejects unwrapped non-objects (`export const x = f as const` correctly NOT collected), monotonic role-union, streaming parity, crash sweep clean. sonnet: 9 real-world scenarios (as const / satisfies / parens / NestJS mixed / CJS-wrapped / double-chained / spread / non-object / precision) all correct. haiku: as-const cardinal confirmed fixed, 407 regression tests pass. |
+| R137 | 3 | ✓ | fresh round 2 — **streak 2, gate met, RELEASABLE.** opus: all four export forms coexist + root independently; dual-name/double-export over-root only; DOGFOOD streaming==in-memory parity, 0 public-API symbols newly flagged. sonnet: 5-level transitive across 3 files live, cross-language isolation, 7 dead siblings still flag (no blanket-root). haiku: full suite 543 + oracles 27 green; pathological inputs (1000 members, unicode/keyword keys, chained wrappers) no crash. |
+
+The 2.1.27 lesson: **the panel earns its keep on the follow-up backlog too.** Round 1 was clean on the
+plain shorthand, but the most common real-world shape (`{ … } as const` on a TS handler object) only
+surfaced in round 2 — and the fix was the one-line unwrap the def branches already used. #77 (underscore
+member-assign), #81, and #83 in the same cluster were resolved WITHOUT a code change: #77 is a deliberate
+precision boundary (a statically-named underscore member that is actually called resolves by name —
+verified), and #81/#83 are already covered for exported modules via `_module_uses` + def-body recursion.
 
 ## Standing themes
 

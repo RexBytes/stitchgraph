@@ -1647,6 +1647,38 @@
             ],
             "findings": {},
             "theme": "v2.1.26 (#54) round 2 on FINAL code \u2014 CLEAN, second consecutive full-diversity \u2192 gate met, RELEASABLE. CLOSES THE ENTIRE PER-LANGUAGE CARDINAL SWEEP. opus (interaction angles): adding `callback` cannot change Node id (cid={rel}::{qual}) or kind (both independent of roles); same-name collapse (get value()/set value(), [Symbol.iterator] vs plain method) unions roles via #61 ON CONFLICT so no live member or callee is lost under collision (streaming + in-memory); helper `name` never diverges from the qual/cid name; TS overload sigs+impl collapse correctly; 396 regression tests pass. sonnet (deep transitive chains): 4-deep iterator\u2192_a\u2192_b\u2192_c chain all live; getter\u2192private\u2192module-free-function live; toString\u2192static-field-init\u2192builder live; cross-class iterator\u2192helper-on-another-class live; dead methods in a live-iterator class still correctly flag; mixed class flags exactly the right dead set. haiku (stress): 50+ implicit-dispatch members, deeply nested classes, huge Symbol. expressions, mixed valid/broken-syntax tree, empty/constructor-only classes \u2014 no crash, valid live members survive; #54 regression tests pass. Only pre-existing out-of-scope notes (#78 string/numeric-computed-key under-rooting; name-based cross-file resolution over-approximation) \u2014 neither introduced by this fix, neither a cardinal."
+        },
+        {
+            "id": "R135",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "CRITICAL": 1
+            },
+            "theme": "v2.1.27 (#74) initial panel \u2014 round 1 clean (3/3) but round 2 haiku found an IN-SCOPE CARDINAL: the canonical TS handler-object idiom `export const handlers = { onClick } as const` wraps the object in an `as_expression` (also `satisfies_expression`/parens), not a bare `object`, so the new `_reexport_names` branch's `v.type == 'object'` check missed it and the member stayed false-flagged dead. Fixed by unwrapping TS value wrappers via `_unwrap_ts_value` on BOTH the named-export object and the `module.exports = \u2026` RHS (mirroring the declarator/assignment def branches). opus R2 separately proved monotonicity (reexports consumption is role-union only, no removal/abort path); sonnet R2 confirmed real-world chains. Streak reset."
+        },
+        {
+            "id": "R136",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.27 (#74) fresh round 1 on FINAL code (with the as-const unwrap) \u2014 CLEAN, full diversity. opus: unwrap is additive, `v.type=='object'` gate rejects unwrapped non-objects (identifier-valued `export const x = f as const` correctly NOT collected), monotonic role-union, streaming parity, crash sweep (uninitialized/destructuring/spread/computed/broken/500-member/>8-paren) zero crashes. sonnet (9 real-world scenarios): as const / satisfies / parens / NestJS mixed-member / CJS-wrapped / double-chained `as const satisfies T` / spread / non-object / precision \u2014 all live chains live, dead siblings flag. haiku: as-const cardinal confirmed fixed across .ts/.tsx, 407 regression tests pass."
+        },
+        {
+            "id": "R137",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.1.27 (#74) fresh round 2 \u2014 CLEAN, second consecutive full-diversity \u2192 gate met, RELEASABLE. opus: all four reexport forms (`export {A}`/`export default {B}`/`module.exports={C}`/`export const d={D} as const`) coexist and root independently; dual-name + double-export lose no liveness (over-root only); TSX/.mts/.cts root; DOGFOOD on stitchgraph/src shows streaming==in-memory stale parity and 0 public-API symbols newly flagged. sonnet: 5-level transitive chain across 3 files live, cross-language isolation (JS rooting doesn't leak to Python/Go), 7 genuinely-dead siblings still flagged (no blanket-root). haiku: full suite 543 + oracles 27 green; pathological inputs (1000 members, unicode/keyword member names, chained wrappers) no crash; mixed valid+broken-syntax tree completes. Pre-existing cardinal-safe recall notes (not introduced): `<const>{\u2026}` angle-bracket assertion + `{\u2026}!` non-null not in _TS_VALUE_WRAPPERS; >8 nested parens; bare-identifier alias-export `export const x = f` \u2014 all deferred."
         }
     ]
 }
