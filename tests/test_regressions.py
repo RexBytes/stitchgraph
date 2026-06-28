@@ -7928,3 +7928,66 @@ def test_const_class_expression_nested_in_function_is_gated(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "deadFactory" in stale       # never called: dead
         assert "secretPaint" in stale       # reached only via a method of a dead-gated class: dead
+
+
+@pytest.mark.parametrize("body", [
+    # method VALUE — bound method passed as a callback
+    'func reg(f func()) {}\nfunc main() { v := t{}; reg(v.run) }',
+    # method EXPRESSION — unbound `T.method`
+    'func use(f func(t)) {}\nfunc main() { use(t.run) }',
+    # method value stored in a struct-literal field
+    'type cfg struct{ onRun func() }\nfunc sink(c cfg) {}\nfunc main() { v := t{}; sink(cfg{onRun: v.run}) }',
+    # method value assigned to a local, then the local passed on
+    'func reg(f func()) {}\nfunc main() { v := t{}; h := v.run; reg(h) }',
+])
+def test_go_method_value_reference_keeps_method_live(tmp_path, body):
+    """#49 (cardinal, cobra dogfood): an UNEXPORTED Go method reached only as a method VALUE
+    (`v.run`), method EXPRESSION (`t.run`), or struct-field value — a reference, not a call — was
+    flagged dead because `_direct_calls` only sees `v.run()` calls, and `_direct_refs` skipped the
+    selector's `field_identifier`. The selector field is now emitted as a by-name REFERENCES edge,
+    so the live method stays live. (Exported/capitalized methods were already rooted, masking this.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.go": "package main\ntype t struct{}\nfunc (x t) run() {}\n" + body + "\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "run" not in stale, "a Go method reached only via a method value/expression must be live"
+
+
+def test_go_genuinely_dead_unexported_method_still_flags(tmp_path):
+    """#49 over-rooting guard: emitting selector field names as references must NOT keep a
+    genuinely-unused unexported method alive. A `run` that is never called, never referenced as a
+    value, and not exported still flags dead — and a same-named selector on an unrelated field
+    access does not accidentally rescue it."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.go": (
+        "package main\n"
+        "type t struct{ name string }\n"
+        "func (x t) run() {}\n"           # never called or referenced -> dead
+        "func main() { v := t{}; _ = v.name }\n"   # selector on a struct FIELD, not the method
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "run" in stale, "a genuinely-unused unexported Go method must still flag dead"
+
+
+def test_go_method_call_not_double_counted_as_reference(tmp_path):
+    """#49: a `v.run()` CALL contains the same selector the reference pass now reads, but the edge
+    loop dedups REFERENCES against the CALLS set — so the helper a method alone calls is reached
+    exactly once and stays live (no spurious double-edge, and no regression to call handling)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.go": (
+        "package main\n"
+        "type t struct{}\n"
+        "func helper() int { return 1 }\n"
+        "func (x t) run() int { return helper() }\n"
+        "func main() { v := t{}; _ = v.run() }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "run" not in stale and "helper" not in stale

@@ -4,6 +4,32 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.21] — 2026-06-28
+
+**Go method value / method expression references — cardinal fix (#49, cobra dogfood).**
+An **unexported** Go method reached only as a *method value* (`reg(v.run)` — a bound method passed
+as a callback), a *method expression* (`use(t.run)` — the unbound `T.method` form), or a
+struct-literal field value (`cfg{onRun: v.run}`) was confidently flagged dead. These are
+*references*, not calls: `_direct_calls` only sees `v.run()` call sites, and `_direct_refs` skipped
+the selector's `field_identifier`, so the method got no inbound edge. (Exported/capitalized methods
+were already rooted as public API, which masked the gap until probed with unexported receivers.)
+
+### Fixed
+
+- `_direct_refs` now emits the trailing `field` name of a Go `selector_expression` as a by-name
+  REFERENCES edge, so a method named as a value/expression keeps its target live. `selector_expression`
+  is unique to the Go grammar, so this is scoped to Go. A plain struct-field access (`v.name`) that
+  happens to share a name with a function is cardinal-safe over-rooting (resolves only to a project
+  symbol). A `v.run()` CALL contains the same selector, but the edge loop dedups REFERENCES against
+  the CALLS set, so it never double-counts. A genuinely-unused unexported method still flags dead.
+
+### Known limitations (unchanged)
+
+The same method-value-as-reference shape in other grammars — Rust `Foo::method` / `vec.iter().map(Foo::bar)`,
+C# method groups, JS `arr.forEach(obj.handler)` — is pre-existing and tracked separately; each needs
+its own per-language review. Bare function/arrow expressions in JS/TS expression positions (#83) and
+`this.#m()` private dispatch (#76/#78) remain deferred.
+
 ## [2.1.20] — 2026-06-28
 
 **JS/TS object & class literals in EXPRESSION positions — cardinal fix (#75).**

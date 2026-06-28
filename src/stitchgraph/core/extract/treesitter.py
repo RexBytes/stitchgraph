@@ -2121,6 +2121,21 @@ def _direct_refs(body, src, spec):
             if c.type in ("identifier", "type_identifier", "constant", "name") \
                     and (c.start_byte, c.end_byte) != name_span:
                 out.append((_text(c, src), c.start_point[0] + 1))
+            elif c.type == "selector_expression":
+                # Go method VALUE / method EXPRESSION / package-qualified reference:
+                # `v.run` (bound method value passed as a callback), `T.run` (unbound method
+                # expression), `cfg{onRun: v.run}` (struct-field value). The method is
+                # REFERENCED, not called, so `_direct_calls` never sees it and an unexported
+                # method reached only as a callback value was confidently flagged dead (#49,
+                # cobra dogfood — `selector_expression` is unique to the Go grammar). Emit the
+                # trailing field name as a by-name reference (resolves only to a project
+                # symbol; a plain struct-field access that happens to share a name with a
+                # function is cardinal-safe over-rooting). A `v.run()` CALL also contains this
+                # selector, but the edge loop dedups REFERENCES against the CALLS set, so it
+                # never double-counts.
+                fld = c.child_by_field_name("field")
+                if fld is not None:
+                    out.append((_text(fld, src), fld.start_point[0] + 1))
             elif spec.callable_strings:
                 # PHP array callables (`[$this, 'm']`) name a method the syntactic call scan
                 # can't see; emit it so the live target isn't flagged dead. Bare-string callables
