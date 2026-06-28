@@ -1906,9 +1906,25 @@ def _reexport_names(root, src):
             # `export default Foo;` / TS `export = Foo;` — a bare identifier child names a
             # predefined symbol. Inline `export default class/function …` has a declaration
             # child (the export_statement -> exported recursion marks it) and anonymous
-            # `export default () => {}` / `{…}` has no identifier child, so both are skipped.
+            # `export default () => {}` is skipped; `export default { onTap }` collects its
+            # shorthand/pair members via add_value (public API reachable as the default export).
             for c in n.children:
                 add_value(c)
+        elif n.type == "export_statement":
+            # `export const handlers = { onClick, onHover, run: doRun }` — the object's members
+            # are public API (any importer reaches `handlers.onClick`), but a shorthand member is
+            # a `shorthand_property_identifier` reference the call graph never sees, so the named
+            # function it points at was false-flagged dead (#74). The inline-export recursion
+            # marks the const itself, not the functions its object references. Collect the object's
+            # member names (shorthand idents + pair value idents) so they're rooted `exported` like
+            # the `module.exports = {…}` / `export default {…}` forms already are.
+            decl = n.child_by_field_name("declaration")
+            if decl is not None and decl.type in ("lexical_declaration", "variable_declaration"):
+                for d in decl.children:
+                    if d.type == "variable_declarator":
+                        v = d.child_by_field_name("value")
+                        if v is not None and v.type == "object":
+                            add_value(v)
         elif n.type == "assignment_expression":
             left = n.child_by_field_name("left")
             if left is not None and left.type in ("member_expression", "subscript_expression"):

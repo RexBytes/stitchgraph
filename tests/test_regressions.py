@@ -8516,3 +8516,88 @@ def test_is_js_implicit_dispatch_method_unit():
     assert got["toJSON"] is True         # serialization hook
     assert got["CONFIG_KEY"] is False    # non-Symbol computed key -> NOT this helper's concern
     assert got["regular"] is False       # plain method
+
+
+# -- #74 (cardinal): shorthand member of an EXPORTED object literal -------------
+@pytest.mark.parametrize("decl", [
+    "export const handlers = { onClick, onHover };",   # named const export of object
+    "export let handlers = { onClick, onHover };",     # let
+    "export var handlers = { onClick, onHover };",      # var
+    "export default { onClick, onHover };",            # default export of object
+])
+def test_js_exported_object_shorthand_members_live(tmp_path, decl):
+    """#74 (cardinal): a function referenced via object-literal SHORTHAND (`{ onClick }`) in an
+    EXPORTED object is public API (an importer reaches `handlers.onClick`), but the shorthand is a
+    `shorthand_property_identifier` the call graph never sees, so the named function — and the
+    private helpers it alone calls — was false-flagged dead. Now rooted `exported` like the
+    `module.exports = {…}` / `export default {…}` forms already were."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.js": (
+        "function onClick() { return clickHelper(); }\n"
+        "function onHover() { return hoverHelper(); }\n"
+        "function clickHelper() { return 1; }\n"
+        "function hoverHelper() { return 2; }\n"
+        + decl + "\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        for live in ("onClick", "onHover", "clickHelper", "hoverHelper"):
+            assert live not in stale, f"{live} reached via an exported object shorthand must be live"
+
+
+def test_js_exported_object_pair_value_member_live(tmp_path):
+    """#74 sibling: a `pair` whose value is an identifier (`{ run: doRun }`) in an exported object
+    is the same public-API surface — `doRun` must be live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.js": (
+        "function doRun() { return runHelper(); }\n"
+        "function runHelper() { return 1; }\n"
+        "export const api = { run: doRun };\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "doRun" not in stale and "runHelper" not in stale
+
+
+def test_js_exported_object_shorthand_does_not_overroot_unexported(tmp_path):
+    """#74 guard: the rooting is gated to EXPORTED objects. A function placed only in a
+    NON-exported object literal, never otherwise used, must STILL flag dead — the fix must not
+    root every shorthand everywhere."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.js": (
+        "function deadFn() { return 1; }\n"
+        "const localOnly = { deadFn };\n"           # NOT exported
+        "export function go() { return 0; }\n"      # gives the module an export surface
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "deadFn" in stale, "a shorthand in a non-exported object must not be rooted"
+
+
+def test_js_uninitialized_export_does_not_crash_reexport_scan(tmp_path):
+    """#74 robustness / mutation-pin: an uninitialized exported binding (`export let x;`) yields a
+    `variable_declarator` with value=None. The object-collection branch must guard `v is not None`
+    BEFORE reading `v.type` (an `and`, not an `or`) — else the reexport scan dereferences None and
+    the whole reindex crashes. Reindex must complete and the real shorthand export still root."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "export let pending;\n"                       # uninitialized -> declarator value is None
+        "function onClick() { return 1; }\n"
+        "function trulyDeadU() { return 9; }\n"       # genuinely dead -> proves JS extraction ran
+        "export const handlers = { onClick };\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must not raise / silently drop JS extraction
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        # Under the None-deref mutant the AttributeError is swallowed and ALL JS extraction is
+        # dropped (no JS nodes), so `trulyDeadU` would vanish from the graph. Requiring it to be
+        # flagged proves extraction completed AND the shorthand export still roots its member.
+        assert "trulyDeadU" in stale, "JS extraction must complete (no swallowed None-deref)"
+        assert "onClick" not in stale

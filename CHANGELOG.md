@@ -4,6 +4,38 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.27] — 2026-06-28
+
+**JS/TS shorthand member of an exported object literal — cardinal fix (#74).**
+A function referenced via object-literal SHORTHAND in an exported object —
+`export const handlers = { onClick, onHover }` — is public API: any importer reaches it as
+`handlers.onClick`. But a shorthand member is a `shorthand_property_identifier` the call graph
+never models as a reference, so the named function — and the private helpers it alone calls — was
+confidently flagged dead. (The CJS/default forms `module.exports = { onClick }` and
+`export default { onClick }` were already handled; the named-const-export form was the gap.)
+
+### Fixed
+
+- `_reexport_names` now also collects an exported declaration's object-literal member names
+  (shorthand identifiers + `pair` value identifiers) for `export const/let/var X = { … }`, feeding
+  them into the same reexport→`exported` rooting path the CJS/default-export object forms already
+  used. Language-gated to JS/TS via the existing reexport role-application guard. Cardinal-safe:
+  rooting only adds a root; a shorthand in a NON-exported object still flags dead.
+
+### Resolved without code change
+
+- **#77** (`obj._x = fn` underscore member-assignment not rooted like the object-literal path): a
+  statically-named underscore member that is actually called resolves by name (verified), so the
+  member-assignment underscore gate is a deliberate, cardinal-safe precision boundary, not a defect.
+- **#81 / #83** (bare-identifier reassignment / bare function-expression in expression position):
+  already covered for exported modules — module-scope `_module_uses` and pass-2 def-body recursion
+  root these. The no-export-module case is the same library-detection boundary as any unreferenced
+  top-level function.
+
+### Known limitations (unchanged)
+
+The remaining cardinal-safe precision/coverage follow-ups (#70–#89, minus those above) stay deferred.
+
 ## [2.1.26] — 2026-06-28
 
 **JS/TS implicit-dispatch class members — cardinal fix (#54).**
