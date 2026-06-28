@@ -2239,46 +2239,55 @@ def _bash_flag_arg(call, cn, src, out, flag):
 
 def _bash_export_decl(call, src, out):
     """A function exported for subshells (invoked via `bash -c 'FUNC'` in a child shell —
-    otherwise invisible) parses as a `declaration_command`. Three equivalent forms (#73):
+    otherwise invisible) parses as a `declaration_command`. Equivalent forms (#73):
       * `export -f FUNC…`       — the `-f` flag exports the named function(s);
       * `declare -fx FUNC…` / `declare -xf FUNC…` — declare with BOTH `f` (function) and `x`
         (export) exports it; the flag combines in either order;
-      * `typeset -fx FUNC…`     — the ksh-compatible spelling of the same.
-    Root each named FUNC once the exporting flag is seen. A plain `export VAR=…`,
+      * `declare -f -x FUNC…` / `declare -x -f FUNC…` — the SAME with the flags written as
+        SEPARATE words (panel R2 cardinal: bash treats split and combined flags identically, so
+        the `f`/`x` characters must be accumulated ACROSS the leading flag words, not required in
+        one token);
+      * `typeset -fx FUNC…` / `typeset -f -x FUNC…` — the ksh-compatible spelling of the same.
+    Root each named FUNC once the exporting flag(s) are seen. A plain `export VAR=…`,
     `declare -r VAR`, or `declare -f FUNC` (print only, no `x`) roots nothing."""
     if not call.children:
         return
     head = _text(call.children[0], src)
     if head not in ("export", "declare", "typeset"):
         return
-    seen_export_fn = False
+    seen_f = False
+    seen_x = False
+    exporting_fn = False
     for ch in call.children[1:]:
         t = _text(ch, src)
-        if not seen_export_fn:
+        if not exporting_fn:
+            # Accumulate flag characters across the run of leading `-`-words. A flag is a `word`
+            # that STARTS WITH `-` (an `and`, not a substring match) so a bare var name whose tail
+            # contains `f`/`x` (`export xf target` exports vars, not a function) never trips it.
             if ch.type == "word" and t.startswith("-"):
                 flags = t[1:]
-                # `export -f`: the `-f` flag alone exports a function. `declare`/`typeset`: need
-                # BOTH `f` and `x` (function + export) — `declare -f` alone only prints.
-                if (head == "export" and "f" in flags) or \
-                        (head in ("declare", "typeset") and "f" in flags and "x" in flags):
-                    seen_export_fn = True
+                seen_f = seen_f or "f" in flags
+                seen_x = seen_x or "x" in flags
+                # `export -f` exports a function (export implies `x`); `declare`/`typeset` need
+                # BOTH `f` and `x` (a bare `declare -f` only prints).
+                if (head == "export" and seen_f) or (seen_f and seen_x):
+                    exporting_fn = True
             continue
         if ch.type in ("variable_name", "word") and t.isidentifier():
             out.append((t, ch.start_point[0] + 1))
 
 
 def _bash_time_target(call, cn, src, out):
-    """`time FUNC` runs FUNC under the `time` keyword. Root the first non-option word when it
-    is a bare identifier (a project function); `time -p FUNC` skips the `-p` option. A brace
-    group `time { FUNC; }` mis-parses (tree-sitter makes `{` a plain word arg of `time`), so skip
-    a leading `{`/`}` token and take the first real word inside — else the grouped command is
-    never seen and a function timed only this way is flagged dead (#73)."""
+    """`time FUNC` / `time { FUNC; }` runs FUNC under the `time` keyword. tree-sitter parses the
+    timed command's words as plain args of `time`, and mis-parses a brace group into word tokens
+    (`{`, or `{ {` for a nested group `time { { FUNC; }; }` — panel R2). Take the FIRST bare-
+    identifier word, skipping options (`-p`) and any brace/grouping token — else the grouped
+    function is never seen and is flagged dead (#73). Only the first identifier word (the
+    command/function head) is taken, so `time cmd arg` doesn't over-collect `arg`."""
     for w, line in _bash_command_words(call, cn, src):
-        if w.startswith("-") or w in ("{", "}"):
-            continue
         if w.isidentifier():
             out.append((w, line))
-        return
+            return
 
 
 def _trap_handler(call, cn, src, out):

@@ -8934,3 +8934,72 @@ def test_nodes_file_column_populated_after_reindex(tmp_path):
             nid, f = r[0], r[1]
             assert f, f"node {nid} has an empty file column"
             assert nid.split("::", 1)[0] == f, f"node {nid} file column {f!r} should match its id prefix"
+
+
+# -- #73 panel R2: split-flag export + nested time brace group -----------------
+@pytest.mark.parametrize("call", [
+    "declare -f -x fn",      # split flags
+    "declare -x -f fn",      # split flags, reversed
+    "typeset -f -x fn",      # typeset split
+    "typeset -x -f fn",
+])
+def test_bash_split_flag_export_function_rooted(tmp_path, call):
+    """#73 (panel R2 cardinal): bash treats split flags `declare -f -x` identically to the combined
+    `declare -fx`, so the `f`/`x` characters must accumulate ACROSS the leading flag words. The
+    combined-only check flagged a split-flag-exported function dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "fn() { echo hi; }\n"
+        + call + "\n"
+        "dead() { echo d; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "fn" not in stale, "a split-flag exported function must be live"
+        assert "dead" in stale, "a genuinely-unused function must still flag"
+
+
+def test_bash_nested_time_brace_group_rooted(tmp_path):
+    """#73 (panel R2 cardinal): a nested `time { { fn; }; }` mis-parses so the first word arg of
+    `time` is `{ {` (multi-char), which an exact `{`/`}` skip missed — take the first bare-identifier
+    word instead so fn is rooted."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "nested_fn() { echo n; }\n"
+        "time { { nested_fn; }; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "nested_fn" not in stale, "a function in a nested time brace group must be live"
+
+
+def test_bash_export_decl_split_flag_unit():
+    """#73 R2 unit-pin: `_bash_export_decl` accumulates f/x across split flag words."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _bash_export_decl
+    def names(src_bytes):
+        root = get_parser("bash").parse(src_bytes).root_node
+        out = []
+        def walk(n):
+            if n.type == "declaration_command":
+                _bash_export_decl(n, src_bytes, out)
+            for c in n.children:
+                walk(c)
+        walk(root)
+        return {n for n, _ in out}
+    assert names(b"declare -f -x a\n") == {"a"}
+    assert names(b"declare -x -f b\n") == {"b"}
+    assert names(b"typeset -f -x c\n") == {"c"}
+    assert names(b"declare -f -r d\n") == set()     # f but no x -> nothing
+    assert names(b"declare -x -r e\n") == set()     # x but no f -> nothing
