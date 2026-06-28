@@ -8601,3 +8601,41 @@ def test_js_uninitialized_export_does_not_crash_reexport_scan(tmp_path):
         # flagged proves extraction completed AND the shorthand export still roots its member.
         assert "trulyDeadU" in stale, "JS extraction must complete (no swallowed None-deref)"
         assert "onClick" not in stale
+
+
+@pytest.mark.parametrize("wrap", [
+    "{ onClick } as const",
+    "{ onClick } satisfies Record<string, () => number>",
+    "({ onClick })",                       # parenthesized
+])
+def test_js_exported_wrapped_object_shorthand_members_live(tmp_path, wrap):
+    """#74 (panel R2 haiku, cardinal): the canonical TS handler-object idiom
+    `export const handlers = { onClick } as const` wraps the object in an `as_expression` /
+    `satisfies_expression` / parens, so the member stayed false-flagged dead until the reexport
+    scan unwraps TS value wrappers (mirroring the declarator/assignment def branches)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "function onClick() { return clickHelper(); }\n"
+        "function clickHelper() { return 1; }\n"
+        "export const handlers = " + wrap + ";\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "onClick" not in stale and "clickHelper" not in stale
+
+
+def test_js_commonjs_wrapped_object_members_live(tmp_path):
+    """#74 sibling: `module.exports = { a } as const` (TS-in-CJS) must also root its members."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "function cjsFn() { return cjsHelper(); }\n"
+        "function cjsHelper() { return 1; }\n"
+        "module.exports = { cjsFn } as const;\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "cjsFn" not in stale and "cjsHelper" not in stale

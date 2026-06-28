@@ -1922,7 +1922,13 @@ def _reexport_names(root, src):
             if decl is not None and decl.type in ("lexical_declaration", "variable_declaration"):
                 for d in decl.children:
                     if d.type == "variable_declarator":
-                        v = d.child_by_field_name("value")
+                        # Peel TS value wrappers (`{…} as const` / `satisfies T` / `(…)`): the
+                        # canonical TS handler-object idiom is `export const h = { onClick } as const`,
+                        # whose value node is an `as_expression`, not a bare `object` — without
+                        # unwrapping, the member stays false-flagged dead (the #74 cardinal in its
+                        # most common real-world shape). Mirrors the declarator/assignment def
+                        # branches, which already unwrap.
+                        v = _unwrap_ts_value(d.child_by_field_name("value"))
                         if v is not None and v.type == "object":
                             add_value(v)
         elif n.type == "assignment_expression":
@@ -1931,7 +1937,9 @@ def _reexport_names(root, src):
                 lt = _text(left, src)
                 if (lt == "module.exports" or lt.startswith("module.exports.")
                         or lt.startswith("exports.")):  # CommonJS export targets
-                    right = n.child_by_field_name("right")
+                    # Unwrap the RHS too so `module.exports = { a } as const` (TS-in-CJS) roots its
+                    # members, matching the named-export branch above.
+                    right = _unwrap_ts_value(n.child_by_field_name("right"))
                     if right is not None:
                         add_value(right)
         for c in n.children:

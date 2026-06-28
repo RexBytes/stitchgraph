@@ -21,6 +21,10 @@ confidently flagged dead. (The CJS/default forms `module.exports = { onClick }` 
   them into the same reexport→`exported` rooting path the CJS/default-export object forms already
   used. Language-gated to JS/TS via the existing reexport role-application guard. Cardinal-safe:
   rooting only adds a root; a shorthand in a NON-exported object still flags dead.
+- The scan unwraps TS value wrappers (`as const` / `satisfies T` / parens) on both the named-export
+  object and the `module.exports = …` RHS, so the canonical TS handler-object idiom
+  `export const handlers = { onClick } as const` roots its members (panel R2 finding — the most
+  common real-world shape of the bug).
 
 ### Resolved without code change
 
