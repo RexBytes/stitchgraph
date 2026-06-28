@@ -7758,3 +7758,32 @@ def test_module_uses_skips_generator_const_def(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "reallyDead" in stale     # uncalled generator's callee NOT over-rooted: flagged
+
+
+def test_variable_declarator_chained_assignment_value_is_traversed(tmp_path):
+    """#48 (cardinal, panel R8 sonnet): a variable_declarator whose value is a chained or
+    parenthesized ASSIGNMENT — `const routes = module.exports = { GET(){ handler() } }`,
+    `const _ = (obj.x = { run(){ helper() } })` — must still be traversed. The v2.1.18
+    variable_declarator branch consumes the child but handles only arrow/fn/object values; with
+    no `else` fallthrough the inner assignment (and its member-assigned object's members) was
+    dropped, flagging the members' callees dead. The branch now recurses generically for any
+    other value form (the pre-v2.1.18 behavior)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "a.js": (
+            "function handler(){ return 1; }\n"
+            "export const routes = module.exports = { GET(){ handler(); } };\n"
+        ),
+        "b.ts": (
+            "function helper(){ return 1; }\n"
+            "function deadOne(){ return 9; }\n"
+            "export const _x = (obj.x = { run(){ helper(); } });\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "handler" not in stale    # chained `const = module.exports = {…}` member walked
+        assert "helper" not in stale     # parenthesized `const = (obj.x = {…})` member walked
+        assert "deadOne" in stale        # genuinely uncalled: still flagged

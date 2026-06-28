@@ -1345,6 +1345,16 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # cardinal). See _object_members.
                 _object_members(val, src, rel, spec, lang, _join(parent, name),
                                 nodes, defs, inherits, contains, is_test, enclosing_func)
+            else:
+                # Any OTHER value form must still be traversed — a chained/parenthesized
+                # assignment (`const routes = module.exports = {…}`, `const _ = (obj.x = {…})`),
+                # an IIFE, a class expression, a nested object in an array, etc. The
+                # variable_declarator branch consumes this child, so without recursing here it
+                # would never reach the inner `assignment_expression`/`object` handling and a
+                # member-assigned object's members (and their callees) would be flagged dead
+                # (cardinal; panel round 8). This restores the pre-v2.1.18 generic fallthrough.
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         exported, is_test, contains=contains, enclosing_func=enclosing_func)
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
             # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
