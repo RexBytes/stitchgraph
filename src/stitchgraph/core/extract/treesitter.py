@@ -1334,12 +1334,13 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # regular-def branch above already does this; this is its arrow twin).
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=cid)
-            elif name and val is not None and val.type == "object":
-                # `const obj = { run() {…}, h: () => {…} }` — extract the object's
-                # function-valued members so their bodies are walked (else a helper
-                # called only there is flagged dead; cardinal). See _object_members.
-                _object_members(val, src, rel, spec, lang, _join(parent, name),
-                                nodes, defs, contains, enclosing_func)
+            elif name and val is not None and (ov := _unwrap_ts_value(val)) is not None \
+                    and ov.type == "object":
+                # `const obj = { run() {…}, h: () => {…} }` (also `{…} as const` / `satisfies T`)
+                # — extract the object's function-valued members so their bodies are walked
+                # (else a helper called only there is flagged dead; cardinal). See _object_members.
+                _object_members(ov, src, rel, spec, lang, _join(parent, name),
+                                nodes, defs, inherits, contains, is_test, enclosing_func)
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
             # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
@@ -1390,13 +1391,14 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains,
                          enclosing_func=(cid if kind is M else None))
-            elif left is not None and val is not None and val.type == "object":
+            elif left is not None and val is not None and (
+                    ov := _unwrap_ts_value(val)) is not None and ov.type == "object":
                 # An object literal assigned to a member or name — `module.exports = {…}`,
-                # `exports = {…}`, `Foo.prototype = { m(){…} }`. Extract its function-valued
-                # members so their bodies are walked (else a helper called only there is
-                # flagged dead; cardinal). The full LHS keeps the qual unique.
-                _object_members(val, src, rel, spec, lang, _join(parent, _text(left, src)),
-                                nodes, defs, contains, enclosing_func)
+                # `exports = {…}`, `Foo.prototype = { m(){…} }` (also `{…} as const`). Extract
+                # its function-valued members so their bodies are walked (else a helper called
+                # only there is flagged dead; cardinal). The full LHS keeps the qual unique.
+                _object_members(ov, src, rel, spec, lang, _join(parent, _text(left, src)),
+                                nodes, defs, inherits, contains, is_test, enclosing_func)
             else:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          exported, is_test, contains=contains, enclosing_func=enclosing_func)
@@ -1406,6 +1408,21 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
 
 
 _OBJ_FN_VALUES = ("arrow_function", "function", "function_expression")
+_TS_VALUE_WRAPPERS = ("as_expression", "satisfies_expression", "parenthesized_expression")
+
+
+def _unwrap_ts_value(val):
+    """Peel TypeScript expression wrappers that sit between a `variable_declarator` value
+    and the object/function it actually holds: `{…} as const`, `{…} as T`, `{…} satisfies T`
+    (TS 4.9+), and `({…})`. The inner expression is the first NAMED child. Without this the
+    `val.type == "object"` check misses `export const obj = {…} as const` — pervasive in
+    modern TS — leaving the object untraversed and a helper called only from its members
+    flagged dead (cardinal)."""
+    seen = 0
+    while val is not None and val.type in _TS_VALUE_WRAPPERS and seen < 8:
+        val = val.named_child(0)
+        seen += 1
+    return val
 
 
 def _obj_key_name(key, src):
@@ -1425,46 +1442,60 @@ def _obj_key_name(key, src):
     return None
 
 
-def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, contains,
-                    enclosing_func):
+def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, contains,
+                    is_test, enclosing_func):
     """Extract the function-valued members of a JS/TS object literal as METHOD nodes so
     their bodies are walked in pass 2 — without this, a module-private function called
     ONLY inside `const obj = { run() { helper() } }` (method shorthand) or
     `{ run: () => helper() }` (function-valued property) is flagged dead, because the
     object value is never traversed and the call to `helper` is never seen (cardinal;
-    rxjs/lodash-style config objects). A module-scope, non-underscore member is invoked
-    dynamically/externally — passed as a callback, spread into config, or looked up by a
-    computed key — never by a plain local name, so root it `callback` (mirrors the
-    member-assignment precedent at the `assignment_expression` branch; over-rooting a
-    member is the precision-over-recall, cardinal-safe direction). A member nested in a
-    function body stays reachability-gated via the CONTAINS edge below — a dead
-    initializer must not mint live roots. Recurses into nested object values so
-    `{ a: { onClick(){…} } }` is covered too."""
+    rxjs/lodash-style config objects). A member at MODULE scope is invoked dynamically —
+    spread into config, passed as a callback, or looked up by a (often computed/string)
+    key — never by a plain local name, so root it `callback`. This rooting is
+    UNCONDITIONAL at module scope (including underscore-`_private` and computed-key
+    members): object literals are the canonical dispatch-table idiom (`handlers[evt]()`,
+    `handlers["_" + name]()`), so an underscore or computed member is just as likely to be
+    reached dynamically as a public one — gating it out would mint an UNROOTED node that is
+    then confidently flagged dead while live (the cardinal sin; this is why object literals
+    differ from the `assignment_expression` member gate, where the member is named
+    statically and resolves by name). Over-rooting a genuinely-dead member is the
+    precision-over-recall, cardinal-safe direction. A member nested in a function body
+    instead stays reachability-gated via the CONTAINS edge below — a dead initializer must
+    not mint live roots. Recurses into nested object values so `{ a: { onClick(){…} } }` is
+    covered too."""
     for child in obj.children:
         if child.type == "method_definition":
-            name = _obj_key_name(child.child_by_field_name("name"), src)
+            key = child.child_by_field_name("name")
             val = child
         elif child.type == "pair":
-            name = _obj_key_name(child.child_by_field_name("key"), src)
+            key = child.child_by_field_name("key")
             val = child.child_by_field_name("value")
             if val is None:
                 continue
             if val.type == "object":
-                if name:
-                    _object_members(val, src, rel, spec, lang, _join(parent, name),
-                                    nodes, defs, contains, enclosing_func)
+                # Recurse into a nested object value; a computed/string key still yields a
+                # parent qual (the raw key text) so deeper members stay uniquely ided.
+                nm = _obj_key_name(key, src) or (_text(key, src) if key is not None else None)
+                if nm:
+                    _object_members(val, src, rel, spec, lang, _join(parent, nm),
+                                    nodes, defs, inherits, contains, is_test, enclosing_func)
                 continue
             if val.type not in _OBJ_FN_VALUES:
                 continue
         else:
             continue
+        name = _obj_key_name(key, src)
         if not name:
-            continue
+            # A computed/dynamic key (`[k]() {}`, `[Symbol.x]: () => …`) has no static name,
+            # but its body must still be walked or a helper called only there is flagged dead
+            # (cardinal). Synthesize an id from the key text; a computed-key member is
+            # inherently accessed dynamically, so it is rooted below at module scope.
+            name = _text(key, src) if key is not None else "[computed]"
         qual = _join(parent, name)
         roles: set[str] = set()
-        # Module-scope (not nested in a function body) public member: dynamically invoked,
-        # root it. Underscore-private members opt out, matching the member-assignment gate.
-        if enclosing_func is None and not name.startswith("_"):
+        # Module scope (not nested in a function body): dynamically invoked, root it
+        # unconditionally (see the docstring — underscore/computed members included).
+        if enclosing_func is None:
             roles.add("callback")
         cid = f"{rel}::{qual}"
         nodes.append(Node(id=cid, kind=M, name=name, location=_loc(rel, val),
@@ -1472,6 +1503,12 @@ def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, contains,
         defs.append((rel, cid, val, lang))
         if enclosing_func is not None:
             contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+        # Walk the member BODY so a def nested inside it (`run() { function inner(){…} }`)
+        # becomes a real node with a CONTAINS edge to this member — without this, pass 2's
+        # `_direct_calls` skips the nested def, its body is never walked, and a helper called
+        # only from it is flagged dead (cardinal). Mirrors the arrow-decl path's body recursion.
+        _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                 False, is_test, contains=contains, enclosing_func=cid)
 
 
 def _bases(node, src, spec):

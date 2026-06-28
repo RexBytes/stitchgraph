@@ -46,6 +46,23 @@ New **`_obj_key_name`** helper reads a member key's static name including STRING
 there, which would silently drop the member. Computed keys (`[Symbol.iterator]`) and number keys have
 no static name and are left to their own concern.
 
+## Hardening from the adversarial panel
+
+The multi-model review surfaced four more cardinal-class gaps in the same surface, all now fixed
+and regression-pinned:
+
+- **Dynamically-dispatched underscore members.** Object literals are the canonical dispatch-table
+  idiom (`handlers["_" + action]()`); an underscore member has no by-name call site. An earlier
+  underscore opt-out minted an *unrooted* node that was then confidently flagged dead while live.
+  Module-scope members are now rooted **unconditionally** (underscore and computed included).
+- **Computed-key members** (`{ [k]: () => h() }`) are extracted under a synthesized id (from the
+  key text) and rooted, so their bodies are walked.
+- **TypeScript value wrappers** (`{…} as const`, `{…} satisfies T`, `({…})`) are peeled by
+  `_unwrap_ts_value` so member extraction fires for the pervasive `export const obj = {…} as const`.
+- **Functions defined inside a member body** (`run() { function inner(){…} }`) are now extracted via
+  `_collect` recursion with a CONTAINS edge — pass 2 skips nested defs, so a helper such a nested
+  fn alone calls was previously flagged dead. Members nested in a dead function stay gated.
+
 ## Compatibility
 
 No API or schema change; indexes rebuild cleanly. Precision-over-recall trade (cardinal-safe): a

@@ -7360,26 +7360,66 @@ def test_commonjs_module_exports_object_methods_are_walked(tmp_path):
         assert "alsoDead" in stale        # never reached: flagged
 
 
-def test_object_literal_private_member_not_rooted(tmp_path):
-    """#48 underscore gate (mirrors the member-assignment precedent): an underscore-private
-    object member opts out of the module-scope callback root. If it's uncalled it's flagged,
-    and a helper reached only from it is flagged too — a recall choice, cardinal-safe (the
-    flagged member really is unreferenced here)."""
+def test_object_literal_underscore_member_dynamically_dispatched_is_live(tmp_path):
+    """#48 (cardinal, panel R-opus): object literals are the canonical DISPATCH-TABLE idiom —
+    `handlers["_" + action]()` reaches an underscore member with no by-name call site. Minting
+    an underscore member as an UNROOTED node (an earlier gate) confidently flagged the live
+    member — and its callees — dead. Module-scope members are therefore rooted UNCONDITIONALLY
+    (underscore included); over-rooting a genuinely-dead member is cardinal-safe."""
     pytest.importorskip("tree_sitter")
     pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "p.ts": (
-            "const obj = {\n"
-            "  _secret() { return hidden(); }\n"
+            "function logEvent(name) { return name; }\n"
+            "const handlers = {\n"
+            "  _open()  { return logEvent('open'); },\n"
+            "  _close() { return logEvent('close'); }\n"
             "};\n"
-            "function hidden(){ return 1; }\n"
+            "export function dispatch(action) {\n"
+            "  const key = '_' + action;\n"
+            "  return handlers[key]();\n"
+            "}\n"
         ),
     })
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
-        ids = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
-        assert "obj._secret" in ids        # underscore-private, uncalled: flagged
-        assert "hidden" in ids             # reached only from the dead member: flagged
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "handlers._open" not in stale    # dynamically dispatched: rooted, not flagged
+        assert "handlers._close" not in stale
+        names = {i.split(".")[-1] for i in stale}
+        assert "logEvent" not in names          # sole callee of the live members: live
+
+
+def test_object_literal_computed_key_member_body_is_walked(tmp_path):
+    """#48 (cardinal): a computed-key function member (`{ [k]: () => h() }`) has no static
+    name, so it can't be rooted by name — but its body must still be walked, or a helper called
+    only there is flagged dead when the table is dispatched dynamically. The member is extracted
+    under a synthesized id and rooted (computed keys are accessed dynamically by definition)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "c.ts": (
+            "const k = 'm';\n"
+            "const obj = {\n"
+            "  [k]: () => h(),\n"
+            "  [k + '2']: { deep() { g(); } }\n"   # computed key -> nested object -> method
+            "};\n"
+            "Object.values(obj).forEach(f => f());\n"
+            "function h(){ return 1; }\n"
+            "function g(){ return 3; }\n"
+            "function deadFn(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        names = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "h" not in names         # called from the computed-key member body: live
+        assert "g" not in names         # called from a method nested under a computed key: live
+        assert "deadFn" in names        # genuinely uncalled: still flagged
+        # The un-nameable member is ided from the key TEXT (not a constant placeholder), so two
+        # distinct computed keys don't collide into one node.
+        node_ids = set(store.all_node_ids())
+        assert "c.ts::obj.[k]" in node_ids
 
 
 def test_object_literal_function_property_non_exported_helper_is_live(tmp_path):
@@ -7406,25 +7446,100 @@ def test_object_literal_function_property_non_exported_helper_is_live(tmp_path):
 def test_object_literal_string_keyed_method_body_is_walked(tmp_path):
     """#48: a string-KEYED method (`{ "do-it"() { reach() } }`) — `_name_of` returns None for
     a string key, which would silently drop the member and leave its body unwalked (cardinal).
-    `_obj_key_name` reads the unquoted fragment so the member is extracted, rooted (module-scope,
-    non-underscore), and its body walked. The id carries the clean (unquoted) name."""
+    `_obj_key_name` reads the unquoted fragment so the member is extracted (under a clean,
+    unquoted id), rooted at module scope, and its body walked. A genuinely-uncalled top-level
+    function still flags."""
     pytest.importorskip("tree_sitter")
     pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "s.ts": (
             "const handlers = {\n"
-            "  \"do-it\"() { return reach(); },\n"
-            "  \"_hidden\"() { return secret(); }\n"
+            "  \"do-it\"() { return reach(); }\n"
             "};\n"
             "function reach(){ return 1; }\n"
-            "function secret(){ return 2; }\n"
+            "function deadFn(){ return 2; }\n"
         ),
     })
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
         ids = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         names = {i.split(".")[-1] for i in ids}
-        assert "reach" not in names              # string-keyed public method body walked: live
-        assert "handlers.do-it" not in ids       # public string-keyed member: rooted, clean id
-        assert "handlers._hidden" in ids         # underscore string-keyed member: flagged, clean id
-        assert "secret" in names                 # reached only from the dead _hidden member: flagged
+        assert "reach" not in names              # string-keyed method body walked: live
+        assert "handlers.do-it" not in ids       # string-keyed member: rooted, clean id
+        assert "deadFn" in names                 # genuinely uncalled top-level fn: flagged
+        # The id carries the UNQUOTED key (`_obj_key_name` strips the string quotes); a wrong
+        # key reader would mint `handlers."do-it"` instead. Pins the string-key path.
+        assert "s.ts::handlers.do-it" in set(store.all_node_ids())
+
+
+def test_object_literal_ts_wrapper_does_not_hide_members(tmp_path):
+    """#48 (cardinal, panel R-sonnet): a TS value wrapper — `{…} as const`, `{…} satisfies T`,
+    `({…})` — sits between the `variable_declarator` value and the object, so the bare
+    `val.type == "object"` check missed it and the members' bodies were never walked. These
+    wrappers are pervasive in modern TS. `_unwrap_ts_value` peels them so a helper called only
+    from a member of an `as const` object stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    for suffix in ("as const", "satisfies T"):
+        _mk(tmp_path, {
+            "lib.ts": (
+                "function helper(){ return 42; }\n"
+                "interface T { run(): void; }\n"
+                f"export const obj = {{ run() {{ helper(); }} }} {suffix};\n"
+            ),
+            "lib.test.ts": "import { obj } from './lib';\ntest('o', () => { obj.run(); });\n",
+        })
+        with sg.Store(":memory:") as store:
+            sg.reindex(store, str(tmp_path))
+            stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+            assert "helper" not in stale, f"{suffix}: helper flagged dead"
+
+
+def test_object_literal_method_body_nested_function_is_extracted(tmp_path):
+    """#48 (cardinal, panel R-sonnet): a function DEFINED inside an object method body
+    (`run() { function inner(){ helper(); } inner(); }`) must be extracted as a node with a
+    CONTAINS edge to the member — pass 2's `_direct_calls` skips nested defs, so without
+    walking the member body the inner fn's body is never scanned and a helper it alone calls is
+    flagged dead. `_object_members` now recurses into member bodies via `_collect`, like every
+    other function-extraction path."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.ts": (
+            "function helper(){ return 42; }\n"
+            "export const obj = {\n"
+            "  run() { function inner() { helper(); } inner(); }\n"
+            "};\n"
+            "obj.run();\n"
+            "function trulyDead(){ return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale       # called by inner(), nested in the live member: live
+        assert "trulyDead" in stale        # genuinely uncalled: flagged
+
+
+def test_object_literal_member_nested_in_dead_function_stays_gated(tmp_path):
+    """#48: an object built inside a DEAD function must stay reachability-gated — the member
+    body is walked with `exported=False`, so a def nested in the member is NOT auto-rooted; if
+    the enclosing function is never called, the member, its nested def, and a helper that def
+    alone calls are all flagged. (Pins the member-body `_collect` `exported` arg: rooting them
+    would mask dead code inside dead code.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "function deadSetup() {\n"
+            "  const obj = { run() { function inner(){ secret(); } inner(); } };\n"
+            "  obj.run();\n"
+            "}\n"
+            "function secret(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadSetup" in stale         # never called: dead
+        assert "secret" in stale            # reached only from a def inside a dead member: dead

@@ -27,9 +27,21 @@ its sole caller was invisible to the graph.
   underscore-private member opts out of the root, matching the member-assignment gate.
 - **New `_obj_key_name` helper** reads a member key's static name including STRING keys
   (`{ "do-it"() {…} }`, `{ "k": fn }`) — `_name_of` returns None for a string-keyed method, which
-  would silently drop the member and leave its body unwalked (the same cardinal class). Computed
-  keys (`[Symbol.iterator]`) and number keys have no static name and are left to their own concern.
-  A genuinely-uncalled top-level function still flags.
+  would silently drop the member and leave its body unwalked (the same cardinal class). A
+  COMPUTED key (`{ [k]: () => … }`) is extracted under a synthesized id (from the key text) and
+  rooted too — its body is walked so a helper called only there stays live. A genuinely-uncalled
+  top-level function still flags.
+- Module-scope members are rooted UNCONDITIONALLY, including underscore-`_private` and
+  computed-key members: object literals are the canonical dispatch-table idiom
+  (`handlers["_" + name]()`), so gating an underscore member out would mint an unrooted node that
+  is then confidently flagged dead while live (cardinal — caught by the adversarial panel).
+- `_unwrap_ts_value` peels TypeScript value wrappers (`{…} as const`, `{…} satisfies T`, `({…})`)
+  that sit between the `variable_declarator` value and the object, so the member-extraction fires
+  for the pervasive `export const obj = {…} as const` form (cardinal — panel).
+- Member bodies are walked via `_collect`, so a function DEFINED inside a member
+  (`run() { function inner(){…} }`) is extracted as a node and reached through a CONTAINS edge —
+  pass 2 skips nested defs, so without this a helper that nested fn alone calls was flagged dead
+  (cardinal — panel). Members nested in a dead function stay reachability-gated.
 
 ## [2.1.17] — 2026-06-28
 
