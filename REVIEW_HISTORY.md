@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.18: R106–R118 (object-literal members, 13 rounds). **2.1.19: R119–R120** (full diversity opus/sonnet/haiku) on `const X = class {…}` (#80) — parity verification vs regular `class X {}`, clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (object-literal helpers all-killed bar 2 justified) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 475 passing (full extras) |
+| Multi-model review panels | 2.1.18: R106–R118 (object-literal members, 13 rounds). 2.1.19: R119–R120 on `const X = class {…}` (#80). **2.1.20: R121–R122** (full diversity opus/sonnet/haiku) on object/class literals in EXPRESSION positions (#75) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_collect` cardinal site killed; survivors pre-existing or cardinal-safe) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 487 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.17: R104✓ R105✓. 2.1.18: object-literal members → R117✓ R118✓ (13 rounds, 10 cardinal classes). 2.1.19: `const X = class {…}` → **R119✓ R120✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.18: object-literal members → R117✓ R118✓ (13 rounds). 2.1.19: `const X = class {…}` → R119✓ R120✓. 2.1.20: object/class literals in EXPRESSION positions → **R121✓ R122✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.17 RELEASED/releasable** (maintainer tags). **2.1.18** (JS/TS object-literal function-member bodies via the new `_object_members` pass) + **2.1.19** (`const X = class {…}` class-expression declarator modeled as a CLASS, at parity with a regular `class X {}`) **RELEASABLE** — R117–R120 full-diversity clean; awaiting the maintainer's manual `v2.1.18`/`v2.1.19` tags. Object literals reached only via an EXPRESSION shape (IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment) remain PRE-EXISTING (byte-identical on the 5cb47bc baseline), documented, deferred to a focused next release (#75). The diverse panel keeps earning its keep: in 2.1.19 sonnet caught the invalid-TS decorator edge + the cardinal-safe fn-nested precision note while opus/haiku verified parity. |
+| Verdict | **1.0.0–2.1.19 RELEASED/releasable** (maintainer tags). **2.1.20** (JS/TS object & class literals reached via an EXPRESSION shape — call argument / array element / ternary / `||`/`??` / IIFE return / sequence / chained-or-parenthesized assignment — now routed through `_object_members` / anonymous-class modeling, with a now-safe descending declarator `else`) **RELEASABLE** — R121–R122 full-diversity clean; awaiting the maintainer's manual `v2.1.20` tag. This closes the broad #75 family that 2.1.18/2.1.19 had documented as deferred. opus's round-1 base-vs-HEAD differential gave a structural proof the change is reachability-monotonic (purely additive → cannot introduce a false-dead). Remaining JS/TS gaps are bare *function/arrow* expressions in expression position (#83, the function analogue) and `this.#m()` private dispatch (#76/#78) — pre-existing, deferred. |
 
 ## Trajectory
 
@@ -1353,6 +1353,35 @@ The fix is a near-verbatim mirror of the `assignment_expression` class branch; t
 job here was parity verification (run the regular-`class` control for every fixture and report only
 a delta). The one "delta" found was the const-class being *more* cardinal-safe than a regular nested
 class — the right direction.
+
+### 2.1.20 — JS/TS object & class literals in EXPRESSION positions (#75)
+
+The broad close-out of the JS/TS object/class extraction line (after 2.1.11 method shorthand, 2.1.18
+`_object_members`, 2.1.19 `const X = class {…}`). An object or class literal reached only through an
+*expression shape* — a call argument (`register({ onInit(){ helper() } })`, `Object.freeze({…})`),
+an array element (`[ {…} ]`), a ternary / `||` / `??` branch, an IIFE return (`(() => ({…}))()`), a
+sequence (`(init(), {…})`), or a chained/parenthesized assignment (`const r = m.exports = {…}`) —
+had its members invisible. Two distinct failures fed the same cardinal: a `variable_declarator` whose
+value was such a shape was **swallowed** (no `else`, so the wrapping call/array/ternary was never
+descended), while a bare-statement form descended generically and minted the member **unrooted** (the
+"round-11" cardinal that the 2.1.18 effort's deliberate no-else had guarded against). Closed by
+routing every generically-reached `object` through `_object_members` and every anonymous
+`class`/`class_expression` through a class model (with a `body`-field guard against the bare `class`
+keyword token), then re-enabling a now-safe descending `else` on the declarator.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R121 | 3 | ✓ | round 1. All three FINDINGS: none. opus built a **base-vs-HEAD differential harness** and gave a structural proof the change is reachability-MONOTONIC and purely additive (only appends nodes/edges/roles; synthesized `<obj@L_C>`/`<class@L_C>` ids cannot collide with real ids; HEAD *fixes* pre-existing cardinals, introduces none). sonnet 35 framework fixtures (createSlice/defineComponent/Express/RTK/Vue), haiku 18+. Two cardinal-safe non-bugs noted: getter/setter sharing a synthesized id (over-rooting only) and bare arrow/function in expression position (pre-existing #75-family recall gap → tracked **#83**). |
+| R122 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** Fresh angles. opus: multi-file homonym resolution over-approximates to ALL same-named candidates (a synthetic `<obj@..>.go` never evicts a real `Foo.go`); a getter/setter id-collision loses a node *row* but not its call *edges* (reachability keys adjacency by edge `src`, requiring only `dst` to exist) so nothing real goes stale; positional per-file ids cannot collide with real symbols. sonnet 25+ scenarios (Angular `@Component`/NgRx/Pinia `this`-dispatch/class-field initializers/default-param objects/JSX/40-symbol mixed live+dead — all 5 genuinely-dead still flag, 20+ live retained); the 2 apparent violations confirmed PRE-EXISTING on base (function-reference-as-argument liveness, #83). haiku 100+ cases incl. empty/spread-only/deeply-nested. |
+
+The 2.1.20 lesson: **the "no else" was a placeholder, not a verdict.** The 2.1.18 declarator branch
+deliberately refused to descend into expression-shaped values because raw generic descent mints an
+object's `method_definition`s as unrooted module-scope nodes — escalating a recall gap into a cardinal
+(round 11). The right fix was not to keep swallowing but to make descent *safe*: intercept the literal
+at the point generic descent reaches it and route it through proper member rooting, so the `else` can
+finally descend. The diverse panel's value this round was the **structural / differential** argument
+(opus's monotonicity proof + base-vs-HEAD harness) over fixture enumeration — the strongest evidence
+that an *additive* change cannot introduce a false-dead.
 
 ## Standing themes
 
