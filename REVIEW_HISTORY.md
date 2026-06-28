@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.19: R119–R120 on `const X = class {…}` (#80). 2.1.20: R121–R122 on object/class literals in EXPRESSION positions (#75). **2.1.21: R123–R124** (full diversity opus/sonnet/haiku) on Go method value/expression selectors (#49) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_direct_refs` selector site killed; survivors pre-existing) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 493 passing (full extras) |
+| Multi-model review panels | 2.1.20: R121–R122 on object/class literals in EXPRESSION positions (#75). 2.1.21: R123–R124 on Go method value/expression selectors (#49). **2.1.22: R125–R126** (full diversity opus/sonnet/haiku) on same-name method-overload role clobber (#61) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (role-union logic in SQL string — pinned by non-vacuous regression tests, 4/5 fail on old REPLACE) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 498 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.19: `const X = class {…}` → R119✓ R120✓. 2.1.20: object/class literals in EXPRESSION positions → R121✓ R122✓. 2.1.21: Go method value/expression selectors → **R123✓ R124✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.20: object/class literals in EXPRESSION positions → R121✓ R122✓. 2.1.21: Go method value/expression selectors → R123✓ R124✓. 2.1.22: same-name method-overload role clobber → **R125✓ R126✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.20 RELEASED/releasable** (maintainer tags). **2.1.21** (Go method value `reg(v.run)` / method expression `use(t.run)` / struct-field value `cfg{onRun: v.run}`: `_direct_refs` now emits the Go `selector_expression` field name as a by-name REFERENCES edge, so an unexported method reached only as a value is live) **RELEASABLE** — R123–R124 full-diversity clean; awaiting the maintainer's manual `v2.1.21` tag. opus proved the change is reachability-monotonic (additive edges + weight-agnostic boolean BFS → cannot strand a live node); sonnet quantified a bounded, cardinal-safe over-rooting from struct-field/function name collisions, scoped to precision follow-up #84. Remaining cardinals are in other languages — Java (#61/#62), C/C++ (#59/#69) — and the JS/TS function-expression analogue (#83); pre-existing, deferred. |
+| Verdict | **1.0.0–2.1.21 RELEASED/releasable** (maintainer tags). **2.1.22** (same-name method overloads collapse to one node id; `Store.add_node` now upserts with `ON CONFLICT(id) DO UPDATE` that UNIONS roles instead of `INSERT OR REPLACE` clobbering them, so a public/`exported` or framework-`callback` method overloaded with a roleless same-name overload declared after it keeps its root — store-level, covers Java/C#/C++) **RELEASABLE** — R125–R126 full-diversity clean; awaiting the maintainer's manual `v2.1.22` tag. opus proved liveness is monotonic in roles (no role gates out → an additive role-union cannot strand a live node); sonnet quantified the bounded, cardinal-safe precision masking (1 dead overload per rooted same-id sibling, inherent to the arity-less id scheme). Remaining cardinals: Java anon-inner-class JDK overrides (#62), C/C++ macro-body call sites (#59) / cross-TU function tables (#69); pre-existing, deferred. |
 
 ## Trajectory
 
@@ -1408,6 +1408,24 @@ structural proof (an additive edge change cannot strand a live node), and sonnet
 quantification* — naming the precision cost precisely (exact-name field/function collisions) and
 scoping the safe-but-real recall loss into its own follow-up rather than letting it block a
 cardinal-clean release.
+
+### 2.1.22 — same-name method-overload role clobber (#61, store-level, all languages)
+
+Two same-name method **overloads** (`void f()` / `void f(int)` in Java/C#/C++) collapse to one node
+id (`Class.f` — the extractor doesn't put arity in the id). `Store.add_node` used `INSERT OR REPLACE`,
+so the **last-written** overload's row won outright and **clobbered the earlier overload's roles**: a
+public-API method (`exported`) overloaded with a private same-name helper declared *after* it, or a
+framework-callback overload (`@PostConstruct`/`@Test`) followed by a plain one, lost its only root and
+was confidently flagged dead though live. The failure was declaration-order-dependent. Closed by
+upserting with `ON CONFLICT(id) DO UPDATE` that **unions** the colliding rows' roles — a rooting role
+is never dropped. The fix is store-level, so it covers C#/C++ overloads, not only Java.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R125 | 3 | ✓ | round 1. All three FINDINGS: none (cardinal). opus structural proof — roles strictly additive + liveness MONOTONIC in roles (no role gates out, audited `detect`/`_live_set`/`_stale_candidates`) + non-role columns identical to old REPLACE; base-vs-HEAD differential. sonnet 16 framework fixtures (JUnit/Spring/servlet/builder/C# `[Fact]`/C++ `operator()`), both declaration orders, and quantified the bounded cardinal-safe precision masking (1 dead overload masked per rooted same-id sibling, never leaks wider — inherent to the arity-less id scheme, since adding arity would risk wrong-overload call resolution = a *new* cardinal). haiku Java/C#/Go/Python, streaming+in-memory, 50+ overloads. |
+| R126 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus attacked the proof on five fronts and it held: no role gates out; the post-extraction seed passes all run on in-memory frozensets BEFORE `add_node` (never on the joined string); every joined-string reader splits-and-dedups; no role is a substring of another (LIKE-safe); no `roles == value` exact-match exists; `kind`/`is_stub` newest-row can only move a node OUT of candidacy (safe); streaming+incremental byte-parity. sonnet 15+ fixtures (duplicated-role strings, `runtime` carry through `replace_file`, mixed-language repo, all downstream ops crash-free, truly-dead private still flags). haiku 33 (stub/kind collisions, 100-overload stress, SQL-injection attempt). |
+
+The 2.1.22 lesson: **when two defs must share an id, merge their liveness signal — never let last-writer-wins decide it.** The id scheme deliberately omits arity (so a call `f(x)` resolves to *the* method `f` without arity inference — adding arity to ids would risk resolving a call to the wrong overload and flagging the real one dead, a worse cardinal). Given that merge, the node row must UNION the rooting signal, not replace it. The diverse panel's value this round was opus's *monotonicity* proof (an additive role change cannot strand a live node, because no role gates out) — the strongest possible evidence for a store-level change — backed by sonnet's enumeration that no role is a substring of another and the bounded precision cost.
 
 ## Standing themes
 

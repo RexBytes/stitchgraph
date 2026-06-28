@@ -1547,6 +1547,26 @@
       ],
       "findings": {},
       "theme": "v2.1.21 (#49) round 2 — CLEAN on the cardinal invariant, second consecutive full-diversity → gate met, RELEASABLE. opus attacked the edges of round 1's additive argument: confirmed selector_expression is Go-UNIQUE across all 12 grammars (no cross-language effect), streaming==in-memory parity (the `_precompute_def` refs path), CALLS/REFERENCES double-dedup (in-function called-set skip + `_dedup_edges`), base-vs-HEAD differential. sonnet quantified the over-rooting blast radius: a struct-field read (`w.run`) shares the selector shape with a method value, so a dead function whose name EXACTLY collides with a struct field is kept live (synthetic worst case 22/25) — cardinal-SAFE precision-over-recall, bounded to exact-name matches, strictly better than the pre-fix false-dead; tracked as precision follow-up #84. haiku 66 cases (pathological selectors, truncated Go, cross-language sanity) crash-free. No newly-introduced cardinal in either round."
+    },
+    {
+      "id": "R125",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.22 (#61) round 1 — CLEAN, all three FINDINGS: none (cardinal). Same-name method OVERLOADS share one node id; `Store.add_node`'s `INSERT OR REPLACE` let the last-written overload clobber the earlier one's ROLES, so a public (`exported`) or framework-callback (@PostConstruct/@Test) method overloaded with a roleless same-name overload declared after it lost its only root and was flagged dead (order-dependent). Fixed by upserting with ON CONFLICT(id) DO UPDATE that UNIONS roles. opus structural proof: roles strictly additive + liveness MONOTONIC in roles (no role gates out — audited detect/_live_set/_stale_candidates) + non-role columns identical to old REPLACE; base-vs-HEAD differential. sonnet 16 framework fixtures (JUnit/Spring/servlet/builder/C#[Fact]/C++ operator()) both declaration orders + quantified the bounded, cardinal-safe precision masking (1 dead overload masked per rooted same-id sibling, never leaks wider — inherent to the arity-less id scheme). haiku Java/C#/Go/Python, streaming+in-memory, 50+ overloads. Store-level → covers C#/C++ too. Streak resets (new fix)."
+    },
+    {
+      "id": "R126",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.22 (#61) round 2 — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus attacked the round-1 proof on five fronts and it held: NO role gates out of liveness anywhere; the post-extraction seed passes (_seed_exported_class_methods/_seed_callback_roles/_seed_test_classes/_set_exported_roles/override-propagation) all run on in-memory frozensets BEFORE add_node, never on the joined string; every joined-string reader splits-and-dedups; no role is a substring of another so the nodes_with_role LIKE is safe; no `roles == value` exact-match exists; kind/is_stub newest-row can only move a node OUT of candidacy (safe); streaming+incremental byte-parity. sonnet 15+ fixtures incl. duplicated-role strings, runtime carry through replace_file, mixed-language repo, all downstream ops (scan/impact_of/get_matrix/summarize_subsystem/trace_path) crash-free, truly-dead private still flags. haiku 33 tests (stub/kind collisions, 100-overload stress, SQL-injection attempt). No newly-introduced cardinal, no crash in either round."
     }
   ]
 }
