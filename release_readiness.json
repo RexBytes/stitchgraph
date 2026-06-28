@@ -1607,6 +1607,26 @@
       ],
       "findings": {},
       "theme": "v2.1.24 (#59) round 2 (final code) — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus: incremental `replace_file`/reindex (no stale `c_macro_refs` leak, role re-pointed exactly), streaming byte-parity on a >=2000-file tree, real-world `util.h` (X-macros/`container_of`/`##`), #59-vs-#88 boundary nailed by in-process disabling the pass, monotonicity gained=0 across 8 fixtures, crash corners (1MB body, recursive `#define A A`). sonnet realistic multi-file C library + downstream ops (scan/find_holes/impact_of/get_callers all crash-free, no misleading presentation of macro-rooted dead fns) + variadic macros (`...` ignored) + C++ `::`-qualified names (namespace/class names match no F/M node) + quantified both precision sources (~2/fixture each). haiku 250+ fuzz incl. 1MB bodies + independently pinpointed #88's source (`_module_uses` preproc_params, ~line 1890). No newly-introduced cardinal, no crash in either round."
+    },
+    {
+      "id": "R131",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.25 (#69) round 1 on FINAL code — CLEAN, all three FINDINGS: none (cardinal). C/C++ function whose address is taken in a global function-pointer table / vtable struct / designated-init / scalar is invoked indirectly (possibly cross-TU; globals aren't nodes) and was false-flagged dead when its TU had no entry point; fixed by `_c_global_init_fn_refs` rooting matching F/M nodes callback (initializer_list matched directly — the dialect common denominator; C++ mis-parses the table as an expression_statement). An earlier round-1 (sonnet) had quantified a precision regression — the scan collected designated-init FIELD names (`.open`/`.read`/`.free`) which collide with the commonest C function names — fixed by collecting only `identifier` (the value), not `field_identifier`. This round verified the fix: opus directly REFUTED the under-rooting risk (function-pointer values are always `identifier`; C++ qualified values recurse to the leaf; only designators/member-components dropped — base-vs-HEAD confirms all values retained); sonnet quantified the precision win (N spurious roots/N-field struct eliminated, file_operations 12→0) and confirmed no value lost; haiku 50+ fuzz. Streak resets."
+    },
+    {
+      "id": "R132",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v2.1.25 (#69) round 2 on FINAL code — CLEAN, second consecutive full-diversity → gate met, RELEASABLE. opus: incremental replace_file/double-reindex (no c_table_refs leak), streaming byte-parity on a 2102-file tree, real-world driver/registry pattern, monotonicity gained=0 across 10 fixtures, crash sweep (1MB init, depth-6000 nesting, recursive typedefs, compound literals). sonnet: realistic multi-file C driver (zero live flagged dead, dead helpers still flag), rooting-pass interaction (EXPORT_SYMBOL/#59 c_macro_refs/_seed_callback_roles all additive set-unions, no conflict), all downstream ops crash-free (callback-rooted handlers NOT shown as spurious public_surface), mixed-language monorepo gate sound, and quantified 3 cardinal-safe precision residuals (global C++ lambda-body callees, enum/scalar idents, array-var names). haiku 350+ fuzz + cross-language gate. NOTE: collecting global-lambda-body identifiers is cardinal-NECESSARY (a global lambda body is not walked by any def pass, so its callees would be false-dead if not collected) — the over-rooting is the cardinal-safe cost, NOT to be 'fixed' by skipping lambda bodies. No newly-introduced cardinal, no crash in either round."
     }
   ]
 }

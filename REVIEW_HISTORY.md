@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2.1.22: R125–R126 on same-name method-overload role clobber (#61). 2.1.23: R127–R128 on Java anonymous-inner-class class-scope overrides (#62). **2.1.24: R129–R130** (full diversity opus/sonnet/haiku) on C/C++ `#define` macro-body call sites (#59) — clean in 2 rounds |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_macro_body_ref_names` 4/4 killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 511 passing (full extras) |
+| Multi-model review panels | 2.1.23: R127–R128 on Java anonymous-inner-class class-scope overrides (#62). 2.1.24: R129–R130 on C/C++ `#define` macro-body call sites (#59). **2.1.25: R131–R132** (full diversity opus/sonnet/haiku) on C/C++ function-pointer table / vtable promotion (#69) — clean in 2 rounds |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_c_global_init_fn_refs` + `_collect_init_idents` killed) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 521 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.22: same-name method-overload role clobber → R125✓ R126✓. 2.1.23: Java anon-inner-class class-scope overrides → R127✓ R128✓. 2.1.24: C/C++ macro-body call sites → **R129✓ R130✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.23: Java anon-inner-class class-scope overrides → R127✓ R128✓. 2.1.24: C/C++ macro-body call sites → R129✓ R130✓. 2.1.25: C/C++ function-pointer table promotion → **R131✓ R132✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **1.0.0–2.1.23 RELEASED/releasable** (maintainer tags). **2.1.24** (a C/C++ function called or named only inside a `#define` macro body is invisible to the AST call scan — the body is raw `preproc_arg` text — and was flagged dead; a new `_macro_body_ref_names` text-scan roots matching project F/M nodes `callback`, with line-continuation splicing and macro-parameter exclusion) **RELEASABLE** — R129–R130 full-diversity clean; awaiting the maintainer's manual `v2.1.24` tag. The round-1 panel drove the line-continuation + param refinements and cleanly attributed the residual param over-rooting to a pre-existing separate mechanism (#88, `_module_uses` walking `preproc_params`). Remaining cardinals: C cross-TU function tables (#69), JS/TS implicit-dispatch (#54); pre-existing, deferred. |
+| Verdict | **1.0.0–2.1.24 RELEASED/releasable** (maintainer tags). **2.1.25** (a C/C++ function whose address is taken in a global function-pointer table / vtable struct / designated-init / scalar is invoked indirectly, possibly cross-TU — globals aren't graph nodes — and was flagged dead when its TU had no entry point; a new `_c_global_init_fn_refs` scan roots matching F/M nodes `callback`, collecting only function-VALUE `identifier`s, not designated-init field names) **RELEASABLE** — R131–R132 full-diversity clean; awaiting the maintainer's manual `v2.1.25` tag. The panel drove a field-designator precision fix and established that collecting global-lambda-body callees is cardinal-NECESSARY (not to be "fixed" away). **The cardinal sweep is now down to one item: JS/TS implicit-dispatch (#54).** Cardinal-safe precision/coverage follow-ups #70–#89 remain, all deferred. |
 
 ## Trajectory
 
@@ -1476,6 +1476,32 @@ line continuations (as the preprocessor does) and exclude parameter placeholders
 *attributing* the residual param over-rooting to a pre-existing, separate mechanism (`_module_uses`
 walking `preproc_params`, #88) rather than to this change, by keying on the `callback` role. Knowing
 which code owns a symptom is as valuable as the fix.
+
+### 2.1.25 — C/C++ function-pointer table / vtable promotion (#69)
+
+A C/C++ function whose address is taken in a global function-pointer table (`int (*ops[])(int) =
+{op_a, op_b}`), a plugin/vtable struct, a designated-initializer table, or a scalar (`cb h =
+handler`) is invoked indirectly through that global — possibly in a different translation unit via
+`extern`. Globals aren't graph nodes, so the cross-TU use is untrackable, and the address-taken
+functions were false-flagged dead when their TU had no entry point (the passive registration-unit
+pattern). Closed by `_c_global_init_fn_refs` rooting matching project C/C++ F/M nodes `callback`,
+matching the `initializer_list` node directly (the dialect common denominator — C++ mis-parses
+`int (*tab[])() = {…}` as an `expression_statement`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R131 | 3 | ✓ | round 1 on the final code. All three FINDINGS: none. The pre-fix round-1 (sonnet) had quantified a precision regression — the scan collected designated-init FIELD names (`.open`/`.read`/`.free`, the commonest C function names) — fixed by collecting only `identifier` (the value), not `field_identifier`. This round verified it: opus directly REFUTED the under-rooting risk (function-pointer values are always `identifier`; only designators/member-components dropped — base-vs-HEAD confirms all values retained); sonnet quantified the win (file_operations 12 spurious → 0); haiku fuzz. |
+| R132 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus incremental + streaming (2102 files) + real-world driver/registry + monotonicity gained=0 + crash sweep (1MB / depth-6000 / recursive typedefs). sonnet driver project + rooting-pass interaction (all additive unions, no conflict) + downstream ops crash-free + 3 cardinal-safe precision residuals quantified. haiku 350+ fuzz + cross-language gate. |
+
+The 2.1.25 lesson: **the over-approximation has a floor you must not cross.** The panel pushed two
+ways at once — sonnet found field-designator over-collection (precision, fixed by dropping
+`field_identifier`), but the *opposite* tightening it later suggested (skipping C++ lambda bodies)
+would have been cardinal-UNSAFE: a global lambda body is not walked by any def pass, so its callees
+are live *only* because the initializer scan collects them — skip it and a function called only in a
+*used* global lambda goes false-dead. Knowing which direction is the cardinal-safe one (collect more,
+never less, for indirect-dispatch text the grammar doesn't model) is the whole discipline. The
+collect-`identifier`-only fix threads it: it drops non-value designators (pure precision) while
+keeping every value and every body callee (cardinal-safety preserved).
 
 ## Standing themes
 
