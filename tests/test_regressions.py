@@ -7991,3 +7991,70 @@ def test_go_method_call_not_double_counted_as_reference(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "run" not in stale and "helper" not in stale
+
+
+@pytest.mark.parametrize("src,fn,nid,rooted", [
+    # Java: public API method + private same-name overload declared LAST. The private overload's
+    # roleless row must not clobber the public one's `exported` root (else the public method,
+    # reachable only as API, is flagged dead).
+    ("public class Api {\n  public void process() {}\n  private void process(int x) {}\n}\n",
+     "Api.java", "Api.java::Api.process", "exported"),
+    # Java: framework-callback overload (@PostConstruct) + plain overload LAST. The plain row must
+    # not clobber the `callback` root of the lifecycle method.
+    ("import javax.annotation.PostConstruct;\nclass Bean {\n  @PostConstruct void init() {}\n  void init(int x) {}\n}\n",
+     "Bean.java", "Bean.java::Bean.init", "callback"),
+    # C# generalization: public method + private same-name overload last (same store-level clobber).
+    ("public class Api {\n  public void Process() {}\n  private void Process(int x) {}\n}\n",
+     "Api.cs", "Api.cs::Api.Process", "exported"),
+])
+def test_overload_role_union_keeps_rooting_method_live(tmp_path, src, fn, nid, rooted):
+    """#61 (cardinal): two same-name method OVERLOADS collapse to one node id. A plain
+    INSERT OR REPLACE let the LAST-written overload's row clobber the earlier one's roles — so a
+    public (`exported`) or framework-callback method overloaded with a roleless same-name overload
+    declared after it lost its only root and was flagged dead though live. `add_node` now UNIONs
+    roles on conflict, so the rooting role survives regardless of declaration order."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {fn: src})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        node = store.get_node(nid)
+        assert node is not None and rooted in node.roles, f"{nid} must keep its '{rooted}' role across the overload"
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert nid not in stale, f"{nid} is rooted ({rooted}) and must not be flagged dead"
+
+
+def test_overload_role_union_is_order_independent(tmp_path):
+    """#61: the role union must hold in BOTH declaration orders — the bug was order-dependent
+    (only the role on the last-written overload survived). Pin both directions explicitly."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    for order in (
+        "  public void process() {}\n  private void process(int x) {}\n",   # rooted first
+        "  private void process(int x) {}\n  public void process() {}\n",   # rooted last
+    ):
+        d = tmp_path / order[:8].strip().replace(" ", "_")
+        _mk(d, {"Api.java": "public class Api {\n" + order + "}\n"})
+        with sg.Store(":memory:") as store:
+            sg.reindex(store, str(d))
+            node = store.get_node("Api.java::Api.process")
+            assert node is not None and "exported" in node.roles
+            assert "Api.java::Api.process" not in {c["id"] for c in sg.find_stale(store).result}
+
+
+def test_overload_role_union_does_not_overroot_unrelated(tmp_path):
+    """#61 guard: unioning roles for a SHARED id must not leak a role onto a genuinely-dead,
+    differently-named private method. A dead `secret()` (no overload, no caller) still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"Api.java": (
+        "public class Api {\n"
+        "  public void process() {}\n"
+        "  private void process(int x) {}\n"
+        "  private void secret() {}\n"   # never called, distinct name -> dead
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "Api.java::Api.secret" in stale, "a genuinely-dead private method must still flag"

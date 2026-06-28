@@ -4,6 +4,32 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.22] — 2026-06-28
+
+**Same-name method-overload role clobber — cardinal fix (#61, store-level, all languages).**
+Two same-name method **overloads** (`void f()` / `void f(int)` in Java/C#/C++) collapse to one node
+id (`Class.f`). The node persistence used `INSERT OR REPLACE`, so the **last-written** overload's row
+won outright and **clobbered the earlier overload's roles**. A public-API method (`exported`)
+overloaded with a private same-name helper declared *after* it — or a framework-callback overload
+(`@PostConstruct` / `@Test`) followed by a plain one — lost its only root and was confidently flagged
+dead though live. The bug was declaration-order-dependent (only the last overload's roles survived).
+
+### Fixed
+
+- `Store.add_node` now upserts with `ON CONFLICT(id) DO UPDATE` and **unions the roles** of colliding
+  nodes instead of replacing them — a rooting role is never dropped, regardless of overload order
+  (cardinal-safe). Edges were never at risk (they key on the `src` id, so both overload bodies'
+  call/reference edges were already retained); only the node row's roles were being lost. Non-role
+  columns continue to take the newest row, matching the prior `REPLACE` semantics. Joined-role
+  duplicates are harmless (every reader splits into a set) and bounded (reindex/`replace_file` clear
+  before re-inserting). The fix is store-level, so it covers C#/C++ overloads too, not only Java.
+
+### Known limitations (unchanged)
+
+Java anonymous-inner-class JDK abstract overrides (#62) and the C/C++ macro-body call sites (#59) /
+cross-TU function-table promotion (#69) remain pre-existing and deferred to their own per-language
+reviews.
+
 ## [2.1.21] — 2026-06-28
 
 **Go method value / method expression references — cardinal fix (#49, cobra dogfood).**

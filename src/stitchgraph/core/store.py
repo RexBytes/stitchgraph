@@ -162,8 +162,31 @@ class Store:
     def add_node(self, node: Node, file: str = "") -> None:
         try:
             self.conn.execute(
-                """INSERT OR REPLACE INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles, end_line)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                # Two defs can share one node id — most commonly same-name METHOD OVERLOADS
+                # (`void f()` / `void f(int)` in Java/C#/C++, both qualified `Class.f`). A plain
+                # INSERT OR REPLACE made the LAST-written overload's row win outright, CLOBBERING
+                # the earlier one's roles: a public API method (`exported`) overloaded with a
+                # private same-name helper declared after it, or a framework-callback overload
+                # (@PostConstruct/@Test) followed by a plain one, lost its only root and was
+                # confidently flagged dead though live (#61, cardinal). Upsert instead and UNION
+                # the roles — a role is never dropped (cardinal-safe; the edges from both bodies
+                # are already kept, since edges key on src id, so only the row's roles were at
+                # risk). Duplicates in the joined string are harmless: every reader splits into a
+                # set (`get_node` -> frozenset; `nodes_with_role` LIKE; `_set_exported_roles`
+                # normalizes), and reindex/replace_file both clear before re-inserting, so the
+                # union is bounded to one build's overloads. Non-role columns take the new row,
+                # matching the prior REPLACE semantics.
+                """INSERT INTO nodes(id, kind, name, location, file, is_stub, arity, summary, roles, end_line)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     kind=excluded.kind, name=excluded.name, location=excluded.location,
+                     file=excluded.file, is_stub=excluded.is_stub, arity=excluded.arity,
+                     summary=excluded.summary, end_line=excluded.end_line,
+                     roles=CASE
+                       WHEN excluded.roles='' THEN nodes.roles
+                       WHEN nodes.roles='' THEN excluded.roles
+                       ELSE nodes.roles || ',' || excluded.roles
+                     END""",
                 (node.id, node.kind.value, node.name, node.location,
                  file or _file_of(node.id), int(node.is_stub), node.arity, node.summary,
                  ",".join(sorted(node.roles)), node.end_line),
