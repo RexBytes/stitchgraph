@@ -30,8 +30,8 @@ Point it at a repo and ask plain questions about it. Every answer is ranked and 
   column, *across languages*.
 - **Where's the code that does X?** — `find_similar`: by name/docs (semantic) or, new in v3.0.0, by
   **body shape** (finds renamed / reordered clones a text search misses).
-- **How do two builds differ?** — `graph_diff`: call-level deltas **plus** Python body-shape
-  changes, so a data-flow bug that leaves the call graph identical still shows up.
+- **How do two builds differ?** — `graph_diff`: call-level deltas **plus** body-shape changes
+  (Python + JS/TS), so a data-flow bug that leaves the call graph identical still shows up.
 - **I'm new here — orient me.** — `orient` / `summarize_subsystem` / `risk`: central modules, entry
   points, and the files most dangerous to touch.
 - **What's referenced but missing?** — `find_holes`: dangling references that don't resolve.
@@ -189,8 +189,8 @@ millions of edges are ever all resident at once.
 | `risk` | Which files are most dangerous to touch (churn × centrality × coupling)? |
 | `scan` | Give me a ranked sweep of issues across the whole repo. |
 | `summarize_subsystem` | What is this package/folder, in one shot? |
-| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python). |
-| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + Python body-shape changes. |
+| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python + JS/TS/TSX). |
+| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + body-shape changes (Python + JS/TS/TSX). |
 | `ingest_trace` | Fuse runtime coverage so "live" reflects what actually ran. |
 
 > Trust model: every answer carries a confidence and provenance. `find_stale` is
