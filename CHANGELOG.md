@@ -4,6 +4,42 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.1.0] — 2026-06-29
+
+**Test-coverage hardening + docs.** No source, API, or schema change — indexes don't need
+rebuilding and every operation behaves exactly as in 3.0.0. This release closes a mutation-coverage
+gap in `find_similar`'s semantic/dense path and makes the README state plainly what the package
+delivers.
+
+### Hardened
+
+- **`core/similar.py` mutation coverage** — the differential mutation meta-oracle
+  (`scripts/mutate.py`) previously left ~15 survivors in the optional dense/`model2vec` retrieval
+  path (the body matrix's own core was already 15/15 + 9/9). Added unit tests that pin: the **token
+  and dense ranking sort direction and `> 0` filter** with strict, tie-free fixtures (the existing
+  fixtures tied at the top, so a reverse-flip left the winner unchanged and the mutants survived);
+  the two **zero-norm `_dot_cos` guards** (a zero-magnitude query or node embedding must degrade to
+  0.0, not divide-by-zero); and the **`model2vec` auto-load** path offline via a fake module + fake
+  config (success wires an embedder and picks the configured-or-default model; the load is attempted
+  at most once; an import failure stays on the token path).
+- **test isolation** — `find_similar`'s dense backend is module-global (`_EMBEDDER` + the
+  `_M2V_TRIED` once-latch); an autouse fixture now snapshots and resets it per test, so leaked state
+  can't change which retrieval path a later test takes. This made the suite *and* the mutation kills
+  order-independent (a mutant had been killed only by a leaked embedder, masking a real gap).
+- Result: **29/32 mutants killed, deterministically**; the 3 survivors are documented as
+  justified-equivalent (`tests/test_similar.py` module docstring). Closes `docs/IDEAS.md` §5d.
+
+### Docs
+
+- **README** — leads with what stitchgraph delivers (the question each operation answers) before the
+  internals; the v3.0.0 body matrix is the headline and the language count is consistent.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **703** passing; differential oracle suite **85**. Mutation
+  meta-oracle: `structure.py` 15/15, `graphdiff` 9/9, and `similar.py` now 29/32 (3 justified
+  equivalent). Two-round full-diversity adversarial panel (opus / sonnet / haiku), clean.
+
 ## [3.0.0] — 2026-06-29
 
 **The intra-procedural body matrix (Python).** stitchgraph's graph has always been

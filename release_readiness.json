@@ -1989,6 +1989,38 @@
             ],
             "findings": {},
             "theme": "v3.0.0 final clean-cycle round 2 (frozen HEAD 941516b) -- CLEAN; streak 2, gate met, RELEASABLE. All three ran the CORRECT mutation kill-signals: structure.py 15/15, graphdiff 9/9. opus: 2000-case structural fuzz + 19 edge cases, zero crashes; cardinal find_stale byte-identical; the lone transient KeyError investigated and ruled a non-reproducible recursion artifact already guarded by fingerprint_source. sonnet: gate 698/85 RELEASABLE, dogfood + read-only stress + determinism all clean. haiku: counts/version/CLI/claims all verified true with the exact kill-signals."
+        },
+        {
+            "id": "R166",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1
+            },
+            "theme": "v3.1.0 round 1 (HEAD 46b7d5f) -- no product defect; opus brute-forced the 3 mutation survivors and confirmed them genuinely equivalent, haiku verified docs/counts. sonnet flagged a one-off two-test failure on a cold run -> investigated to a real TEST-DETERMINISM gap (LOW, test-only): find_similar's module-global dense backend (_EMBEDDER/_M2V_TRIED) wasn't isolated per test, so the token-path reverse= mutant was being killed only by a leaked embedder (the shared fixture's query ties at 0.447), masking a coverage hole. Fixed: autouse isolation fixture + a tie-free token-ranking test + localized model2vec import-failure (sys.modules[None]) and a subprocess latch check. (The cold-run flake itself was later traced to reviewers running mutate.py concurrently with pytest under the editable install.)"
+        },
+        {
+            "id": "R167",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.1.0 final clean-cycle round 1 (frozen HEAD 7bffb12) -- CLEAN. opus: full suite 703 x2 + the previously-flaky pair x3 all deterministic; similar.py mutation 29/32 run TWICE with identical survivors (11/23/28); all 3 re-confirmed equivalent; isolation fixture + new tests sound. sonnet: gate 703/85, mutation similar 29/32 / structure 15/15 / graphdiff 9/9, dogfood + cardinal byte-identical, RELEASABLE. haiku: counts/version/claims/README all verified true; no dead helper / hygiene issues."
+        },
+        {
+            "id": "R168",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.1.0 final clean-cycle round 2 (frozen HEAD 7bffb12) -- CLEAN; streak 2, gate met, RELEASABLE (RRS 93.3). opus (fresh skeptic angles): subprocess latch test robust to cleared env, the autouse fixture does not mask real path-switching, the token-ranking test's 0.784 vs 0.632 gap can't silently tie -> sort pin robust. sonnet: 703 x2, mutation 29/32 + 15/15 + 9/9, dogfood + cardinal clean. haiku: docs/version/README consistent; the lone 'bare mypy error in tests' note was a methodology slip (mypy is configured files=[\"src\"], so the gate excludes tests by design and is clean)."
         }
     ]
 }

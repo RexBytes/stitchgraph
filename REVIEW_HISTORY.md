@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (3.0.0: `structure.py` 15/15 + `graphdiff` 9/9 killed by their own unit suites) ✅ · oracles 85 ✅ · no-open-defects ✅ |
-| Tests | 698 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 85 ✅ · no-open-defects ✅ |
+| Tests | 703 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.2.1: Bash `PROMPT_COMMAND=fn` hook (#95) → R147✓ R148✓. 2.3.0: shared `tarjan_scc` extraction → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. **3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds: qualname collision, recursion, operator-blind, control-flow defs, match, temp-copy read-only, AugAssign read-edge, mutation test-gaps) → R164✓ R165✓ full-diversity on a frozen HEAD (streak 2, gate met, readiness RELEASABLE, RRS 93.3)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. **3.1.0: mutation-harden `find_similar`'s dense path + clearer README → R166 (test-determinism gap fixed: dense-backend global state isolated) → R167✓ R168✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE, RRS 93.3)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1717,6 +1717,29 @@ gaps were in tests I'd just written; closing them (and naming the kill-signal in
 reviewer ran the wrong one) is the same shape as the v2.3.0 `on_stack` lesson. (4) A surfaced but
 **out-of-scope** item — `similar.py`'s optional semantic/dense path has pre-existing mutation gaps
 (documented optional-dep blind spot) — was parked in `docs/IDEAS.md` §5d rather than chased.
+
+## v3.1.0 — mutation-harden `find_similar`'s dense path + a clearer README (test-only)
+
+A small, safe follow-up to v3.0.0: no runtime source change. It closes the one parked hardening
+item (`docs/IDEAS.md` §5d) — the optional dense/`model2vec` retrieval path in `core/similar.py` had
+~15 surviving mutants — and makes the README lead with *what stitchgraph delivers*.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R166 | 3 | ✗ | round 1 (HEAD 46b7d5f). No product defect — opus brute-forced the 3 mutation survivors and confirmed them genuinely equivalent; haiku verified docs/counts. sonnet saw a one-off two-test failure on a cold run → traced to a **test-determinism gap** (LOW, test-only): `find_similar`'s module-global dense backend (`_EMBEDDER`/`_M2V_TRIED`) wasn't isolated per test, so the token-path `reverse=` mutant was killed only by a *leaked* embedder (the shared fixture's query ties at 0.447), masking a coverage hole. **Fix:** autouse isolation fixture + a tie-free token-ranking test + localized model2vec import-failure (`sys.modules[None]`) and a subprocess latch check. |
+| R167 | 3 | ✓ | final clean-cycle round 1 (frozen HEAD 7bffb12). opus: suite 703×2 + the previously-flaky pair ×3 all deterministic; `similar.py` mutation **29/32 run twice, identical survivors** (11/23/28); all three re-confirmed equivalent. sonnet: gate 703/85, mutation 29/32 + 15/15 + 9/9, dogfood + cardinal byte-identical. haiku: counts/version/README all true. |
+| R168 | 3 | ✓ | final clean-cycle round 2 — **streak 2, gate met, RELEASABLE.** opus probed fresh angles (subprocess robustness, fixture not masking path-switching, token-test tie-robustness) — all negative. sonnet: 703×2, mutation 29/32 + 15/15 + 9/9. haiku: docs consistent; its lone "bare-mypy error in tests" note was a methodology slip — mypy is configured `files=["src"]`, so tests are out of the type-check gate by design and the gate is clean. |
+
+Process notes: (1) the **mutation meta-oracle found a real test gap a panel hadn't** — `similar.py`'s
+dense ranking was only *apparently* covered; a mutant killed by leaked global state is not covered,
+and making the run deterministic (the isolation fixture) exposed and then closed it. The same lesson
+as v2.3.0's `on_stack` gap, one layer deeper. (2) Two review **artifacts** were correctly run down
+to non-defects: a cold-run suite flake and transient ruff/oracle failures, both from running
+`mutate.py` (which writes to `src/` under the editable install) *concurrently* with `pytest`/`ruff`
+— a reviewer-methodology hazard now called out in the panel briefs (run the meta-oracle
+sequentially). (3) The 3 residual `similar.py` survivors are **justified-equivalent**, documented in
+the `tests/test_similar.py` docstring and re-verified by adversarial distinguishing-input attempts in
+both clean rounds — "kill or justify," with the justification itself audited.
 
 ## Standing themes
 
