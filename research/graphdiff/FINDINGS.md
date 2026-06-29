@@ -35,6 +35,32 @@ the oracle flags exactly that (one fn becomes a class+method, one new constructi
 correctly reporting the unchanged call shape as unchanged. That is the "matrix as oracle, not
 generator" thesis working: the LLM writes the translation; this primitive *verifies* what survived.
 
+## Real cross-language twin — the honest Q2 number (`measure_translation.py`)
+
+The demo toys were too clean, so a faithful Python↔JS translation of the *same* ~9-function
+recursive-descent calculator (`fixtures/calc_py`, `fixtures/calc_js`) was indexed and diffed.
+
+| | nodes | edges |
+|---|---|---|
+| Python | 14 | 20 |
+| JS | 14 | 20 |
+| **leaf-mode recall (before ctor-normalisation)** | **93%** | **95%** |
+| **leaf-mode recall (after ctor-normalisation)** | **100%** | **100%** |
+
+The *entire* algorithm call-shape — `tokenize → parse → _expr → _term → _factor` (recursive),
+`evaluate` recursion, `calc` driver — matched across the language hop. The **only** residual was
+`__init__` (Python) vs `constructor` (JS): a pure naming convention, not a lost edge. Normalising
+constructor spellings to a canonical `<init>` token (`_CTOR_ALIASES` in `graphdiff.py`) closes it
+to a clean **100%** — and it's safe, because a genuinely missing/extra constructor still shows as a
+node-count delta.
+
+**Takeaway:** for a *faithful* translation, leaf-mode graph-diff is a high-recall fidelity oracle —
+the structural signal survives the language hop almost perfectly once trivial naming conventions are
+normalised. This is the strongest evidence yet for the "matrix as verifier" half of Q2: the LLM
+writes the JS, this primitive confirms the call graph it produced matches the Rust/Python original.
+The complementary harder case (a *restructured* translation) is demo scenario 3c/3d, where the
+oracle instead *locates* the genuine structural change.
+
 ## Honest limits (the §2 caveat, made concrete)
 
 - **3a is a coincidence, not a triumph.** id mode matched only because both toys use bare

@@ -31,8 +31,17 @@ from dataclasses import dataclass, field
 import stitchgraph as sg
 
 
+# Constructor spellings differ by language but mean the same node in a call graph.
+# Normalising them in leaf mode removes a pure-convention residual without hiding any
+# real algorithm delta (a missing/extra constructor still shows as a node-count delta).
+_CTOR_ALIASES = {"__init__", "constructor", "__construct", "new", "initialize"}
+
+
 def _leaf(name: str | None) -> str:
-    return name.rsplit(".", 1)[-1].rsplit("::", 1)[-1] if name else ""
+    if not name:
+        return ""
+    leaf = name.rsplit(".", 1)[-1].rsplit("::", 1)[-1]
+    return "<init>" if leaf in _CTOR_ALIASES else leaf
 
 
 def index(path: str) -> dict:
