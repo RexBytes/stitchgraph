@@ -626,7 +626,8 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
 
 
 @operation("Structurally diff this index against another (translation / plan-vs-actual).")
-def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True) -> Result:
+def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
+               body_threshold: float = 0.95) -> Result:
     """Compare this index with another built index at `other_db` (a stitchgraph `.db` path).
     Reports located node/edge deltas — mode="id" is exact (same codebase: did a refactor change the
     graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
@@ -647,6 +648,9 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True)
         return refuse("other_db must be a path string", confidence=0.0)
     if mode not in ("id", "leaf"):
         return refuse("mode must be 'id' or 'leaf'", confidence=0.0)
+    if not isinstance(body_threshold, (int, float)) or isinstance(body_threshold, bool) \
+            or not 0.0 < body_threshold <= 1.0:
+        return refuse("body_threshold must be a number in (0.0, 1.0]", confidence=0.0)
     if not Path(other_db).is_file():
         return refuse(f"no index database at '{other_db}'", confidence=0.0)
     # Validate it's a real stitchgraph index via a READ-ONLY probe *before* constructing a Store —
@@ -669,7 +673,8 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True)
                       confidence=0.0)
     other = Store(other_db)
     try:
-        d = gd.graph_diff(store, other, mode=mode, body=bool(body))
+        d = gd.graph_diff(store, other, mode=mode, body=bool(body),
+                          body_threshold=float(body_threshold))
     finally:
         other.close()
     delta = (len(d["nodes_only_a"]) + len(d["nodes_only_b"]) + len(d["edges_only_a"])

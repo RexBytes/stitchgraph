@@ -23,7 +23,8 @@ def test_operations_expose_only_json_params():
     assert {"scope", "relation", "limit"} <= {p.name for p in ops["get_matrix"].exposed_params()}
     assert {"path"} <= {p.name for p in ops["reindex"].exposed_params()}
     # v3.0.0 ops expose their JSON-simple params to CLI/MCP (R153 sonnet F4)
-    assert {"other_db", "mode", "body"} <= {p.name for p in ops["graph_diff"].exposed_params()}
+    assert {"other_db", "mode", "body", "body_threshold"} <= {
+        p.name for p in ops["graph_diff"].exposed_params()}
     assert "mode" in {p.name for p in ops["find_similar"].exposed_params()}
 
 

@@ -211,6 +211,25 @@ def test_body_diff_catches_control_flow_nested_def_change(tmp_path):
     assert any(c["name"] == "outer.inner" for c in d["body_changed"]), d["body_changed"]
 
 
+def test_body_threshold_tunes_sensitivity(tmp_path):
+    # R155 (sonnet NIT): body_threshold is exposed. score's body sim ~0.6 — flagged at the 0.95
+    # default, not flagged when the caller lowers the bar below it.
+    a = _index(tmp_path / "a", PLAN)
+    b = _index(tmp_path / "b", BUGGY)
+    hi = graphdiff.graph_diff(a, b, mode="id", body=True, body_threshold=0.95)
+    lo = graphdiff.graph_diff(a, b, mode="id", body=True, body_threshold=0.3)
+    assert any(c["name"] == "score" for c in hi["body_changed"])
+    assert not any(c["name"] == "score" for c in lo["body_changed"])
+
+
+def test_operation_refuses_bad_body_threshold(tmp_path):
+    cur = _index(tmp_path, PLAN)
+    for bad in (1.5, 0.0, -0.1):
+        res = sg.graph_diff(cur, "x.db", body_threshold=bad)
+        assert not res.ok
+        assert "body_threshold" in " ".join(res.review_reasons).lower()
+
+
 def test_operation_diffs_against_a_db_path(tmp_path):
     # build two on-disk indexes; graph_diff op takes a path to the 'other' db
     other_db = tmp_path / "other.db"
