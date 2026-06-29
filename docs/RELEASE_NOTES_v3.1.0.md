@@ -19,10 +19,15 @@ The in-house differential mutation meta-oracle (`scripts/mutate.py`) injects one
 mutation at a time and checks the suite *kills* it. New unit tests pin the previously-unpinned
 behaviour:
 
-- **Dense ranking is strict.** The old dense test tied at the top (two nodes both scored 1.0), so
-  the `reverse=True` sort and the `> 0` filter weren't actually pinned. A 3-axis fake embedder now
-  gives a strict, tie-free ranking with one exactly-zero node — so sort direction and the
-  drop-non-positive filter are both observable.
+- **Ranking is strict (token + dense).** The existing fixtures tied at the top (the dense test's
+  two nodes both scored 1.0; the token query tied at 0.447), so a `reverse=True` flip left the
+  winner unchanged and the sort-direction mutants survived. New strict, tie-free fixtures (a 3-axis
+  fake embedder for the dense path; a distinct-overlap pair for the token path) make sort direction
+  and the drop-non-positive `> 0` filter observable.
+- **Test isolation.** The dense backend is module-global (`_EMBEDDER` + the `_M2V_TRIED` once-latch).
+  An autouse fixture now snapshots and resets it around every test, so leaked state can't change
+  which retrieval path a later test takes — which had made both the suite and the mutation kills
+  order-dependent (one mutant was killed only by a leaked embedder, masking a real gap).
 - **Zero-norm embeddings degrade, never divide-by-zero.** A zero-magnitude query *or* node
   embedding must score 0.0; the two `_dot_cos` norm guards (`… or 1.0`) are now pinned against the
   `and` flip that would raise `ZeroDivisionError`.
@@ -50,7 +55,7 @@ unaffected. This release adds **tests only** — no runtime code changed.
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **702** passing; differential oracle suite **85**.
+- ruff + mypy clean; full suite **703** passing; differential oracle suite **85**.
 - Mutation meta-oracle: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32 (3 justified
   equivalent) — kill-signals named in the CHANGELOG.
 - **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.

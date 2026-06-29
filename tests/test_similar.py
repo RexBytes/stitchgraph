@@ -17,8 +17,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import stitchgraph as sg
 from stitchgraph.core.similar import tokenise
+
+
+@pytest.fixture(autouse=True)
+def _isolate_embedder_state():
+    """find_similar's dense backend is module-global (`_EMBEDDER` / the `_M2V_TRIED` once-latch).
+    Snapshot and reset it around every test so leaked state can't change which retrieval path a
+    later test takes — which otherwise makes mutation kills (and the suite) order-dependent.
+    Default: no embedder + latch tripped, so the token path runs unless a test opts in."""
+    from stitchgraph.core import similar
+    saved = (similar._EMBEDDER, similar._M2V_TRIED)
+    similar._EMBEDDER = None
+    similar._M2V_TRIED = True
+    try:
+        yield
+    finally:
+        similar._EMBEDDER, similar._M2V_TRIED = saved
 
 
 def test_tokenise_splits_identifiers():
@@ -81,6 +99,34 @@ def test_pluggable_dense_embedder(tmp_path):
     finally:
         similar.set_embedder(None)
         store.close()
+
+
+def test_token_ranking_is_strict(tmp_path):
+    """Pin the TOKEN path's sort direction with a strictly-ordered 2-result fixture.
+
+    IDEAS §5d hardening: the shared `_project` query ties (parse_sql_query and tables both 0.447),
+    so a `reverse=True` flip there left the top result unchanged and the mutant survived. Here a
+    higher-overlap function must rank strictly above a lower-overlap one.
+    """
+    from stitchgraph.core import similar
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "m.py").write_text(
+        'def alpha_beta_gamma():\n    "alpha beta gamma delta"\n    return 1\n\n'
+        'def alpha_only():\n    "alpha"\n    return 2\n')
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    try:
+        res = similar.find_similar(store, "alpha beta", limit=10)
+    finally:
+        store.close()
+    ids = [nid.rsplit("::", 1)[-1] for nid, _ in res]
+    scores = [s for _, s in res]
+    assert ids[0] == "alpha_beta_gamma"   # higher overlap ranks first (kills reverse=True -> False)
+    assert "alpha_only" in ids
+    assert scores[0] > scores[1]           # strictly distinct — no tie masking the sort direction
 
 
 def test_dense_ranks_strictly_and_drops_nonpositive(tmp_path):
@@ -204,13 +250,13 @@ def test_model2vec_autoload_is_offline_safe_and_once(tmp_path, monkeypatch):
         assert res.ok
         assert similar._EMBEDDER is not None               # auto-load fired (kills the `or`->`and`)
 
-        # Failure path: no model2vec module -> False, latched, token path stays safe.
+        # Failure path: model2vec import fails -> False, latched, token path stays safe.
+        # A None entry in sys.modules makes `import model2vec` raise ImportError — localized and
+        # auto-restored by monkeypatch (no global `builtins.__import__` patch to leak across tests).
         loads_before = len(names)
         monkeypatch.setattr(similar, "_EMBEDDER", None, raising=False)
         monkeypatch.setattr(similar, "_M2V_TRIED", False, raising=False)
-        monkeypatch.delitem(sys.modules, "model2vec", raising=False)
-        monkeypatch.setattr("builtins.__import__",
-                            _blocking_import("model2vec", __import__), raising=False)
+        monkeypatch.setitem(sys.modules, "model2vec", None)
         assert similar._try_model2vec() is False           # import failed (kills except `return True`)
         assert similar._M2V_TRIED is True                  # latch still set on failure
         assert similar._EMBEDDER is None
@@ -223,20 +269,14 @@ def test_model2vec_autoload_is_offline_safe_and_once(tmp_path, monkeypatch):
 def test_model2vec_latch_initialises_unset():
     # The module-level once-latch must start False — if it initialised True, model2vec auto-load
     # could never fire (the guard would be pre-tripped). Pins the `_M2V_TRIED = False` literal.
-    import importlib
+    # Checked in a FRESH interpreter so the literal is observed without reloading (and thus
+    # mutating the global state of) the in-process module other tests share.
+    import subprocess
+    import sys
 
-    from stitchgraph.core import similar
-    mod = importlib.reload(similar)
-    try:
-        assert mod._M2V_TRIED is False
-        assert mod._EMBEDDER is None
-    finally:
-        mod.set_embedder(None)
-
-
-def _blocking_import(blocked: str, real):
-    def _imp(name, *a, **k):
-        if name == blocked:
-            raise ImportError(f"blocked: {blocked}")
-        return real(name, *a, **k)
-    return _imp
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import stitchgraph.core.similar as s; print(s._M2V_TRIED, s._EMBEDDER)"],
+        capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "False None"

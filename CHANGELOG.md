@@ -15,14 +15,19 @@ delivers.
 
 - **`core/similar.py` mutation coverage** — the differential mutation meta-oracle
   (`scripts/mutate.py`) previously left ~15 survivors in the optional dense/`model2vec` retrieval
-  path (the body matrix's own core was already 15/15 + 9/9). Added unit tests that pin: the dense
-  ranking's **sort direction and `> 0` filter** with a strict, tie-free fixture (the old test tied
-  at the top, so those mutants survived); the two **zero-norm `_dot_cos` guards** (a zero-magnitude
-  query or node embedding must degrade to 0.0, not divide-by-zero); and the **`model2vec`
-  auto-load** path offline via a fake module + fake config (success wires an embedder and picks the
-  configured-or-default model; the load is attempted at most once; an import failure stays on the
-  token path). Result: **29/32 mutants killed**, the 3 survivors documented as justified-equivalent
-  (`tests/test_similar.py` module docstring). Closes `docs/IDEAS.md` §5d.
+  path (the body matrix's own core was already 15/15 + 9/9). Added unit tests that pin: the **token
+  and dense ranking sort direction and `> 0` filter** with strict, tie-free fixtures (the existing
+  fixtures tied at the top, so a reverse-flip left the winner unchanged and the mutants survived);
+  the two **zero-norm `_dot_cos` guards** (a zero-magnitude query or node embedding must degrade to
+  0.0, not divide-by-zero); and the **`model2vec` auto-load** path offline via a fake module + fake
+  config (success wires an embedder and picks the configured-or-default model; the load is attempted
+  at most once; an import failure stays on the token path).
+- **test isolation** — `find_similar`'s dense backend is module-global (`_EMBEDDER` + the
+  `_M2V_TRIED` once-latch); an autouse fixture now snapshots and resets it per test, so leaked state
+  can't change which retrieval path a later test takes. This made the suite *and* the mutation kills
+  order-independent (a mutant had been killed only by a leaked embedder, masking a real gap).
+- Result: **29/32 mutants killed, deterministically**; the 3 survivors are documented as
+  justified-equivalent (`tests/test_similar.py` module docstring). Closes `docs/IDEAS.md` §5d.
 
 ### Docs
 
@@ -31,7 +36,7 @@ delivers.
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **702** passing; differential oracle suite **85**. Mutation
+- ruff + mypy clean; full suite **703** passing; differential oracle suite **85**. Mutation
   meta-oracle: `structure.py` 15/15, `graphdiff` 9/9, and `similar.py` now 29/32 (3 justified
   equivalent). Two-round full-diversity adversarial panel (opus / sonnet / haiku), clean.
 
