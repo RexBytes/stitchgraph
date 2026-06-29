@@ -107,6 +107,42 @@ def test_self_similarity_is_one():
     assert abs(structure.similarity(fp, fp) - 1.0) < 1e-9
 
 
+def test_similarity_never_exceeds_one():
+    # R153 (opus, LOW): float rounding could push a cosine to 1.0000000002; clamp guarantees <= 1.0.
+    for name in ("sum_even_squares", "accumulate_even", "split_csv"):
+        fp = _fps(CLONES)[name]
+        assert structure.similarity(fp, fp) <= 1.0
+
+
+def test_operator_distinguishes_add_from_subtract():
+    # R153 (opus, MEDIUM): a deposit (+) and a withdraw (-) must NOT be structural clones.
+    src = '''
+def deposit(bal, amt):
+    bal = bal + amt
+    return bal
+
+def withdraw(bal, amt):
+    bal = bal - amt
+    return bal
+'''
+    assert _sim(src, "deposit", src, "withdraw") < 0.95
+
+
+def test_operator_distinguishes_lt_from_gt():
+    src = '''
+def below(a, b):
+    if a < b:
+        return a
+    return b
+
+def above(a, b):
+    if a > b:
+        return a
+    return b
+'''
+    assert _sim(src, "below", src, "above") < 0.95
+
+
 # --- robustness / contract --------------------------------------------------------
 
 def test_syntax_error_returns_empty_not_raises():

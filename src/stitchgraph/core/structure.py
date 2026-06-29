@@ -108,24 +108,26 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             g.link(ctrl, n, _CTRL)
             return n
         if isinstance(node, ast.BinOp):
-            n = g.add("BINOP")
+            # tag the operator: a+b, a-b, a*b are different shapes (a `+`->`-` refactor is a real
+            # change graph_diff should catch, not collapse to one "BINOP").
+            n = g.add("BINOP:" + type(node.op).__name__)
             g.link(ev(node.left, ctrl), n, _DATA)
             g.link(ev(node.right, ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
             return n
         if isinstance(node, ast.BoolOp):
-            n = g.add("BOOLOP")
+            n = g.add("BOOLOP:" + type(node.op).__name__)
             for v in node.values:
                 g.link(ev(v, ctrl), n, _DATA)
             return n
         if isinstance(node, ast.Compare):
-            n = g.add("CMP")
+            n = g.add("CMP:" + "/".join(type(o).__name__ for o in node.ops))
             g.link(ev(node.left, ctrl), n, _DATA)
             for c in node.comparators:
                 g.link(ev(c, ctrl), n, _DATA)
             return n
         if isinstance(node, ast.UnaryOp):
-            n = g.add("UNARY")
+            n = g.add("UNARY:" + type(node.op).__name__)
             g.link(ev(node.operand, ctrl), n, _DATA)
             return n
         if isinstance(node, ast.Subscript):
@@ -182,7 +184,7 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             if s.value is not None:
                 bind(s.target, ev(s.value, ctrl))
         elif isinstance(s, ast.AugAssign):
-            n = g.add("BINOP")
+            n = g.add("BINOP:" + type(s.op).__name__)
             g.link(ev(s.target, ctrl), n, _DATA)
             g.link(ev(s.value, ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
@@ -289,7 +291,8 @@ def similarity(a: collections.Counter[str], b: collections.Counter[str]) -> floa
     dot = sum(a[k] * b[k] for k in keys)
     na = sum(v * v for v in a.values()) ** 0.5
     nb = sum(v * v for v in b.values()) ** 0.5
-    return dot / (na * nb) if na and nb else 0.0
+    # clamp: float rounding can push an identical-pair cosine to 1.0000000002.
+    return min(1.0, dot / (na * nb)) if na and nb else 0.0
 
 
 def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:

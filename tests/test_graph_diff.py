@@ -157,6 +157,31 @@ def test_internal_call_edge_resolves_to_target_name(tmp_path):
     assert any(e.startswith("('run'") for e in d["edges_only_a"])
 
 
+def test_same_qualname_in_different_files_not_collapsed(tmp_path):
+    # R153 (opus, HIGH): body matching keyed by bare qualname dropped a real change when two files
+    # share a name. Here u.py::helper changes substantially while v.py::helper is untouched; the
+    # change must NOT be swallowed by v.py::helper.
+    common_v = "def helper():\n    return 1\n"
+    changed_u = "def helper():\n    out = []\n    for i in range(10):\n        out.append(i * i)\n    return out\n"
+    a = _index(tmp_path / "a", {"u.py": "def helper():\n    return 1\n", "v.py": common_v})
+    b = _index(tmp_path / "b", {"u.py": changed_u, "v.py": common_v})
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert any(c["name"] == "helper" for c in d["body_changed"])
+    assert not d["equivalent"]
+
+
+def test_empty_body_function_not_flagged_against_itself(tmp_path):
+    # R153 (opus, MEDIUM): stubs (pass / ... / docstring-only) have an empty fingerprint and
+    # similarity(empty, empty)==0.0 — must NOT be flagged changed when unchanged.
+    files = {"s.py": "def stub():\n    ...\n\nclass P:\n    def m(self):\n        pass\n\n"
+                     "def real(x):\n    return x + 1\n"}
+    a = _index(tmp_path / "a", files)
+    b = _index(tmp_path / "b", files)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["body_changed"] == []
+    assert d["equivalent"]
+
+
 def test_operation_diffs_against_a_db_path(tmp_path):
     # build two on-disk indexes; graph_diff op takes a path to the 'other' db
     other_db = tmp_path / "other.db"

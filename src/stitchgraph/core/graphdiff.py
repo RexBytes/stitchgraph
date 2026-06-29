@@ -61,14 +61,13 @@ def _counter_delta(ca: collections.Counter, cb: collections.Counter) -> tuple[li
     return only_a, only_b
 
 
-def _qual_fingerprints(store: Store) -> dict[str, collections.Counter[str]]:
-    """{qualname -> structural fingerprint} for stored Python functions/methods. Matching by
-    qualname (not full id) lets a renamed-path build still line up for body comparison."""
-    out: dict[str, collections.Counter[str]] = {}
-    for node_id, fp in similar._python_fn_fingerprints(store):
-        qual = node_id.partition("::")[2].split("#", 1)[0]
-        out[qual] = fp
-    return out
+def _id_fingerprints(store: Store) -> dict[str, collections.Counter[str]]:
+    """{node-id -> structural fingerprint} for stored Python functions/methods. Keyed by the FULL
+    node id (`path::qualname#disamb`, path relative to the indexed root) — NOT the bare qualname —
+    so two files defining the same name (`helper`, `__init__`, …) don't collide and silently drop a
+    real body change. Two separately-indexed trees with the same internal layout (plan vs actual)
+    still line up, because node paths are root-relative and therefore identical."""
+    return dict(similar._python_fn_fingerprints(store))
 
 
 def graph_diff(store_a: Store, store_b: Store, mode: str = "id",
@@ -82,11 +81,18 @@ def graph_diff(store_a: Store, store_b: Store, mode: str = "id",
 
     body_changed: list[dict] = []
     if body:
-        fa, fb = _qual_fingerprints(store_a), _qual_fingerprints(store_b)
-        for qual in sorted(set(fa) & set(fb)):
-            sim = structure.similarity(fa[qual], fb[qual])
+        fa, fb = _id_fingerprints(store_a), _id_fingerprints(store_b)
+        for nid in sorted(set(fa) & set(fb)):
+            # Identical fingerprints are unchanged — skip BEFORE the similarity guard. This avoids
+            # the empty-body trap: a `pass`/`...`/docstring-only function has an empty fingerprint
+            # and similarity(empty, empty)==0.0 (zero-norm), which would otherwise flag an
+            # unchanged stub as "changed" against itself.
+            if fa[nid] == fb[nid]:
+                continue
+            sim = structure.similarity(fa[nid], fb[nid])
             if sim < body_threshold:
-                body_changed.append({"name": qual, "similarity": round(sim, 3)})
+                name = nid.partition("::")[2].split("#", 1)[0]
+                body_changed.append({"name": name, "similarity": round(sim, 3)})
 
     equivalent = not (nodes_only_a or nodes_only_b or edges_only_a
                       or edges_only_b or body_changed)
