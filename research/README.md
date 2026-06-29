@@ -134,15 +134,40 @@ and #3 (plan-vs-actual) reduce to "where do two graphs differ?". It is prototype
 promotion to `src/`** — *after* research, and only through the full gate + two-round adversarial
 panel, like every other change. See `graphdiff/FINDINGS.md` for the path-to-`src/` checklist.
 
+### The granularity ladder (what level the matrix is built at)
+
+The shipped matrix is **inter-procedural**: nodes are defs, edges are CALLS/REFERENCES/INHERITS/
+IMPORTS. Experiment 02 drops one level *into* the function body, which is where redundancy actually
+lives:
+
+| Level | Built at | Experiment |
+|---|---|---|
+| call graph (shipped) | defs ↔ defs | `01-structural-redundancy/` |
+| **body matrix** (normalised AST / control+data shape) | statements inside a function | `02-body-matrix/` |
+| CFG / DFG / PDG (future) | basic blocks, def-use | deferred ("variable-granularity data flow" roadmap item) |
+
+**Key result:** experiment 01 (call graph) returned a confident *negative* on this repo; experiment
+02 (body matrix) found a **real** cross-module duplication the call graph is blind to — a
+byte-identical Tarjan SCC core in `dataloop._tarjan` and `reach.strongly_connected_components`
+(verified by reading both). Matrixifying function *contents*, not just their call edges, is the
+stronger redundancy signal — and the same representation sharpens Q2/Q3.
+
 ### Layout
-- `01-structural-redundancy/` — `experiment.py` + `FINDINGS.md` (question #1, run on this repo).
-- `graphdiff/` — `graphdiff.py` (the oracle primitive), `demo.py` (3 scenarios), `FINDINGS.md`
-  (questions #2 & #3, + promotion checklist).
+- `01-structural-redundancy/` — `experiment.py` (call-graph clones) + `experiment_idf.py`
+  (IDF precision pass) + `FINDINGS.md` (question #1; confident negative on this repo).
+- `02-body-matrix/` — `body_matrix.py` (normalised-AST body clones) + `fixtures/clones.py`
+  + `FINDINGS.md` (found the Tarjan duplication the call graph missed).
+- `graphdiff/` — `graphdiff.py` (the oracle primitive), `demo.py` (3 scenarios),
+  `measure_translation.py` + `fixtures/calc_{py,js}/` (real Py↔JS twin: 100% leaf-mode recall),
+  `FINDINGS.md` (questions #2 & #3, + promotion checklist).
 
 ### Run
 ```bash
-PYTHONPATH=src python research/01-structural-redundancy/experiment.py   # Q1, defaults to src/stitchgraph
-PYTHONPATH=src:research/graphdiff python research/graphdiff/demo.py     # Q2/Q3 oracle demo
+PYTHONPATH=src python research/01-structural-redundancy/experiment.py        # Q1 call-graph clones
+PYTHONPATH=src python research/01-structural-redundancy/experiment_idf.py    # Q1 IDF precision pass
+python research/02-body-matrix/body_matrix.py                                # Q1 body-level clones (stdlib only)
+PYTHONPATH=src:research/graphdiff python research/graphdiff/demo.py          # Q2/Q3 oracle demo
+PYTHONPATH=src:research/graphdiff python research/graphdiff/measure_translation.py  # Q2 real twin number
 ```
 
 > **▶ RESUME HERE (parked 2026-06-29):** (a) add IDF callee-weighting to experiment 01 and validate
