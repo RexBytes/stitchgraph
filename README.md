@@ -38,7 +38,7 @@ for the agent rules that teach an LLM when to call which tool.
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v2.2.1 — cardinal sweep complete across all 10 languages)
+## Status (v2.3.0 — shared SCC core; cardinal sweep complete across all 10 languages)
 
 Working end-to-end and dogfooding on its own source. See
 [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
