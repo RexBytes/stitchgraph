@@ -6157,6 +6157,8 @@ def test_c_attr_roots_helper():
     """Pin _c_attr_roots (R73): the parser-level mapping from a C/C++ function's attributes to
     roots. constructor/destructor/used/retain -> callback; dllexport / visibility("default") ->
     exported; visibility("hidden") and a plain fn -> no roots."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     from tree_sitter_language_pack import get_parser
 
     from stitchgraph.core.extract.treesitter import _c_attr_roots
@@ -6243,6 +6245,8 @@ def test_c_dangling_attr_texts_helper():
     """Pin _c_dangling_attr_texts (R75): recover ONLY the trailing attribute (the next decl's,
     after the prior field_declaration's declarator) — not the field's own leading attribute — and
     return nothing when the prior sibling is not a mis-parsed empty-body method."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     from tree_sitter_language_pack import get_parser
 
     from stitchgraph.core.extract.treesitter import _c_dangling_attr_texts
@@ -6322,6 +6326,8 @@ def test_cpp_header_declaration_export_attr_roots_definition(tmp_path):
 def test_c_export_decl_names_helper():
     """Pin _c_export_decl_names (R77 F2): collect names of functions/methods declared with an export
     attribute — top-level qualified, free, and in-class member; ignore non-export attrs and bodies."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     from tree_sitter_language_pack import get_parser
 
     from stitchgraph.core.extract.treesitter import _c_export_decl_names
@@ -6411,6 +6417,8 @@ def test_cpp_class_level_export_attr_roots_public_methods(tmp_path):
 def test_c_public_method_names_helper():
     """Pin _c_public_method_names (R80 F1): only PUBLIC methods of an export-attributed class/struct.
     `class` defaults private, `struct` defaults public; a per-section access label switches it."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     from tree_sitter_language_pack import get_parser
 
     from stitchgraph.core.extract.treesitter import _c_export_decl_names
@@ -6580,6 +6588,8 @@ def test_php_bare_string_callable_is_live(tmp_path):
 def test_php_string_callable_names_helper():
     """Pin _php_string_callable_names (R86): only string args of known callback builtins; a
     `Class::method` string and a non-callback callee yield nothing."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     from tree_sitter_language_pack import get_parser
 
     from stitchgraph.core.extract.treesitter import _php_string_callable_names
@@ -6674,6 +6684,8 @@ def test_go_cgo_export_directive_rooted(tmp_path):
 def test_go_has_export_directive_helper():
     """Pin _go_has_export_directive (R88): True only when the immediately-preceding `//export <name>`
     comment names THIS func; False for a name mismatch, no comment, or no preceding sibling."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     from tree_sitter_language_pack import get_parser
 
     from stitchgraph.core.extract.treesitter import _go_has_export_directive
@@ -6968,6 +6980,8 @@ def test_csharp_explicit_interface_via_project_chain_live(tmp_path):
 def test_transitive_closure_does_not_overmask_pure_firstparty_chain(tmp_path):
     """Cardinal-safety boundary: a first-party inheritance chain with NO external base must
     NOT get framework rooting — a genuinely-dead override stays flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Base.php": "<?php\nabstract class Base {\n    protected function handle() {}\n}\n",
         "Child.php": "<?php\nclass Child extends Base {\n"
@@ -7031,6 +7045,8 @@ def test_c_interrupt_isr_attribute_roots_handler(tmp_path):
     hardware vector table — no in-tree caller — so it and its callees were flagged dead. The
     implicit-entry attr regex omitted `interrupt`/`signal`. Cardinal-safe (only adds roots): a plain
     static with no attribute still flags dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "isr.c": (
             "static void log_event(void) {}\n"
@@ -7052,6 +7068,8 @@ def test_rust_ctor_dtor_attribute_roots_function(tmp_path):
     """`#[ctor::ctor]` / `#[ctor]` / `#[ctor::dtor]` run a function automatically before/after main
     (the Rust analogue of C `__attribute__((constructor))`), idiomatically private, so the fn + its
     callees were flagged dead. `_RUST_RUNTIME_ENTRY_ATTRS` omitted ctor/dtor."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.rs": (
             "pub fn api() -> i32 { 1 }\n"
@@ -7072,6 +7090,8 @@ def test_java_native_method_is_rooted(tmp_path):
     """A Java `native` method is a JNI entry point (implemented in C, invoked across the JNI
     boundary) with no in-tree caller — a non-public one was flagged dead. Cardinal-safe: a plain
     non-native private method with no caller still flags dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "Jni.java": (
             "class Jni {\n"
@@ -7110,6 +7130,8 @@ def test_ruby_implicit_protocol_methods_rooted(tmp_path):
     textual call — so a live class's protocol methods (and the helpers they reach) were
     false-flagged dead. The Ruby analogue of Python dunder rooting. Cardinal-safe: a plain
     method with no caller still flags dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.rb": (
             "class Money\n"
@@ -7146,6 +7168,8 @@ def test_cpp_range_for_begin_end_rooted(tmp_path):
     graph never sees those calls, and no other pass roots them, so an iterable's begin/end (and
     what they reach) were false-flagged dead. Rooted via `_IMPLICIT_HOOKS["cpp"]`. Cardinal-safe:
     a plain method with no caller still flags dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "r.cpp": (
             "struct Range {\n"
@@ -7173,6 +7197,8 @@ def test_bash_callback_arg_invocations_rooted(tmp_path):
     completion handlers, `export -f FUNC` (subshell-invoked), and `time FUNC`. Each must root
     FUNC; a genuinely-dead function and a plain `export VAR=…` must NOT be rooted (cardinal-
     safe — only names matching a project function are rooted)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "s.sh": (
             "#!/bin/bash\n"
@@ -7241,6 +7267,8 @@ def test_ruby_symbol_dispatch_rooted(tmp_path):
     """Ruby names a method via a literal symbol the call graph can't see: `xs.map(&:upcase)`
     (Symbol#to_proc), `enum_for(:m)` (lazy enumerator), `&method(:m)`. Each must root the named
     method; genuinely-dead methods still flag (cardinal-safe — only project methods rooted)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
     _mk(tmp_path, {
         "lib.rb": (
             "class Token\n"
