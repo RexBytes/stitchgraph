@@ -142,6 +142,9 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             return n
         if isinstance(node, ast.Dict):
             n = g.add("DICT")
+            for k in node.keys:
+                if k is not None:  # None key = `**d` unpacking (no key expression)
+                    g.link(ev(k, ctrl), n, _DATA)
             for v in node.values:
                 g.link(ev(v, ctrl), n, _DATA)
             return n

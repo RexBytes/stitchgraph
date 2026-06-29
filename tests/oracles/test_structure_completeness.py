@@ -94,3 +94,74 @@ def test_no_uncovered_statement_type():
     assert not uncovered, (
         f"new ast.stmt type(s) not classified by the completeness oracle: {sorted(uncovered)} — "
         f"add to _VALUE_BEARING (+ a battery template) or _NO_VALUE_FLOW")
+
+
+# --- expression-level completeness (the sibling class — where the Subscript-index bug lived) -----
+# Same metamorphic idea one level down: a CALL vs a CONST in a sub-expression position must change
+# the fingerprint, else that expression type is dropping a child (as ev(Subscript) once dropped the
+# index, and ev(Dict) once dropped keys).
+_EXPR_TEMPLATES: dict[str, str] = {
+    "BoolOp": "def t(a):\n    return a and {probe}\n",
+    "BinOp": "def t(a):\n    return a + {probe}\n",
+    "UnaryOp": "def t(a):\n    return -{probe}\n",
+    "Compare": "def t(a):\n    return a < {probe}\n",
+    "Call-arg": "def t(a):\n    return f({probe})\n",
+    "Call-func": "def t(a):\n    return ({probe})()\n",
+    "Attribute": "def t(a):\n    return ({probe}).attr\n",
+    "Subscript-value": "def t(a):\n    return ({probe})[0]\n",
+    "Subscript-index": "def t(a):\n    return a[{probe}]\n",
+    "Slice-lower": "def t(a):\n    return a[{probe}:1]\n",
+    "List": "def t(a):\n    return [{probe}]\n",
+    "Tuple": "def t(a):\n    return ({probe}, 1)\n",
+    "Set": "def t(a):\n    return {{{probe}}}\n",
+    "Dict-key": "def t(a):\n    return {{{probe}: 1}}\n",
+    "Dict-value": "def t(a):\n    return {{1: {probe}}}\n",
+    "ListComp-elt": "def t(a):\n    return [{probe} for x in a]\n",
+    "ListComp-iter": "def t(a):\n    return [x for x in {probe}]\n",
+    "ListComp-if": "def t(a):\n    return [x for x in a if {probe}]\n",
+    "SetComp": "def t(a):\n    return {{{probe} for x in a}}\n",
+    "DictComp-key": "def t(a):\n    return {{{probe}: 1 for x in a}}\n",
+    "DictComp-value": "def t(a):\n    return {{x: {probe} for x in a}}\n",
+    "GeneratorExp": "def t(a):\n    return sum({probe} for x in a)\n",
+    "IfExp-body": "def t(a):\n    return {probe} if a else 0\n",
+    "IfExp-test": "def t(a):\n    return 0 if {probe} else 1\n",
+    "IfExp-orelse": "def t(a):\n    return 0 if a else {probe}\n",
+    "Starred": "def t(a):\n    return [*{probe}]\n",
+    "NamedExpr": "def t(a):\n    return (y := {probe})\n",
+    "Await": "async def t(a):\n    return await {probe}\n",
+    "Yield": "def t(a):\n    yield {probe}\n",
+    "YieldFrom": "def t(a):\n    yield from {probe}\n",
+    "FString": 'def t(a):\n    return f"{{{probe}}}"\n',
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EXPR_TEMPLATES))
+def test_value_bearing_expression_is_walked(label):
+    tmpl = _EXPR_TEMPLATES[label]
+    sim = _sim(tmpl.format(probe="helper()"), tmpl.format(probe="0"))
+    assert sim < 1.0, (
+        f"{label}: a CALL vs a CONST in this expression position produced identical fingerprints "
+        f"(sim={sim}) — the expression type is dropping a child sub-expression")
+
+
+def _concrete_expr_types() -> set[str]:
+    return {c.__name__ for c in ast.expr.__subclasses__()}
+
+
+# Covered by the expr battery above; leaf = no sub-expression to lose; opaque = intentionally a
+# black box (lambda bodies are NESTED, documented).
+_EXPR_COVERED = {
+    "BoolOp", "NamedExpr", "BinOp", "UnaryOp", "IfExp", "Dict", "Set", "ListComp", "SetComp",
+    "DictComp", "GeneratorExp", "Await", "Yield", "YieldFrom", "Compare", "Call",
+    "FormattedValue", "JoinedStr", "Attribute", "Subscript", "Starred", "List", "Tuple", "Slice",
+}
+_EXPR_LEAF = {"Constant", "Name"}
+_EXPR_OPAQUE = {"Lambda"}
+
+
+def test_no_uncovered_expression_type():
+    known = _EXPR_COVERED | _EXPR_LEAF | _EXPR_OPAQUE
+    uncovered = _concrete_expr_types() - known
+    assert not uncovered, (
+        f"new ast.expr type(s) not classified by the completeness oracle: {sorted(uncovered)} — "
+        f"add to _EXPR_COVERED (+ a battery template), _EXPR_LEAF, or _EXPR_OPAQUE")
