@@ -4,6 +4,109 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.3.0] — 2026-06-29
+
+**Internal: shared Tarjan SCC core (`tarjan_scc`).** The strongly-connected-components algorithm
+was duplicated verbatim in `reach.strongly_connected_components` (call/import-cycle detection,
+behind `scan`) and `dataloop._tarjan` (data-feedback loops). It is now extracted once into
+`core/_scc.py:tarjan_scc(adj, seeds, node_count)`; both call sites delegate to it. **No API,
+schema, or behaviour change** — index output, `scan` cycles, and `find_data_loops` results are
+byte-identical; this is a pure de-duplication.
+
+Surfaced by the matrix-as-oracle research (`research/` is not packaged): `02-body-matrix` found the
+byte-identical clone the call-graph detector was blind to, and `03-pdg` independently re-found it by
+dependence structure.
+
+### Changed
+
+- Extract `tarjan_scc` into `core/_scc.py`; `reach.py` and `dataloop.py` delegate to it. Each call
+  site keeps its own adjacency build, seed set (`reach`: all node ids; `dataloop`: adjacency keys)
+  and post-filter, so behaviour is preserved exactly, including the temporary recursion-limit raise
+  restored in a `finally`.
+
+### Added
+
+- `tests/test_scc.py` — 15 direct unit tests for the shared primitive: component identity
+  (empty / single / self-loop / chain / cycle / two cycles / cross-edge into a finished SCC),
+  destination-only and out-of-adjacency seeds, reverse-topological order, deep-chain
+  no-`RecursionError`, `defaultdict` non-mutation, and recursion-limit restoration on both normal
+  return and an exception mid-walk. Stdlib-only, so it runs in the core-only CI job.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **590** passing; differential oracle suite (27) green; mutation
+  meta-oracle on `tarjan_scc` — 6/6 mutants killed by `tests/test_scc.py` alone. Two-round
+  full-diversity adversarial panel (opus/sonnet/haiku) clean: confirmed component/order/
+  recursion-limit equivalence to the old inline copies (incl. a 650-graph random differential with
+  zero divergences) and that `find_stale` liveness is structurally independent of SCC (SCC feeds
+  only advisory cycle/data-loop findings, never stale rooting).
+
+## [2.2.1] — 2026-06-29
+
+**Bash `PROMPT_COMMAND` hook recall (#95) + contributor methodology docs.** A small patch on top of
+the v2.2.0 milestone. No API or schema change.
+
+### Fixed
+
+- **#95** — a function registered via `PROMPT_COMMAND=fn` (also `PROMPT_COMMAND="fn1; fn2"` and
+  `export PROMPT_COMMAND=fn`) is run by the interactive shell before each prompt — a runtime hook
+  with no textual call site — so it was false-flagged dead. `_bash_callback_refs` now roots the
+  function name(s) in a `PROMPT_COMMAND` assignment. Scoped to that well-known variable (high
+  precision); cardinal-safe (only a name that resolves to a project function is rooted). The generic
+  `var=fn; $var` indirection remains a documented deferred dynamic-dispatch gap.
+
+### Docs
+
+- `CONTRIBUTING.md` gains **"The cardinal-hardening loop (dogfood + docs)"** — the repeatable method
+  behind the v2.1.x→v2.2.0 line: dogfood real repos to surface false-deads, read the language/runtime
+  docs to find the exact form that's actually invoked, fix additively (an added root can't introduce
+  a cardinal), gate + pin both directions, and document over-rooting boundaries rather than risk the
+  invariant by tightening them.
+
+### Issue triage
+
+- GitHub issues #18–#22 (filed against v1.0.4) were verified already fixed in the shipped code
+  (`--version`, `risk` indexed-root default, `[project.scripts]` roots, bash top-level body seeding,
+  `find_holes` scope documented) and can be closed.
+
+## [2.2.0] — 2026-06-29
+
+**Milestone release — the cardinal sweep is complete across all ten supported languages, and the
+post-sweep precision/recall follow-up backlog (#70–#89) is closed.** A consolidation of the
+2.1.1–2.1.31 hardening line into one minor release. No API or schema change; indexes rebuild cleanly
+and `find_stale` output is strictly more precise than 2.1.0 (fewer false-positive dead-code reports).
+
+The guiding invariant throughout: **live code is never confidently flagged dead.** Every fix in this
+line either removes a way live code could be reported dead (a "cardinal") or improves dead-code recall
+without ever risking that invariant; each shipped behind the full gate (ruff + mypy + the differential
+streaming oracle + a mutation meta-oracle) and two consecutive clean full-diversity multi-model
+adversarial review rounds.
+
+### Highlights since 2.1.0
+
+- **Per-language cardinal sweep (2.1.1–2.1.26)** — one gated cardinal fix per language across Python,
+  JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, and Bash: framework/attribute classes, runtime/FFI
+  and native entry points, test-runner discovery, indirect/dynamic dispatch (Ruby `&:sym`, JS
+  well-known Symbols + accessors + coercion hooks), C/C++ macro-body and function-pointer-table call
+  sites, Java overload/role unions and anonymous-inner-class overrides, and more.
+- **Post-sweep follow-up backlog #70–#89 (2.1.27–2.1.31)** — JS/TS shorthand members of exported
+  objects incl. `as const`/`satisfies` (#74); TS `#private` via `this.#m()` and string/computed/
+  numeric-keyed class methods (#76/#78); Python subscripted-`Protocol[T]`/ABC recognition and bodyless
+  abstract interface methods (#70/#86); C/C++ structs used only as a type (#89); Bash `declare -fx` /
+  `declare -f -x` / `typeset -fx` exports and `time { … }` targets (#73). The remaining items were
+  resolved without code change as deliberate, panel-confirmed cardinal-safe boundaries, or are
+  coverage-only.
+
+The granular per-version entries below remain as the detailed development record.
+
+### CI / tests
+
+- Guarded 14 pre-existing tree-sitter-dependent regression tests with
+  `pytest.importorskip(...)` so the **core-only (no-extras)** CI job skips them cleanly instead of
+  erroring. (They had been latently unguarded since the cardinal sweep but were never surfaced
+  because CI had never actually executed — Actions was blocked by a $0 spending budget until the
+  repository was made public.) Test-only; no behavior change with the extras installed.
+
 ## [2.1.31] — 2026-06-28
 
 **Bash function-export recall (#73) — and the close of the #70–#89 follow-up backlog.**
@@ -103,72 +206,6 @@ live was confidently flagged dead:
   analogue of the object-literal computed-key rule, since such a method is reachable only via a
   dynamic `obj["k"]()` / `obj[expr]()` subscript. Cardinal-safe (only adds a root); a plain
   by-name method that is genuinely uncalled still flags dead.
-
-## [2.2.1] — 2026-06-29
-
-**Bash `PROMPT_COMMAND` hook recall (#95) + contributor methodology docs.** A small patch on top of
-the v2.2.0 milestone. No API or schema change.
-
-### Fixed
-
-- **#95** — a function registered via `PROMPT_COMMAND=fn` (also `PROMPT_COMMAND="fn1; fn2"` and
-  `export PROMPT_COMMAND=fn`) is run by the interactive shell before each prompt — a runtime hook
-  with no textual call site — so it was false-flagged dead. `_bash_callback_refs` now roots the
-  function name(s) in a `PROMPT_COMMAND` assignment. Scoped to that well-known variable (high
-  precision); cardinal-safe (only a name that resolves to a project function is rooted). The generic
-  `var=fn; $var` indirection remains a documented deferred dynamic-dispatch gap.
-
-### Docs
-
-- `CONTRIBUTING.md` gains **"The cardinal-hardening loop (dogfood + docs)"** — the repeatable method
-  behind the v2.1.x→v2.2.0 line: dogfood real repos to surface false-deads, read the language/runtime
-  docs to find the exact form that's actually invoked, fix additively (an added root can't introduce
-  a cardinal), gate + pin both directions, and document over-rooting boundaries rather than risk the
-  invariant by tightening them.
-
-### Issue triage
-
-- GitHub issues #18–#22 (filed against v1.0.4) were verified already fixed in the shipped code
-  (`--version`, `risk` indexed-root default, `[project.scripts]` roots, bash top-level body seeding,
-  `find_holes` scope documented) and can be closed.
-
-## [2.2.0] — 2026-06-29
-
-**Milestone release — the cardinal sweep is complete across all ten supported languages, and the
-post-sweep precision/recall follow-up backlog (#70–#89) is closed.** A consolidation of the
-2.1.1–2.1.31 hardening line into one minor release. No API or schema change; indexes rebuild cleanly
-and `find_stale` output is strictly more precise than 2.1.0 (fewer false-positive dead-code reports).
-
-The guiding invariant throughout: **live code is never confidently flagged dead.** Every fix in this
-line either removes a way live code could be reported dead (a "cardinal") or improves dead-code recall
-without ever risking that invariant; each shipped behind the full gate (ruff + mypy + the differential
-streaming oracle + a mutation meta-oracle) and two consecutive clean full-diversity multi-model
-adversarial review rounds.
-
-### Highlights since 2.1.0
-
-- **Per-language cardinal sweep (2.1.1–2.1.26)** — one gated cardinal fix per language across Python,
-  JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, and Bash: framework/attribute classes, runtime/FFI
-  and native entry points, test-runner discovery, indirect/dynamic dispatch (Ruby `&:sym`, JS
-  well-known Symbols + accessors + coercion hooks), C/C++ macro-body and function-pointer-table call
-  sites, Java overload/role unions and anonymous-inner-class overrides, and more.
-- **Post-sweep follow-up backlog #70–#89 (2.1.27–2.1.31)** — JS/TS shorthand members of exported
-  objects incl. `as const`/`satisfies` (#74); TS `#private` via `this.#m()` and string/computed/
-  numeric-keyed class methods (#76/#78); Python subscripted-`Protocol[T]`/ABC recognition and bodyless
-  abstract interface methods (#70/#86); C/C++ structs used only as a type (#89); Bash `declare -fx` /
-  `declare -f -x` / `typeset -fx` exports and `time { … }` targets (#73). The remaining items were
-  resolved without code change as deliberate, panel-confirmed cardinal-safe boundaries, or are
-  coverage-only.
-
-The granular per-version entries below remain as the detailed development record.
-
-### CI / tests
-
-- Guarded 14 pre-existing tree-sitter-dependent regression tests with
-  `pytest.importorskip(...)` so the **core-only (no-extras)** CI job skips them cleanly instead of
-  erroring. (They had been latently unguarded since the cardinal sweep but were never surfaced
-  because CI had never actually executed — Actions was blocked by a $0 spending budget until the
-  repository was made public.) Test-only; no behavior change with the extras installed.
 
 ## [2.1.27] — 2026-06-28
 

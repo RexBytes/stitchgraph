@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_bash_time_target` killed; `_bash_export_decl` functional behavior pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 571 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`tarjan_scc` 6/6 killed by `test_scc.py` alone) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 590 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.30: C/C++ struct-used-as-a-type → R142✓ R143✓. 2.1.31: Bash function-export recall → R144 (2 cardinals found, fixed) → R145✓ R146✓. 2.2.1: Bash `PROMPT_COMMAND=fn` hook (#95) → **R147✓ R148✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.2.1: Bash `PROMPT_COMMAND=fn` hook (#95) → R147✓ R148✓. **2.3.0: shared `tarjan_scc` extraction → R149 (NIT: no direct tests) → R150 (✗ MEDIUM: `on_stack` guard untested) → R151✓ R152✓ full-diversity (streak 2, gate met, readiness RELEASABLE, RRS 94.8)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1661,6 +1661,26 @@ A process note worth recording: 2.2.1 initially shipped on the deterministic gat
 pytest/oracles/mutation + both-directions regression) — the two-round panel was added retroactively
 when the maintainer asked whether it had run. The bar is *two clean full-diversity panels per
 code-changing release*; an additive cardinal-safe recall fix is not an exemption from it.
+
+## v2.3.0 — shared `tarjan_scc` core (the first research-driven refactor)
+
+The body-level structural-clone research (`research/02-body-matrix`, cross-validated by `03-pdg`)
+surfaced a byte-identical Tarjan SCC core duplicated in `reach.strongly_connected_components` and
+`dataloop._tarjan` — invisible to the call-graph clone detector. Extracted into
+`core/_scc.py:tarjan_scc`; pure de-duplication, behaviour-preserving. This is the first time the
+project's own research line drove a production change.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R149 | 3 | ~ | round 1. opus: CLEAN — strongconnect byte-identical to both old copies; find_stale uses `reachable_from` BFS, structurally insulated from SCC. sonnet: 1 LOW (dataloop `node_count` over-count — PRE-EXISTING, safe-direction) + 1 NIT (no *direct* tests for the primitive). haiku: 12 edge cases pass; theoretical >536M-node `setrecursionlimit` overflow is pre-existing → NIT. **Action: added `tests/test_scc.py`.** |
+| R150 | 3 | ✗ | round 2 — **gap found.** opus + haiku CLEAN (no state bleed, defaultdict read-only via `.get`, docs accurate). sonnet: **650-graph differential = 0 divergences (code correct)** but a MEDIUM test-coverage gap — the unit tests didn't pin the `elif w in on_stack` cross-edge guard. **Action: added cross-edge + defaultdict tests; mutation now 6/6 killed by `test_scc.py` alone.** |
+| R151 | 3 | ✓ | clean-cycle round 1 — CLEAN (code frozen since R150; only tests grew). opus reproduced the guard mutant and confirmed the new test kills it. sonnet: **800-graph differential = 0 divergences**, mutation 6/6. haiku: new tests load-bearing, docstrings accurate. |
+| R152 | 3 | ✓ | clean-cycle round 2 — **streak 2, gate met, RELEASABLE.** opus: full 4-file diff behaviour-preserving, cardinal unaffected, all CHANGELOG/notes claims true; lone NIT (pre-existing CHANGELOG 2.2.x ordering) **fixed during finalize**. sonnet: deterministic gate re-run (590/27 + ruff/mypy), readiness RELEASABLE (RRS 94.8), live `scan`/`find_data_loops` coherent. haiku: version 2.3.0 consistent (metadata-derived), no stale refs/debug. |
+
+Process note: unlike 2.2.1, the panels ran *before* shipping. The two-round bar did real work here —
+R150 caught a genuine unit-test gap (the `on_stack` guard) in tests I had just written; the fix was
+verified by a standalone mutation run, then re-confirmed by a fresh two clean rounds (R151/R152).
+The code itself was differentially proven equivalent across 800+ random graphs.
 
 ## Standing themes
 
