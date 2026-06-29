@@ -57,46 +57,48 @@ for LLM agents. The full operation list and the question each answers is in the 
 - **Polyglot, in one graph.** Python (deep) + 11 more languages via tree-sitter,
   plus cross-language resolvers, all resolving into a single typed graph — so a
   trace can cross an HTML form → route → handler → ORM → SQL table → column.
-- **Sees inside functions, not just between them.** v3.0.0's **body matrix**
-  (Python) fingerprints each function's value flow order- and name-invariantly, so
-  `find_similar(mode="structure")` catches renamed / reordered clones and
-  `graph_diff` flags a data-flow change that leaves the call graph identical —
-  advisory and read-only, never feeding dead-code detection.
+- **Sees inside functions, not just between them.** The **body matrix**
+  (Python + JS/TS/TSX) fingerprints each function's value flow order- and
+  name-invariantly, so `find_similar(mode="structure")` catches renamed / reordered
+  clones and `graph_diff` flags a data-flow change that leaves the call graph
+  identical — advisory and read-only, never feeding dead-code detection.
 - **Scales to monorepos.** The v2 **constant-memory streaming indexer** indexes
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.0.0 — intra-procedural body matrix for Python)
+## Status (v3.2.0 — intra-procedural body matrix for Python + JS/TS/TSX)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
-and v3.0.0 adds the body matrix on top. See [`docs/STATUS.md`](docs/STATUS.md) for
-the full table + roadmap.
+and the body matrix (v3.0.0) now spans Python and the JS family (v3.2.0). See
+[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
 
-### Headline (v3.0.0): the intra-procedural body matrix (Python)
+### Headline: the intra-procedural body matrix (Python + JS/TS/TSX)
 
 Every prior release modeled code *between* definitions — a graph of functions /
-classes linked by CALLS / REFERENCES / INHERITS / IMPORTS. **v3.0.0 adds the level
-below that:** a per-Python-function **value-flow fingerprint**
-(`core/structure.py`) — operations + control points, data + control edges, copy
+classes linked by CALLS / REFERENCES / INHERITS / IMPORTS. **v3.0.0 added the level
+below that** and **v3.2.0 extends it to JavaScript/TypeScript**: a per-function
+**value-flow fingerprint** (`core/structure.py` for Python, `core/structure_js.py`
+for the JS family) — operations + control points, data + control edges, copy
 propagation — fingerprinted **order- and name-invariantly** via a Weisfeiler-Lehman
 kernel. Renamed locals, reordered independent statements, and temp-variable
-factoring all read as the *same shape*. It powers two new advisory capabilities:
+factoring all read as the *same shape* (an arrow rewrite and TS type annotations
+included). It powers two advisory capabilities:
 
-- **`find_similar(mode="structure")`** — rank stored Python functions by **body
-  shape**, finding renamed / reordered / temp-var clones (Type-2/Type-3) a token
-  differ misses.
+- **`find_similar(mode="structure")`** — rank stored functions by **body shape**,
+  finding renamed / reordered / temp-var clones (Type-2/Type-3) a token differ
+  misses. The snippet's language is auto-detected and ranked same-language only.
 - **body-aware `graph_diff`** — structurally diff two built indexes: call-level
-  node/edge deltas *plus*, for Python functions in both, those whose **body shape
+  node/edge deltas *plus*, for functions in both, those whose **body shape
   diverged** — so a data-flow change that leaves the call graph identical (the
   classic translation / plan-vs-actual bug) is still caught.
 
-Both are **advisory and read-only** — they never feed `find_stale`, so the
-cardinal rule is structurally unaffected. Python-only for now (built on the deep
-stdlib `ast`); extending the matrix to the tree-sitter languages is future work
-(`docs/IDEAS.md` §5). It is a structural *approximation*, not sound data flow —
-full scope and limits in
-[`docs/RELEASE_NOTES_v3.0.0.md`](docs/RELEASE_NOTES_v3.0.0.md).
+Both are **advisory and read-only** — they never feed `find_stale`, so the cardinal
+rule is structurally unaffected. **Python is stdlib-only; the JS/TS layer needs the
+tree-sitter extra.** Cross-language *body* comparison stays oracle-only (topology
+tracks the extractor); the features rank/diff within one language. It is a
+structural *approximation*, not sound data flow — full scope and limits in
+[`docs/RELEASE_NOTES_v3.2.0.md`](docs/RELEASE_NOTES_v3.2.0.md).
 
 ```python
 import stitchgraph as sg

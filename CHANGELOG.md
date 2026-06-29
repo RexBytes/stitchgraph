@@ -4,6 +4,39 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.2.0] — 2026-06-29
+
+**The body matrix learns JavaScript / TypeScript / TSX.** v3.0.0 shipped the intra-procedural
+value-flow matrix for Python; v3.2.0 ports it to the JS family — the first step of the
+multi-language roadmap (`docs/IDEAS.md` §5b). New representation for new languages → MINOR;
+backward-compatible (schema/indexes/existing ops unchanged, opt-in, advisory).
+
+### Added
+
+- **`core/structure_js.py`** — a tree-sitter value-flow walker for JS/TS/TSX that emits the **same**
+  `_VFG` vocabulary as the Python frontend (operations + control points, data + control edges, copy
+  propagation) and reuses the language-neutral Weisfeiler-Lehman kernel, so JS↔JS bodies compare the
+  way Python↔Python ones do. Captures every idiomatic function form — declarations, methods,
+  `const f = () =>…` / `= function(){…}` bindings, object methods, class-field arrows, nested
+  functions — and walks TS type annotations through as no-value-flow (so `TS ≡ JS`).
+- **`find_similar(mode="structure")`** now auto-detects the snippet's language (Python, else the
+  JS/TS family) and ranks it against stored functions of the **same** language (a fingerprint's
+  topology tracks its extractor — cross-language scores aren't comparable).
+- **`graph_diff`** body layer now covers JS/TS/TSX functions too: a data-flow change that leaves the
+  call graph identical is caught in JS just as in Python (same-language by construction).
+
+Requires the optional **tree-sitter extra** for the JS layer; without it those paths return nothing
+(advisory degrade) — the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **754** passing; differential oracle suite **132** — incl. a
+  **JS/TS body-matrix completeness oracle** (47 metamorphic cases: `helper()` vs `0` in each
+  value-bearing position must change the fingerprint), which caught a real template-literal
+  substitution drop during development. Mutation meta-oracle unchanged (`structure.py` 15/15,
+  `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/
+  haiku), clean.
+
 ## [3.1.0] — 2026-06-29
 
 **Test-coverage hardening + docs.** No source, API, or schema change — indexes don't need
