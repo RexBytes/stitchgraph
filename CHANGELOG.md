@@ -4,6 +4,886 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [2.1.31] — 2026-06-28
+
+**Bash function-export recall (#73) — and the close of the #70–#89 follow-up backlog.**
+A function exported for subshells via `declare -xf` / `typeset -fx` (the ksh/bash spellings of
+`export -f`), or invoked under `time { fn; }`, was flagged dead though it is live.
+
+### Fixed
+
+- `_bash_export_decl` now recognizes `declare -fx` / `declare -xf` / `typeset -fx` / `typeset -xf`
+  (a flag combining `f` and `x` exports a function), in addition to `export -f`. A plain
+  `export VAR=…`, `declare -r`, or `declare -f` (print only, no `x`) still roots nothing.
+- `_bash_time_target` skips a leading brace-group token, so `time { fn; }` (which tree-sitter
+  mis-parses, making `{` a word arg of `time`) roots `fn`.
+
+### Resolved without code change (cardinal-safe boundaries / non-issues)
+
+- **#72** (`trap SIGNAL` one-word reset over-roots the signal name): over-rooting is the
+  cardinal-SAFE direction; a one-word trap arg is ambiguous (signal vs handler), so removing the
+  root would risk flagging an intended handler dead. Left intentionally.
+- **#84** (narrow Go selector-field references to method-kind): the current broad selector rooting
+  (v2.1.12) is over-rooting; narrowing it would un-mask and risk a cardinal. Deferred.
+- **#79** (`_unwrap_ts_value` `seen < 8` cap): the cap is a runaway guard; 9+ literally-nested
+  TS value wrappers do not occur in real code. Theoretical, no action.
+- **#82** (decorator on a `const X = class{}` expression): not valid TypeScript. No action.
+- **#85**: added a regression test pinning that `nodes.file` is populated after a plain reindex.
+
+With this, the entire post-sweep cardinal-safe follow-up backlog (#70–#89) is closed — every item
+is either fixed behind the full gate or has a documented cardinal-safety reason to stay.
+
+## [2.1.30] — 2026-06-28
+
+**C/C++ struct used only as a type (#89).** A struct/union/enum used only as a TYPE —
+`struct Config g;`, `void f(struct Config *p)`, a field or return type — is a live data-model
+definition, but C/C++ has no constructor call to edge it, so it had no inbound edge and was
+false-flagged dead.
+
+### Fixed
+
+- A new `_c_type_ref_names` collects the names of bodyless (type-use) `struct`/`union`/`enum`/`class`
+  specifiers — the definition carries a `body` field and is skipped — and the post-pass roots every
+  matching C/C++ class node `callback`. Project-wide (a type is defined in a header and used in a
+  `.c`), scoped to C/C++. Cardinal-safe over-approximation: a struct genuinely never used as a type
+  (and never instantiated) still flags dead — verified.
+
+### Resolved without code change
+
+- **#88** (`_module_uses` treats `#define` parameter names as references): this is over-rooting —
+  the cardinal-SAFE direction. Tightening it would *un-mask*, risking a live macro-referenced
+  symbol being flagged dead, so it is left as a deliberate precision boundary.
+- **#87** (enum-constant-body overrides): confirmed already handled — a Java enum constant with a
+  method-override body and the helpers it calls are kept live (no reproduction). The companion
+  class-scope anon-class over-rooting is the cardinal-SAFE direction and is left intentionally.
+
+## [2.1.29] — 2026-06-28
+
+**Python abstract / Protocol interface methods (#70, #86).** A bodyless interface-method
+declaration is a contract fulfilled by overrides, never called by name — so it should not be
+reported as dead code.
+
+### Fixed
+
+- `_is_abstract_class` now resolves a SUBSCRIPTED base via `_base_name`, so `class Repo(Protocol[T])`
+  / `class C(ABC, Generic[T])` is recognized as abstract (it was missed when the base was an
+  `ast.Subscript`, whose `_name_of` is None) — #70.
+- A bodyless abstract / Protocol method (`def m(self): ...` under `@abstractmethod` or inside a
+  Protocol/ABC) is now rooted `callback`, so it is no longer false-flagged dead — #86. Cardinal-safe
+  (only adds a root). A method with a real body (a concrete default in an ABC) that is genuinely
+  uncalled still flags dead, as does the private helper it alone reaches — precision preserved.
+
+### Resolved without code change
+
+- **#71** (`_framework_classes` name-based cross-file collision over-masks): over-masking is the
+  cardinal-SAFE direction — it keeps a possibly-framework-reachable class live. Tightening it would
+  *un-mask*, risking a live framework-only-reachable class being flagged dead (the cardinal sin), so
+  the current behavior is a deliberate precision boundary, left intentionally.
+
+## [2.1.28] — 2026-06-28
+
+**TS class-member resolution cardinals (#76, #78).** Two ways a class method that is genuinely
+live was confidently flagged dead:
+
+- **#76 — `#private` method via `this.#m()`.** `_name_of` and `_callee` both returned None for a
+  `private_property_identifier`, so a `#m(){…}` def was dropped (its body unwalked → a helper it
+  alone calls flagged dead) AND the `this.#m()` call edge was lost.
+- **#78 — string / computed / numeric-keyed class methods.** `_name_of` returned None for a string
+  key (`"do it"(){}`), a computed-string key (`["do it"](){}`), or a numeric key (`42(){}`), so the
+  method def was silently dropped and the helper it alone calls was flagged dead. A computed
+  *identifier* key (`[NAME](){}`) was named but, in a non-exported class, never rooted.
+
+### Fixed
+
+- `_trailing_id` now handles `private_property_identifier`, so the `#m` def name and the
+  `this.#m()` call site resolve to the SAME `#m`. A `#private` method resolves by name, so an
+  UNCALLED one (and its private helper) still flags dead — precision preserved.
+- A JS/TS class method with a dynamic key (string / computed / numeric) is now modeled as a node
+  (named from the raw key text) with its body walked, and rooted `callback` — the class-body
+  analogue of the object-literal computed-key rule, since such a method is reachable only via a
+  dynamic `obj["k"]()` / `obj[expr]()` subscript. Cardinal-safe (only adds a root); a plain
+  by-name method that is genuinely uncalled still flags dead.
+
+## [2.2.0] — 2026-06-29
+
+**Milestone release — the cardinal sweep is complete across all ten supported languages, and the
+post-sweep precision/recall follow-up backlog (#70–#89) is closed.** A consolidation of the
+2.1.1–2.1.31 hardening line into one minor release. No API or schema change; indexes rebuild cleanly
+and `find_stale` output is strictly more precise than 2.1.0 (fewer false-positive dead-code reports).
+
+The guiding invariant throughout: **live code is never confidently flagged dead.** Every fix in this
+line either removes a way live code could be reported dead (a "cardinal") or improves dead-code recall
+without ever risking that invariant; each shipped behind the full gate (ruff + mypy + the differential
+streaming oracle + a mutation meta-oracle) and two consecutive clean full-diversity multi-model
+adversarial review rounds.
+
+### Highlights since 2.1.0
+
+- **Per-language cardinal sweep (2.1.1–2.1.26)** — one gated cardinal fix per language across Python,
+  JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, and Bash: framework/attribute classes, runtime/FFI
+  and native entry points, test-runner discovery, indirect/dynamic dispatch (Ruby `&:sym`, JS
+  well-known Symbols + accessors + coercion hooks), C/C++ macro-body and function-pointer-table call
+  sites, Java overload/role unions and anonymous-inner-class overrides, and more.
+- **Post-sweep follow-up backlog #70–#89 (2.1.27–2.1.31)** — JS/TS shorthand members of exported
+  objects incl. `as const`/`satisfies` (#74); TS `#private` via `this.#m()` and string/computed/
+  numeric-keyed class methods (#76/#78); Python subscripted-`Protocol[T]`/ABC recognition and bodyless
+  abstract interface methods (#70/#86); C/C++ structs used only as a type (#89); Bash `declare -fx` /
+  `declare -f -x` / `typeset -fx` exports and `time { … }` targets (#73). The remaining items were
+  resolved without code change as deliberate, panel-confirmed cardinal-safe boundaries, or are
+  coverage-only.
+
+The granular per-version entries below remain as the detailed development record.
+
+## [2.1.27] — 2026-06-28
+
+**JS/TS shorthand member of an exported object literal — cardinal fix (#74).**
+A function referenced via object-literal SHORTHAND in an exported object —
+`export const handlers = { onClick, onHover }` — is public API: any importer reaches it as
+`handlers.onClick`. But a shorthand member is a `shorthand_property_identifier` the call graph
+never models as a reference, so the named function — and the private helpers it alone calls — was
+confidently flagged dead. (The CJS/default forms `module.exports = { onClick }` and
+`export default { onClick }` were already handled; the named-const-export form was the gap.)
+
+### Fixed
+
+- `_reexport_names` now also collects an exported declaration's object-literal member names
+  (shorthand identifiers + `pair` value identifiers) for `export const/let/var X = { … }`, feeding
+  them into the same reexport→`exported` rooting path the CJS/default-export object forms already
+  used. Language-gated to JS/TS via the existing reexport role-application guard. Cardinal-safe:
+  rooting only adds a root; a shorthand in a NON-exported object still flags dead.
+- The scan unwraps TS value wrappers (`as const` / `satisfies T` / parens) on both the named-export
+  object and the `module.exports = …` RHS, so the canonical TS handler-object idiom
+  `export const handlers = { onClick } as const` roots its members (panel R2 finding — the most
+  common real-world shape of the bug).
+
+### Resolved without code change
+
+- **#77** (`obj._x = fn` underscore member-assignment not rooted like the object-literal path): a
+  statically-named underscore member that is actually called resolves by name (verified), so the
+  member-assignment underscore gate is a deliberate, cardinal-safe precision boundary, not a defect.
+- **#81 / #83** (bare-identifier reassignment / bare function-expression in expression position):
+  already covered for exported modules — module-scope `_module_uses` and pass-2 def-body recursion
+  root these. The no-export-module case is the same library-detection boundary as any unreferenced
+  top-level function.
+
+### Known limitations (unchanged)
+
+The remaining cardinal-safe precision/coverage follow-ups (#70–#89, minus those above) stay deferred.
+
+## [2.1.26] — 2026-06-28
+
+**JS/TS implicit-dispatch class members — cardinal fix (#54).**
+A class member invoked only IMPLICITLY by the JS/TS runtime — a well-known-Symbol method
+(`[Symbol.iterator]`, `[Symbol.asyncIterator]`, `[Symbol.toPrimitive]`, `[Symbol.hasInstance]`, …,
+run by `for…of` / spread / coercion / `instanceof`), a `get`/`set` accessor (run by a property
+read/write), or a serialization/coercion hook (`toJSON` via `JSON.stringify`, `toString`/`valueOf`
+via string & numeric coercion) — is never reached by a plain `obj.method()` by-name call. In a
+non-exported (but instantiated) class, the member and the private helpers it alone calls were
+confidently flagged dead. (Exported-class members were already rescued by
+`_seed_exported_class_methods`, which masked the gap.)
+
+### Fixed
+
+- A new `_is_js_implicit_dispatch_method` recognizes these three forms (a `computed_property_name`
+  containing `Symbol.`; a `get`/`set` accessor; the names `toJSON`/`toString`/`valueOf`) and the
+  JS/TS method-extraction path roots them `callback`. Language-gated to javascript/typescript/tsx
+  (a Python `toJSON` is not a JS hook). Cardinal-safe over-approximation: rooting only adds a root,
+  so a genuinely-unused accessor/hook is over-rooted (bounded, one per member) but live code is
+  never flagged dead. A plain by-name method that is genuinely uncalled still flags.
+
+### Known limitations (unchanged)
+
+A general (non-`Symbol`) computed-key class method (`[CONFIG_KEY]() {}`) is a separate dynamic-
+dispatch concern (#78) and is out of this change's scope. The remaining cardinal-safe precision/
+coverage follow-ups (#70–#89) stay deferred.
+
+## [2.1.25] — 2026-06-28
+
+**C/C++ function-pointer table / vtable promotion — cardinal fix (#69).**
+A C/C++ function whose address is taken in a global function-pointer table (`int (*ops[])(int) =
+{op_a, op_b}`), a plugin/vtable struct (`struct ops P = {init, teardown}`), a designated-initializer
+table (`{[0]=on_start}`), or a scalar (`cb h = handler`) is invoked **indirectly** through that
+global — which may be consumed in a different translation unit via `extern`. Globals aren't graph
+nodes, so that cross-TU use is untrackable, and the address-taken functions were confidently flagged
+dead whenever their own TU had no entry point of its own (the passive registration-unit pattern).
+
+### Fixed
+
+- A new `_c_global_init_fn_refs` scan walks C/C++ module scope (top-level declarations, plus
+  `namespace {…}` / `extern "C" {…}` bodies; never descending into function bodies) and collects the
+  function identifiers in global-variable initializers — matching the `initializer_list` node
+  directly, which is the common denominator across dialects (C parses the global as a `declaration`,
+  but C++ mis-parses `int (*tab[])() = {…}` as an `expression_statement`/`assignment_expression`
+  whose right side is still an `initializer_list`). Matching project C/C++ F/M nodes are rooted
+  `callback`, mirroring the object-literal / macro-body indirect-dispatch rooting. Project-wide (the
+  table and its target routinely live in different files). Cardinal-safe over-approximation: resolves
+  by name to F/M nodes only — a non-function initializer identifier (a global const, an enum value)
+  merely over-roots a homonym, never flags live code dead. Local (in-function) function-pointer
+  assignments are unchanged (already covered by `_direct_refs`).
+
+### Known limitations (newly documented)
+
+A C `struct` used only as the type of a global/extern variable is still flagged dead (#89) — a
+bodyless data type, not executable code (a precision nit, like the abstract-method-declaration
+case). A function over-rooted because its name happens to appear in an *unused* global initializer is
+a bounded, cardinal-safe precision cost. The JS/TS implicit-dispatch surface (#54) remains
+pre-existing and deferred.
+
+## [2.1.24] — 2026-06-28
+
+**C/C++ function called only inside a `#define` macro body — cardinal fix (#59).**
+A function called or named *only* inside a preprocessor macro body — `#define LOG(m) log_impl(m)`,
+a function-pointer macro `#define DEFAULT handler`, a helper-wrapping macro `#define BOTH() (a()+b())`
+— was confidently flagged dead. Tree-sitter parses a macro body as a single raw-text `preproc_arg`
+node, so the call/reference inside it is invisible to the AST call scan and the function loses its
+only caller.
+
+### Fixed
+
+- A new text-scan (`_macro_body_ref_names`) collects every identifier appearing in C/C++ `#define`
+  bodies; any project C/C++ function/method whose name matches is rooted `callback` (it is invoked
+  indirectly wherever the macro expands). This is the direct analogue of the existing
+  `EXPORT_SYMBOL` text-scan for constructs the grammar doesn't model as calls. Project-wide across
+  the unified C/C++ resolution bucket (a header macro routinely wraps a function defined in a `.c`),
+  byte-gated to files that contain `#define`. Cardinal-safe over-approximation: matching resolves by
+  name to F/M nodes only, so a macro parameter or a keyword sharing a name merely over-roots (keeps
+  a genuinely-dead function live) — it never flags live code dead. A function whose name appears in
+  no macro body still flags dead; numeric/string macros yield no identifiers.
+
+### Known limitations (unchanged)
+
+The C cross-TU global function-table promotion (#69) and JS/TS implicit-dispatch surface (#54) remain
+pre-existing and deferred to their own reviews. A function over-rooted because its name happens to
+appear in an *unused* macro body is a bounded, cardinal-safe precision cost.
+
+## [2.1.23] — 2026-06-28
+
+**Java anonymous-inner-class override in a class-scope initializer — cardinal fix (#62).**
+An anonymous inner class (`new Base() { … }`) has no name, so its overriding method can never be
+resolved by a `Class.method` by-name call — it is invoked only polymorphically through the base type
+(`Runnable.run`, `Comparator.compare`, a custom abstract base). When the anonymous class sits in a
+**method body** the enclosing-function containment edge already keeps its override live; but in a
+**field / static initializer** (class scope, no enclosing function) nothing rooted it, so a
+non-`public` override — and the private helpers it alone calls — was confidently flagged dead though
+live. (Public overrides were masked by the `exported` role; the gap shows on `protected`/
+package-private overrides of a custom abstract base.)
+
+### Fixed
+
+- A def that sits directly in an anonymous class body (a `class_body` child of an
+  `object_creation_expression`) is now rooted `callback` when it is at class scope
+  (`enclosing_func is None`) — it is polymorphically invoked and unreachable by name. An anonymous
+  class inside a method body stays reachability-gated via the existing containment edge, preserving
+  its precision (an override in a genuinely-dead method still flags). Cardinal-safe: only ever adds
+  a root. A normal (named) class is untouched (the check requires the `object_creation_expression`
+  parent), so a genuinely-dead named-class method still flags.
+
+### Known limitations (unchanged / newly documented)
+
+Abstract/interface method *declarations* (no body) are still flagged dead even when concrete
+implementations are reached (#86) — pre-existing, general, and not a true live-code cardinal (a
+bodyless contract slot). The C/C++ macro-body call sites (#59) and cross-TU function-table promotion
+(#69) remain deferred to their own reviews.
+
+## [2.1.22] — 2026-06-28
+
+**Same-name method-overload role clobber — cardinal fix (#61, store-level, all languages).**
+Two same-name method **overloads** (`void f()` / `void f(int)` in Java/C#/C++) collapse to one node
+id (`Class.f`). The node persistence used `INSERT OR REPLACE`, so the **last-written** overload's row
+won outright and **clobbered the earlier overload's roles**. A public-API method (`exported`)
+overloaded with a private same-name helper declared *after* it — or a framework-callback overload
+(`@PostConstruct` / `@Test`) followed by a plain one — lost its only root and was confidently flagged
+dead though live. The bug was declaration-order-dependent (only the last overload's roles survived).
+
+### Fixed
+
+- `Store.add_node` now upserts with `ON CONFLICT(id) DO UPDATE` and **unions the roles** of colliding
+  nodes instead of replacing them — a rooting role is never dropped, regardless of overload order
+  (cardinal-safe). Edges were never at risk (they key on the `src` id, so both overload bodies'
+  call/reference edges were already retained); only the node row's roles were being lost. Non-role
+  columns continue to take the newest row, matching the prior `REPLACE` semantics. Joined-role
+  duplicates are harmless (every reader splits into a set) and bounded (reindex/`replace_file` clear
+  before re-inserting). The fix is store-level, so it covers C#/C++ overloads too, not only Java.
+
+### Known limitations (unchanged)
+
+Java anonymous-inner-class JDK abstract overrides (#62) and the C/C++ macro-body call sites (#59) /
+cross-TU function-table promotion (#69) remain pre-existing and deferred to their own per-language
+reviews.
+
+## [2.1.21] — 2026-06-28
+
+**Go method value / method expression references — cardinal fix (#49, cobra dogfood).**
+An **unexported** Go method reached only as a *method value* (`reg(v.run)` — a bound method passed
+as a callback), a *method expression* (`use(t.run)` — the unbound `T.method` form), or a
+struct-literal field value (`cfg{onRun: v.run}`) was confidently flagged dead. These are
+*references*, not calls: `_direct_calls` only sees `v.run()` call sites, and `_direct_refs` skipped
+the selector's `field_identifier`, so the method got no inbound edge. (Exported/capitalized methods
+were already rooted as public API, which masked the gap until probed with unexported receivers.)
+
+### Fixed
+
+- `_direct_refs` now emits the trailing `field` name of a Go `selector_expression` as a by-name
+  REFERENCES edge, so a method named as a value/expression keeps its target live. `selector_expression`
+  is unique to the Go grammar, so this is scoped to Go. A plain struct-field access (`v.name`) that
+  happens to share a name with a function is cardinal-safe over-rooting (resolves only to a project
+  symbol). A `v.run()` CALL contains the same selector, but the edge loop dedups REFERENCES against
+  the CALLS set, so it never double-counts. A genuinely-unused unexported method still flags dead.
+
+### Known limitations (unchanged)
+
+The same method-value-as-reference shape in other grammars — Rust `Foo::method` / `vec.iter().map(Foo::bar)`,
+C# method groups, JS `arr.forEach(obj.handler)` — is pre-existing and tracked separately; each needs
+its own per-language review. Bare function/arrow expressions in JS/TS expression positions (#83) and
+`this.#m()` private dispatch (#76/#78) remain deferred.
+
+Precision note (cardinal-safe): because a plain Go struct-field read (`w.run`) is syntactically
+identical to a method value, its field name is emitted as a reference too — so a genuinely-dead
+function/method whose name *exactly* collides with a struct field name is over-rooted (kept live).
+This never produces a false-dead (it is the precision-over-recall, cardinal-safe direction, and is
+strictly better than the pre-fix state where the method value itself was false-dead), and is bounded
+to exact-name collisions. A follow-up (#84) will narrow selector-field references to method-kind
+resolution to recover that recall.
+
+## [2.1.20] — 2026-06-28
+
+**JS/TS object & class literals in EXPRESSION positions — cardinal fix (#75).**
+An object (or class) literal reached only through an *expression shape* — a call argument
+(`register({ onInit(){ helper() } })`, `Object.freeze({…})`), an array element (`[ {…} ]`), a
+ternary / `||` / `??` branch, an IIFE return (`(() => ({…}))()`), a sequence
+(`(init(), {…})`), or a chained/parenthesized assignment (`const r = m.exports = {…}`) — had its
+members invisible. A `variable_declarator` whose value was such a shape was SWALLOWED (no descent),
+so a helper called only from a member was flagged dead; a bare statement form descended generically
+and minted the member as an UNROOTED node — the live method itself flagged dead. This closes the
+last broad object/class extraction gap behind the v2.1.11/2.1.18/2.1.19 line.
+
+### Fixed
+
+- **Expression-position object literals** are now routed through `_object_members` (the same pass
+  that backs `const obj = {…}` and `module.exports = {…}`) wherever generic descent reaches one, so
+  their function-valued members are extracted and their bodies walked. Members at module scope take
+  the `callback` role (dispatch-table idiom — over-rooting is the precision-over-recall, cardinal-safe
+  direction); members nested in a function body stay reachability-gated via a CONTAINS edge. A
+  position-synthesized qual (`<obj@line_col>`) keeps an anonymous object's members from colliding
+  with a same-named real module function.
+- **Anonymous/expression-position class literals** (`reg(class {…})`, `[ class {…} ]`) are modeled
+  as CLASS nodes with INHERITS edges and their bodies walked, mirroring the `const X = class {…}`
+  (#80) and `obj.X = class {…}` paths. At module scope the class takes the `exported` role so its
+  public methods are rescued; nested in a function it is reachability-gated and its methods gated to
+  the class (the round-3/4 rule). A `body`-field guard skips the bare `class` *keyword token* (also
+  typed `class`) inside a regular `class X {}`, so ordinary class declarations are unaffected.
+- The `variable_declarator` branch now **descends** into non-arrow/object/class values (call,
+  array, ternary, logical, IIFE, chained assignment) instead of swallowing them — made safe by the
+  interception above, which roots any literal it finds rather than letting raw descent mint
+  unrooted methods (the round-11 cardinal the old no-else guarded against).
+
+### Known limitations (unchanged)
+
+`this.#m()` private dispatch (#76), `#private`/computed-key methods inside a class body dropped by
+`_name_of` (#78), and bare-identifier function reassignment (`g = function(){…}`, #81) remain
+pre-existing and deferred. Private-method dead-eligibility on *anonymous* expression-position
+classes is cardinal-safe (over-rooting only).
+
+## [2.1.19] — 2026-06-28
+
+**JS/TS `const X = class {…}` class-expression bound to a const — cardinal fix (#80).**
+A class expression assigned to a `const` (`export const Widget = class extends Component {
+render(){ helper() } }`) was never modeled: the `variable_declarator` branch handled
+arrow/function/generator/object values but not `class`/`class_expression`, so the class was not a
+node and a helper called only from its methods was flagged dead. (The sibling
+`assignment_expression` branch already handled `obj.X = class {…}`; this closes the asymmetry.)
+
+### Fixed
+
+- The `variable_declarator` branch now models a `class`/`class_expression` value as a CLASS node,
+  mirroring the assignment-expression class handling: it emits INHERITS edges for the heritage,
+  walks the class body, and (when the const is `export`ed) takes the `exported` role so
+  `_seed_exported_class_methods` rescues its public methods — private methods stay dead-eligible
+  (R46A). A class nested in a function body gates its methods to the class (chain enclosing-fn →
+  class → methods, the round-3/4 rule); at module scope they rely on the exported rescue / call
+  resolution. Behaviour is now at **parity with a regular `class X {}`** declaration. TS value
+  wrappers on the value (`class {…} as const`) are peeled via the existing `_unwrap_ts_value`.
+
+### Known limitations (unchanged from 2.1.18)
+
+The broad "object literal reached only via an EXPRESSION shape" family (#75 — IIFE / ternary /
+`||`/`&&`/`??` / `Object.freeze` / array element / sequence / chained-or-parenthesized assignment),
+`this.#m()` private dispatch (#76), and bare-identifier function reassignment (#81) remain
+pre-existing and deferred to a focused follow-up.
+
+## [2.1.18] — 2026-06-28
+
+**JS/TS object-literal function-member bodies — cardinal fix (rxjs/lodash-style config objects).**
+A top-level function called ONLY inside an object-literal member — `const obj = { run() { helper() } }`
+(method shorthand), `{ run: () => helper() }` (function-valued property), or a nested object — was
+false-flagged dead: the object value was never traversed, so the call to `helper` was never seen and
+its sole caller was invisible to the graph.
+
+### Fixed
+
+- **New `_object_members` pass** extracts the function-valued members of a JS/TS object literal
+  (method shorthand, `arrow`/`function`/`function_expression`-valued properties, and members of
+  nested object values) as METHOD nodes, so pass 2 walks their bodies and the calls inside become
+  visible. Wired into both the `variable_declarator` branch (`const obj = {…}`) and the
+  `assignment_expression` branch (`module.exports = {…}`, `Foo.prototype = {…}`).
+- A module-scope, non-underscore member is invoked dynamically/externally (passed as a callback,
+  spread into config, looked up by a computed key), never by a plain local name, so it takes the
+  `callback` role — mirroring the existing member-assignment precedent. Over-rooting a member is the
+  precision-over-recall, cardinal-safe direction. A member nested inside a function body stays
+  reachability-gated via a CONTAINS edge (a dead initializer must not mint live roots). An
+  underscore-private member opts out of the root, matching the member-assignment gate.
+- **New `_obj_key_name` helper** reads a member key's static name including STRING keys
+  (`{ "do-it"() {…} }`, `{ "k": fn }`) — `_name_of` returns None for a string-keyed method, which
+  would silently drop the member and leave its body unwalked (the same cardinal class). A
+  COMPUTED key (`{ [k]: () => … }`) is extracted under a synthesized id (from the key text) and
+  rooted too — its body is walked so a helper called only there stays live. A genuinely-uncalled
+  top-level function still flags.
+- Module-scope members are rooted UNCONDITIONALLY, including underscore-`_private` and
+  computed-key members: object literals are the canonical dispatch-table idiom
+  (`handlers["_" + name]()`), so gating an underscore member out would mint an unrooted node that
+  is then confidently flagged dead while live (cardinal — caught by the adversarial panel).
+- `_unwrap_ts_value` peels TypeScript value wrappers (`{…} as const`, `{…} satisfies T`, `({…})`)
+  that sit between the `variable_declarator` value and the object, so the member-extraction fires
+  for the pervasive `export const obj = {…} as const` form (cardinal — panel).
+- Member bodies are walked via `_collect`, so a function DEFINED inside a member
+  (`run() { function inner(){…} }`) is extracted as a node and reached through a CONTAINS edge —
+  pass 2 skips nested defs, so without this a helper that nested fn alone calls was flagged dead
+  (cardinal — panel). Members nested in a dead function stay reachability-gated.
+- A member VALUE is itself unwrapped (`run: (() => h())`, `go: (fn satisfies T)`, `x: ({…} as const)`)
+  and a `class`-valued member (`{ Parser: class {…} }`) is modeled as a CLASS with the `exported`
+  role so its public methods (and their private callees) are rescued — `_unwrap_ts_value` was
+  applied to the whole object but not to individual member values, and class members weren't
+  handled, so each dropped a live member's body (cardinal — panel round 2).
+- A function-scoped class-valued member (`function f(){ const o = { K: class { run(){ h() } } } }`,
+  `function f(){ obj.X = class {…} }`) gates its methods to the class node (chain enclosing-fn →
+  class → methods) instead of leaving them orphaned and confidently flagged dead (cardinal —
+  panels round 3/4); module-scope class members keep the `exported` rescue (private methods stay
+  dead-eligible, R46A).
+- `generator_function` values (`{ gen: function*(){…} }`, `async function*`, `exports.h =
+  function*(){…}`, `const g = function*(){…}`) are handled across all four function-value tuples,
+  so a generator member's body is walked like any other function value (cardinal — panel round 8).
+
+### Known limitations (pre-existing, deferred to a focused follow-up)
+
+These flag identically on the pre-v2.1.18 extractor — they are NOT regressions of this release; they
+are the broad "object literal reached through an EXPRESSION shape" family, which the next release
+will close with a single principled "route every object literal through `_object_members`" pass:
+
+- An object literal reached only via an expression shape — an IIFE return, a ternary/`||`/`&&`/`??`
+  operand, `Object.freeze(…)`/`Object.assign(…)`, a call argument to an external function, an array
+  element, a `sequence` expression, or a chained/parenthesized assignment value
+  (`const routes = module.exports = {…}`) — is not member-extracted, so a helper called only from
+  such a member is flagged. (A naive generic fallthrough that "fixed" this instead minted the
+  members as unrooted nodes and flagged the live methods themselves — a worse cardinal — so it was
+  reverted; the family stays a recall gap until the principled pass lands.)
+- `const X = class {…}` (a class expression bound to a `const`) is not modeled (the
+  `variable_declarator` branch handles arrow/function/generator/object values, not `class`).
+- A TS `#private` method invoked via `this.#m()`, and a bare-identifier function reassignment
+  (`g = function(){…}`), are likewise pre-existing and tracked.
+
+## [2.1.17] — 2026-06-28
+
+**Ruby `&:symbol` / `enum_for` / `&method(:m)` symbol dispatch — cardinal fix (Ruby dogfood).**
+Ruby names a method via a literal symbol in idioms the name-based call graph can't see, so the named
+method (and its callees) was false-flagged dead.
+
+### Fixed
+
+- **New `_ruby_symbol_refs` pass** roots the method named by `xs.map(&:upcase)` (`Symbol#to_proc`),
+  `enum_for(:m)` / `to_enum(:m)`, and `method(:m)` / `instance_method(:m)` (commonly `&method(:m)`).
+  Each literal symbol is routed through `_ref` so it is rooted only if it resolves to a project
+  method (cardinal-safe). Ruby method-name suffixes handled (`:valid?`, `:save!`, `:name=`).
+  `send`/`public_send` are deliberately not covered (documented dynamic-dispatch limitation). A
+  genuinely-dead method still flags.
+
+## [2.1.16] — 2026-06-28
+
+**Bash callback/invocation argument recognition — cardinal/recall fixes (doc-driven + dogfood manual
+pass).** Commands that invoke a function via an *argument* (not the command head) were missed by the
+head-keyed command scan, so the function (and its callees) was false-flagged dead.
+
+### Fixed
+
+- **`_bash_trap_handlers` generalized to `_bash_callback_refs`**, now rooting the function named by:
+  `trap HANDLER` **including inside function bodies** (was top-level only); `complete -F FUNC` /
+  `compgen -F FUNC` completion callbacks; `export -f FUNC…` (subshell-invoked, parses as a
+  `declaration_command`); and `time FUNC` (the `time` keyword's target, which tree-sitter parses as a
+  plain word). Each is routed through `_ref` → rooted only if it resolves to a project function
+  (cardinal-safe); a genuinely-dead function and a plain `export VAR=…` still flag.
+
+## [2.1.15] — 2026-06-27
+
+**C++ range-based-`for` `begin()`/`end()` customization points — cardinal fix (doc-driven manual
+pass).** `for (x : r)` is desugared to `r.begin()`/`r.end()`, so the name-based call graph never sees
+those calls and an iterable type's `begin`/`end` (and what they reach) were false-flagged dead.
+
+### Fixed
+
+- **`_IMPLICIT_HOOKS` gains a `"cpp"` entry rooting `begin`/`end`** as `callback`. A class defining
+  `begin`/`end` is iterable by design; rooting them is semantically correct and cardinal-safe
+  (only adds roots). Covers `.cpp`/`.cc`/`.cxx`/`.hpp` and any `.h` that `_header_lang`
+  content-sniffs as C++ (carries `class`/`namespace`/`template`/… markers); a pure-C `.h` stays
+  C. A plain method with no caller still flags dead.
+
+## [2.1.14] — 2026-06-27
+
+**Ruby implicit conversion / Enumerable protocol methods — cardinal fix (doc-driven manual pass).**
+The interpreter/stdlib invoke a class's conversion (`to_s`/`inspect`/`to_str`/…), Enumerable
+(`each`), Hash-key (`hash`/`eql?`), and marshalling (`marshal_dump`/`_dump`/…) methods *by name*, so
+a live class's protocol methods (and the helpers they reach) were false-flagged dead.
+
+### Fixed
+
+- **`_IMPLICIT_HOOKS["ruby"]` extended with the documented implicit-invocation protocol** —
+  conversion/coercion (`to_s`, `inspect`, `to_str`, `to_a`, `to_ary`, `to_h`, `to_hash`, `to_i`,
+  `to_int`, `to_f`, `to_r`, `to_proc`, `to_io`, `to_path`, `to_sym`), Enumerable (`each`, `each_pair`), Hash-key /
+  ordering (`hash`, `eql?`, `succ`), and marshalling (`marshal_dump`, `marshal_load`, `_dump`,
+  `_load`). Each such method is rooted `callback` (the Ruby analogue of Python dunder rooting). Only
+  ever adds roots (cardinal-safe): a plain method with no caller still flags dead.
+
+## [2.1.13] — 2026-06-27
+
+**Runtime/native entry-point attributes: C ISR, Rust `#[ctor]`, Java `native` — three narrow cardinal
+fixes extending the v2.1.9 runtime/native (FFI) entry-point arc.** Each marks a function the runtime
+or toolchain invokes automatically with no in-tree by-name caller, so it (and its callees) was
+false-flagged dead. All three are attribute/modifier-gated and only ever *add* roots (cardinal-safe).
+
+### Fixed
+
+- **C interrupt service routines** — `__attribute__((interrupt))` / AVR `((signal))` /
+  `interrupt_handler` are invoked by the hardware vector table. The implicit-entry attribute regex
+  omitted `interrupt`/`signal`; now matched → rooted `callback`.
+- **Rust `#[ctor]` / `#[dtor]`** — the `ctor` crate's before/after-`main` attributes (the Rust
+  analogue of C `__attribute__((constructor))`), idiomatically private. Added `ctor`/`dtor` to
+  `_RUST_RUNTIME_ENTRY_ATTRS` (path-token match: `#[ctor::ctor]` and bare `#[ctor]` hit;
+  `#[constructor_helper]` does not).
+- **Java `native` methods** — JNI entry points (implemented in C, invoked across the JNI boundary,
+  no Java body, no in-tree caller). New `_is_java_native` helper roots a `native` method `callback`
+  (the Java analogue of Go cgo `//export` / C# `[UnmanagedCallersOnly]` from v2.1.9).
+
+  Each is cardinal-safe: a plain function with no such attribute/modifier still flags dead.
+
+## [2.1.12] — 2026-06-27
+
+**Transitive framework-inheritance callback rooting (tree-sitter) — one cardinal fix clearing the
+same root cause across PHP, C#, Java, and C++.** A symmetry gap: the Python extractor's
+`_apply_callback_roles` already did a transitive INHERITS closure, but the tree-sitter extractor
+marked only the *direct* subclass of an external framework base.
+
+### Fixed
+
+- **Framework-class detection now closes transitively over the in-tree INHERITS tree.** A concrete
+  override two-or-more hops below an external framework base (via an in-tree abstract intermediary) is
+  framework-invoked but had no in-tree caller, so it was confidently flagged dead — cardinal. New
+  `_framework_classes` helper: (a) every class with a direct external base, (b) same-name self-loop
+  bases (`class Foo extends pkg.Foo`, base leaf binds to itself — the real base is an external
+  same-named framework class), plus (c) the transitive first-party descendants of those classes
+  (fixpoint closure). Only ever *adds* roots, so it is cardinal-safe; a pure first-party chain with
+  no external base anywhere still flags genuinely-dead overrides. Confirmed on real
+  Magento 2.4.7 (`Shipment::_getValidationRulesBeforeSave`,
+  `Transaction\Collection::_renderFiltersBefore`) and on the C# explicit `IDisposable.Dispose`
+  reached only via `using` through a project interface that extends the framework interface.
+  `_framework_classes` helper unit test + per-language regressions + mutation pinned.
+
+## [2.1.11] — 2026-06-27
+
+**Python implicit-invocation surface — three cardinal fixes, found by combining real-codebase
+dogfooding (sqlalchemy, werkzeug) with a doc-driven pass over the Python language/library
+reference.** Each was a live symbol confidently flagged dead at confidence ≥ 0.5; all three fixes
+are reachability-*adding* and therefore cardinal-safe by construction.
+
+### Fixed
+
+- **Subscripted generic base classes now record an INHERITS edge.** `class Sub(Base[K, V])` parses
+  the base as an `ast.Subscript`, so the old `_name_of` returned `None`, dropping the edge — and with
+  it the polymorphic-override path, so a live override of a base template method was flagged dead. New
+  `_base_name` helper unwraps the subscript (looping for nested `Base[K][V]`). `Generic`/`Iterator`/
+  `Iterable` are already plain bases, so `class Foo(Generic[T])` is not misclassified as a framework
+  base. Confirmed on sqlalchemy / werkzeug `Mixin(Base[K, V])`.
+- **Enum machinery hooks `_missing_` / `_generate_next_value_` are rooted to their class.** These are
+  single-underscore (not dunders) but invoked by name by the enum metaclass (`Color(x)` lookup miss;
+  `auto()`); added to `_is_protocol_method` so the existing class→method seed keeps them (and their
+  callees) live when the enum is reachable, dead otherwise.
+- **pytest plugin hooks (`pytest_*`) in test files are rooted.** pytest discovers and invokes
+  `pytest_configure`, `pytest_collection_modifyitems`, … by name from `conftest.py`/test-tree modules
+  with no in-tree call site. New `_is_pytest_hook` roots module-level `pytest_*` functions (callback
+  role), scoped to the `is_test_file` set. Regression + helper + mutation pinned.
+
+## [2.1.10] — 2026-06-27
+
+**Python IPython/Jupyter rich-display protocol hooks cardinal fix — found by dogfooding `rich`.**
+Indexing the real `rich` library surfaced `JupyterMixin._repr_mimebundle_` flagged dead: the
+IPython display protocol (`_repr_html_`, `_repr_png_`, `_repr_mimebundle_`, `_ipython_display_`, …)
+is invoked **by name** by IPython when an object is displayed, but its methods are *single*-underscore
+so the `__x__` dunder pass missed them.
+
+### Fixed
+
+- **A class's IPython/Jupyter rich-display hooks are now rooted to the class**, exactly like the
+  interpreter dunders. When the class is reachable, its `_repr_*_` / `_ipython_*_` hooks — and
+  whatever they reach — are live; a dead class's hooks stay dead (cardinal-safe). The set is the
+  documented IPython rich-display protocol, not an open-ended name match. `_is_protocol_method` helper
+  (shared with the dunder pass); regression + mutation pinned.
+
+## [2.1.9] — 2026-06-27
+
+**Runtime / native (FFI) entry-point directives across Rust, C#, and Go cardinal fix** — found by
+continuing the doc-driven hunt into each language's runtime-entry surface. Each is a function the
+runtime or native code invokes automatically with no in-tree caller, and (unlike the already-covered
+`pub`/public forms) need not be public — so it and its callees were false-flagged dead at 0.6.
+
+### Fixed
+
+- **Rust `#[panic_handler]` / `#[start]` / `#[alloc_error_handler]` are rooted.** The runtime calls
+  these automatically (on panic / as the program entry / on allocation failure); a non-`pub` one had
+  no `pub` to trigger export-rooting. (`#[proc_macro]`/`#[proc_macro_derive]`/`#[proc_macro_attribute]`
+  need no handling — they require `pub`, already rooted.) `_is_rust_runtime_entry_attr` helper.
+- **C# `[UnmanagedCallersOnly]` is rooted** (added to the curated callback-attribute set, with
+  `[JSInvokable]`). A method exported to native (C-ABI) callers is invoked from unmanaged code, not
+  by a managed caller, and is typically non-public.
+- **Go cgo `//export name` is rooted.** A function with `//export` directly above it is callable from
+  C. A capitalised one was already exported by Go's rule, but a **lowercase** `//export lower_entry`
+  was flagged dead; the directive (the func's preceding `comment`) now roots it.
+
+All cardinal-safe (only add roots); `_is_rust_runtime_entry_attr` / `_go_has_export_directive`
+helpers, regression + mutation pinned.
+
+## [2.1.8] — 2026-06-27
+
+**Recall: PHP bare-string function callables** (the last queued non-cardinal gap from the
+`LIMITATIONS.md` audit).
+
+### Fixed
+
+- **A PHP global function passed as a bare-string callback to a known callback builtin is no longer
+  flagged dead.** `usort($x, 'topcmp')`, `call_user_func('handler')`, `array_map('mapper', …)` etc.
+  name a project function the syntactic call scan can't see; it now emits a REFERENCES edge to the
+  named function (the bare-string analogue of the v2.0.1 array-callable form). Scoped to a curated
+  set of callback-taking builtins (`_PHP_CALLBACK_BUILTINS`) so an ordinary string literal that
+  merely matches a function name doesn't over-root. A `'Class::method'` string needs no handling (a
+  static string call requires a public target, already rooted). `_php_string_callable_names` helper,
+  regression + mutation pinned.
+
+### Docs
+
+- Corrected the JS export-indirections note: `export * from './m'` is **not** an unrooted form — it
+  re-exports symbols `m` already exports inline (so they are already rooted). Verified (panel R86).
+
+## [2.1.7] — 2026-06-27
+
+**Recall: third-party Rust test harnesses + ByteBuddy/Moshi annotations rooted** (the non-cardinal
+recall gaps from the `LIMITATIONS.md` audit). These under-reported live code as dead — never a
+false-dead's opposite, just missed roots — and are now closed.
+
+### Fixed
+
+- **Common third-party Rust test attributes are recognized.** `#[rstest]`, `#[test_case(...)]`,
+  `#[gtest]` (googletest-rust), `#[quickcheck]` — whose attribute path doesn't end in `test`, so the
+  `test`/`*::test` convention missed them — now root the free-form-named test fn (and its helpers).
+  Matched on the last path segment, so the crate-qualified form (`rstest::rstest`) is covered too.
+- **ByteBuddy `@Advice.OnMethodEnter`/`@OnMethodExit` and Moshi `@ToJson`/`@FromJson` are rooted.**
+  These framework-invoked Java methods (bytecode instrumentation / reflection adapters) were the
+  documented external-framework-annotation gap (mockito/okhttp hunt); they are now on the curated
+  Java callback-annotation set (role `callback`). Cardinal-safe (only adds roots).
+
+## [2.1.6] — 2026-06-27
+
+**C/C++ class-level export-attribute cardinal fix** (R80 Finding 2 — the last cardinal item from the
+limitation audit).
+
+### Fixed
+
+- **Public methods of a class carrying a *class-level* export attribute are no longer flagged
+  dead.** `class __attribute__((visibility("default"))) Foo { … };` / `__declspec(dllexport)` exports
+  the class's whole public interface, so every public method is public ABI even with no per-method
+  attribute. Their out-of-line `.cpp` definitions carry no attribute, so they (and their callees)
+  were false-flagged dead at 0.6 (cardinal). The public method names declared in an export-attributed
+  class/struct body are now collected (project-wide, into the same set as the header-declaration
+  fix) and root the matching definitions. Covers all three member shapes (panel R81): a declared-only
+  method, an **inline-defined** method (parses as `function_definition`, not `field_declaration`),
+  and a **templated** method (`template_declaration`). `public` and `protected` are collected
+  (protected is the extensibility ABI — reachable by out-of-tree subclasses); `private` is internal
+  and stays dead-code-eligible. `struct` defaults public, `class` private. Cardinal-safe;
+  `_c_public_method_names` helper, regression + mutation pinned.
+
+## [2.1.5] — 2026-06-27
+
+**C/C++ header-declaration export-attribute cardinal fix, from the limitation audit.** A review of
+every documented limitation (per the maintainer's "fix it, don't document it" direction) promoted
+the one genuinely-cardinal C/C++ item — flagged in panel R77 (F2) — from a documented tradeoff to a
+fix.
+
+### Fixed
+
+- **A C/C++ function/method whose export attribute is on its (header) declaration is no longer
+  flagged dead.** `__attribute__((visibility("default")))` / `__declspec(dllexport)` is commonly
+  placed on the **declaration** in a header (`struct W { __attribute__((visibility("default"))) int
+  compute(int); };` or a top-level `… int W::compute(int);`), while the out-of-line definition in
+  the `.cpp` carries no attribute. The definition therefore had no in-tree caller and was
+  false-flagged dead at confidence 0.6 — and so was everything its body reached (panel R77 F2,
+  cardinal). The names of export-attributed declarations are now collected project-wide (declaration
+  and definition live in different files) and root the matching definition by name — the C/C++
+  analogue of Python's project-wide `__all__`. Cardinal-safe (over-roots a homonym only in the safe
+  direction); `visibility("hidden")` and unattributed methods still flag. `_c_export_decl_names`
+  helper, regression + mutation pinned; the AST walk is byte-gated so it is skipped on files with no
+  export attribute.
+
+## [2.1.4] — 2026-06-27
+
+**C/C++ attribute-entry-point cardinal fix, from doc-driven hunting** (continuing the method that
+found the Rust FFI-export gap). The GCC/Clang/MSVC attribute reference enumerates the function
+attributes that make a symbol an implicit entry point or part of the public ABI — none of which
+produce an in-tree by-name caller. A minimal fixture confirmed a whole cluster was false-flagged
+dead (panel R73, cardinal).
+
+### Fixed
+
+- **C/C++ functions carrying an entry-point / export attribute are no longer flagged dead.**
+  `__attribute__((constructor))` / `((destructor))` (and the C++ `[[gnu::constructor]]` / priority
+  `((constructor(101)))` forms) run automatically before/after `main` — the C analogue of a static
+  initializer or Go `init` — so the function definitely executes; `__attribute__((used))` /
+  `((retain))` explicitly tells the compiler the symbol is used (a use it can't see by name —
+  inline asm, a linker section); `__attribute__((visibility("default")))` and MSVC
+  `__declspec(dllexport)` mark the public-ABI surface (the analogue of Rust `#[no_mangle]`). None
+  has an in-tree caller, so each — and everything its body reached — was false-flagged dead. They
+  are now rooted (`callback` for the runtime/used forms, `exported` for the visibility/dllexport
+  forms). Also covered (panel R74): the GCC `__name__` synonyms (`__constructor__`, `__used__`,
+  `__visibility__`, …) used in system headers; `__attribute__((section("…")))` (linker-collected
+  init tables → callback) and `((weak))` (linker-visible overridable symbol → exported); and the
+  **target** of `((alias("t")))` / `((ifunc("r")))`, which is kept live by name (the attributed
+  symbol is itself a body-less declaration). `visibility("hidden")` and plain uncalled statics
+  correctly stay dead-eligible. Cardinal-safe (only adds roots). `_c_attr_roots` /
+  `_c_alias_target_names` helpers isolate the mapping; owned by regression tests and pinned by
+  mutation.
+- **An attribute absorbed by a preceding empty-body inline C++ method is recovered.** The
+  tree-sitter C++ grammar parses an empty-body method (`void f() {}`) as a `field_declaration` and
+  swallows the *following* method's leading attribute as a trailing one — so a
+  `__attribute__((visibility("default")))` method right after an empty-body one lost its attribute
+  and was false-flagged dead (panel R75, cardinal). The extractor now reattaches an attribute that
+  sits after the prior `field_declaration`'s declarator to the current function. Cardinal-safe;
+  `_c_dangling_attr_texts` helper, regression + mutation pinned.
+
+## [2.1.3] — 2026-06-27
+
+**Rust FFI/linker-export cardinal fix, from doc-driven hunting.** Reading each language's
+reference enumerates its *complete* implicit-invocation surface (magic methods, operator
+overloads, FFI exports, reflection hooks) — gaps a repo only surfaces if it happens to exercise
+them. The Rust reference's "the `no_mangle` attribute" / `export_name` made a gap visible that no
+scanned repo had hit: a non-`pub` `#[no_mangle]` export. A minimal fixture confirmed it was a
+cardinal false-positive (panel R69).
+
+### Fixed
+
+- **Rust `#[no_mangle]` / `#[export_name]` functions are no longer flagged dead.** These
+  attributes export the function's symbol to the linker / foreign (C) code regardless of `pub`
+  visibility — the function is a public-ABI entry point with no in-tree caller (the Rust analogue
+  of C's `EXPORT_SYMBOL`). A `pub fn` was already export-rooted, but a non-`pub`
+  `#[no_mangle] extern "C" fn` (valid Rust — the symbol is still exported) had no `pub` to trigger
+  that rooting, so it *and everything its body reached* were false-flagged dead (cardinal). Such
+  functions are now rooted `exported`. Covers the bare form *and* the wrapped forms —
+  `#[unsafe(no_mangle)]` / `#[unsafe(export_name = "…")]` (the **required** spelling in the Rust
+  2024 edition; panel R70) and `#[cfg_attr(<pred>, no_mangle)]` (conditionally applied). Cardinal-safe
+  (only adds roots). A `_is_rust_export_attr` helper isolates the attribute test; owned by
+  regression tests and pinned by mutation.
+
+## [2.1.2] — 2026-06-26
+
+**C# custom-attribute cardinal fix, from continuing the cross-language hunt** (jackson-core,
+mockito, okhttp, serilog). Most findings were the documented external-framework-annotation
+limitation (ByteBuddy `@Advice.*` on mockito's advice methods, Moshi `@ToJson`/`@FromJson` on
+okhttp's sample adapters — unrecognised framework annotations, now cited in LIMITATIONS).
+serilog surfaced a clean, general extraction bug.
+
+### Fixed
+
+- **C# in-tree attribute classes used via `[Foo]` are no longer flagged dead.** C# applies an
+  attribute with the `Attribute` suffix omitted — `[NoEnumeration]` names class
+  `NoEnumerationAttribute` — so the bare reference never resolved, and a custom attribute class
+  used only via `[Foo]` was false-flagged dead (serilog `NoEnumerationAttribute`, applied in
+  `Guard.AgainstNull`; panel R64, cardinal). An `attribute` usage now also emits the suffixed
+  reference (`Foo` → `FooAttribute`), so the attribute class is kept live. Cardinal-safe (adds a
+  reference only; the suffixed name resolves only if such a class exists). Covered in both
+  `_direct_refs` (attributes on methods/classes/structs) and `_module_uses` (attributes on
+  `enum`/`delegate` declarations, which aren't in the C# `defs` set; panel R66). Owned by
+  regression tests.
+
+## [2.1.1] — 2026-06-26
+
+**Ruby operator-method cardinal fix, from dogfooding across a Rust/Go/Ruby hunt** (serde, clap,
+gorm, cobra, gin, logrus, grape). Go and Rust came back clean (0 cardinal false-positives;
+serde's library is fully live, only test-suite/trybuild fixtures flag). Ruby surfaced a real
+one.
+
+### Fixed
+
+- **Ruby operator methods (`def []`, `def []=`, `def <=>`, `def ==`, `def <<`, …) are now
+  captured and rooted.** Their name node is tree-sitter type `operator`, which `_trailing_id`
+  didn't recognize — so the method was dropped from the graph entirely. Two consequences, both
+  fixed: (1) the operator method was un-navigable / un-analyzable; (2) anything used *only*
+  inside its body was false-flagged dead — e.g. in grape, `def []=` does `ValueArray.new(value)`,
+  so `ValueArray`'s constructor was flagged dead though the class is instantiated (cardinal,
+  panel R61). Operator methods are invoked through operator/index **syntax** (`a[k]`, `a[k]=v`,
+  `a <=> b`, `sort`), never a by-name call, so they're rooted as `callback` — the Ruby analogue
+  of the existing C++ special-member pass. Cardinal-safe (only adds roots). Owned by a
+  regression test.
+
+## [2.1.0] — 2026-06-26
+
+**Constant-memory *queries*, from dogfooding v2.0.1 across a multi-repo Python hunt** (Django,
+Salt, Ansible, CPython stdlib, Home Assistant). v2.0.0 made *indexing* memory-bounded; this
+release extends that to the *reachability* sweeps so `find_stale` / `impact_of` scale to the
+graphs the indexer can now build.
+
+### Changed
+
+- **Reachability streams its adjacency (the find_stale scalability ceiling).** Home Assistant
+  indexed fine — 6,728 files, **~16M edges**, ~4 GB — but `find_stale` then OOM'd: every
+  reachability/centrality sweep funnelled through `Store.resolved_edges()`, which does
+  `SELECT * … fetchall()` and builds **all 16M `Edge` objects at once**. A new lean
+  `Store.iter_resolved()` streams `(src, relation, dst_id, weight)` tuples cursor-by-cursor;
+  `algebra._Adjacency` and the `reach.py` sweeps (`reachable_from`, `reverse_reachable_from`,
+  `fan_in`/`fan_out`, `best_path`, SCC) build directly from it. Byte-identical results (the
+  GraphBLAS==pure-Python and incremental/streaming oracles stay green); peak on a 6M-edge graph
+  dropped to ~840 MB (was multi-GB), so a 16M-edge graph now queries in ~2 GB instead of OOM.
+
+### Fixed
+
+- **SQL resolver no longer treats prose as SQL.** `_sql_literals` matched any string whose
+  *first word* was a SQL verb, so English docstrings — `"Create a list…"`, `"Update the…"`,
+  `"Delete a…"`, `"With this…"` — were handed to sqlglot, flooding output with parse warnings
+  (hundreds per file on Django/Salt) and occasionally minting phantom tables. It now requires
+  real statement structure (`SELECT … FROM`, `INSERT INTO`, `UPDATE … SET`, `DELETE FROM`,
+  `CREATE <table|index|view|…>`, `WITH … AS … SELECT`). Real queries still resolve; prose
+  doesn't. Owned by a regression test.
+
+### Docs
+
+- **LIMITATIONS:** documented plugin-loader / string-name dynamic dispatch (Salt's loader,
+  pluggy, entry-point registries) as a static-analysis blind spot — on Salt 3008, `find_stale`
+  flags 3,907 loader-dispatched functions that are live at runtime. Escape hatch: pin the public
+  surface via `[entry_points]` globs or `ingest_trace`.
+
+## [2.0.1] — 2026-06-26
+
+**PHP precision fix from dogfooding v2.0.0 on Magento.** Running `find_stale` on the Magento
+Framework surfaced a cardinal-class false-positive: methods invoked through PHP's
+**`[$this, 'method']` callable-array idiom** (the `usort` / `uasort` / `preg_replace_callback`
+comparator pattern) were flagged dead, because the method name is a *string*, not a syntactic
+call, so the call scan never saw it.
+
+### Fixed
+
+- **PHP array callables are now recognized** (tree-sitter extractor). A 2-element callable
+  array `[$this|self::class|static::class|'Class'|$obj, 'method']` — the `usort` / `uasort` /
+  `preg_replace_callback` / `array_map` comparator idiom — emits a REFERENCES edge to `method`.
+  Cardinal-safe — only project symbols resolve, so a non-callable 2-element array that happens
+  to name a method merely over-roots (masking dead code), never causing a false-dead. On the
+  Magento Framework this removed 9 false-positive dead-flags (39 → 30 PHP candidates) while
+  still flagging genuinely-unused private methods. Byte-identity (streaming == full) is
+  preserved — the new edges flow through the shared extractor path. Owned by a regression test.
+  (A `'Class::method'` *string* callable needs no handling: a string static call requires a
+  PUBLIC target, which is already rooted as exported.)
+
 ## [2.0.0] — 2026-06-26
 
 **Constant-memory streaming indexer.** The major feature of v2: `reindex` can now stream the

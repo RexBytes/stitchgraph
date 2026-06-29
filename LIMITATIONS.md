@@ -37,10 +37,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   `[Fact]`/`[Theory]`/`[Test]`/… (xUnit/NUnit/MSTest), PHP `#[Test]` (PHPUnit); and,
   for **call-based** suites that define no named test function (JS/TS Jest/Mocha/
   Vitest, Ruby RSpec), the module-level `test()`/`it()`/`describe()` call sites in a
-  test file, rooted from the module node. A test driven *only* by a runner the
-  detector doesn't know — a third-party Rust macro whose attribute path doesn't end in
-  `test` (`#[rstest]`, `#[test_case]`, `#[googletest::gtest]`), or a custom
-  Java/C# annotation not on the allowlist — can surface as a stale candidate.
+  test file, rooted from the module node. Common third-party Rust harnesses are on the allowlist
+  (`#[rstest]`, `#[test_case]`, `#[gtest]`, `#[quickcheck]`, plus any `*::test` like `#[tokio::test]`
+  / `#[googletest::test]`; v2.1.7). A test driven *only* by a runner still outside the allowlist —
+  a more obscure third-party Rust macro, or a custom Java/C# annotation not on the set — can surface
+  as a stale candidate.
 - **Decisions / safe direction:** attributes match the annotation **path/name**
   against an allowlist (not a raw `"test"` substring); annotation tests propagate the
   `test` role to the enclosing class (`_seed_test_classes`) so a package-private
@@ -72,9 +73,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   forms — `export {}` / inline `export class/fn` / `export default <ident>` / CommonJS
   `module.exports`/`exports.*` / TS `export =`). A handful of indirect forms are still
   not rooted, so a symbol exported *only* that way can surface as a stale candidate:
-  a `module.exports = X` assignment buried *inside a function body*; `export * from
-  './m'`; `Object.assign(module.exports, {…})`; and `module.exports = ns.Member` via a
-  locally-constructed namespace object.
+  a `module.exports = X` assignment buried *inside a function body*;
+  `Object.assign(module.exports, {…})`; and `module.exports = ns.Member` via a
+  locally-constructed namespace object. (`export * from './m'` is **not** affected — it
+  re-exports symbols that `m` already `export`s inline, so they are already rooted in `m`;
+  verified, panel R86.)
 - **Decision / rationale:** match the idiomatic top-level forms by exact shape; these
   indirections are rare, and rooting them generically (e.g. any member-expression RHS)
   would over-mark and *hide* genuinely-dead code — the precision-unsafe direction. They
@@ -166,16 +169,20 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** trust the per-edge `provenance` — the concrete-dispatch candidates are
   `AMBIGUOUS`; the `EXTRACTED`/`--precise` edge identifies the declared target.
 
-### Implicitly-invoked dunder methods are rooted to their class (Python)
-- **Concern:** a class's dunder (`__call__`, `__get__`/`__set__`/`__delete__`,
-  `__getitem__`, `__enter__`, operators, …) is invoked by the interpreter with no explicit
-  call site, so a helper it alone calls would be orphaned and flagged dead (panel R20A).
-- **Decision:** seed a `REFERENCES` edge from each class to its dunder methods, so that when
-  the class is reachable its dunders — and their callees — are reachable too.
-- **Rationale:** dunders are real, implicitly-reachable entry points whenever instances of
-  the class are used. Tying the edge to the *class* (not rooting the dunder unconditionally)
-  keeps a dead class's dunders dead, so this rescues only genuinely-live callees. Dunders are
-  already excluded from stale candidates, so this changes only their callees' liveness.
+### Implicitly-invoked dunder + IPython display methods are rooted to their class (Python)
+- **Concern:** a class's dunder (`__call__`, `__get__`/`__set__`/`__delete__`, `__getitem__`,
+  `__enter__`, operators, …) is invoked by the interpreter with no explicit call site, so a helper
+  it alone calls would be orphaned and flagged dead (panel R20A). The same applies to the
+  IPython/Jupyter rich-display protocol (`_repr_html_`, `_repr_mimebundle_`, `_repr_png_`,
+  `_ipython_display_`, …), which IPython invokes **by name** when displaying an object — these are
+  single-underscore, so the dunder rule missed them and a class's display hook (+ callees) was
+  false-flagged dead (rich dogfood, panel R90).
+- **Decision:** seed a `REFERENCES` edge from each class to its dunder **and** IPython-protocol
+  methods, so that when the class is reachable they — and their callees — are reachable too.
+- **Rationale:** these are real, implicitly-reachable entry points whenever instances of the class
+  are used/displayed. Tying the edge to the *class* (not rooting the method unconditionally) keeps a
+  dead class's hooks dead, so this rescues only genuinely-live methods/callees (cardinal-safe). The
+  IPython set is the documented rich-display protocol, not an open-ended name match.
 
 ### Language implicit-hook methods are rooted by name (Ruby/Java/PHP/C++)
 - **Concern:** every language has methods the runtime/interpreter invokes *implicitly*, never
@@ -191,6 +198,101 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   implicit entry point. Rooting by name only ever *adds* roots (cardinal-safe); over-rooting a
   genuinely-dead hook is the documented precision-over-recall trade-off.
 
+### Rust FFI/linker exports are rooted regardless of `pub` (v2.1.3)
+- **Covered:** a function carrying `#[no_mangle]` or `#[export_name = "…"]` exports its symbol to
+  the linker / foreign (C) code, so it is a public-ABI entry point with no in-tree caller — the
+  Rust analogue of C's `EXPORT_SYMBOL`. `pub fn` was already export-rooted; these attributes now
+  root the function (role `exported`) **even without `pub`** (`#[no_mangle] extern "C" fn f()` is
+  valid Rust and still exports). Covers the bare form and the wrapped forms: `#[unsafe(no_mangle)]`
+  / `#[unsafe(export_name = "…")]` (the **required** spelling in the Rust 2024 edition; panel R70)
+  and `#[cfg_attr(<pred>, no_mangle)]`. Found doc-driven (the Rust reference documents the attribute
+  independent of visibility), since real crates almost always pair `#[no_mangle]` with `pub`
+  (cdylib convention), masking the non-`pub` path (panel R69).
+- **Rationale:** rooting only ever *adds* roots (cardinal-safe); the prior gap was a genuine
+  cardinal false-positive (a non-`pub` export and everything its body reached flagged dead).
+- **Runtime entry points (v2.1.9):** `#[panic_handler]`, `#[start]`, `#[alloc_error_handler]` are
+  invoked by the runtime automatically and need not be `pub`, so they are also rooted (role
+  `callback`; panel R88). `#[proc_macro]`/`#[proc_macro_derive]`/`#[proc_macro_attribute]` require
+  `pub` and were already rooted; `#[global_allocator]` applies to a `static` (not extracted as a
+  node, so never flagged).
+
+### Go cgo `//export` and C# `[UnmanagedCallersOnly]` native entry points (v2.1.9)
+- **Go:** a function with a `//export <name>` cgo directive on the line directly above it is callable
+  from C. A capitalised name is already `exported` by Go's rule; a **lowercase** `//export` is now
+  rooted from the directive (panel R88). `//go:linkname` and other `//go:` pragmas are not modeled.
+- **C#:** `[UnmanagedCallersOnly]` (native C-ABI entry, typically non-public) and `[JSInvokable]`
+  (Blazor JS interop) are now on the curated callback-attribute set. Cardinal-safe (only add roots).
+
+### C/C++ entry-point & export attributes are rooted (v2.1.4)
+- **Covered:** a C/C++ function carrying `__attribute__((constructor))` / `((destructor))` (incl.
+  the C++ `[[gnu::constructor]]` and priority `((constructor(101)))` forms), `__attribute__((used))`
+  / `((retain))`, `((section("…")))`, `((weak))`, `__attribute__((visibility("default")))`, or MSVC
+  `__declspec(dllexport)` is rooted — none has an in-tree by-name caller, yet each is live:
+  constructor/destructor run automatically around `main` (the C analogue of a static initializer /
+  Go `init`), `used` is explicitly kept by the compiler, `section` places the function in a
+  linker-collected table, `weak` is a linker-visible overridable symbol, and visibility/dllexport
+  are the public-ABI surface (the analogue of Rust `#[no_mangle]`). The **target** of
+  `((alias("t")))` / `((ifunc("r")))` is kept live by name (the attributed symbol is itself a
+  body-less declaration). The GCC `__name__` synonyms (`__constructor__`, …) are matched too.
+  Found doc-driven (the GCC/Clang/MSVC attribute reference enumerates them); panels R73/R74,
+  cardinal.
+- **Export attribute on a header *declaration* (handled, v2.1.5):** the export attribute is commonly
+  placed on the **declaration** (in a header) — `struct W { __attribute__((visibility("default")))
+  int compute(int); };` or a top-level `… int W::compute(int);` — while the out-of-line `.cpp`
+  definition carries none. The names of export-attributed declarations are collected project-wide and
+  root the matching definition by name (the C/C++ analogue of `__all__`), so a public-ABI method
+  marked only in the header is no longer false-flagged dead (panel R77 F2). Covers pointer/
+  reference-return wrappers (the `function_declarator` nested in a `pointer_declarator`; panel R78).
+- **Class-level export attribute (handled, v2.1.6):** `class __attribute__((visibility("default")))
+  Foo {…}` / `__declspec(dllexport)` exports the class's whole **public** interface; the public
+  public/protected method names in the class body are collected and root their definitions, so a
+  public method with no per-method attribute isn't false-flagged dead (panel R80 F1). Covers
+  declared-only, inline-defined (`function_definition`), and templated (`template_declaration`)
+  members (panel R81). `protected` is included (out-of-tree subclass ABI); `private:` members are
+  internal and stay dead-code-eligible.
+- **Rationale / scope:** rooting only ever *adds* roots (cardinal-safe). `visibility("hidden")` is
+  genuinely internal and stays dead-code-eligible; a plain non-`static` function (external linkage
+  but no explicit export attribute) is still **not** auto-rooted — that is the deliberate
+  precision/recall tradeoff for C, since otherwise no library function is ever dead. Annotate the
+  public surface (or pin via `[entry_points]`) to root those.
+- **Macro-wrapped attributes are not seen (unfixable without a preprocessor):** a project that
+  hides the attribute behind a macro — `#define EXPORT __attribute__((visibility("default")))` then
+  `EXPORT void f() {}` — defeats rooting, because tree-sitter does not run the C preprocessor, so
+  `EXPORT` parses as an opaque identifier with no `attribute_specifier` node (panels R77/R83). This is
+  the same family as every other preprocessor limitation and **genuinely unfixable** without running
+  the C preprocessor (which the local-first, offline-by-default design does not do). Strictly it
+  *can* be a false-dead — an uncalled public function exported only via a macro is live ABI yet
+  flagged — but it is unavoidable, not a precision-safe over-root; treat it as the documented
+  preprocessor boundary. Escape hatch: pin via `[entry_points]`, or use the literal attribute
+  spelling (which roots correctly).
+- **Empty-body-method attribute absorption (handled, panel R75):** the tree-sitter C++ grammar
+  parses an *empty-body* inline method (`void f() {}`) as a `field_declaration` and swallows the
+  *following* method's leading attribute. The extractor reattaches an attribute that sits after the
+  prior `field_declaration`'s declarator to the current function, so an export/entry attribute on
+  the method after an empty-body one still roots it. (The empty-body method itself is still not
+  extracted as its own node — a non-cardinal navigability gap, since a node-less symbol is never
+  flagged dead.)
+
+### PHP string callables: array + bare-string covered; module-scope is not (yet)
+- **Covered (v2.0.1):** the 2-element array callable `[$this, 'method']` / `[self::class, 'method']`
+  / `['Class', 'method']` inside a function/method body — the `usort` / `uasort` /
+  `preg_replace_callback` / `array_map` comparator idiom — emits a REFERENCES edge to the method
+  (Magento dogfood, panel R53). So a protected/private method invoked only this way is no longer
+  flagged dead.
+- **Covered (v2.1.8):** a **bare-string function callable** passed to a known PHP callback builtin —
+  `usort($x, 'topcmp')`, `call_user_func('handler')`, `array_map('mapper', …)` — now emits a
+  REFERENCES edge to the named global function (panel R86). Scoped to a curated builtin set
+  (`_PHP_CALLBACK_BUILTINS`) so an ordinary string literal that merely matches a function name
+  doesn't over-root.
+- **Not yet covered (known recall gap):** an array/bare-string callable at **module/file scope**
+  (not inside a def), since the callable scan runs over def bodies (`_direct_refs`), not module-level
+  code (`_module_uses`). In practice its targets resolve to public/exported symbols, so a false-dead
+  is unlikely. A bare-string callback passed to a *non-builtin* (project) higher-order function is
+  also out of scope (the builtin allowlist bounds the over-rooting).
+- **Escape hatch:** pin via `stitchgraph.toml [entry_points]` for the rare module-scope or
+  custom-dispatcher case. (Also not covered: the `preg_replace_callback_array(['/pat/' => 'cb'])`
+  keyed-array form, where the callback is an array *value* rather than a direct argument — pin it.)
+
 ### Framework annotations/attributes/decorators are rooted (Java/C#/JS/TS)
 - **Concern:** a method/class the framework invokes by *reflection or routing* — marked by an
   annotation (`@PostConstruct`, `@EventListener`, JPA `@PrePersist`, JMH `@Setup`), an
@@ -202,10 +304,18 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Decision:** root by a curated per-language set of framework annotations/attributes/
   decorators (role `callback`). The sets cover the dominant frameworks, not every library.
 - **Rationale / gaps:** these markers denote framework contracts, so a definition is a genuine
-  entry point; rooting only ever *adds* roots (cardinal-safe). NOT yet covered: a *custom*
-  user-defined decorator/annotation, C#'s named serialization callbacks discovered only via a
-  `[method]` reference, and JS/TS *metadata-only* decorators (`@Version`) that enhance but
-  don't invoke. Pin those in `stitchgraph.toml [entry_points]`.
+  entry point; rooting only ever *adds* roots (cardinal-safe). ByteBuddy's `@Advice.OnMethodEnter`/
+  `@OnMethodExit` (bytecode instrumentation, e.g. mockito's mock advice) and Moshi's `@ToJson`/
+  `@FromJson` adapter methods are now on the Java set (v2.1.7). Still NOT covered: a method invoked
+  by another *unrecognised* framework annotation, and JS/TS *metadata-only* decorators (`@Version`)
+  that enhance but don't invoke. The curated set covers dominant frameworks, not every library; pin
+  the rest in `stitchgraph.toml [entry_points]`.
+- **Fixed in 2.1.2 (the related reference gap):** a *custom in-tree attribute class* used via
+  `[Foo]` is now kept live. C# applies attributes with the `Attribute` suffix omitted
+  (`[NoEnumeration]` → class `NoEnumerationAttribute`), so the bare reference never resolved and
+  the attribute class was false-flagged dead (serilog dogfood, panel R64). An `attribute` usage
+  now also emits the suffixed reference. (This is the attribute *class* being referenced — not
+  the same as rooting an annotated *method*, which is the curated-set concern above.)
 
 ## Cost-of-fix exceeds value
 
@@ -303,6 +413,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   function that runs later, or attribute reassignment (`obj.method = patched`). Same class
   as dynamic dispatch / monkeypatching; surfaces as `needs_review`, not a confident verdict.
 - **Escape hatch:** pin the symbol in `stitchgraph.toml`, or `ingest_trace`.
+
+### Plugin-loader frameworks that dispatch by string name (Salt, pluggy, entry-point registries)
+- **Concern:** some frameworks invoke functions purely by **string name through a loader** —
+  Salt's loader resolves `state.apply` / `pkg.install` to module functions by name at runtime;
+  pluggy/`importlib.metadata` entry-point systems do the same. There is no syntactic call site
+  for the loader to follow, so nearly every public function of such a project looks dead to a
+  static call graph. The multi-repo Python hunt measured this directly: `find_stale` on Salt
+  3008 flagged **3,907** functions — overwhelmingly real, loader-dispatched execution-module
+  functions, not dead code.
+- **Decision:** do **not** special-case individual frameworks' loaders (Salt's `__virtualname__`,
+  pluggy's hookspecs, …) in the core — that is unbounded and brittle. The static graph reports
+  what it can see; the loader edge is genuinely invisible without modeling each framework.
+- **Escape hatch:** pin the public surface as roots — `stitchgraph.toml [entry_points]` globs
+  (e.g. every `salt/modules/*` function), or feed a runtime `ingest_trace` from a test run so the
+  loader-invoked functions are marked `runtime`-live. Treat a bare `find_stale` on a
+  loader-driven project as "internal-only candidates" rather than a dead-code verdict.
 
 ### A coverage trace from an unrelated tree sharing a path tail can mis-attribute
 - **Concern:** `ingest_trace` matches a coverage file's paths to indexed nodes by exact
@@ -418,8 +544,14 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   oracle (`tests/oracles/test_streaming_differential.py`). See
   [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
 - **Note:** streaming realises the saving only with an **on-disk** `Store` (a `:memory:` DB
-  necessarily holds the rows in RAM). It is currently opt-in via `streaming=True`; making it
-  the default above a file-count threshold is the final v2.0.0 step.
+  necessarily holds the rows in RAM). As of v2.0.0 it is the **default** (`streaming=None` →
+  AUTO: on-disk store with ≥ `_STREAM_AUTO_FILES` source files); force it either way with
+  `streaming=True` / `streaming=False`.
+- **Querying at that scale (v2.1.0):** the reachability sweeps (`find_stale`, `impact_of`,
+  `fan_in`) now stream their adjacency from `Store.iter_resolved()` rather than materialising
+  every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM. The
+  one remaining O(edges) structure is the in-memory adjacency itself (compact ints, not `Edge`
+  objects); pushing that to disk/GraphBLAS-on-disk is the next step if even that is too big.
 
 ## Behaviour is the contract (changing it would silently break callers)
 

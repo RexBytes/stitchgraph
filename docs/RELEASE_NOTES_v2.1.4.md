@@ -1,0 +1,85 @@
+# stitchgraph v2.1.4 — C/C++ attribute entry-point cardinal fix (doc-driven)
+
+Found by **continuing the doc-driven hunt** that produced v2.1.3's Rust FFI-export fix — this time
+against the GCC/Clang/MSVC function-attribute reference, which enumerates the attributes that make
+a C/C++ symbol an implicit entry point or part of the public ABI.
+
+## The bug
+
+stitchgraph treats a C/C++ function as dead when nothing in-tree references it and it carries no
+recognised entry signal. But several attributes make a function live with **no in-tree by-name
+caller** — and none was recognised:
+
+```c
+__attribute__((constructor)) static void init_module(void) { setup(); }  // runs before main
+static void setup(void) { ... }                                          // reached only from it
+
+__attribute__((used))        static void keep_me(void) { ... }           // compiler must keep
+__attribute__((visibility("default"))) void exported_api(void) { ... }   // public ABI
+```
+
+A minimal fixture confirmed the whole cluster — `init_module`, its destructor sibling, `keep_me`,
+`exported_api`, **and every helper they reach** — was flagged dead at confidence 0.6 (≥ 0.5), a
+cardinal-class false positive general to any C/C++ project using these idioms. The
+`__attribute__((constructor))` case is the sharpest: that function is **guaranteed to execute** at
+load time, yet was reported dead.
+
+## The fix
+
+A `_c_attr_roots(node, src)` helper inspects the attributes on a C/C++ function definition (the GNU
+`__attribute__((…))` / `attribute_specifier`, the C++11 `[[…]]` / `attribute_declaration`, and the
+MSVC `__declspec(…)` / `ms_declspec_modifier` — including the GNU *trailing* form that attaches to
+the declarator) and roots the function:
+
+- `constructor` / `destructor` → `callback` (runtime-invoked around `main`)
+- `used` / `retain` → `callback` (explicitly kept; a use the compiler can't see by name)
+- `visibility("default")` / `dllexport` → `exported` (public ABI)
+
+Cardinal-safe: it only ever *adds* roots, so a broad match can over-root (mask dead code) but can
+never flag live code dead. `visibility` is matched only for `"default"` — `"hidden"` is genuinely
+internal and stays dead-code-eligible; plain uncalled statics stay dead.
+
+### Panel R74 broadened the coverage
+
+The first review round found the bare-keyword match was incomplete — exactly the v2.1.3 pattern
+(doc-driven finds the mechanism, the panel finds the spellings). Added:
+
+- **GCC `__name__` synonyms** (`__constructor__`, `__used__`, `__visibility__`, …) — the
+  double-underscore form system/library headers use to dodge user macros. The original
+  `\b…\b` match couldn't see inside `__constructor__` (`_` is a word char); now an optional `_*`
+  surrounds each keyword. This was a CARDINAL miss (opus, R74).
+- **`section("…")`** → `callback` (linker-collected init tables) and **`weak`** → `exported`
+  (a linker-visible, overridable symbol callable from outside the tree).
+- **`alias("t")` / `ifunc("r")` targets** — these attributes name *another* in-tree function the
+  linker/loader reaches through this symbol; the attributed symbol is usually a body-less
+  declaration (no node), but its named target had a real definition with no by-name caller and was
+  flagged dead. The target is now kept live by name (the same mechanism as `EXPORT_SYMBOL`).
+
+### Panel R75 — empty-body-method attribute absorption (fixed, not documented)
+
+A second review round found one more spelling of the same class. The tree-sitter C++ grammar parses
+an *empty-body* inline method (`void f() {}`) as a `field_declaration` and swallows the **following**
+method's leading attribute as a trailing one — so `__attribute__((visibility("default"))) void g()`
+placed right after an empty-body method lost its attribute and `g` was false-flagged dead
+(cardinal). Rather than document it as a limitation, the extractor now reattaches an attribute that
+sits after the prior `field_declaration`'s declarator to the current function. Cardinal-safe; the
+field's own leading attribute (before its declarator) is never stolen. (The empty-body method itself
+is still not extracted as its own node — a non-cardinal navigability gap, since a node-less symbol
+can't be flagged dead.)
+
+## Why doc-driven found it
+
+This is the C analogue of the Rust `#[no_mangle]` gap. As with Rust, real repos exercise only a
+slice of the attribute surface and overwhelmingly pair these attributes with patterns that mask the
+gap; the reference enumerates each mechanism directly, and a minimal fixture isolates it.
+
+## Compatibility
+
+No API or schema change; indexes rebuild cleanly. C/C++ indexes now root functions carrying these
+entry-point / export attributes.
+
+## Quality gate
+
+Full suite (incl. new C, C++, and helper regression tests) + ruff + mypy clean; all differential
+oracles green; mutation meta-oracle over the new helper (all mutants killed); two-round
+full-diversity multi-model adversarial review.

@@ -59,6 +59,78 @@ def test_sql_tables_extracted(tmp_path):
         assert "users" in tables
 
 
+def test_prose_starting_with_sql_verb_is_not_parsed_as_sql(tmp_path):
+    """R58 (multi-repo Python hunt — Django/Salt): the SQL resolver must require real SQL
+    *structure*, not just a leading verb, or ordinary English docstrings ('Create a list…',
+    'Update the…', 'Delete a…') get fed to sqlglot — a warning flood and the odd phantom table.
+    Prose yields no DB tables; a genuine query alongside it still does."""
+    pytest.importorskip("sqlglot")
+    from stitchgraph.core.model import NodeKind
+    (tmp_path / "svc.py").write_text(
+        'def helper():\n'
+        '    """Create a list of prepopulated fields that should render JavaScript."""\n'
+        '    x = "Update the cache when the value changes for the current request"\n'
+        '    y = "Delete a stale entry from the in-memory mapping if present"\n'
+        '    return x, y\n'
+        'def real():\n'
+        '    return run("SELECT id, name FROM customers WHERE active = 1")\n'
+    )
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
+    assert "customers" in tables                                   # real SQL still resolves
+    assert not ({"list", "cache", "entry", "prepopulated"} & tables)  # prose -> no phantom tables
+
+
+def test_sql_literals_rejects_prose_keeps_real_sql():
+    """Pin `_sql_literals` directly: prose strings whose first word is a SQL verb are NOT
+    collected (so sqlglot never sees them — no warning flood), while real statements are.
+    This pins the `and`/length guards the end-to-end table test can't distinguish (R58)."""
+    pytest.importorskip("sqlglot")
+    import ast as _ast
+
+    from stitchgraph.core.resolve.sql import _sql_literals
+    src = (
+        'def f():\n'
+        '    a = "Create a list of prepopulated fields to render"\n'   # prose
+        '    b = "Update the cache for the current request object"\n'  # prose
+        '    c = "Delete a stale entry from the mapping object now"\n' # prose
+        '    d = "SELECT id FROM accounts WHERE active = 1"\n'         # real
+        '    e = "CREATE TABLE widgets (id integer primary key)"\n'    # real
+        '    g = "INSERT INTO audit (who) VALUES (1)"\n'               # real
+        '    return a, b, c, d, e, g\n'
+    )
+    func = _ast.parse(src).body[0]
+    found = _sql_literals(func)
+    assert all(s.split()[0].upper() in ("SELECT", "CREATE", "INSERT") for s in found)
+    assert len(found) == 3                                  # only the 3 real statements
+    assert not any(s.startswith(("Create a", "Update the", "Delete a")) for s in found)
+
+
+def test_prose_with_companion_keyword_makes_no_phantom_table(tmp_path):
+    """R58 (haiku): prose that *reads* like a clause — 'Select items from the list' — has SQL
+    structure, so the structural regex alone let it through and sqlglot minted a phantom `db::the`
+    table. `_STOP_TABLES` drops table names that are English function-words (the/a/of/…), which is
+    all such prose ever produces. A genuine query in the same file still resolves."""
+    pytest.importorskip("sqlglot")
+    from stitchgraph.core.model import NodeKind
+    (tmp_path / "svc.py").write_text(
+        'def doc():\n'
+        '    a = "Select items from the list when the page first renders"\n'
+        '    b = "Update the cache for the request before the handler runs"\n'
+        '    c = "Delete from the queue all the stale entries after a backup"\n'
+        '    return a, b, c\n'
+        'def q():\n'
+        '    return run("SELECT id FROM orders WHERE total > 0")\n'
+    )
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        tables = {n.name for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
+    assert "orders" in tables                                      # real query resolves
+    # prose parsed-as-SQL yields only English function-word "tables" (the/a/…), all dropped
+    assert not ({"the", "a", "for", "from", "with"} & tables)
+
+
 def test_full_stack_trace_route_to_table(tmp_path):
     pytest.importorskip("sqlglot")
     """The headline 'gem': a path from an HTTP route down to a DB table."""

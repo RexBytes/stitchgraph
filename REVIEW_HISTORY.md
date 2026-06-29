@@ -8,13 +8,13 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 1.0.7: R40–R48. **2.0.0: R49–R52** (full diversity opus/sonnet/haiku) on the streaming indexer |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation 20/20 ✅ · oracles 26 ✅ · no-open-defects ✅ |
-| Tests | 391 passing (full extras) |
-| Coverage | ~86% |
-| Convergence | 1.0.6: R33–R39 → R38–R39 (streak 2). 1.0.7: R40–R46 → **R47✓ R48✓** (streak 2). 2.0.0: R49✓ R50✗ (opus: `precise=True`×streaming `name_based` divergence, MEDIUM — fixed) → **R51✓ R52✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
-| Dogfood (self) | find_stale 1 advisory (no false-dead) · holes 0 |
-| Verdict | **1.0.0–1.0.7 RELEASED/releasable** (maintainer tags). **2.0.0** (constant-memory streaming indexer — reindex peak 3.2 GB→269 MB, ~12×, byte-identical; Magento-scale fits in memory) **RELEASABLE** — R50 finding fixed; R51+R52 full-diversity clean streak met (readiness RELEASABLE); awaiting the maintainer's manual `v2.0.0` tag |
+| Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_bash_time_target` killed; `_bash_export_decl` functional behavior pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
+| Tests | 571 passing (full extras) |
+| Coverage | ~93% |
+| Convergence | 2.1.29: Python abstract/Protocol interface methods → R140✓ R141✓. 2.1.30: C/C++ struct-used-as-a-type → R142✓ R143✓. 2.1.31: Bash function-export recall → R144 (2 cardinals found, fixed) → **R145✓ R146✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
+| Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). One newly-discovered pre-existing recall gap filed for later: Bash `PROMPT_COMMAND=fn` / `var=fn; $var` indirect invocation not rooted. |
 
 ## Trajectory
 
@@ -843,6 +843,805 @@ exhaustive reviewer (sonnet, 80 tool calls) and the fastest (haiku) both returne
 same code where opus constructed the one input — `precise=True` with a homonym — that broke
 byte-identity. A bug invisible to two independent thorough reviews fell to a third
 perspective.
+
+## 2.0.1 — PHP array-callable recognition (R53–R57)
+
+Dogfooding v2.0.0's streaming indexer on the **Magento Framework** (3,968 PHP files) surfaced a
+cardinal-class false-positive: methods invoked via PHP's `[$this, 'method']` callable-array
+idiom (`usort`/`uasort`/`preg_replace_callback` comparators) were flagged dead, because the
+method name is a *string*, not a syntactic call. The fix: the tree-sitter PHP extractor emits a
+REFERENCES edge to the method named by a 2-element array callable. Cardinal-safe (only project
+symbols resolve; over-rooting masks dead code, never a false-dead), byte-identity preserved. On
+the Framework, PHP dead-candidates dropped 39 → 30; genuinely-unused private methods still flag.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R53 | 3 | ✓ | full-diversity clean — append-only/cardinal-safe verified, PHP-only gating, byte-identity across all edge fields, edge cases (keyed/3-elem/non-string/nested) over-root-only. |
+| R54 | 3 | ✗ | code unanimously clean at real-Magento scale (opus: `find_stale` only shrank 8→6; sonnet: cross-file inheritance, typo→no hole). **haiku** found a doc inaccuracy: CHANGELOG/RELEASE_NOTES still claimed a `'Class::method'` string branch that the mutation-cleanup had dropped. |
+| R55 | 3 | ✗ | code clean again; the R54 doc fix was **incomplete** (the CHANGELOG *intro* + two in-code comments still claimed string-callable handling). **Fix:** grep-verified purge of every stale claim. |
+| R56 | 3 | ✓ | full-diversity clean — closure confirmed: no remaining "string callable handled" claim anywhere; byte-identity re-verified. |
+| R57 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. opus fresh 41-file PHP repo (every callable position, nested, multibyte, `precise=True`); surfaced two PRE-EXISTING recall gaps (bare-string function callable; module-scope array callable) — not regressions, now documented in LIMITATIONS. |
+
+The 2.0.1 lesson mirrors 1.0.x: **the doc-accuracy invariant catches incomplete fixes.** A
+partial doc correction (R54→R55) was caught twice before a comprehensive grep-driven purge
+closed it — and the final round (R57) turned up two adjacent recall gaps to document rather
+than silently ship. The cardinal fix itself was clean from R53; the iterations were all about
+keeping the docs honest about exactly what is and isn't covered.
+
+## 2.1.0 — constant-memory queries + SQL-prose precision (R58–R60)
+
+Dogfooding v2.0.1's streaming indexer across a **multi-repo Python hunt** (Django, Salt,
+Ansible, CPython stdlib, Home Assistant) found that *indexing* outran *querying*: Home Assistant
+indexed at ~4 GB (6,728 files / ~16M edges) but `find_stale` then **OOM'd** — every reachability
+sweep went through `Store.resolved_edges()` → `SELECT * … fetchall()`, building all 16M `Edge`
+objects at once. v2.1.0 streams a lean `(src, relation, dst_id, weight)` tuple view
+(`Store.iter_resolved()`); `algebra._Adjacency` and the `reach.py` sweeps build from it. Result
+byte-identical (the GraphBLAS==pure-Python oracle proves it); 6M-edge `find_stale` peak dropped
+to ~840 MB, so 16M now queries in ~2 GB. Plus a precision fix: the SQL resolver was treating
+prose docstrings (`"Create a list…"`) as SQL — now a structural regex + an English function-word
+`_STOP_TABLES` drop. And the Salt-loader string-name dynamic-dispatch blind spot (3,907
+flagged) is documented.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R58 | 3 | ✗ | reachability streaming verified byte-identical (opus differential, all sweeps). **opus** LOW: `iter_resolved` bypassed `_row_to_edge`'s corrupt-row drop → a corrupt relation could reach `best_path(relations=None)`. **haiku** MEDIUM: the SQL structural regex still let clause-shaped prose (`"Select items from the list"`) mint a phantom `db::the`. Fixes: skip invalid relations + coerce non-finite weight; `_STOP_TABLES` drops function-word table names. (A first signal-gate attempt was reverted — it rejected real minimal `SELECT x FROM y`.) |
+| R59 | 3 | ✓ | full-diversity clean — fixes confirmed byte-identical on real indexes; `_STOP_TABLES` drops no plausible real table. Tidied 2 NITs (stale test docstring, redundant import). |
+| R60 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. opus full differential (GraphBLAS + pure-Python) + doc-accuracy audit (corrected a stale v2.0.0 "streaming opt-in" LIMITATIONS line to AUTO-default). |
+
+The 2.1.0 lesson: **a memory-shape change is only as safe as its differential oracle, and the
+meta-oracle must run the path that actually executes.** The streaming rewrite was correct from
+the start (oracles green), but the first mutation run showed 16/16 survivors — because with
+GraphBLAS installed the pure-Python sweeps it mutated are *shadowed*; pinning them required a
+test that forces the core-only path. And the SQL fix needed two attempts (signal-gate →
+stop-words) to cut prose phantoms *without* dropping real minimal queries.
+
+## 2.1.1 — Ruby operator-method cardinal fix (R61–R63)
+
+A **Rust / Go / Ruby dogfood hunt** (serde, clap, gorm, cobra, gin, logrus, grape) chasing the
+higher-yield finding the Python hunt didn't produce: a *new* cardinal false-positive. Go (gin:
+`find_stale=0`) and Rust (serde: library fully live, only test-suite/trybuild fixtures flag)
+came back clean — confirming their rooting is mature. **Ruby (grape) produced the bug.** An
+asymmetry pointed straight at it: `ValueArray#initialize` was flagged dead while the
+structurally-identical `ValueHash#initialize` was live (the latter survived only by a
+*coincidental* mis-resolved edge). Root cause: Ruby operator methods (`def []`, `def []=`,
+`def <=>`, …) have a name node of tree-sitter type `operator` that the extractor didn't
+recognize, so the whole method was dropped — making it invisible AND false-flagging anything
+used only inside its body (`ValueArray.new(value)` lives inside `def []=`). Fix: capture the
+`operator` name node + root operator methods as `callback` (syntax-invoked, the Ruby analogue
+of the C++ special-member pass). grape: `ValueArray#initialize` now live, `[]`/`[]=` captured
+(+18 nodes), `find_stale` 23→19.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R61 | — | discovery | dogfood (not a formal panel): grape `ValueArray#initialize` false-dead found + root-caused to the dropped `operator` name node. |
+| R62 | 3 | ✓ | full-diversity clean — opus: shared `operator` capture never reaches a node/edge-minting path in C++/C# (no cross-language regression); sonnet: 24 operator forms + bodies' callees live, dead normals still flag, polyglot full==streaming; haiku: version/docs/no-bogus-nodes. |
+| R63 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Fresh angles: backtick method, unary `-@`/`+@`, `def self.[]`, module-level, nested modules, operator-calls-operator, cross-file homonyms, Ruby+C++ byte-identical streaming. |
+
+The 2.1.1 lesson: **diversity of *targets* finds what diversity of *reviewers* can't.** The
+Python hunt (mature rooting) found a scalability ceiling; pointing the same tool at a
+less-battle-tested language (Ruby) immediately surfaced a real cardinal bug. The
+`ValueArray`/`ValueHash` asymmetry was the tell — when two structurally-identical things get
+opposite verdicts, one of them is a bug.
+
+## 2.1.2 — C# custom-attribute cardinal fix (R64–R68)
+
+Continuing the hunt into Java and C# (jackson-core, mockito, okhttp, serilog). Most findings
+were the **documented external-framework-annotation limitation** — mockito's `@Advice.*`
+(ByteBuddy bytecode instrumentation), okhttp's `@ToJson`/`@FromJson` (Moshi reflection): methods
+invoked by annotations outside the curated set, now cited in LIMITATIONS (pin via
+`[entry_points]`). serilog surfaced a clean extraction bug: `NoEnumerationAttribute`, defined and
+applied as `[NoEnumeration]`, was flagged dead — **C# omits the `Attribute` suffix in usage**, so
+the bare reference never resolved. Fix: an attribute usage also emits the suffixed reference
+(`Foo` → `FooAttribute`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R64 | — | discovery | dogfood: serilog `NoEnumerationAttribute` false-dead, root-caused to the omitted-suffix reference. |
+| R65 | 3 | ✓ | full-diversity clean on the initial fix (`_direct_refs`) — every attribute form (`[Foo(1)]`/`[A.B.Foo]`/`[assembly:]`/generics) safe, no cross-language regression. |
+| R66 | 3 | ✗ | opus + haiku clean, but **sonnet** found the fix was incomplete: C# `enum`/`delegate` aren't in `spec.defs`, so their attributes are walked by `_module_uses` (not `_direct_refs`) — `[MyFlag]` on an enum left `MyFlagAttribute` dead. Fix: mirror the branch in `_module_uses`. |
+| R67 | 3 | ✓ | full-diversity clean — opus's coverage table + sonnet's exhaustive 18-target sweep confirm every C# attribute target is now covered, no double-count. |
+| R68 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Fresh angles: nested enum-in-class routing, local-function attrs, `using`-alias, no-live-root (correctly dead), C#+PHP polyglot streaming. |
+
+The 2.1.2 lesson reprises 2.0.1's: **the same reviewer who is slowest is often the one who finds
+the incomplete fix.** sonnet drove both the R66 enum/delegate gap and (in 2.0.1) the
+partial-doc-fix catches — exhaustive enumeration of cases is its edge, exactly where a "looks
+done" fix hides one uncovered branch. Also: the curated framework-annotation allowlist is a
+deliberate, documented boundary (ByteBuddy/Moshi out of scope), distinct from the genuine
+extraction bug (the attribute *class* reference) that was fixed.
+
+## 2.1.3 — Rust FFI/linker-export cardinal fix, doc-driven (R69–R72)
+
+A methodological shift: instead of waiting for a repo to surface a gap, **read the language
+reference**, which enumerates the *complete* implicit-invocation surface (magic methods, operator
+overloads, FFI exports, reflection hooks). The Rust reference documents `#[no_mangle]` /
+`#[export_name]` independent of `pub` visibility — so a non-`pub` `#[no_mangle] extern "C" fn`
+exports its symbol yet has no `pub` to trigger export-rooting, leaving it (and everything its body
+reaches) false-flagged dead. No scanned crate had hit it: real crates pair `#[no_mangle]` with
+`pub` (cdylib convention), masking the non-`pub` path. A minimal fixture isolates exactly that
+combination. Fix: `_is_rust_export_attr` + role `exported` (the Rust analogue of C `EXPORT_SYMBOL`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R69 | — | discovery | doc-driven: a non-`pub` `#[no_mangle] extern "C" fn` confirmed cardinal false-dead by a minimal fixture (`rust_entry dead? True`). The reference, not a repo, exposed it. |
+| R70 | 3 | ✗ | sonnet + haiku clean, but **opus** found the path-only matcher missed `#[unsafe(no_mangle)]` / `#[unsafe(export_name=…)]` — the **required** spelling in the **Rust 2024 edition** (mainstream, not an edge case) — and `#[cfg_attr(<pred>, no_mangle)]`; a non-`pub` export in either form stayed false-dead (verified conf 0.6). Fix: drop string-literals, then match the export token anywhere in the attribute (covers the `unsafe(...)` / `cfg_attr` wrappers; keeps `#[doc="no_mangle"]` from reading as an export). |
+| R71 | 3 | ✓ | full-diversity clean on the broadened fix — raw strings/escaped quotes, interleaved doc comments, `extern "C" {}` import blocks, macros, transitive depth >1, `pub`/`#[test]` coexistence; cross-language non-regression (the `attr_export` path is structurally Rust-only); word-boundary negatives (`#[no_mangle_extra]`/`#[xno_mangle]` False). |
+| R72 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. opus dogfooded **actual serde** (`test_suite/no_std`'s non-`pub` `#[no_mangle] rust_eh_personality` now correctly rooted; no crash, no catastrophic backtracking); sonnet ran the oracle suite (27/27: streaming==full, incremental==full, graphblas==pure-python) + multi-file cross-module reachability from an export root; confidence proof shows only genuinely-dead code flagged (0.6), export callees live by reachability not threshold-filtering. |
+
+The 2.1.3 lesson reprises and sharpens the 2.1.2 one: **the doc-driven fixture found the gap, but
+the first fix was still incomplete — and again model diversity caught it.** opus (not sonnet this
+time) found the edition-mandated `unsafe(...)` wrapper the path-only matcher missed. Reading the
+reference tells you *which mechanism* exists; it does not tell you *every syntactic spelling* of
+it (the 2024-edition `unsafe(...)` wrap is itself documented elsewhere in the reference). So
+doc-driven discovery and adversarial breadth are complementary: the doc finds the missing
+mechanism, the panel finds the missing spelling. Cardinal-safety made the broadening cheap — a
+wider token match can only ever over-root (mask dead code), never flag live code dead.
+
+## 2.1.4 — C/C++ entry-point & export attribute cardinal fix, doc-driven (R73–R77)
+
+Continuing the doc-driven method into the GCC/Clang/MSVC function-attribute reference, which
+enumerates the C/C++ attributes that make a symbol an implicit entry point or public ABI with no
+in-tree by-name caller. A minimal fixture confirmed a cardinal cluster flagged dead at 0.6:
+`__attribute__((constructor))`/`((destructor))` (run automatically around `main`), `((used))`,
+`visibility("default")`, `__declspec(dllexport)` — and every helper they reach. Fix: `_c_attr_roots`
+maps these to roots (callback for runtime/used, exported for visibility/dllexport). Two follow-on
+helpers landed as the panels broadened coverage: `_c_alias_target_names` (alias/ifunc targets) and
+`_c_dangling_attr_texts` (recovering an attribute the C++ grammar mis-attaches to a preceding
+empty-body method).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R73 | — | discovery | doc-driven: the C/C++ attribute cardinal cluster confirmed by a minimal fixture (conf 0.6). |
+| R74 | 3 | ✗ | opus found a CARDINAL miss — the GCC `__name__` synonyms (`__constructor__`, …, common in system headers) the `\b`-anchored match couldn't see (`_` is a word char); fixed with optional `_*`. opus also flagged Finding 2 (recall): `weak`/`section` fns + `alias`/`ifunc` **targets** still dead — the maintainer opted to fix in-release (`section`→callback, `weak`→exported, alias/ifunc target kept live by name). sonnet CLEAN (no regression, oracle 27/27, F→M normalization preserves roles); noted the empty-body-method gap as pre-existing/non-cardinal. haiku CLEAN. |
+| R75 | 3 | ✓→reset | full-diversity clean on the weak/section/alias code — but the streak **reset**: responding to sonnet's R74 empty-body note, the maintainer said *fix limitations, don't document them*, so `_c_dangling_attr_texts` landed after this round and is re-gated by R76/R77. opus: cross-file alias is invalid C (gcc rejects cross-TU alias); sonnet: EXPORT_SYMBOL∪alias per-file scoping correct, oracle 27/27. |
+| R76 | 3 | ✓ | full-diversity clean on the final tree incl. the empty-body recovery. opus 8-scenario attack — the recovery is structurally additive (only copies attr text onto a node) so it can't manufacture a false-dead; self-attr-steal harmless, chains/nested/malformed all no-crash. sonnet whole-file monkeypatch non-regression + determinism. |
+| R77 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Fresh: K&R defs, complex declarators, header+source, 50-fn stress (exactly the 25 dead flagged), prior-release regressions 281 pass, empty-body recovery under streaming. Surfaced two non-regressions: **F1** macro-wrapped attribute (`#define EXPORT …`) is unseeable without a preprocessor — now documented (unfixable); **F2** an export attribute on a C++ *header declaration* isn't propagated to the out-of-line definition (a pre-existing, documented C recall tradeoff surfacing at 0.6) — queued as the **v2.1.5 lead fix**. |
+
+The 2.1.4 lesson sharpens the doc-driven theme into a working rule: **the reference finds the
+mechanism; the panel finds every spelling of it; the maintainer's "fix don't document" turns the
+review's *documented gap* into the *next fix*.** R74 alone added three spellings the bare-keyword
+match missed (`__name__` synonyms, the alias/ifunc target indirection, weak/section); R75→R76 turned
+sonnet's documented empty-body limitation into a fix. The only things left documented for C/C++ are
+genuinely unfixable (macro-wrapped attributes — no preprocessor) or a real refactor (header-decl
+attribute propagation, now scheduled). Cardinal-safety made every broadening cheap: a wider match
+can only over-root (mask dead code), never flag live code dead.
+
+## 2.1.5 — C/C++ header-declaration export-attribute cardinal fix, from the limitation audit (R78–R80)
+
+A full audit of `LIMITATIONS.md` (per the maintainer's *fix it, don't document it* direction) triaged
+every note into fixable / fundamental / intentional and promoted the one genuinely-cardinal fixable
+item — R77 Finding 2 — to a fix. The export attribute (`visibility("default")` / `dllexport`) is
+commonly placed on the **header declaration** while the out-of-line `.cpp` definition carries none, so
+the public-ABI method (and its callees) was false-flagged dead at 0.6. Fix: `_c_export_decl_names`
+collects export-attributed declaration names **project-wide** (declaration and definition live in
+different files) and roots the matching definition by name — the C/C++ analogue of Python's `__all__`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R78 | 3 | ✗ | opus found a CARDINAL miss: the collector matched only *direct* `function_declarator` children, so a pointer/reference-returning export (`char* W::make(int)`, whose `function_declarator` nests inside a `pointer_declarator`) wasn't collected and its live def was flagged dead at 0.6. Fixed by reusing `_name_of` (which descends `_DECLARATOR_WRAPPERS`), guarded by `_has_function_declarator`; this also fixed the template-param mis-collection. sonnet/haiku reviewed the pre-fix code. |
+| R79 | 3 | ✓ | full-diversity clean on the fixed tree — every return-type wrapper (`char*`/`int&`/`int&&`/`const char*`/`char**`/function-pointer-return/member/qualified-nested) roots and propagates to helpers; determinism, full==streaming, incremental==full. Two non-cardinal informational notes (both safe over-root direction, pre-existing): a function-pointer *variable* over-rooting its name, and a deeply-namespace-nested class *shell* flagged via a `_cpp_method_scope` gap. |
+| R80 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Realistic multi-class lib (exactly the genuinely-dead internals flag), oracle 27/27, bounded two-library same-name over-root (== Python `__all__`), order-independent, cross-language gated, 100-export + 50-dead stress exact. opus surfaced **F1** (pre-existing, non-blocking): a class exported via a *class-level* attribute doesn't propagate `exported` to its public methods — queued as **v2.1.6**. |
+
+The 2.1.5 lesson: **a limitation audit is itself a doc-driven hunt** — `LIMITATIONS.md` enumerates the
+known gaps the way a language reference enumerates mechanisms, and triaging it cleanly separates the
+*fixable* (this release), the *fundamental* (needs a type model), and the *intentional* (the contract).
+R78 reprised the now-familiar pattern one more time (the fix handled the common declarator, the panel
+found the wrapped one). Cardinal-safety again made the project-wide rooting cheap: over-rooting a
+homonym across libraries is bounded and safe, exactly as Python's flat `__all__` already is.
+
+## 2.1.6 — C/C++ class-level export-attribute cardinal fix (R81–R83)
+
+The last cardinal item from the limitation audit (R80 F1), completing the C/C++ export-attribute
+story (definition → header-declaration → class-level). `class __attribute__((visibility("default")))
+Foo {…}` / `__declspec(dllexport)` exports the whole public interface, so a public method with no
+per-method attribute is public ABI; its out-of-line definition carries none and was false-flagged
+dead. Fix: `_c_public_method_names` collects the public/protected method names of an
+export-attributed class body into the project-wide `c_decl_exports` set.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R81 | 3 | ✗ | opus found a CARDINAL miss: the collector iterated only `field_declaration` children, so an **inline-defined** public method (parses as `function_definition`; templated → `template_declaration`) was missed and flagged dead at 0.6. Fixed by handling all three member shapes and including `protected` (out-of-tree subclass ABI). sonnet (its long run overlapped the commit) reviewed the fixed code and confirmed clean. |
+| R82 | 3 | ✓ | full-diversity clean — every member-shape × access combination, defaulted/deleted/pure/qualified/friend/using, empty-body interaction, `struct`/`class` `__declspec` variants, determinism, full==streaming, incremental==full. Footnote (non-blocking): a *double-nested* `template<T> template<U>` member isn't collected — but that is ill-formed C++ no compiler accepts, so it is out of the cardinal invariant's practical scope. |
+| R83 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Real-world header-only lib, the entire v2.1.4–2.1.6 attribute surface in one project (no cross-mechanism interference), namespaced exported classes, inheritance/virtual overrides, 40-class+30-dead stress (exactly the 30 flag), bounded two-library over-root, cross-language gated, nested classes correctly excluded (GCC visibility rules). |
+
+The 2.1.6 lesson closes the C/C++ export-attribute arc that ran v2.1.4→v2.1.6: **the same
+find-the-common-form / panel-finds-the-other-form rhythm repeated at every level** — definition
+attrs (v2.1.4: bare → `__name__` synonyms → weak/section/alias), header declarations (v2.1.5:
+direct → pointer/reference wrappers), class-level (v2.1.6: declared-only → inline/templated). Each
+broadening was cardinal-safe, so the cost of the iterative widening was only review rounds, never a
+shipped regression. What remains documented for C/C++ is genuinely unfixable (macro-wrapped
+attributes — no preprocessor) or non-compilable (double-nested member templates).
+
+## 2.1.7 — recall: third-party Rust test harnesses + ByteBuddy/Moshi annotations (R84–R85)
+
+The first **non-cardinal** release from the limitation audit — recall gaps that under-report live code
+as dead (a test/framework method that *is* reached, surfacing as a stale candidate). `_is_rust_test_attr`
+gained the common third-party harnesses (`#[rstest]`/`#[test_case]`/`#[gtest]`/`#[quickcheck]`, matched
+on the last path segment); the Java callback-annotation set gained ByteBuddy `@Advice.OnMethodEnter`/
+`@OnMethodExit` and Moshi `@ToJson`/`@FromJson`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R84 | 3 | ✓ | full-diversity clean **on the first round** (unlike the cardinal fixes, which kept surfacing wrapped/inline forms). Last-segment match rejects `#[my_rstest]`/`#[derive(rstest)]`/`#[cfg(feature="rstest")]`, accepts the real ones; monkeypatch diff shows only the intended new roots; zero cross-language bleed. |
+| R85 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Stress (30 Rust + 20 dead → 20/20 flagged; 20 Java + 15 dead → 15/15 flagged), rstest `#[case]`/`#[fixture]`/mixed `mod tests`, Kotlin produces zero nodes (no bleed), Go `OnMethodEnter` live by Go's own export rule (not bleed), build.rs/malformed no crash, determinism 5×, 290 regressions + 426 full. |
+
+The 2.1.7 contrast is the lesson: **a recall (additive-allowlist) change converges in one round, where a
+cardinal extraction change took two or three** — because over-rooting is structurally safe, so the only
+review questions are over-match, cross-language bleed, and regression, all of which a single thorough
+round settles. The cardinal fixes had a second axis (every syntactic form of the mechanism) that only
+adversarial breadth across rounds exhausts.
+
+## 2.1.8 — recall: PHP bare-string function callables (R86–R87)
+
+The last queued non-cardinal item from the limitation audit. A PHP global function passed by bare
+string to a known callback builtin (`usort($x, 'topcmp')`, `call_user_func('handler')`,
+`array_map('mapper', …)`) is reached at runtime but the syntactic call scan misses the string;
+`_php_string_callable_names` now emits a REFERENCES edge to it, scoped to a curated builtin allowlist
+so an ordinary string matching a function name doesn't over-root. Also a docs-only correction:
+`export * from './m'` is *not* an unrooted JS form (re-exported symbols are already inline-exported in
+`m`), verified by fixture.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R86 | 3 | ✓ | full-diversity clean on the first round. Positive coverage across both arg positions, over-match guard (string to a non-builtin stays dead), `Class::method`/namespaced safely dropped, cross-language no bleed, JS `export *` independently verified non-gap. The one finding — top-level module-scope callables not covered — is the *documented* pre-existing recall gap (both array and bare-string scans run over def bodies, not `_module_uses`). |
+| R87 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Magento-style mixed array+bare-string, nested `array_map(array_filter(…))`, closures, heredoc/interpolated/constant callbacks (no crash), all 6 input guards correct, polyglot index (PHP+Rust+Java+C+++Python) zero contamination, cardinal matrix 12/12, self-dogfood on the real Python codebase unchanged, 292 regressions + 428 full. |
+
+The 2.1.8 lesson reinforces 2.1.7's: the recall release converged in **two clean rounds with zero
+code findings across both** — the only notes were pre-existing documented gaps (module-scope,
+heredoc, `preg_replace_callback_array`) and a *docs correction* (`export *`). A scoped-allowlist
+additive change is the cheapest kind to gate, because the only failure modes are over-match (bounded
+by the allowlist) and cross-language bleed (bounded by the spec flag), both settled in one thorough
+round.
+
+## 2.1.9 — runtime / native (FFI) entry-point directives across Rust, C#, Go (R88–R89)
+
+Doc-driven hunt into each language's *runtime-entry* surface — functions a runtime or native caller
+invokes automatically, with no in-tree caller, and (unlike the already-covered `pub`/public forms)
+not necessarily public. Each candidate was probed with a minimal fixture before fixing, and the
+already-covered forms were left alone (the JS-`export*` discipline): Rust `#[proc_macro]*` require
+`pub`, C# `[JSInvokable]` on a public method, Go capitalised `//export`, and `#[global_allocator]`
+(on a `static`, never extracted) were all confirmed already-live and skipped.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R88 | 3 | ✓ | full-diversity clean on the first round. The decisive test: one index with Rust+Go+C#+Java+Python all defining `start`/`export`/`UnmanagedCallersOnly` — all 13 unattributed homonyms stayed dead, only the 3 attributed rooted (zero cross-language bleed). Wrapper syntaxes covered; name-mismatch/blank-gap/prev-None guards work; streaming==full (the Go `prev_sibling` read happens in pass 1 before the tree is freed). Non-cardinal notes: the Go regex over-roots `// export`(space) / a blank-line gap — cardinal-safe, real cgo never triggers. |
+| R89 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Real-world embedded-Rust / Go-cgo / C#-native shapes; a polyglot index exercising *every* prior cross-language fix at once (no interference); cardinal matrix 12/12; stress 36-dead-exact across three languages, 3 orderings identical; word-boundary + name-equality + csharp-only-set verified at the code level. |
+
+The 2.1.9 lesson extends the export-attribute arc to a sibling surface — *runtime*-invoked entries
+(panic handlers, native callees, cgo exports) rather than *linker*-exported symbols — and the
+cross-language bleed test became the centerpiece: as the per-language entry-point sets grow, the
+sharpest risk is one language's marker leaking into another, so the "N languages, same symbol name,
+only the right ones root" fixture is now the canonical check for any entry-point addition.
+
+## 2.1.10 — Python IPython/Jupyter display-protocol hooks, found by dogfooding rich (R90–R91)
+
+The first release this stretch **discovered by dogfooding a real library** rather than doc-driven
+hypothesis. Indexing `rich` flagged `JupyterMixin._repr_mimebundle_` dead: the IPython rich-display
+protocol (`_repr_html_`, `_repr_png_`, `_repr_mimebundle_`, `_ipython_display_`, …) is invoked *by
+name* by IPython on display, but the methods are *single*-underscore so the `__x__` dunder pass
+missed them. Fix: `_seed_protocol_dunders` ties a class's IPython-protocol methods to the class like
+dunders (shared `_is_protocol_method`; documented 13-name set, exact membership).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R90 | 3 | ✓ | full-diversity clean on the first round. Cardinal-safety is structural (the seed edge is class→method, so it never self-roots the class — a class whose only surface is a hook stays fully dead); scope discrimination (a top-level *function* named `_repr_html_` stays dead); exact frozenset (no `_repr_*` glob); dunder pass unchanged; rich 38→36 (exactly the 2 hooks). |
+| R91 | 3 | ✓ | full-diversity clean — **streak 2, gate met, RELEASABLE**. Breadth dogfood across 6 real libs (ipython/prompt_toolkit/rich/tabulate/textual/traitlets) — 65 protocol hooks, 0 flagged dead; `--precise` path identical; override interaction; 30-item stress; polyglot zero interference; cardinal matrix 12/12. |
+
+The 2.1.10 lesson is the value of **dogfooding over hypothesis**: doc-driven hunting enumerates a
+language's *own* implicit surface, but a real library exercises *ecosystem* protocols (IPython's
+display hooks aren't in the Python language reference — they're an IPython convention). Running on
+`rich` surfaced in one shot what no amount of synthetic Python probing would. The fix slotted into
+the existing dunder-seeding machinery (same class-scoped, cardinal-safe mechanism), and the
+breadth-dogfood across six IPython-integrating libraries (65 hooks, 0 false-dead) is the kind of
+real-world validation that earns "best repo."
+
+## 2.1.11 — Python implicit-invocation surface: generics, enum hooks, pytest hooks (R92–R93)
+
+Three Python cardinal false-positives in one release, found by **combining** the two hunting modes
+that earlier releases used separately: real-codebase dogfooding (sqlalchemy, werkzeug) *and* a
+doc-driven manual pass over the Python language/library reference. All three are reachability-*adding*
+and therefore cardinal-safe by construction (they can only make more code live).
+
+1. **Subscripted generic base** (`class Sub(Base[K, V])`) recorded no INHERITS edge — the base is an
+   `ast.Subscript` and `_name_of` returned `None`, dropping the edge and the polymorphic-override
+   path. New `_base_name` helper unwraps the subscript (loops for nested `Base[K][V]`).
+2. **Enum machinery hooks** `_missing_` / `_generate_next_value_` — single-underscore (not dunders),
+   invoked by name by the enum metaclass. Added to `_is_protocol_method` so the existing class→method
+   seed keeps them (and callees) live when the enum is reachable.
+3. **pytest plugin hooks** `pytest_*` in test files — discovered/invoked by name by pytest with no
+   in-tree call site. New `_is_pytest_hook` roots them (callback role), scoped to `is_test_file`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R92 | 3 | ✓ | full-diversity clean round 1. All three fixes strictly reachability-adding (subscripted base previously produced *neither* edge nor external-base entry — no diversion possible); `Generic[T]`/`Protocol[T]` in `_PLAIN_BASES` so not framework-misclassified (dead private method still flagged); enum/pytest hooks class- or test-file-scoped, dead variants stay dead. Minor/nit (nested-subscript one-level, pytest in any test-tree file, comment wording) all cardinal-safe — addressed in polish (`_base_name` while-loop, scope-accurate comment, external-base + nested-subscript tests). |
+| R93 | 3 | ✓ | full-diversity clean round 2 — **streak 2, gate met, RELEASABLE**. opus: full/streaming/incremental byte-identical, determinism holds, helper fuzzing. haiku: 441/441 + oracles 27/27 + ruff/mypy clean. sonnet: real-corpus dogfood (click/flask/requests/httpx/werkzeug) live-stays-live, and **confirmed the fix also resolves a real pre-existing false *negative*** — `flask.SecureCookieSession(CallbackDict[str, t.Any])` now correctly gets the `callback` role. |
+
+The 2.1.11 lesson: **dogfood + manual-reference together** is stronger than either alone. The manual
+pass enumerates a language's own implicit surface (enum hooks, subscripted-generic syntax); dogfooding
+proves they bite in real code (sqlalchemy/werkzeug mixins, conftest hooks) and — as the flask
+false-negative shows — the same INHERITS-edge fix that closes a cardinal gap also tightens recall.
+A single shared helper (`_base_name`) now backs the INHERITS edge and external-base detection, with a
+tracked follow-up to extend it to `_is_abstract_class` (find_holes precision, non-cardinal).
+
+## 2.1.12 — Transitive framework-inheritance callback rooting, tree-sitter (R94–R95)
+
+One cardinal fix clearing the **same root cause across PHP, C#, Java, and C++** — a symmetry gap
+where the Python extractor's `_apply_callback_roles` did a transitive INHERITS closure but the
+tree-sitter extractor marked only the *direct* subclass of an external framework base. A concrete
+override two-or-more hops below the framework base (via an in-tree abstract intermediary) is
+framework-invoked but had no in-tree caller, so it was confidently flagged dead. New
+`_framework_classes` helper: (a) direct external base + (b) same-name self-loop + (c) transitive
+first-party closure (fixpoint down the in-tree INHERITS tree). Confirmed on real Magento 2.4.7 and
+the C# explicit-`IDisposable.Dispose`-via-project-interface shape.
+
+This release is the clearest example yet of **the gate doing its job**: round 1 was clean on opus's
+*first* pass — but a deeper opus probe found a blocker (the case-(b) self-loop, `class Foo extends
+pkg.Foo`, was dropped in the port, reintroducing the same cardinal class in a different shape). Fixed
+to full python.py parity (cases a+b+c), then a fresh two-round full-diversity gate.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R94 | 3 | ✓ | re-gate round 1 (after the self-loop blocker fix). opus: blocker genuinely fixed (PHP/C#/Java self-loop overrides live), full a/b/c parity, cycle-safe, determinism + streaming parity; one pre-existing collision MINOR + a docstring NIT (both addressed/tracked). sonnet: **1000-iteration fuzz proves the change is a strict superset of prior rooting — under-rooting mathematically impossible vs pre-2.1.12**; real PHP/Java/C++ dogfood live-stays-live. haiku: 446 + oracles 27 + ruff/mypy + R94 tests green. |
+| R95 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Final confirmation on the complete release (incl. the docstring caveat); no cardinal introduced, over-mask boundary holds, residual cross-file-collision case confirmed pre-existing and tracked. |
+
+The 2.1.12 lesson: **a clean first look is not a clean gate.** opus's initial pass said RELEASABLE;
+its deeper pass found a real cardinal. Two-round, multi-model, *adversarial-not-confirmatory* review
+is what catches the port that's 90% right. The residual name-collision case (a true self-loop that
+also collides with an unrelated same-named class) is the one shape still resolved by name rather than
+`dst_id`; cardinal-safe in common shapes, pre-existing, tracked for a resolved-edge fix.
+
+## 2.1.13 — Runtime/native entry-point attributes: C ISR, Rust `#[ctor]`, Java `native` (R96–R97)
+
+Three narrow cardinal fixes batched into one release, extending the v2.1.9 runtime/native (FFI)
+entry-point arc to the attribute/modifier-marked entries the runtime or toolchain invokes
+automatically: C `__attribute__((interrupt))`/`((interrupt_handler))`/AVR `((signal))` (rooted
+`callback` via the implicit-entry regex), Rust `ctor`/`dtor` (added to `_RUST_RUNTIME_ENTRY_ATTRS`),
+and Java `native` (new `_is_java_native`). All attribute/modifier-gated, add-roots-only.
+
+Like 2.1.12, the gate paid off: the first round-1 pass found a **cardinal blocker** (opus *and*
+sonnet, independently) — the ISR regex matched `interrupt`/`signal` but not the trailing-word form
+`interrupt_handler` (after `interrupt`, the `_` is a word char so `\b` fails), so ARM/MIPS/m68k
+`__attribute__((interrupt_handler))` ISRs were flagged dead *and the changelog falsely claimed the
+form was covered*. Fixed (`interrupt(?:_handler)?|signal(?:_handler)?`) + regression, then a fresh
+two-round full-diversity gate.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R96 | 3 | ✓ | re-gate round 1 (after the `interrupt_handler` blocker fix). opus: blocker fixed (interrupt_handler/signal_handler ISR + callees live), `(?:_handler)?` neither over- nor under-matches (`interrupt_handler_foo` longer identifier stays dead; `my_interrupt_handler` attr name doesn't match), Rust/Java re-confirmed. sonnet: 11-form C ISR matrix incl. `[[gnu::interrupt]]` + GNU synonyms, Rust 9 forms, Java 10 forms — all correct; macro-wrapped ISR is the pre-existing preprocessor boundary, not new. haiku: interrupt_handler verified empirically, 450 + oracles 27 + ruff/mypy + readiness RELEASABLE. |
+| R97 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Final confirmation on the corrected release; no cardinal across all three fixes; over-mask boundary holds; determinism/streaming parity. |
+
+The 2.1.13 lesson reinforces 2.1.12's: **a regex that's right for the keyword can still be wrong for
+the keyword's real-world spellings.** `interrupt` matched but `interrupt_handler` (a genuine
+MIPS/m68k/ARM attribute) did not — and a confirmatory review that only checked the documented happy
+path would have shipped it. The adversarial probe that enumerated *toolchain spellings* found it. The
+reference/audit finds the mechanism; the adversarial panel finds the spelling.
+
+## 2.1.14 — Ruby implicit conversion / Enumerable protocol methods (R98–R99)
+
+The Ruby analogue of Python's dunder rooting: the interpreter/stdlib invoke a class's conversion
+(`to_s`/`inspect`/`to_str`/…), numeric-coercion (`to_i`/`to_f`/`to_r`), Enumerable (`each`),
+Hash-key (`hash`/`eql?`), and marshalling (`marshal_dump`/`_dump`/…) methods *by name*, so a live
+class's protocol methods (and their callees) were false-flagged dead. Fix: extend
+`_IMPLICIT_HOOKS["ruby"]` with the documented protocol names — each such method (in a `.rb` file) is
+rooted `callback`. Add-roots-only, cardinal-safe; Ruby-gated (no cross-language bleed).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R98 | 3 | ✓ | round 1. opus: all 22 names verified genuine Ruby protocol (no wrong member), Ruby-gated (no bleed into Python/JS `each`/`to_s`/`hash`), callee cascade live, genuinely-dead non-protocol methods still flag; NIT (top-level free fn named `to_s` also rooted — safe over-root, consistent with existing hooks). sonnet: 54 fixtures incl. real Rack/Money/ActiveRecord-style gems, before/after patch comparison proving the FPs were real; flagged `to_f`/`to_r` omission (same cardinal class as `to_i`). haiku: cross-language bleed empirically negative, 451 + oracles 27 + ruff/mypy + RELEASABLE. |
+| R99 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. `to_f`/`to_r` added (completing the conversion family); final confirmation on the complete set — no cardinal, no bleed, over-mask boundary holds. |
+
+The 2.1.14 lesson: **complete the family.** Adding `to_s`/`to_i` but not `to_f`/`to_r` leaves the
+same cardinal open for the un-added members — `Integer(obj)`/`Float(obj)` emit a call to
+`Integer`/`Float`, never to the object's hook, so a coercion-only `to_f` has no textual caller. The
+panel that enumerated the *whole* numeric-conversion family caught the omission a per-name spot-check
+would not.
+
+## 2.1.15 — C++ range-based-`for` `begin()`/`end()` customization points (R100–R101)
+
+`for (x : r)` is desugared by the compiler to `r.begin()`/`r.end()` (or ADL `begin(r)`/`end(r)`), so
+the name-based call graph never sees those calls — an iterable type's `begin`/`end` (and what they
+reach) were false-flagged dead. `_IMPLICIT_HOOKS` had no C++ entry and the special-member pass covers
+only operators/destructors. Fix: a `"cpp"` entry rooting `begin`/`end` as `callback`. Add-roots-only,
+cardinal-safe.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R100 | 3 | ✓ | round 1. opus: core fix works (begin/end + callees live, genuinely-dead still flag), pre-existing cardinal confirmed, const `begin() const` extracts to name `begin` (rooted), no cross-language bleed, no C-file over-rooting; flagged a DOC inaccuracy — the `.h`-as-C boundary claim is wrong, `_header_lang` content-sniffs C++ `.h` headers to `cpp` so their begin/end ARE rooted (better coverage, cardinal-safe). sonnet: real C++ lib dogfood (`Span`/`SmallVec`/`FilterView` in `.hpp`) all live, rbegin/rend correctly NOT rooted (called explicitly), same doc-inaccuracy finding. haiku: C-file bleed negative, 452 + oracles 27 + RELEASABLE. |
+| R101 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Doc wording corrected (the `.h` `_header_lang` sniff); final confirmation across `.cpp`/`.hpp`/`.h`-C++/pure-C-`.h`/`.c` — no cardinal, no bleed, over-mask boundary holds, determinism. |
+
+The 2.1.15 lesson: **the docs are part of the diff.** The code was correct and cardinal-safe, but the
+comment/CHANGELOG/release-notes asserted a `.h` "out of scope" boundary that the `_header_lang`
+content-sniffer had already removed — the panel checked the *claim against the code* and caught it. A
+factually-wrong comment that understates coverage is still a defect worth fixing.
+
+## 2.1.16 — Bash callback/invocation argument recognition (R102–R103)
+
+Commands that invoke a function via an *argument* (not the command head) are missed by the
+head-keyed command scan. `_bash_trap_handlers` generalized to `_bash_callback_refs`, now rooting the
+function named by `trap HANDLER` (incl. inside function bodies), `complete -F`/`compgen -F`,
+`export -f` (a `declaration_command`), and `time FUNC` — each routed through `_ref` so only project
+functions are rooted (cardinal-safe).
+
+Two adversarial rounds drove the parser to correctness on the messy real-world spellings:
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R102 | 3 | ✓ | re-gate round 1 (after the first round's recall/precision fixes: quote-strip in `_bash_command_words` for `time "bench"`/`complete -F "_c"`; `_bash_flag_arg` rewritten to take the immediate slot after `-F` so `complete -F ${VAR} cmd` stops grabbing `cmd`). opus + haiku clean; sonnet confirmed both fixes and found three pre-existing LOW gaps. |
+| R103 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. The one pathological cardinal from R102 (`complete -F f1 -F f2` rooting only the first, flagging the live last handler dead) fixed — `_bash_flag_arg` now roots every `-F` slot (cardinal-safe over-rooting of the overwritten one). Final confirmation: no cardinal across all four mechanisms; trap precision intact; genuinely-dead still flags; no cross-language bleed. |
+
+Pre-existing LOW gaps left as tracked follow-ups (cardinal-safe / rare): bare `trap EXIT` one-word
+reset rooting the signal name; `time { group; }` brace form (tree-sitter grammar limitation);
+`declare -xf`/`typeset -fx` export-f synonyms.
+
+The 2.1.16 lesson: **an argument parser meets the shell's real grammar, not the tidy form.** The tidy
+`complete -F _c cmd` worked first try; the rounds found `-F "_c"` (quoted), `-F ${VAR} cmd` (dynamic,
+grabbed the wrong word), and `-F f1 -F f2` (last wins) — each a different real spelling. Routing every
+candidate through `_ref` kept all of them cardinal-safe while the spellings were nailed down.
+
+## 2.1.17 — Ruby `&:symbol` / `enum_for` / `&method(:m)` symbol dispatch (R104–R105)
+
+Ruby names a method via a literal symbol in idioms the name-based call graph can't see, so the method
+(and its callees) was false-flagged dead. New `_ruby_symbol_refs` pass roots the method named by
+`&:sym` block arguments and by the first symbol arg of `enum_for`/`to_enum`/`method`/`instance_method`
+— each routed through `_ref` so only project methods are rooted (cardinal-safe). `send`/`public_send`
+stay the documented dynamic-dispatch limitation.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R104 | 3 | ✓ | re-gate round 1 (after a CARDINAL fix). opus's *first* round found the blocker — `_ruby_symbol_name` kept the `=` for setter symbols (`:name=` → `name=`), but setter defs are keyed without the `=` (`name`), so `method(:name=)` flagged the live setter dead; sonnet and haiku both missed it. Fixed (strip a trailing `=`, keep `?`/`!`). This R104: opus re-confirmed the fix; sonnet ran a full symbol-name surface audit (operators `:[]`/`:[]=`/`:+`/`:<=>`/`:-@` correctly skipped here and pre-rooted by `_is_ruby_operator_method`; setter was the *only* def-key mismatch); haiku verified the setter end-to-end. |
+| R105 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE**. Final confirmation across all dispatch forms; setters live; genuinely-dead flags; `send` excluded; no cross-language bleed; determinism. |
+
+The 2.1.17 lesson: **emit the key the def side uses, not the source spelling.** `?`/`!` are part of a
+Ruby method name (kept) but `=` is stripped from setter def keys — so the symbol side had to match.
+The single diverse reviewer who tested a *setter* found a cardinal two others, testing only
+getters/predicates, called clean. Diversity of *test inputs* across the panel is the safeguard.
+
+### 2.1.18 — JS/TS object-literal function-member bodies (#48)
+
+A top-level function called only inside an object-literal member (`const obj = { run(){ helper() } }`,
+method shorthand / function-valued property / nested object) was false-flagged dead: the object value
+was never traversed, so the member body's calls were invisible. The fix grew a new `_object_members`
+pass (members extracted as nodes, bodies walked, module-scope members rooted `callback`; class
+members `exported`; fn-scoped members CONTAINS-gated). This was the **deepest single surface of the
+campaign** — thirteen rounds, ten distinct cardinal classes — because every round of the diverse
+panel exposed one more {value-kind × wrapper × scope × branch} combination the extraction had to
+cover, and once because a fix over-reached.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R106 | 3 | — | core #48; round-1 cardinals: dynamically-dispatched underscore members (`handlers["_"+x]()`), computed-key member body walk, string-key members (opus found the underscore-dynamic one). |
+| R107 | 3 | — | member-VALUE wrappers (`run: (() => h())`, `(fn satisfies T)`) and class-valued members (`{ Parser: class {} }`) dropped the member body (opus, 3). |
+| R108 | 3 | — | fn-scoped class-valued member orphaned its methods (`enclosing_func=None` walked the class body as module-scope) — sonnet; gated methods to the class. |
+| R109 | 3 | — | the `assignment_expression` branch carried the identical fn-scoped class orphaning (`obj.X = class{}` in a fn) — sonnet; same one-liner gate. opus clean. |
+| R110 | 3 | ✓ | CLEAN. opus noted one MINOR pre-existing parity item (assignment-branch underscore gate vs object path) → deferred #77. |
+| R111 | 3 | — | TS wrappers not peeled on the fn/class assignment RHS (`obj.X = (class{}) satisfies T`) nor the arrow-const value — sonnet+opus; `_unwrap_ts_value` applied uniformly. |
+| R112 | 3 | ✓ | CLEAN. opus noted the `_unwrap_ts_value` `seen<8` cap under 9+ literal parens (LOW/theoretical) → deferred #79. |
+| R113 | 3 | — | `generator_function` values omitted from the function-value tuples (opus); a **delayed** round-8 sonnet additionally found the chained/parenthesized-assignment value gap (`const routes = module.exports = {}`). |
+| R114 | 3 | ✓ | completed `generator_function` in the 4th tuple (the multi-line `_module_uses` def-skip the round-8 edit missed). Cardinal-SAFE precision; both reviewers clean on cardinals. |
+| R115 | 3 | ✓ | CLEAN on the generator-complete code; full matrix + real-world objects (Redux/Vuex/Express/RxJS). |
+| R116 | 3 | — | **REGRESSION caught + reverted.** The round-8 chained-assignment `else` fallthrough escalated the pre-existing #75 expression-shape family (helper-recall) into a CARDINAL by minting object/class methods as *unrooted, mis-qualed* nodes (opus). Reverted; chained-assignment + expression-position objects deferred to #75. |
+| R117 | 3 | ✓ | CLEAN — opus+sonnet `FINDINGS: none`; haiku surfaced only the **verified-pre-existing** #75/#80 family (proven byte-identical on the `5cb47bc` baseline). First of two consecutive clean on the final HEAD. |
+| R118 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** All three clean; ~45/35 differential fixtures HEAD-vs-`5cb47bc`, zero new flags, no crash. Direct object-literal member surface fully hardened. |
+
+The 2.1.18 lessons — three of them: (1) **a partial fix can be worse than the gap.** R116's `else`
+fallthrough "fixed" a pre-existing helper-recall (#75) but escalated it to a live-*method*-flagged-dead
+cardinal by letting generic descent mint object members as unrooted nodes; reverting and deferring the
+whole family to one principled pass was correct. (2) **wait for every reviewer.** The delayed round-8
+sonnet (22 min) found the chained-assignment cardinal after the round had been prematurely concluded
+on opus+haiku — concluding a round before its slowest model returns hides findings. (3) **distinct
+test names matter:** a self-probe was masked when a fixture's method (`m`) collided with the module
+node id (`m.ts::m`); the panel's `svc.ts`/`mmm` naming exposed it. The expression-position family
+(#75: IIFE/ternary/`||`/`Object.freeze`/array/sequence/chained-assignment), `const X = class {…}`
+(#80), and a few others are **pre-existing** (identical on `5cb47bc`) and deferred to a focused next
+release that routes every object literal through `_object_members`.
+
+### 2.1.19 — `const X = class {…}` class-expression declarator (#80)
+
+A class expression bound to a const (`export const Widget = class extends Component {
+render(){ helper() } }`) was never modeled — the `variable_declarator` branch handled
+arrow/function/generator/object values but not `class`/`class_expression` — so a helper called
+only from its methods was flagged dead. Closed by adding a class branch that mirrors the
+`assignment_expression` class handling (CLASS node, INHERITS edges, body walk, `exported` rescue,
+round-3/4 fn-scope gating). Now at parity with a regular `class X {}`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R119 | 3 | ✓ | round 1. opus+haiku clean with full parity tables vs regular `class X {}` (const-class is frequently *safer* in fn-scope — gates methods to the class rather than orphaning). sonnet's lone finding `@Injectable() const Service = class{}` is **invalid TypeScript** (decorating a const → parse-ERROR node, decorator unreachable) → out of scope, tracked LOW #82; the valid decorator patterns (method decorators inside, framework-base `extends`) work at parity. |
+| R120 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus+haiku clean (haiku 64 custom + 475 pytest; opus const-extends-const / regular-extends-const / cross-file INHERITS / mixins / re-export). sonnet clean on the cardinal invariant across 20 scenarios; one LOW *cardinal-safe* precision note (a fn-nested const-class over-roots its genuinely-dead methods) — by design (the round-3/4 over-rooting, required by the gating regression). |
+
+The 2.1.19 lesson: **a const-bound class expression is a class, so give it the class treatment.**
+The fix is a near-verbatim mirror of the `assignment_expression` class branch; the diverse panel's
+job here was parity verification (run the regular-`class` control for every fixture and report only
+a delta). The one "delta" found was the const-class being *more* cardinal-safe than a regular nested
+class — the right direction.
+
+### 2.1.20 — JS/TS object & class literals in EXPRESSION positions (#75)
+
+The broad close-out of the JS/TS object/class extraction line (after 2.1.11 method shorthand, 2.1.18
+`_object_members`, 2.1.19 `const X = class {…}`). An object or class literal reached only through an
+*expression shape* — a call argument (`register({ onInit(){ helper() } })`, `Object.freeze({…})`),
+an array element (`[ {…} ]`), a ternary / `||` / `??` branch, an IIFE return (`(() => ({…}))()`), a
+sequence (`(init(), {…})`), or a chained/parenthesized assignment (`const r = m.exports = {…}`) —
+had its members invisible. Two distinct failures fed the same cardinal: a `variable_declarator` whose
+value was such a shape was **swallowed** (no `else`, so the wrapping call/array/ternary was never
+descended), while a bare-statement form descended generically and minted the member **unrooted** (the
+"round-11" cardinal that the 2.1.18 effort's deliberate no-else had guarded against). Closed by
+routing every generically-reached `object` through `_object_members` and every anonymous
+`class`/`class_expression` through a class model (with a `body`-field guard against the bare `class`
+keyword token), then re-enabling a now-safe descending `else` on the declarator.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R121 | 3 | ✓ | round 1. All three FINDINGS: none. opus built a **base-vs-HEAD differential harness** and gave a structural proof the change is reachability-MONOTONIC and purely additive (only appends nodes/edges/roles; synthesized `<obj@L_C>`/`<class@L_C>` ids cannot collide with real ids; HEAD *fixes* pre-existing cardinals, introduces none). sonnet 35 framework fixtures (createSlice/defineComponent/Express/RTK/Vue), haiku 18+. Two cardinal-safe non-bugs noted: getter/setter sharing a synthesized id (over-rooting only) and bare arrow/function in expression position (pre-existing #75-family recall gap → tracked **#83**). |
+| R122 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** Fresh angles. opus: multi-file homonym resolution over-approximates to ALL same-named candidates (a synthetic `<obj@..>.go` never evicts a real `Foo.go`); a getter/setter id-collision loses a node *row* but not its call *edges* (reachability keys adjacency by edge `src`, requiring only `dst` to exist) so nothing real goes stale; positional per-file ids cannot collide with real symbols. sonnet 25+ scenarios (Angular `@Component`/NgRx/Pinia `this`-dispatch/class-field initializers/default-param objects/JSX/40-symbol mixed live+dead — all 5 genuinely-dead still flag, 20+ live retained); the 2 apparent violations confirmed PRE-EXISTING on base (function-reference-as-argument liveness, #83). haiku 100+ cases incl. empty/spread-only/deeply-nested. |
+
+The 2.1.20 lesson: **the "no else" was a placeholder, not a verdict.** The 2.1.18 declarator branch
+deliberately refused to descend into expression-shaped values because raw generic descent mints an
+object's `method_definition`s as unrooted module-scope nodes — escalating a recall gap into a cardinal
+(round 11). The right fix was not to keep swallowing but to make descent *safe*: intercept the literal
+at the point generic descent reaches it and route it through proper member rooting, so the `else` can
+finally descend. The diverse panel's value this round was the **structural / differential** argument
+(opus's monotonicity proof + base-vs-HEAD harness) over fixture enumeration — the strongest evidence
+that an *additive* change cannot introduce a false-dead.
+
+### 2.1.21 — Go method value / method expression references (#49, cobra dogfood)
+
+An **unexported** Go method reached only as a *method value* (`reg(v.run)`), *method expression*
+(`use(t.run)`), or struct-literal field value (`cfg{onRun: v.run}`) was flagged dead. These are
+references, not calls: `_direct_calls` sees only `v.run()` call sites, and `_direct_refs` collected
+`identifier`/`type_identifier`/`constant`/`name` nodes but not the selector's `field_identifier`, so
+the method got no inbound edge. (Capitalized/exported methods are rooted as public API — that masked
+the gap until it was probed with unexported receivers, the methodical lesson: *test the unexported
+surface, because the exported one is auto-live.*) Closed by emitting the trailing `field` name of a
+Go `selector_expression` as a by-name REFERENCES edge in `_direct_refs` (Go-scoped — that node type
+is unique to the Go grammar).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R123 | 3 | ✓ | round 1. All three FINDINGS: none. opus structural proof — the branch is strictly additive and `find_stale` is weight-agnostic boolean BFS, so it can only over-root (cardinal-safe); base-commit dump confirms HEAD fixes a real false-dead. sonnet 24 framework fixtures (cobra/gin/k8s/goroutine/defer/embedding/dispatch-map/25-symbol mixed live+dead); haiku 68. Genuinely-dead unexported method still flags; no crash. |
+| R124 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus confirmed Go-uniqueness of `selector_expression` across all 12 grammars (no cross-language effect), streaming==in-memory parity, CALLS/REFERENCES double-dedup, base-vs-HEAD differential. sonnet quantified the over-rooting blast radius (a struct-field read shares the selector shape, so a dead function whose name *exactly* collides with a struct field is kept live — synthetic worst case 22/25; cardinal-SAFE precision-over-recall, bounded to exact-name matches, strictly better than the pre-fix false-dead) → precision follow-up **#84**. haiku 66 crash/edge cases clean. |
+
+The 2.1.21 lesson: **a reference is not a call, and a method value is a reference.** The selector
+field that names a method handed off as a value never appears in the call scan; emitting it as a
+REFERENCES edge (the same closing move the Python `_direct_names` / the JS bare-name refs use) keeps
+the live target live. The diverse panel's value this round was twofold: opus's *weight-agnostic-BFS*
+structural proof (an additive edge change cannot strand a live node), and sonnet's *blast-radius
+quantification* — naming the precision cost precisely (exact-name field/function collisions) and
+scoping the safe-but-real recall loss into its own follow-up rather than letting it block a
+cardinal-clean release.
+
+### 2.1.22 — same-name method-overload role clobber (#61, store-level, all languages)
+
+Two same-name method **overloads** (`void f()` / `void f(int)` in Java/C#/C++) collapse to one node
+id (`Class.f` — the extractor doesn't put arity in the id). `Store.add_node` used `INSERT OR REPLACE`,
+so the **last-written** overload's row won outright and **clobbered the earlier overload's roles**: a
+public-API method (`exported`) overloaded with a private same-name helper declared *after* it, or a
+framework-callback overload (`@PostConstruct`/`@Test`) followed by a plain one, lost its only root and
+was confidently flagged dead though live. The failure was declaration-order-dependent. Closed by
+upserting with `ON CONFLICT(id) DO UPDATE` that **unions** the colliding rows' roles — a rooting role
+is never dropped. The fix is store-level, so it covers C#/C++ overloads, not only Java.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R125 | 3 | ✓ | round 1. All three FINDINGS: none (cardinal). opus structural proof — roles strictly additive + liveness MONOTONIC in roles (no role gates out, audited `detect`/`_live_set`/`_stale_candidates`) + non-role columns identical to old REPLACE; base-vs-HEAD differential. sonnet 16 framework fixtures (JUnit/Spring/servlet/builder/C# `[Fact]`/C++ `operator()`), both declaration orders, and quantified the bounded cardinal-safe precision masking (1 dead overload masked per rooted same-id sibling, never leaks wider — inherent to the arity-less id scheme, since adding arity would risk wrong-overload call resolution = a *new* cardinal). haiku Java/C#/Go/Python, streaming+in-memory, 50+ overloads. |
+| R126 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus attacked the proof on five fronts and it held: no role gates out; the post-extraction seed passes all run on in-memory frozensets BEFORE `add_node` (never on the joined string); every joined-string reader splits-and-dedups; no role is a substring of another (LIKE-safe); no `roles == value` exact-match exists; `kind`/`is_stub` newest-row can only move a node OUT of candidacy (safe); streaming+incremental byte-parity. sonnet 15+ fixtures (duplicated-role strings, `runtime` carry through `replace_file`, mixed-language repo, all downstream ops crash-free, truly-dead private still flags). haiku 33 (stub/kind collisions, 100-overload stress, SQL-injection attempt). |
+
+The 2.1.22 lesson: **when two defs must share an id, merge their liveness signal — never let last-writer-wins decide it.** The id scheme deliberately omits arity (so a call `f(x)` resolves to *the* method `f` without arity inference — adding arity to ids would risk resolving a call to the wrong overload and flagging the real one dead, a worse cardinal). Given that merge, the node row must UNION the rooting signal, not replace it. The diverse panel's value this round was opus's *monotonicity* proof (an additive role change cannot strand a live node, because no role gates out) — the strongest possible evidence for a store-level change — backed by sonnet's enumeration that no role is a substring of another and the bounded precision cost.
+
+### 2.1.23 — Java anonymous-inner-class override in a class-scope initializer (#62)
+
+An anonymous inner class (`new Base(){ … }`) has no name, so its overriding method can never be
+resolved by a `Class.method` by-name call — it is invoked only polymorphically through the base type.
+Inside a method body the enclosing-function containment edge already keeps the override live; but in a
+**field / static / instance initializer** (class scope, no enclosing function) nothing rooted it, so a
+non-`public` override — and the private helper it alone calls — was flagged dead though live. (Public
+overrides were masked by the `exported` role; the gap surfaced on `protected`/package-private
+overrides of a custom abstract base.) Closed by rooting a def that sits directly in an anonymous class
+body (`class_body` child of `object_creation_expression`) as `callback` when at class scope; the
+in-method case stays containment-gated, preserving its precision.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R127 | 3 | ✓ | round 1. All three FINDINGS: none (cardinal). opus structural proof (additive/monotonic, cross-checked vs #61's no-role-gates-out) + 165k-invocation crash fuzz (0 exceptions) + base-vs-HEAD differential + streaming parity. sonnet 15 framework fixtures (Swing/`Runnable`/`Comparator`/`TimerTask`/custom base) + quantified the bounded cardinal-safe precision masking (~1 dead private per class-scope anon class, never leaks to named classes). haiku 12 crash cases incl. enum constants. → precision/under-rooting follow-up **#87** (anon dead-member masking + enum-constant-body override gap). |
+| R128 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus attacked the proof on fresh corners and it held: lambda-in-field (a Java lambda is not a def scope, so `enclosing_func` stays None → correct rooting, no flip), incremental `replace_file` byte-equal to a fresh reindex across edits, streaming parity on a 2101-file tree, base-vs-HEAD strict-SUBSET (numeric monotonicity), enum-constant bodies unchanged from base. sonnet all downstream ops crash-free + masking bounded to anon-class members + no conflict with `_seed_callback_roles`/exported seeding. haiku 200+ fuzz files + 5-deep nesting. |
+
+The 2.1.23 lesson: **an anonymous class has no name, so name-resolution can never reach its
+overrides — they must be rooted structurally.** The two reachability paths for a nameless override
+are the containment edge (in a method body) and polymorphic dispatch (everywhere); only the former
+was modeled, leaving class-scope initializers orphaned. Rooting anon-class members `callback` at
+class scope closes it, gated by `enclosing_func is None` so the in-method case keeps its precise
+containment gating. The diverse panel again leaned on the *monotonicity* proof (additive role ⇒ can't
+strand a live node) and a large crash-fuzz, with sonnet bounding the precision cost.
+
+### 2.1.24 — C/C++ function called only inside a `#define` macro body (#59)
+
+A function called or named *only* inside a preprocessor macro body — `#define LOG(m) log_impl(m)`, a
+function-pointer macro `#define DEFAULT handler`, a helper-wrapping macro — was confidently flagged
+dead. Tree-sitter parses a macro body as a single raw-text `preproc_arg`, so the call inside it is
+invisible to the AST call scan. Closed by `_macro_body_ref_names` (a text-scan of macro bodies, the
+direct analogue of the `EXPORT_SYMBOL` scan) rooting matching project C/C++ F/M nodes `callback`,
+project-wide across the unified C/C++ bucket. The first review round drove two refinements in: splice
+`\<newline>` line continuations before scanning (a continuation splitting an identifier was read as
+two fragments, missing the target — a found cardinal-recall gap), and exclude the macro's own
+`preproc_params` from the body scan.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R129 | 3 | ✓ | round 1 on the FINAL code. All three FINDINGS: none (cardinal). opus structural proof (additive/monotonic, base-vs-HEAD differential) + crash hunt (20k-deep nesting, garbage bytes, `#undef`/conditionals). sonnet attributed precision cleanly: #59 body-token over-rooting vs the SEPARATE pre-existing #88 module-walk param-reference over-rooting (distinguished by the `callback` role). haiku 200+ fuzz files. Cross-language gate holds; streaming parity. (The pre-fix round-1 that found the line-continuation + param-precision issues is folded into this fix, not counted as a clean panel.) |
+| R130 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: incremental `replace_file`/reindex (no stale-state leak), streaming byte-parity on a ≥2000-file tree, real-world `util.h` (X-macros/`container_of`/`##`), #59-vs-#88 boundary nailed by disabling the pass in-process, monotonicity gained=0, crash corners (1MB body, recursive `#define A A`). sonnet multi-file C library + all downstream ops crash-free + variadic macros + C++ `::`-qualified names + quantified both precision sources (~2/fixture each). haiku 250+ fuzz + independently pinpointed #88's source (`_module_uses` `preproc_params`, ~line 1890). |
+
+The 2.1.24 lesson: **scan the text the grammar refuses to parse — but scan it the way the
+preprocessor would.** The macro body is opaque `preproc_arg` text, so a byte-scan (the EXPORT_SYMBOL
+move) is the right tool; the round-1 panel's value was catching that a faithful scan must also splice
+line continuations (as the preprocessor does) and exclude parameter placeholders, and — sharply —
+*attributing* the residual param over-rooting to a pre-existing, separate mechanism (`_module_uses`
+walking `preproc_params`, #88) rather than to this change, by keying on the `callback` role. Knowing
+which code owns a symptom is as valuable as the fix.
+
+### 2.1.25 — C/C++ function-pointer table / vtable promotion (#69)
+
+A C/C++ function whose address is taken in a global function-pointer table (`int (*ops[])(int) =
+{op_a, op_b}`), a plugin/vtable struct, a designated-initializer table, or a scalar (`cb h =
+handler`) is invoked indirectly through that global — possibly in a different translation unit via
+`extern`. Globals aren't graph nodes, so the cross-TU use is untrackable, and the address-taken
+functions were false-flagged dead when their TU had no entry point (the passive registration-unit
+pattern). Closed by `_c_global_init_fn_refs` rooting matching project C/C++ F/M nodes `callback`,
+matching the `initializer_list` node directly (the dialect common denominator — C++ mis-parses
+`int (*tab[])() = {…}` as an `expression_statement`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R131 | 3 | ✓ | round 1 on the final code. All three FINDINGS: none. The pre-fix round-1 (sonnet) had quantified a precision regression — the scan collected designated-init FIELD names (`.open`/`.read`/`.free`, the commonest C function names) — fixed by collecting only `identifier` (the value), not `field_identifier`. This round verified it: opus directly REFUTED the under-rooting risk (function-pointer values are always `identifier`; only designators/member-components dropped — base-vs-HEAD confirms all values retained); sonnet quantified the win (file_operations 12 spurious → 0); haiku fuzz. |
+| R132 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus incremental + streaming (2102 files) + real-world driver/registry + monotonicity gained=0 + crash sweep (1MB / depth-6000 / recursive typedefs). sonnet driver project + rooting-pass interaction (all additive unions, no conflict) + downstream ops crash-free + 3 cardinal-safe precision residuals quantified. haiku 350+ fuzz + cross-language gate. |
+
+The 2.1.25 lesson: **the over-approximation has a floor you must not cross.** The panel pushed two
+ways at once — sonnet found field-designator over-collection (precision, fixed by dropping
+`field_identifier`), but the *opposite* tightening it later suggested (skipping C++ lambda bodies)
+would have been cardinal-UNSAFE: a global lambda body is not walked by any def pass, so its callees
+are live *only* because the initializer scan collects them — skip it and a function called only in a
+*used* global lambda goes false-dead. Knowing which direction is the cardinal-safe one (collect more,
+never less, for indirect-dispatch text the grammar doesn't model) is the whole discipline. The
+collect-`identifier`-only fix threads it: it drops non-value designators (pure precision) while
+keeping every value and every body callee (cardinal-safety preserved).
+
+### 2.1.26 — JS/TS implicit-dispatch class members (#54) — closes the cardinal sweep
+
+A JS/TS class member the runtime invokes *implicitly* is never reached by a plain `obj.method()`
+by-name call, so the by-name resolver finds no caller and — in a non-exported (but instantiated)
+class — the member and the private helpers it alone calls were confidently flagged dead though live.
+Three forms: a well-known-Symbol computed key (`[Symbol.iterator]`/`[Symbol.asyncIterator]`/
+`[Symbol.toPrimitive]`/`[Symbol.hasInstance]`/`[Symbol.toStringTag]`, run by `for…of`/spread/`+`
+coercion/`instanceof`/`Object.prototype.toString`); a `get`/`set` accessor (run by a property
+read/write, which the graph models as a member access, not a call); and a serialization/coercion hook
+by name (`toJSON` via `JSON.stringify`, `toString`/`valueOf` via string & numeric coercion). Closed by
+`_is_js_implicit_dispatch_method` (a `computed_property_name` containing `Symbol.`, a `get`/`set`
+child node, or a name in `{toJSON, toString, valueOf}`), language-gated to javascript/typescript/tsx,
+rooting the member `callback`. Exported-class members were already rescued by
+`_seed_exported_class_methods`, so the gap surfaced on non-exported classes.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R133 | 3 | ✓ | round 1 on the final code. All three FINDINGS: none. opus: rooting purely additive (`roles.add` only, never deletes; Node id/kind independent of roles), helper cannot raise on malformed/unicode/empty-child nodes, single call site, streaming==in-memory, plain uncalled method still flags dead. sonnet (empiricist, 14 fixtures across .ts/.tsx/.js/.jsx/.mjs): every branch keeps member+private callee live, genuinely-dead members still flag, no crash. haiku (42 crash-robustness checks): empty/malformed bodies, non-UTF-8 bytes, backwards byte ranges, `Symbol.` substring false-positives — all over-root-or-no-op, zero crashes. |
+| R134 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE; closes the entire per-language cardinal sweep.** opus (interaction angles): adding `callback` can't change `cid`/kind; same-name collapse (`get value()`/`set value()`, `[Symbol.iterator]` vs plain method) unions roles via #61 `ON CONFLICT` so no live member/callee lost under collision (streaming + in-memory); helper `name` never diverges from the qual; TS overload sigs+impl collapse correctly; 396 regression tests pass. sonnet (deep transitive chains): 4-deep iterator→_a→_b→_c, getter→private→module-free-fn, toString→static-field-init→builder, cross-class iterator→helper — all live; dead methods in a live-iterator class still flag. haiku (stress): 50+ implicit-dispatch members, deep nesting, huge `Symbol.` expressions, mixed valid/broken tree, empty/ctor-only classes — no crash. |
+
+The 2.1.26 close: **the same precision-over-recall instinct that built `_seed_exported_class_methods`,
+generalized to the implicit-dispatch surface that rescue couldn't reach.** With this the per-language
+cardinal sweep is complete — v2.1.1 through v2.1.26 each shipped one gated cardinal fix across all ten
+supported languages (Python, JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, Bash). What remains (#70–#89)
+is entirely cardinal-*safe* precision/coverage follow-ups — over-rooting to tighten and recall gaps to
+widen, none of which can flag live code dead — all deferred.
+
+### 2.1.27 — JS/TS shorthand member of an exported object (#74) — first of the follow-up backlog
+
+The post-sweep backlog (#70–#89) is cardinal-*safe* in aggregate, but a few entries are themselves
+pre-existing cardinals worth closing. #74 is one: a function referenced via object-literal SHORTHAND
+in an exported object — `export const handlers = { onClick, onHover }` — is public API (an importer
+reaches `handlers.onClick`), but a `shorthand_property_identifier` is never modeled as a reference, so
+the named function and the private helpers it alone calls were false-flagged dead. The CJS/default
+forms (`module.exports = { onClick }`, `export default { onClick }`) were already handled by
+`_reexport_names`; the named-const-export form was the gap. Closed by collecting an exported
+declaration's object-literal member names (shorthand idents + `pair` value idents) into the same
+reexport→`exported` path.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R135 | 3 | ✗ | initial panel — round 1 clean (3/3) but round 2 haiku found an IN-SCOPE CARDINAL: the canonical TS idiom `export const handlers = { onClick } as const` wraps the object in an `as_expression` (also `satisfies`/parens), not a bare `object`, so the new branch's `v.type == "object"` check missed it and the member stayed dead. **Fixed** by unwrapping TS value wrappers via `_unwrap_ts_value` on both the named-export object and the `module.exports = …` RHS (mirroring the declarator/assignment def branches). Streak reset. |
+| R136 | 3 | ✓ | fresh round 1 on the final code. All three FINDINGS: none. opus: unwrap additive, `v.type=="object"` gate rejects unwrapped non-objects (`export const x = f as const` correctly NOT collected), monotonic role-union, streaming parity, crash sweep clean. sonnet: 9 real-world scenarios (as const / satisfies / parens / NestJS mixed / CJS-wrapped / double-chained / spread / non-object / precision) all correct. haiku: as-const cardinal confirmed fixed, 407 regression tests pass. |
+| R137 | 3 | ✓ | fresh round 2 — **streak 2, gate met, RELEASABLE.** opus: all four export forms coexist + root independently; dual-name/double-export over-root only; DOGFOOD streaming==in-memory parity, 0 public-API symbols newly flagged. sonnet: 5-level transitive across 3 files live, cross-language isolation, 7 dead siblings still flag (no blanket-root). haiku: full suite 543 + oracles 27 green; pathological inputs (1000 members, unicode/keyword keys, chained wrappers) no crash. |
+
+The 2.1.27 lesson: **the panel earns its keep on the follow-up backlog too.** Round 1 was clean on the
+plain shorthand, but the most common real-world shape (`{ … } as const` on a TS handler object) only
+surfaced in round 2 — and the fix was the one-line unwrap the def branches already used. #77 (underscore
+member-assign), #81, and #83 in the same cluster were resolved WITHOUT a code change: #77 is a deliberate
+precision boundary (a statically-named underscore member that is actually called resolves by name —
+verified), and #81/#83 are already covered for exported modules via `_module_uses` + def-body recursion.
+
+### 2.1.28 — TS class-member resolution cardinals (#76, #78)
+
+Two ways a genuinely-live TS class method (and the private helpers it alone calls) was confidently
+flagged dead. #76: a `#private` method called via `this.#m()` — `_name_of` and `_callee` both
+returned None for `private_property_identifier`, so the `#m` def was dropped (body unwalked → helper
+dead) and the call edge was lost. #78: a class method with a dynamic key (string `"k"(){}`,
+computed-string `["k"](){}`, numeric `42(){}`) — `_name_of` returned None, dropping the def. Closed
+by (a) adding `private_property_identifier` to `_trailing_id`'s leaf set so the def name and the call
+site resolve to the same `#m`, and (b) modeling a dynamic-keyed class method as a node (named from
+the raw key) with its body walked, rooted `callback` (reachable only via a dynamic subscript). A
+`#private` method resolves by name, so an UNCALLED one still flags dead (precision preserved); the
+dynamic-key rooting is the class-body analogue of the object-literal computed-key rule.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R138 | 3 | ✓ | round 1. opus: the `_trailing_id` change is strictly ADDITIVE (former None → `#name`, no misroute; `#`-prefix unique so no public/private collision; inert at other call sites by grammar); #78 modeling additive with id-collision safety (`["run"]` vs `run` distinct). sonnet (12 fixtures): private state machines, static/getter/arrow-field `#private`, Redux `["ACTION"]` maps, #54 Symbol coexistence — all live, uncalled #private + plain-dead still flag. haiku: crash sweep (hex/unicode/escaped keys, 200+ dyn methods, broken syntax) zero crashes, 441 tests. |
+| R139 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: other `_trailing_id`/`_name_of` consumers unaffected; a `#private` in an exported class is correctly NOT rescued (so uncalled still flags); `.`/`::` dyn-key ids cause no crash + no under-rooting; DOGFOOD streaming==in-memory parity; 550 tests. sonnet: 6-file library, inheritance, plain-JS ES2022, regression bundle (#54/#74) no regression, free-fn-via-#private transitive live. haiku: 550 + oracles 27; downstream ops crash-free on #private/dyn-key nodes; reindex idempotent. |
+
+A pre-existing, cardinal-SAFE note the panel surfaced: two classes with an identically-named
+`#private` method share a by-name bucket, so a `this.#m()` call resolves AMBIGUOUSLY to both — an
+over-root in the safe direction, and a net correctness *gain* over the prior state (where the
+`#private` node didn't exist at all and the called method was a false-dead).
+
+### 2.1.29 — Python abstract / Protocol interface methods (#70, #86)
+
+A bodyless interface-method declaration is a contract fulfilled by overrides, never called by name —
+so it should not be reported as dead code. Two compounding gaps: `_is_abstract_class` used `_name_of`
+on each base, returning None for an `ast.Subscript` (`Protocol[T]`, `Generic[T]`), so a subscripted-
+base abstract class wasn't recognized (#70); and a bodyless abstract/Protocol method had no root, so
+an uncalled one was flagged dead (#86). Closed by (a) `_is_abstract_class` unwrapping subscripted
+bases via `_base_name`, and (b) rooting a bodyless `_is_abstract` method `callback`. Cardinal-safe: a
+concrete (real-body) uncalled method in an ABC and its private helper still flag dead.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R140 | 3 | ✓ | round 1. opus: change is strictly ADDITIVE to liveness (`is_stub`/`is_abstract` never feed reachability — verified by grep; `_is_abstract_class` still matches only the literal Protocol/ABC set); #71 deferral confirmed cardinal-safe. sonnet (6 fixture suites): Protocol[T]/ABC,Generic[T]/ABCMeta stubs spared, concrete-dead still flags, non-abstract subscripted bases unaffected, find_stale not a no-op. haiku: 24 edge cases no crash, parity. |
+| R141 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: inheritance+override end-to-end, cross-file Protocol, #51 subscripted-base INHERITS coexistence, no metric inflation, DOGFOOD streaming==in-memory parity. sonnet: plugin ABC architecture, DI Protocols, @runtime_checkable/@abstractmethod @property/abstract @classmethod, precision intact. haiku: 553 + oracles 27; find_holes correctly spares bodyless abstract methods (contracts, not holes); reindex idempotent; downstream ops crash-free. |
+
+#71 (`_framework_classes` name-collision over-masks) was resolved WITHOUT a code change: over-masking
+is the cardinal-SAFE direction (it keeps a possibly-framework-reachable class live), and tightening
+it would *un-mask* — risking a live framework-only-reachable class flagged dead. A deliberate
+precision boundary, left intentionally; the panel independently confirmed the reasoning.
+
+### 2.1.30 — C/C++ struct used only as a type (#89)
+
+A struct/union/enum used only as a TYPE — `struct Config g;`, `void f(struct Config *p)`, a field or
+return type — is a live data-model definition, but C/C++ has no constructor call to edge it, so it had
+no inbound edge and was false-flagged dead. Closed by `_c_type_ref_names`, which collects the names of
+bodyless (type-use) struct/union/enum/class specifiers (the body-bearing definition is skipped); the
+post-pass roots every matching C/C++ class node `callback`. Project-wide, scoped to C/C++.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R142 | 3 | ✓ | round 1. opus: post-pass purely additive, body-is-None guard excludes the definition, cross-language gate blocks Java/C#/TS homonyms, `_trailing_id` safe on qualified/template/scoped-enum shapes, cross-file rooting works. sonnet (6 fixtures): header/source split, field/typedef/enum/union uses, C++ class/enum-class/namespace/template, #69+#59 coexistence, dead C functions still caught. haiku: 12 crash/edge cases no crash, 422+27 green, parity. |
+| R143 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus (mechanism): rooting a class `callback` does NOT rescue its methods (LIVENESS_RELATIONS excludes CONTAINS; `_seed_exported*` key on `exported`), so a dead method of a type-rooted class still flags; .h/.cpp/.c unification; sizeof/cast/fn-ptr-typedef uses rooted; 2000-struct + recursive typedef reindex 0.3s; parity. sonnet: realistic C allocator + C++ inheritance/templates, precision boundary, transitive type liveness, mixed-language isolation. haiku: 558 + oracles 27, downstream ops crash-free, idempotent, 9 pathological scenarios. |
+
+Cardinal-safe boundaries the panel confirmed (left intentionally): **#88** (the C/C++ module walk
+treats a `#define` parameter name as a reference) is over-rooting — un-masking would risk a cardinal.
+**#87** (enum-constant-body overrides) is already handled — a Java enum constant's override and its
+helpers stay live; the companion class-scope anon-class over-rooting is the cardinal-safe direction. A
+recall backstop gap noted by the panel (cardinal-safe, deferred): a C++ bare type name without the
+`struct`/`class` keyword (`Config c;`) parses as `type_identifier`, so `_c_type_ref_names` doesn't
+collect it — but when the using code is live the `REFERENCES` edge already rescues the type, and when
+the using code is dead the type being dead is correct, so it is never a false-dead.
+
+### 2.1.31 — Bash function-export recall (#73); closes the #70–#89 backlog
+
+A function exported for subshells via `declare -fx` / `typeset -fx` (the ksh/bash spellings of
+`export -f`) or invoked under `time { fn; }` was flagged dead though live. `_bash_export_decl` now
+accumulates the `f`/`x` flag characters across the leading flag words (so the split spellings
+`declare -f -x` / `declare -x -f` work as well as combined `declare -fx`); `_bash_time_target` takes
+the first bare-identifier word (robust to any brace token, incl. nested `time { { fn; }; }`).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R144 | 3 | ✗ | initial panel — R1 all clean, but R2 found TWO in-scope cardinals: opus, split flags `declare -f -x` (the combined-token check missed the split spelling); haiku, nested `time { { fn; }; }` (first word arg is the multi-char token `{ {`, which an exact `{`/`}` skip missed). **Fixed** by accumulating `f`/`x` across flag words and taking the first identifier word. Streak reset. |
+| R145 | 3 | ✓ | fresh round 1 on the final code. opus verified against bash POSIX options-then-operands semantics that NO valid export form places the flag after the name (so the leading-run accumulation has no under-rooting gap) + 3000-case fuzz; sonnet 9 groups; haiku both cardinals fixed + triple-nested time. |
+| R146 | 3 | ✓ | fresh round 2 — **streak 2, gate met, RELEASABLE; closes the #70–#89 follow-up backlog.** opus comprehensive all-mechanisms script + cross-file + 10-file dogfood parity + deferral re-confirmation; sonnet 7 fixtures + over-root guard; haiku 571+27 + 2000-fn stress + idempotency. |
+
+The 2.1.31 lesson: **the panel earns its keep even on the last release.** A clean round 1 on the
+obvious forms, then round 2 surfaced two valid-bash spellings the first fix didn't cover
+(`declare -f -x` split flags; nested `time { { } }`). The corrected accumulate-across-flag-words
+model was then validated against actual bash option-parsing semantics — there is no valid form that
+places the exporting flag after the name, so the recall is complete, not just patched for the cases
+seen. With this, the post-sweep follow-up backlog (#70–#89) is closed: #70/#74/#76/#78/#86/#89/#73
+fixed behind the full gate; the remainder resolved without code change, documented as deliberate
+cardinal-safe boundaries, or coverage-only.
 
 ## Standing themes
 

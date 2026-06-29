@@ -33,18 +33,21 @@ class _Adjacency:
     """A derived boolean adjacency matrix plus the node<->index mapping."""
 
     def __init__(self, store: Store, relations: Iterable[Relation]) -> None:
-        rels = set(relations)
+        rels = {r.value for r in relations}  # compare against raw stored strings (see iter_resolved)
         self.ids = store.all_node_ids()
         self.index = {nid: i for i, nid in enumerate(self.ids)}
+        index = self.index
         rows: list[int] = []
         cols: list[int] = []
         weights: list[float] = []
-        for edge in store.resolved_edges():
-            if edge.relation in rels and edge.dst_id in self.index \
-                    and edge.src in self.index:
-                rows.append(self.index[edge.src])
-                cols.append(self.index[edge.dst_id])
-                weights.append(min(max(edge.weight, 0.0), 1.0))
+        # Stream lean (src, relation, dst, weight) tuples instead of materialising every Edge
+        # object: a 16M-edge graph builds these three int/float columns directly, never a 16M-
+        # element Edge list (which OOM'd find_stale on Home Assistant before v2.1).
+        for src, rel, dst, weight in store.iter_resolved():
+            if rel in rels and dst in index and src in index:
+                rows.append(index[src])
+                cols.append(index[dst])
+                weights.append(min(max(weight, 0.0), 1.0))
         self.n = len(self.ids)
         self.rows, self.cols, self.weights = rows, cols, weights
 

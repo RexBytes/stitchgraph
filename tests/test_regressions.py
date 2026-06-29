@@ -2838,7 +2838,7 @@ def test_bash_trap_handler_parsing_matrix(tmp_path):
     for code, expected in cases.items():
         src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
         tree = parser.parse(src)
-        got = [n for n, _ in ts._bash_trap_handlers(tree.root_node, src)]
+        got = [n for n, _ in ts._bash_callback_refs(tree.root_node, src)]
         assert got == expected, f"{code!r} -> {got}, expected {expected}"
 
 
@@ -5879,3 +5879,3127 @@ def test_comment_between_rust_attribute_and_fn_keeps_test_root(tmp_path):
         stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
         assert "closeness_works" not in stale   # #[test] survives the comment: rooted
         assert "helper_in_test" not in stale     # reached only from the test fn: live
+
+
+def test_php_array_callable_method_is_live(tmp_path):
+    """R53 (Magento dogfood, cardinal): PHP invokes methods via the `[$this, 'method']`
+    callable-array idiom (usort/uasort/preg_replace_callback comparators) — the method name is
+    a STRING, not a syntactic call, so the call scan missed it and the live method was
+    confidently flagged dead. The tree-sitter PHP extractor now emits a REFERENCES edge for
+    the array-callable's method (cardinal-safe: only project symbols resolve, so a non-callable
+    2-element array merely over-roots). A genuinely unused private method is still flagged.
+    (`compareRows` is protected and `_convert` private — neither is rooted by public-export, so
+    they would be flagged dead without the callable-array fix.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Svc.php": (
+            "<?php\n"
+            "class Svc {\n"
+            "    public function run() {\n"
+            "        $rows = [];\n"
+            "        usort($rows, [$this, 'compareRows']);\n"
+            "        return preg_replace_callback('/x/', [$this, '_convert'], 'y');\n"
+            "    }\n"
+            "    protected function compareRows($a, $b) { return $a <=> $b; }\n"
+            "    private function _convert($m) { return ''; }\n"
+            "    private function _reallyDead() { return 1; }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "compareRows" not in stale     # [$this, 'compareRows'] usort callback: live
+    assert "_convert" not in stale        # [$this, '_convert'] preg_replace_callback: live
+    assert "_reallyDead" in stale         # genuinely unused private method: still flagged
+
+
+def test_ruby_operator_method_captured_and_rooted(tmp_path):
+    """R61 (grape dogfood, cardinal): Ruby operator methods (`def []`, `def []=`, `def <=>`)
+    have an `operator`-typed name node, which the extractor dropped — so the method was invisible
+    AND anything it used (e.g. `ValueArray.new(value)` inside `def []=`) was false-flagged dead,
+    because its only construction site lived in an uncaptured method. The extractor now captures
+    operator method names and roots them (invoked via operator/index SYNTAX, never a by-name
+    call — the Ruby analogue of the C++ special-member pass)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "store.rb": (
+            "class Bag\n"
+            "  def []=(key, value)\n"
+            "    @h ||= {}\n"
+            "    @h[key] = Entry.new(value)\n"   # Entry constructed only inside []=
+            "  end\n"
+            "  def [](key)\n    @h[key]\n  end\n"
+            "end\n"
+            "class Entry\n"
+            "  def initialize(v)\n    @v = v\n  end\n"
+            "  def evaluate\n    @v\n  end\n"
+            "end\n"
+            "class Unused\n"
+            "  def initialize\n    @x = 1\n  end\n"   # never .new'd -> genuinely dead
+            "end\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = {r["id"].split("::", 1)[-1] for r in store.conn.execute("SELECT id FROM nodes")}
+        stale_full = {c["id"] for c in sg.find_stale(store).result}
+    stale = {i.split("::", 1)[-1].split(".")[-1] for i in stale_full}
+    assert "Bag.[]=" in ids and "Bag.[]" in ids       # operator methods captured as nodes
+    assert "[]=" not in stale and "[]" not in stale     # rooted (syntax-invoked), not dead
+    # Entry is constructed only inside `[]=`; its constructor is now reached, not false-dead:
+    assert not any(i.endswith("Entry.initialize") for i in stale_full)
+    assert any(i.endswith("Unused.initialize") for i in stale_full)  # genuinely unused: flagged
+
+
+def test_is_ruby_operator_method_helper():
+    """Pin _is_ruby_operator_method directly (R61): operator names (no leading letter/_) are
+    rooted; normal/predicate/bang/setter-by-name methods are not over-rooted."""
+    from stitchgraph.core.extract.treesitter import _is_ruby_operator_method
+    for op in ("[]", "[]=", "<=>", "==", "===", "<<", ">>", "+", "-", "*", "/", "%", "&", "|",
+               "^", "~", "!", "<", ">", "<=", ">=", "=~", "+@", "-@"):
+        assert _is_ruby_operator_method(op), op
+    for normal in ("evaluate", "initialize", "_private", "valid?", "save!", "to_s", "call"):
+        assert not _is_ruby_operator_method(normal), normal
+    assert not _is_ruby_operator_method("")
+
+
+def test_csharp_attribute_class_used_via_bracket_is_live(tmp_path):
+    """R64 (serilog dogfood, cardinal): C# applies an attribute with the `Attribute` suffix
+    OMITTED — `[NoEnumeration]` names class `NoEnumerationAttribute`. The bare `NoEnumeration`
+    reference never resolved, so an in-tree attribute class used only via `[X]` was flagged dead.
+    The extractor now also emits the suffixed reference from an `attribute` usage."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.cs": (
+            "using System;\n"
+            "sealed class NoEnumerationAttribute : Attribute { }\n"
+            "sealed class UnusedAttribute : Attribute { }\n"   # defined, never applied -> dead
+            "public class Guard {\n"
+            "    public static T AgainstNull<T>([NoEnumeration] T arg) { return arg; }\n"
+            "}\n"
+            "public class App {\n"
+            "    public static void Main() { Guard.AgainstNull(\"x\"); }\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert not any(i.endswith("NoEnumerationAttribute") for i in stale)  # used via [NoEnumeration]
+    assert any(i.endswith("UnusedAttribute") for i in stale)             # never applied: dead
+
+
+def test_csharp_attribute_suffix_ref_helper():
+    """Pin _csharp_attribute_suffix_ref (R64): `[Foo]` -> 'FooAttribute'; an already-suffixed
+    `[FooAttribute]` -> None (the bare name already resolves)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _csharp_attribute_suffix_ref
+    p = get_parser("csharp")
+
+    def attr_ref(code_attr):
+        src = (f"class C {{ void M([{code_attr}] int x) {{}} }}").encode()
+        tree = p.parse(src)
+        node = next(n for n in _walk(tree.root_node) if n.type == "attribute")
+        return _csharp_attribute_suffix_ref(node, src)
+
+    def _walk(n):
+        yield n
+        for c in n.children:
+            yield from _walk(c)
+
+    assert attr_ref("NoEnumeration") == "NoEnumerationAttribute"
+    assert attr_ref("Obsolete") == "ObsoleteAttribute"
+    assert attr_ref("NoEnumerationAttribute") is None    # already suffixed -> bare name resolves
+
+
+def test_csharp_attribute_on_enum_and_delegate_is_live(tmp_path):
+    """R66 (sonnet): the R64 C# attribute-suffix fix lived only in _direct_refs, which scans the
+    bodies of `spec.defs` nodes. C# `enum`/`delegate` declarations aren't in `defs`, so their
+    attributes are walked by _module_uses instead — which lacked the suffix branch, leaving the
+    attribute class false-flagged dead. _module_uses now mirrors the _direct_refs branch."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.cs": (
+            "using System;\n"
+            "sealed class MyFlagAttribute : Attribute { }\n"
+            "sealed class InterceptableAttribute : Attribute { }\n"
+            "sealed class UnusedAttribute : Attribute { }\n"   # defined, never applied -> dead
+            "enum Status { [MyFlag] Active = 1, Idle = 2 }\n"
+            "[Interceptable] public delegate void MyDelegate(int x);\n"
+            "public class App { public static void Main() { var s = Status.Active; } }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in (sg.find_stale(store).result or [])}
+    assert not any(i.endswith("MyFlagAttribute") for i in stale)        # enum-member attribute
+    assert not any(i.endswith("InterceptableAttribute") for i in stale)  # delegate attribute
+    assert any(i.endswith("UnusedAttribute") for i in stale)            # never applied: dead
+
+
+def test_rust_no_mangle_export_is_live(tmp_path):
+    """R69 (doc-driven): a Rust `#[no_mangle]` / `#[export_name]` fn exports its symbol to the
+    linker/FFI regardless of `pub`, so a NON-pub one is a public-ABI entry point with no in-tree
+    caller — it (and what its body reaches) was false-flagged dead. Now rooted (exported), the
+    Rust analogue of C EXPORT_SYMBOL. `#[inline]`-only / unused fns still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": (
+            "#[no_mangle]\n"
+            "extern \"C\" fn rust_entry() -> i32 { only_from_entry() }\n"
+            "#[export_name = \"sym\"]\n"
+            "fn renamed() -> i32 { 2 }\n"
+            "fn only_from_entry() -> i32 { 42 }\n"   # reached only from the non-pub export
+            # Rust 2024 edition REQUIRES the `unsafe(...)` wrapper — the mainstream spelling
+            # going forward; it must root the same as the bare form (panel R70, cardinal).
+            "#[unsafe(no_mangle)]\n"
+            "extern \"C\" fn rust_entry_2024() -> i32 { only_from_2024() }\n"
+            "fn only_from_2024() -> i32 { 7 }\n"     # reached only from the 2024-syntax export
+            "#[inline]\n"
+            "fn inline_dead() -> i32 { 1 }\n"        # #[inline] is NOT an export -> dead
+            "fn really_dead() -> i32 { 0 }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "rust_entry" not in stale and "renamed" not in stale     # FFI exports: live
+    assert "only_from_entry" not in stale                            # reached from an export
+    assert "rust_entry_2024" not in stale                            # 2024 unsafe(...) export: live
+    assert "only_from_2024" not in stale                             # reached from the 2024 export
+    assert "inline_dead" in stale and "really_dead" in stale         # not exports: dead
+
+
+def test_is_rust_export_attr_helper():
+    """Pin _is_rust_export_attr (R69/R70): no_mangle/export_name are exports incl. the Rust-2024
+    `unsafe(...)` wrapper and `cfg_attr(<pred>, …)`; inline/test/cfg/doc-string are not."""
+    from stitchgraph.core.extract.treesitter import _is_rust_export_attr
+    for a in ("#[no_mangle]", "#[export_name = \"x\"]", "#![no_mangle]",
+              "#[unsafe(no_mangle)]", "#[unsafe(export_name = \"x\")]",     # Rust 2024 (R70)
+              "#[cfg_attr(unix, no_mangle)]"):                              # conditionally applied
+        assert _is_rust_export_attr(a), a
+    for a in ("#[inline]", "#[test]", "#[cfg(test)]", "#[derive(Debug)]", "#[doc=\"no_mangle\"]",
+              "#[unsafe(test)]", "#[link_name = \"x\"]",   # link_name is on imports, not exports
+              "no_mangle", "", "not an attribute"):        # non-bracket strings: not attributes
+        assert not _is_rust_export_attr(a), a
+
+
+def test_c_attribute_constructor_destructor_used_export_is_live(tmp_path):
+    """R73 (doc-driven): a C function carrying a GCC/Clang/MSVC attribute that makes it an
+    implicit entry point or exported symbol has no in-tree by-name caller — `constructor`/
+    `destructor` run automatically around `main`, `used` is explicitly kept, `visibility("default")`
+    is public ABI — so it (and everything its body reaches) was false-flagged dead (cardinal). Now
+    rooted. A plain uncalled static fn and a `visibility("hidden")` fn still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.c": (
+            "#include <stdio.h>\n"
+            "__attribute__((constructor)) static void init_module(void) { setup(); }\n"
+            "static void setup(void) { printf(\"s\"); }\n"        # reached only from constructor
+            "__attribute__((destructor)) static void fini_module(void) { teardown(); }\n"
+            "static void teardown(void) { printf(\"t\"); }\n"
+            "__attribute__((used)) static void keep_me(void) { printf(\"k\"); }\n"
+            "__attribute__((visibility(\"default\"))) void exported_api(void) { helper_v(); }\n"
+            "static void helper_v(void) { printf(\"h\"); }\n"
+            "__attribute__((visibility(\"hidden\"))) void hidden_fn(void) {}\n"  # hidden: stays dead
+            "static void really_dead(void) { printf(\"d\"); }\n"
+            "int main(void) { return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("init_module", "setup", "fini_module", "teardown", "keep_me",
+                 "exported_api", "helper_v"):
+        assert live not in stale, live          # implicit entry / export (and its callees): live
+    assert "really_dead" in stale               # plain uncalled static: dead
+    assert "hidden_fn" in stale                 # visibility("hidden") is internal: dead-eligible
+
+
+def test_cpp_attribute_forms_root(tmp_path):
+    """R73: the C++ `[[gnu::constructor]]` / `[[gnu::destructor]]` form, MSVC `__declspec(dllexport)`,
+    and a priority constructor `__attribute__((constructor(101)))` all root; `visibility("hidden")`
+    does not."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.cpp": (
+            "#include <cstdio>\n"
+            "[[gnu::constructor]] static void cpp_ctor() { c_helper(); }\n"
+            "static void c_helper() { printf(\"h\"); }\n"
+            "[[gnu::destructor]] static void cpp_dtor() {}\n"
+            "__attribute__((constructor(101))) static void prio_ctor() {}\n"
+            "__declspec(dllexport) void win_api() { w_helper(); }\n"
+            "static void w_helper() {}\n"
+            "static void plain_dead() {}\n"
+            "int main() { return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("cpp_ctor", "c_helper", "cpp_dtor", "prio_ctor", "win_api", "w_helper"):
+        assert live not in stale, live
+    assert "plain_dead" in stale
+
+
+def test_c_attr_roots_helper():
+    """Pin _c_attr_roots (R73): the parser-level mapping from a C/C++ function's attributes to
+    roots. constructor/destructor/used/retain -> callback; dllexport / visibility("default") ->
+    exported; visibility("hidden") and a plain fn -> no roots."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_attr_roots
+
+    def roots(decl: str, lang: str = "c") -> set:
+        src = decl.encode()
+        root = get_parser(lang).parse(src).root_node
+        fn = next(n for n in root.children if n.type == "function_definition")
+        return _c_attr_roots(fn, src)
+
+    assert roots("__attribute__((constructor)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((destructor)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((used)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((visibility(\"default\"))) void f(void){}") == {"exported"}
+    assert roots("__attribute__((visibility(\"hidden\"))) void f(void){}") == set()
+    assert roots("static void f(void){}") == set()
+    # GNU *trailing* form: the attribute attaches to the function_declarator, not the def node.
+    assert roots("static void f(void) __attribute__((used)) { }") == {"callback"}
+    # GCC double-underscore synonyms (`__constructor__` etc.) — common in system headers (R74).
+    assert roots("__attribute__((__constructor__)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((__used__)) static void f(void){}") == {"callback"}
+    assert roots("__attribute__((__visibility__(\"default\"))) void f(void){}") == {"exported"}
+    assert roots("__attribute__((__visibility__(\"hidden\"))) void f(void){}") == set()
+    assert roots("[[gnu::constructor]] static void f(){}", "cpp") == {"callback"}
+    assert roots("__declspec(dllexport) void f(){}", "cpp") == {"exported"}
+    # R74 Finding 2: section -> callback (linker-collected); weak -> exported (linker-visible).
+    assert roots("__attribute__((section(\".init_array\"))) void f(void){}") == {"callback"}
+    assert roots("__attribute__((weak)) void f(void){}") == {"exported"}
+
+
+def test_c_alias_ifunc_target_kept_live(tmp_path):
+    """R74 Finding 2: `__attribute__((alias("t")))` / `((ifunc("r")))` names another in-tree
+    function the linker/loader reaches through this symbol; the target has a real definition with
+    no by-name caller and was false-flagged dead (cardinal). The named target is now kept live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.c": (
+            "#include <stdio.h>\n"
+            "void real_func(void) { rf_help(); }\n"
+            "static void rf_help(void) { printf(\"a\"); }\n"
+            "void alias_name(void) __attribute__((alias(\"real_func\")));\n"
+            "__attribute__((weak)) void weak_hook(void) { wh_help(); }\n"
+            "static void wh_help(void) { printf(\"w\"); }\n"
+            "__attribute__((section(\".init_array\"))) void section_entry(void) {}\n"
+            "static void plain_dead(void) {}\n"
+            "int main(void){return 0;}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("real_func", "rf_help", "weak_hook", "wh_help", "section_entry"):
+        assert live not in stale, live
+    assert "plain_dead" in stale
+
+
+def test_cpp_empty_body_method_does_not_eat_next_attribute(tmp_path):
+    """R75: the tree-sitter C++ grammar parses an *empty-body* inline method `void f() {}` as a
+    field_declaration and absorbs the FOLLOWING method's leading attribute, so a
+    `__attribute__((visibility("default")))` method right after an empty-body one lost its
+    attribute and was false-flagged dead (cardinal). The attribute is now recovered from the prior
+    sibling."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "t.cpp": (
+            "struct T {\n"
+            "  __attribute__((constructor)) void empty_ctor() {}\n"   # empty body -> field_declaration
+            "  __attribute__((visibility(\"default\"))) void exported_me() { do_work(); }\n"
+            "  void do_work() {}\n"
+            "};\n"
+            "int main(){ return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "exported_me" not in stale     # its visibility("default") survives the prior empty-body method
+    assert "do_work" not in stale         # reached from the exported method
+
+
+def test_c_dangling_attr_texts_helper():
+    """Pin _c_dangling_attr_texts (R75): recover ONLY the trailing attribute (the next decl's,
+    after the prior field_declaration's declarator) — not the field's own leading attribute — and
+    return nothing when the prior sibling is not a mis-parsed empty-body method."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_dangling_attr_texts
+
+    def dangling(struct_src: str) -> list:
+        src = struct_src.encode()
+        root = get_parser("cpp").parse(src).root_node
+
+        def find_fn(n):
+            for c in n.children:
+                if c.type == "function_definition":
+                    return c
+                r = find_fn(c)
+                if r is not None:
+                    return r
+            return None
+
+        fn = find_fn(root)
+        return [t.decode() for t in _c_dangling_attr_texts(fn, src)]
+
+    # Empty-body method before an attributed one: recover ONLY the trailing visibility attribute.
+    got = dangling("struct T {\n"
+                   "  __attribute__((constructor)) void a() {}\n"
+                   "  __attribute__((visibility(\"default\"))) void b() { w(); }\n"
+                   "  void w() {}\n};\n")
+    assert any("visibility" in t for t in got)          # the next decl's attr is recovered
+    assert not any("constructor" in t for t in got)     # NOT the field's own leading attr
+    # A plain field (no function_declarator) before a method recovers nothing — must not steal its
+    # own trailing attribute.
+    got2 = dangling("struct U {\n"
+                    "  int x __attribute__((aligned(8)));\n"
+                    "  void m() { z(); }\n"
+                    "  void z() {}\n};\n")
+    assert got2 == []
+
+
+def test_c_alias_target_names_helper():
+    """Pin _c_alias_target_names (R74): extract alias/ifunc target names, incl. dunder spelling."""
+    from stitchgraph.core.extract.treesitter import _c_alias_target_names
+    assert _c_alias_target_names(b'void o(void) __attribute__((alias(\"new_impl\")));') == {"new_impl"}
+    assert _c_alias_target_names(b'void f(void) __attribute__((ifunc(\"resolver\")));') == {"resolver"}
+    assert _c_alias_target_names(b'void o() __attribute__((__alias__(\"t\")));') == {"t"}
+    assert _c_alias_target_names(b'static void f(void){}') == set()
+
+
+def test_cpp_header_declaration_export_attr_roots_definition(tmp_path):
+    """R77 F2 (v2.1.5): an export attribute on a C++ *header declaration* — `__attribute__((
+    visibility("default")))` on the in-class member declaration — must root the out-of-line `.cpp`
+    definition, which carries no attribute. Otherwise the public-ABI method (and its callees) is
+    false-flagged dead at confidence 0.6 (cardinal). A non-exported sibling method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "w.h": (
+            "struct W {\n"
+            "  __attribute__((visibility(\"default\"))) int exported_m(int x);\n"
+            "  int internal_m(int x);\n"
+            "};\n"
+        ),
+        "w.cpp": (
+            "#include \"w.h\"\n"
+            "int W::exported_m(int x) { return em_help(x); }\n"
+            "static int em_help(int x) { return x; }\n"
+            "int W::internal_m(int x) { return x; }\n"
+            "__attribute__((constructor)) static void boot(void){ live(); }\n"  # keep file partly live
+            "static void live(void){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "exported_m" not in stale     # rooted via the header declaration's export attribute
+    assert "em_help" not in stale        # reached from the exported method
+    assert "internal_m" in stale         # no export attribute, no caller: correctly dead
+
+
+def test_c_export_decl_names_helper():
+    """Pin _c_export_decl_names (R77 F2): collect names of functions/methods declared with an export
+    attribute — top-level qualified, free, and in-class member; ignore non-export attrs and bodies."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_export_decl_names
+
+    def names(src: str) -> set:
+        b = src.encode()
+        return _c_export_decl_names(get_parser("cpp").parse(b).root_node, b)
+
+    assert names('__attribute__((visibility("default"))) int Widget::compute(int);') == {"compute"}
+    assert names('__attribute__((visibility("default"))) void free_api(void);') == {"free_api"}
+    assert names('struct W { __attribute__((visibility("default"))) int m(int); };') == {"m"}
+    assert names('__declspec(dllexport) int Other::run();') == {"run"}
+    assert names('__attribute__((visibility("hidden"))) void h(void);') == set()  # hidden: not export
+    assert names('int plain(void);') == set()                                     # no attribute
+    # R78: the function_declarator is nested inside a pointer/reference-return wrapper — descend to
+    # it so a pointer-returning export is collected (else its def is false-flagged dead, cardinal).
+    assert names('__attribute__((visibility("default"))) char* make_buf(int n);') == {"make_buf"}
+    assert names('struct W { __attribute__((visibility("default"))) char* make(int); };') == {"make"}
+    assert names('__attribute__((visibility("default"))) int& ref_api(int);') == {"ref_api"}
+    # A non-function export (a variable/global) contributes no name.
+    assert names('__attribute__((visibility("default"))) int g_counter;') == set()
+
+
+def test_cpp_pointer_return_header_export_is_live(tmp_path):
+    """R78 (cardinal): a pointer/reference-returning function whose export attribute is on the header
+    declaration nests its function_declarator inside a pointer_declarator; the declaration-name
+    collector must descend to it, or the live out-of-line definition is flagged dead at 0.6."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "api.hpp": (
+            "struct W {\n"
+            "  __attribute__((visibility(\"default\"))) char* make(int n);\n"
+            "};\n"
+        ),
+        "api.cpp": (
+            "#include \"api.hpp\"\n"
+            "char* W::make(int n) { return mk_help(n); }\n"
+            "static char* mk_help(int n) { return 0; }\n"
+            "__attribute__((constructor)) static void boot(void){ live(); }\n"
+            "static void live(void){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "make" not in stale       # pointer-returning header export: rooted
+    assert "mk_help" not in stale     # reached from it
+
+
+def test_cpp_class_level_export_attr_roots_public_methods(tmp_path):
+    """R80 F1 (v2.1.6): a class carrying a CLASS-LEVEL export attribute (`class
+    __attribute__((visibility("default"))) Foo`) exports its whole public interface, so each public
+    method is public ABI even with no per-method attribute. Their out-of-line `.cpp` definitions
+    carry no attribute and were false-flagged dead at 0.6 (cardinal). Public methods are now rooted;
+    a PRIVATE method stays dead-code-eligible."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "api.hpp": (
+            "class __attribute__((visibility(\"default\"))) Foo {\n"
+            "public:\n"
+            "  int alpha(int x);\n"
+            "  int beta(int x);\n"
+            "private:\n"
+            "  int secret_dead();\n"
+            "};\n"
+        ),
+        "api.cpp": (
+            "#include \"api.hpp\"\n"
+            "int Foo::alpha(int x) { return a_help(x); }\n"
+            "static int a_help(int x){ return x; }\n"
+            "int Foo::beta(int x) { return x; }\n"
+            "int Foo::secret_dead() { return 0; }\n"
+            "__attribute__((constructor)) static void boot(void){ live(); }\n"
+            "static void live(void){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "alpha" not in stale and "beta" not in stale   # public methods of an exported class: live
+    assert "a_help" not in stale                            # reached from a public method
+    assert "secret_dead" in stale                           # private: not ABI, stays dead-eligible
+
+
+def test_c_public_method_names_helper():
+    """Pin _c_public_method_names (R80 F1): only PUBLIC methods of an export-attributed class/struct.
+    `class` defaults private, `struct` defaults public; a per-section access label switches it."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_export_decl_names
+
+    def names(src: str) -> set:
+        b = src.encode()
+        return _c_export_decl_names(get_parser("cpp").parse(b).root_node, b)
+
+    # class: default private -> alpha private (excluded), beta public (included)
+    assert names('class __attribute__((visibility("default"))) C {'
+                 ' int alpha(); public: int beta(); };') == {"beta"}
+    # struct: default public -> both included until a private label
+    assert names('struct __attribute__((visibility("default"))) S {'
+                 ' int a(); private: int b(); };') == {"a"}
+    # dllexport class
+    assert names('class __declspec(dllexport) D { public: int m(); };') == {"m"}
+    # no export attribute on the class -> nothing
+    assert names('class Plain { public: int m(); };') == set()
+    # a data member in the public section contributes no name (not a function)
+    assert names('struct __attribute__((visibility("default"))) V { int field; int f(); };') == {"f"}
+    # R81: inline-defined method (function_definition, not field_declaration) is collected
+    assert names('class __attribute__((visibility("default"))) I {'
+                 ' public: int m(int x){ return x; } };') == {"m"}
+    # R81: inline templated method (template_declaration) is collected
+    assert names('class __attribute__((visibility("default"))) T {'
+                 ' public: template<class X> X tm(X a){ return a; } };') == {"tm"}
+    # R81: protected is part of the extensibility ABI (out-of-tree subclasses) -> collected
+    assert names('class __attribute__((visibility("default"))) P {'
+                 ' protected: int hook(); private: int sec(); };') == {"hook"}
+
+
+def test_cpp_class_level_export_inline_method_is_live(tmp_path):
+    """R81 (cardinal): an INLINE-defined public method of a class-level-export class parses as a
+    function_definition (templated: template_declaration), not a field_declaration; it must still be
+    rooted or the live public-ABI method is flagged dead at 0.6. Private members still flag."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "api.hpp": (
+            "class __attribute__((visibility(\"default\"))) Api {\n"
+            "public:\n"
+            "  int compute(int x) { return x + secret(); }\n"   # inline public method
+            "  template<class X> X passthru(X a) { return a; }\n"  # inline templated public method
+            "protected:\n"
+            "  int hook() { return 1; }\n"                       # protected: extensibility ABI
+            "private:\n"
+            "  int secret() { return 7; }\n"                     # private, but reached from compute
+            "  int dead_priv() { return 9; }\n"                  # private, uncalled: dead
+            "};\n"
+        ),
+        "main.cpp": (
+            "#include \"api.hpp\"\n"
+            "__attribute__((constructor)) static void boot(){ live(); }\n"
+            "static void live(){}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("compute", "passthru", "hook", "secret"):
+        assert live not in stale, live
+    assert "dead_priv" in stale
+
+
+def test_rust_third_party_test_attrs_rooted(tmp_path):
+    """R84 (v2.1.7, recall): third-party Rust test-harness attributes whose path doesn't end in
+    `test` — `#[rstest]`, `#[test_case(...)]`, `#[gtest]` (googletest-rust), `#[quickcheck]` — root
+    the free-form-named fn they decorate (and its helpers), which the name/`::test` convention
+    misses. A genuinely-dead fn still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": (
+            "pub fn used() -> i32 { 1 }\n"
+            "#[rstest]\nfn rstest_case() { helper_r(); }\nfn helper_r() {}\n"
+            "#[test_case(1)]\nfn tc_case() { helper_tc(); }\nfn helper_tc() {}\n"
+            "#[gtest]\nfn gt_case() {}\n"
+            "#[quickcheck]\nfn qc_case() {}\n"
+            "fn really_dead() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    for live in ("rstest_case", "helper_r", "tc_case", "helper_tc", "gt_case", "qc_case"):
+        assert live not in stale, live
+    assert "really_dead" in stale
+
+
+def test_is_rust_test_attr_third_party_helper():
+    """Pin the R84 third-party test-attr paths; non-test attrs stay False."""
+    from stitchgraph.core.extract.treesitter import _is_rust_test_attr
+    for a in ("#[rstest]", "#[rstest::rstest]", "#[test_case(1)]", "#[gtest]", "#[quickcheck]",
+              "#[tokio::test]", "#[test]", "#[cfg(test)]"):
+        assert _is_rust_test_attr(a), a
+    for a in ("#[derive(Debug)]", "#[inline]", "#[serde(rename=\"x\")]", "#[cfg(feature=\"testing\")]",
+              "#[my_attr(test)]",          # non-cfg attr containing a `test` arg token: not a test
+              "rstest", "", "not an attr"):  # non-bracket strings: not attributes
+        assert not _is_rust_test_attr(a), a
+
+
+def test_java_bytebuddy_moshi_annotations_rooted(tmp_path):
+    """R84 (v2.1.7, recall): ByteBuddy `@Advice.OnMethodEnter`/`@OnMethodExit` (bytecode
+    instrumentation) and Moshi `@ToJson`/`@FromJson` (reflection adapters) are framework-invoked,
+    not called by name — they were flagged dead (documented gap, panel R62/R68 hunt). Now rooted
+    `callback`; their callees go live. An unannotated uncalled method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Adv.java": (
+            "class Adv {\n"
+            "  @Advice.OnMethodEnter static void enter() { reached_e(); }\n"
+            "  static void reached_e() {}\n"
+            "  @Advice.OnMethodExit static void exit() { reached_x(); }\n"
+            "  static void reached_x() {}\n"
+            "  @ToJson String toJson(Url u) { return tj(); }\n"
+            "  String tj() { return \"\"; }\n"
+            "  void deadm() {}\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    for live in ("enter", "reached_e", "exit", "reached_x", "toJson", "tj"):
+        assert live not in stale, live
+    assert "deadm" in stale
+
+
+def test_php_bare_string_callable_is_live(tmp_path):
+    """R86 (v2.1.8, recall): a project global function passed as a BARE-STRING callback to a known
+    PHP callback builtin — `usort($x, 'topcmp')`, `call_user_func('handler')`, `array_map('mapper',
+    …)` — is reached at runtime but the syntactic call scan misses the string, so it was
+    false-flagged dead (documented gap, panel R57). Now rooted. A string passed to a non-callback
+    function does NOT root it (over-match guard)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.php": (
+            "<?php\n"
+            "function topcmp($a, $b) { return $a - $b; }\n"
+            "function handler() { echo \"h\"; }\n"
+            "function mapper($x) { return $x * 2; }\n"
+            "function notcb() { echo \"x\"; }\n"
+            "function logmsg($s) { echo $s; }\n"
+            "function run() {\n"
+            "    $arr = [3,1,2];\n"
+            "    usort($arr, 'topcmp');\n"
+            "    call_user_func('handler');\n"
+            "    $r = array_map('mapper', $arr);\n"
+            "    logmsg('notcb');\n"           # 'notcb' to a non-callback fn: must NOT root
+            "    return $r;\n"
+            "}\n"
+            "function really_dead() { echo \"d\"; }\n"
+            "run();\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    for live in ("topcmp", "handler", "mapper"):
+        assert live not in stale, live
+    assert "notcb" in stale            # string arg to a non-callback builtin: not rooted
+    assert "really_dead" in stale      # never referenced: dead
+
+
+def test_php_string_callable_names_helper():
+    """Pin _php_string_callable_names (R86): only string args of known callback builtins; a
+    `Class::method` string and a non-callback callee yield nothing."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _php_string_callable_names
+
+    def names(call_src: str) -> set:
+        b = (f"<?php function f() {{ {call_src}; }}").encode()
+        root = get_parser("php").parse(b).root_node
+
+        def find_call(n):
+            for c in n.children:
+                if c.type == "function_call_expression":
+                    return c
+                r = find_call(c)
+                if r is not None:
+                    return r
+            return None
+
+        call = find_call(root)
+        return {nm for nm, _ in _php_string_callable_names(call, b)}
+
+    assert names("usort($x, 'topcmp')") == {"topcmp"}
+    assert names("call_user_func('handler')") == {"handler"}
+    assert names("array_map('mapper', $x)") == {"mapper"}
+    assert names("call_user_func('Cls::method')") == set()   # static string: already-rooted public
+    assert names("logmsg('notcb')") == set()                  # not a callback builtin
+
+
+def test_rust_runtime_entry_attrs_rooted(tmp_path):
+    """R88 (v2.1.9, cardinal): Rust `#[panic_handler]`/`#[start]`/`#[alloc_error_handler]` fns are
+    invoked by the runtime, not by an in-tree call, and need not be `pub`, so they (and their
+    callees) were false-flagged dead at 0.6. Now rooted. `#[proc_macro]` is already covered (it
+    requires `pub`); a plain uncalled fn still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.rs": (
+            "#![no_std]\n"
+            "#[panic_handler]\n"
+            "fn my_panic(info: &core::panic::PanicInfo) -> ! { ph_help(); loop {} }\n"
+            "fn ph_help() {}\n"
+            "#[start]\n"
+            "fn my_start(_a: isize, _b: *const *const u8) -> isize { st_help(); 0 }\n"
+            "fn st_help() -> i32 { 1 }\n"
+            "#[alloc_error_handler]\n"
+            "fn on_oom(_l: core::alloc::Layout) -> ! { aeh_help(); loop {} }\n"
+            "fn aeh_help() {}\n"
+            "fn really_dead() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    for live in ("my_panic", "ph_help", "my_start", "st_help", "on_oom", "aeh_help"):
+        assert live not in stale, live
+    assert "really_dead" in stale
+
+
+def test_is_rust_runtime_entry_attr_helper():
+    """Pin _is_rust_runtime_entry_attr (R88): panic_handler/start/alloc_error_handler only."""
+    from stitchgraph.core.extract.treesitter import _is_rust_runtime_entry_attr
+    for a in ("#[panic_handler]", "#[start]", "#[alloc_error_handler]"):
+        assert _is_rust_runtime_entry_attr(a), a
+    for a in ("#[no_mangle]", "#[test]", "#[inline]", "#[derive(Debug)]", "#[doc=\"start\"]",
+              "panic_handler", "", "not an attr"):
+        assert not _is_rust_runtime_entry_attr(a), a
+
+
+def test_go_cgo_export_directive_rooted(tmp_path):
+    """R88 (v2.1.9, cardinal): a Go cgo `//export name` directly above a func makes it C-callable
+    (native entry point, no in-tree caller). A capitalised one is already exported by Go's rule, but
+    a LOWERCASE `//export lower_entry` was false-flagged dead. Now rooted from the directive."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "main.go": (
+            "package main\n"
+            "import \"C\"\n"
+            "//export lower_entry\n"
+            "func lower_entry() { lowHelp() }\n"
+            "func lowHelp() {}\n"
+            "func reallyDeadGo() {}\n"
+            "func main() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "lower_entry" not in stale and "lowHelp" not in stale
+    assert "reallyDeadGo" in stale
+
+
+def test_go_has_export_directive_helper():
+    """Pin _go_has_export_directive (R88): True only when the immediately-preceding `//export <name>`
+    comment names THIS func; False for a name mismatch, no comment, or no preceding sibling."""
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _go_has_export_directive
+
+    def has(src: str, fn_name: str) -> bool:
+        b = src.encode()
+        root = get_parser("go").parse(b).root_node
+
+        def find(n):
+            for c in n.children:
+                if c.type == "function_declaration":
+                    return c
+                r = find(c)
+                if r is not None:
+                    return r
+            return None
+
+        return _go_has_export_directive(find(root), fn_name, b)
+
+    assert has("package m\n//export f\nfunc f(){}", "f") is True
+    assert has("package m\n//export other\nfunc f(){}", "f") is False   # name mismatch
+    assert has("package m\nfunc f(){}", "f") is False                   # no preceding comment
+    assert has("func f(){}", "f") is False                              # no prev sibling (guard)
+
+
+def test_csharp_unmanaged_callers_only_rooted(tmp_path):
+    """R88 (v2.1.9, cardinal): a C# `[UnmanagedCallersOnly]` method is a native (C-ABI) entry point
+    invoked from unmanaged code, not by a managed caller, and is typically non-public — so it (and
+    its callees) was false-flagged dead. Now rooted `callback`. A plain uncalled method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "Lib.cs": (
+            "class Lib {\n"
+            "  [UnmanagedCallersOnly(EntryPoint = \"native_entry\")]\n"
+            "  static void NativeEntry() { UceHelp(); }\n"
+            "  static void UceHelp() {}\n"
+            "  void deadCs() {}\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+    assert "NativeEntry" not in stale and "UceHelp" not in stale
+    assert "deadCs" in stale
+
+
+def test_python_ipython_display_protocol_hooks_rooted(tmp_path):
+    """R90 (v2.1.10, cardinal — found dogfooding rich): the IPython/Jupyter rich-display protocol
+    methods (`_repr_html_`, `_repr_mimebundle_`, …) are single-underscore (so the `__x__` dunder
+    pass misses them) but are invoked BY NAME by IPython on display, never from source. A live
+    class's hook — and whatever it reaches — was false-flagged dead. Tied to the class like a
+    dunder: a live class's hooks (+ callees) live; a dead class's hooks stay dead (cardinal-safe)."""
+    _mk(tmp_path, {
+        "m.py": (
+            "__all__ = [\"Widget\"]\n"
+            "class Widget:\n"
+            "    def _repr_html_(self):\n"
+            "        return fmt_html()\n"
+            "    def _repr_mimebundle_(self, include, exclude):\n"
+            "        return mime_payload()\n"
+            "def fmt_html():\n"
+            "    return \"<b>w</b>\"\n"
+            "def mime_payload():\n"
+            "    return {}\n"
+            "class DeadWidget:\n"
+            "    def _repr_html_(self):\n"
+            "        return dead_only_helper()\n"
+            "def dead_only_helper():\n"
+            "    return \"x\"\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Widget._repr_html_" not in stale          # live class's IPython hook: rooted
+    assert "Widget._repr_mimebundle_" not in stale
+    assert "fmt_html" not in stale and "mime_payload" not in stale   # hooks' callees: live
+    assert "DeadWidget._repr_html_" in stale          # dead class's hook stays dead (cardinal-safe)
+    assert "dead_only_helper" in stale
+
+
+def test_is_protocol_method_helper():
+    """Pin _is_protocol_method (R90): interpreter dunders AND IPython display hooks; a plain
+    single-underscore method or a public method is not a protocol method."""
+    from stitchgraph.core.extract.python import _is_protocol_method
+    for n in ("__call__", "__getitem__", "__enter__",                      # interpreter dunders
+              "_repr_html_", "_repr_mimebundle_", "_ipython_display_",      # IPython protocol
+              "_ipython_key_completions_",
+              "_missing_", "_generate_next_value_"):                        # enum machinery hooks
+        assert _is_protocol_method(n), n
+    for n in ("_private", "_repr_", "render", "__x", "x__", "__", "_repr_custom_", "_missing"):
+        assert not _is_protocol_method(n), n
+
+
+# -- R93 / manual-pass (CARDINAL): enum machinery hooks tied to their class ------
+def test_enum_hooks_live_when_enum_class_reachable(tmp_path):
+    """`_missing_` / `_generate_next_value_` are invoked by name by the enum metaclass
+    (`Color(x)` lookup miss; `auto()`), never from source. A reachable enum's hooks (and
+    the helpers they alone reach) must stay live; a dead enum's hooks stay dead
+    (cardinal-safe — tied to the class, not rooted unconditionally)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "from .colors import Color as Color\n",
+        "pkg/colors.py": """
+            import enum
+
+            class Color(enum.Enum):
+                RED = 1
+                @classmethod
+                def _missing_(cls, value):
+                    return resolve_alias(value)
+                @staticmethod
+                def _generate_next_value_(name, start, count, last):
+                    return gen_value(name)
+
+            def resolve_alias(v):
+                return None
+            def gen_value(n):
+                return n
+
+            class DeadColor(enum.Enum):
+                X = 1
+                @classmethod
+                def _missing_(cls, value):
+                    return dead_helper(value)
+            def dead_helper(v):
+                return None
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Color._missing_" not in stale              # live enum's hooks: rooted via class
+    assert "Color._generate_next_value_" not in stale
+    assert "resolve_alias" not in stale and "gen_value" not in stale   # hooks' callees: live
+    assert "DeadColor._missing_" in stale              # dead enum's hook stays dead (cardinal-safe)
+    assert "dead_helper" in stale
+
+
+# -- R93 / manual-pass (CARDINAL): pytest conftest hooks rooted by name ----------
+def test_pytest_conftest_hooks_are_not_stale(tmp_path):
+    """pytest discovers and calls `pytest_*` hook functions by name from conftest.py — no
+    in-tree call site exists, so without rooting they (and their helpers) are false-flagged
+    dead. The `test`-prefix role only covers `test*`; `pytest_*` needs its own rooting."""
+    _mk(tmp_path, {
+        "app.py": "__all__ = [\"run\"]\ndef run():\n    return 1\n",
+        "tests/test_thing.py": "def test_ok():\n    assert True\n",
+        "tests/conftest.py": """
+            def pytest_configure(config):
+                register_marker(config)
+            def pytest_collection_modifyitems(items):
+                reorder(items)
+            def register_marker(c):
+                return c
+            def reorder(i):
+                return i
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "pytest_configure" not in stale
+    assert "pytest_collection_modifyitems" not in stale
+    assert "register_marker" not in stale and "reorder" not in stale   # hooks' callees: live
+
+
+def test_is_pytest_hook_helper():
+    """Pin _is_pytest_hook (R93): a `pytest_`-prefixed name with a suffix is a hook; a long
+    non-prefixed name and the bare prefix are not (pins the `and`, not `or`, in the guard)."""
+    from stitchgraph.core.extract.python import _is_pytest_hook
+    assert _is_pytest_hook("pytest_configure")
+    assert _is_pytest_hook("pytest_collection_modifyitems")
+    assert not _is_pytest_hook("pytest_")              # bare prefix, no hook name
+    assert not _is_pytest_hook("register_marker")      # long name, wrong prefix (kills or-mutant)
+    assert not _is_pytest_hook("test_thing")
+    assert not _is_pytest_hook("py")
+
+
+# -- R92 / dogfood (CARDINAL): subscripted generic base must record INHERITS -----
+def test_subscripted_generic_base_keeps_polymorphic_override_live(tmp_path):
+    """`class Sub(Base[K, V])` must record an INHERITS edge so a polymorphic override
+    of a base template method is reached, not flagged dead. The base-class expression is
+    an ast.Subscript whose `.value` is the real name; `_name_of` returned None for it, so
+    no INHERITS edge was emitted and the live override was cardinal-false-flagged
+    (confirmed on sqlalchemy / werkzeug `Mixin(Base[K, V])`)."""
+    _mk(tmp_path, {
+        "pkg/__init__.py": "from .mixins import Base as Base, SubMixin as SubMixin\n",
+        "pkg/mixins.py": """
+            from typing import Generic, TypeVar
+            K = TypeVar("K"); V = TypeVar("V")
+
+            class Base(Generic[K, V]):
+                def _hook(self):
+                    return []
+                def compute(self):
+                    return list(self._hook())   # template method -> self._hook()
+
+            class SubMixin(Base[K, V]):          # subscripted generic base
+                def _hook(self):
+                    return [1, 2, 3]             # live override -- must not be stale
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "SubMixin._hook" not in stale   # reached via INHERITS + polymorphic edge
+
+
+def test_base_name_unwraps_subscripted_generic():
+    """Pin _base_name (R92): a plain/attribute base resolves to its name; a subscripted
+    generic unwraps to the underlying base name; a non-name expression is None."""
+    import ast
+
+    from stitchgraph.core.extract.python import _base_name
+    assert _base_name(ast.parse("Base", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("mod.Base", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("Base[K, V]", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("mod.Base[K, V]", mode="eval").body) == "Base"
+    assert _base_name(ast.parse("Base[K][V]", mode="eval").body) == "Base"   # nested subscript
+    assert _base_name(ast.parse("(a + b)", mode="eval").body) is None
+
+
+def test_subscripted_external_base_gets_framework_callback(tmp_path):
+    """The real sqlalchemy/werkzeug shape: a subclass of a *subscripted external* generic base
+    (`class V(GenericView[int])`) must get framework-callback rooting — the base resolves to a
+    non-first-party name (signal (b) in _apply_callback_roles), so the class's framework-invoked
+    override (and its callees) stay live. Before the _base_name fix the subscript yielded no base
+    name at all, so neither the INHERITS edge nor the external-base signal fired."""
+    _mk(tmp_path, {
+        "app/__init__.py": "from .views import MyView as MyView\n",
+        "app/views.py": """
+            from framework import GenericView   # external (unindexed) framework base
+
+            class MyView(GenericView[int]):
+                def get(self, request):          # framework-invoked override -- live
+                    return render_body()
+
+            def render_body():
+                return "ok"
+        """,
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "MyView.get" not in stale          # framework override rooted via external base
+    assert "render_body" not in stale         # and its callee
+
+
+# -- R94 / dogfood+manual (CARDINAL): transitive external-base callback closure -----
+def test_php_transitive_framework_inheritance_keeps_override_live(tmp_path):
+    """A concrete override two+ hops below an external framework base (via an in-tree
+    abstract intermediary) is framework-invoked and must stay live. `external_base_classes`
+    only checked the DIRECT parent, so the grandchild override got no callback role and was
+    flagged dead (CARDINAL, confirmed on Magento Shipment._getValidationRulesBeforeSave)."""
+    _mk(tmp_path, {
+        "Base.php": "<?php\nabstract class Base extends ExternalFramework {\n"
+                    "    protected function handle() {}\n}\n",
+        "Child.php": "<?php\nclass Child extends Base {\n"
+                     "    protected function handle() { return $this->helper(); }\n"
+                     "    private function helper() { return 1; }\n}\n",
+        "main.php": "<?php\n$c = new Child();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Child.handle" not in stale     # framework override, rooted transitively
+    assert "Child.helper" not in stale     # reached only through the override
+
+
+def test_csharp_explicit_interface_via_project_chain_live(tmp_path):
+    """C# explicit interface impl (`void IDisposable.Dispose()`) reached only implicitly
+    (`using`) via a PROJECT interface that extends the framework interface. The project
+    interface resolves in-tree, so the implementing class was not a direct external subclass
+    and its Dispose (+ callee) were flagged dead — same root cause as the PHP case."""
+    _mk(tmp_path, {
+        "P.cs": "using System;\n"
+                "interface IHook : IDisposable { }\n"
+                "class H : IHook {\n"
+                "    void IDisposable.Dispose() { Clean(); }\n"
+                "    void Clean() { }\n"
+                "    public void Touch() { }\n}\n"
+                "class Program { static void Main() { using (IHook h = new H()) { h.Touch(); } } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "H.Dispose" not in stale
+    assert "H.Clean" not in stale
+
+
+def test_transitive_closure_does_not_overmask_pure_firstparty_chain(tmp_path):
+    """Cardinal-safety boundary: a first-party inheritance chain with NO external base must
+    NOT get framework rooting — a genuinely-dead override stays flagged."""
+    _mk(tmp_path, {
+        "Base.php": "<?php\nabstract class Base {\n    protected function handle() {}\n}\n",
+        "Child.php": "<?php\nclass Child extends Base {\n"
+                     "    protected function deadHandle() { return 1; }\n}\n",
+        "main.php": "<?php\n$c = new Child();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Child.deadHandle" in stale     # no external base anywhere -> still dead
+
+
+def test_framework_classes_helper():
+    """Pin _framework_classes (R94): direct external base, transitive descendant, plain-base
+    exclusion, and same-name self-loop. The self-loop (`class S extends S` — base leaf binds to
+    itself, the werkzeug-EnvironBuilder shape) IS framework: its real base is an external
+    same-named class, so it must be rooted (python.py `_apply_callback_roles` case (b)). A plain
+    base (`Object`) is not framework."""
+    from stitchgraph.core.extract.treesitter import _framework_classes
+    class_by_name = {
+        "Base": {"f::Base"}, "Child": {"f::Child"}, "Grand": {"f::Grand"},
+        "E": {"f::E"}, "S": {"f::S"},
+    }
+    inherits = [
+        ("f::Base", "Ext", "php"),       # external direct -> Base framework
+        ("f::Child", "Base", "php"),     # first-party -> transitive
+        ("f::Grand", "Child", "php"),    # first-party -> deeper transitive
+        ("f::E", "Object", "php"),       # plain base (in _PLAIN_BASES) -> not framework
+        ("f::S", "S", "php"),            # same-name self loop -> framework (case b)
+    ]
+    result = _framework_classes(inherits, class_by_name)
+    assert result == {"f::Base", "f::Child", "f::Grand", "f::S"}
+    assert "f::E" not in result          # plain base excluded
+
+
+def test_same_name_external_self_loop_keeps_override_live(tmp_path):
+    """An in-tree class that extends an EXTERNAL same-named framework class (`class Foo extends
+    com.framework.Foo`) parses to a self-loop INHERITS edge (base leaf == subclass name). It must
+    be treated as framework, or a protected override invoked only by the framework is flagged dead
+    (CARDINAL, the python.py `_apply_callback_roles` case-(b) shape, ported in R94)."""
+    _mk(tmp_path, {
+        "Foo.java": (
+            "package app;\n"
+            "import com.framework.Foo;\n"
+            "public class Foo extends com.framework.Foo {\n"
+            "    protected void onEvent() { helper(); }\n"
+            "    private void helper() {}\n}\n"
+        ),
+        "Main.java": "package app;\npublic class Main { public static void main(String[] a){ new Foo(); } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Foo.onEvent" not in stale     # framework override on same-name self-loop class
+    assert "Foo.helper" not in stale      # reached only through it
+
+
+# -- R96 / manual-pass (CARDINAL): narrow runtime/native entry-point attrs -------
+def test_c_interrupt_isr_attribute_roots_handler(tmp_path):
+    """A C function marked `__attribute__((interrupt))` / AVR `((signal))` is an ISR invoked by the
+    hardware vector table — no in-tree caller — so it and its callees were flagged dead. The
+    implicit-entry attr regex omitted `interrupt`/`signal`. Cardinal-safe (only adds roots): a plain
+    static with no attribute still flags dead."""
+    _mk(tmp_path, {
+        "isr.c": (
+            "static void log_event(void) {}\n"
+            "__attribute__((interrupt)) static void isr(void) { log_event(); }\n"
+            "__attribute__((interrupt_handler)) void isr_arm(void) { log_event(); }\n"
+            "static void truly_dead(void) {}\n"
+            "int main(void) { return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "isr" not in stale and "log_event" not in stale   # ISR + callee rooted
+    assert "isr_arm" not in stale                            # ARM/MIPS `interrupt_handler` form rooted
+    assert "truly_dead" in stale                              # no attr -> still dead (cardinal-safe)
+
+
+def test_rust_ctor_dtor_attribute_roots_function(tmp_path):
+    """`#[ctor::ctor]` / `#[ctor]` / `#[ctor::dtor]` run a function automatically before/after main
+    (the Rust analogue of C `__attribute__((constructor))`), idiomatically private, so the fn + its
+    callees were flagged dead. `_RUST_RUNTIME_ENTRY_ATTRS` omitted ctor/dtor."""
+    _mk(tmp_path, {
+        "lib.rs": (
+            "pub fn api() -> i32 { 1 }\n"
+            "#[ctor::ctor]\n"
+            "fn init() { setup(); }\n"
+            "fn setup() {}\n"
+            "fn truly_dead() {}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "init" not in stale and "setup" not in stale   # ctor + callee rooted
+    assert "truly_dead" in stale                          # plain private -> still dead
+
+
+def test_java_native_method_is_rooted(tmp_path):
+    """A Java `native` method is a JNI entry point (implemented in C, invoked across the JNI
+    boundary) with no in-tree caller — a non-public one was flagged dead. Cardinal-safe: a plain
+    non-native private method with no caller still flags dead."""
+    _mk(tmp_path, {
+        "Jni.java": (
+            "class Jni {\n"
+            "    native int compute(int x);\n"
+            "    private int deadHelper() { return 0; }\n"
+            "    static { System.loadLibrary(\"jni\"); }\n}\n"
+        ),
+        "Main.java": "public class Main { public static void main(String[] a){ new Jni(); } }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Jni.compute" not in stale     # native JNI entry rooted
+    assert "Jni.deadHelper" in stale      # plain private, no caller -> still dead
+
+
+def test_rust_runtime_entry_attr_helper():
+    """Pin _is_rust_runtime_entry_attr (R96): ctor/dtor path tokens match; a longer identifier
+    containing the token and a non-attr does not."""
+    from stitchgraph.core.extract.treesitter import _is_rust_runtime_entry_attr
+    assert _is_rust_runtime_entry_attr("#[ctor::ctor]")
+    assert _is_rust_runtime_entry_attr("#[ctor]")
+    assert _is_rust_runtime_entry_attr("#[ctor::dtor]")
+    assert _is_rust_runtime_entry_attr("#[panic_handler]")
+    assert not _is_rust_runtime_entry_attr("#[constructor_helper]")   # not a bare ctor token
+    assert not _is_rust_runtime_entry_attr("#[doc = \"ctor\"]")       # string stripped
+    assert not _is_rust_runtime_entry_attr("#[derive(Debug)]")
+    assert not _is_rust_runtime_entry_attr("ctor")                    # not bracketed -> no match
+    assert not _is_rust_runtime_entry_attr("")                        # empty -> no match
+
+
+# -- R98 / manual-pass (CARDINAL): Ruby implicit conversion/Enumerable protocol ----
+def test_ruby_implicit_protocol_methods_rooted(tmp_path):
+    """Ruby invokes conversion (`to_s`/`inspect`/`to_str`/…), Enumerable (`each`), Hash-key
+    (`hash`/`eql?`) and marshalling hooks BY NAME from the interpreter/stdlib — never via a
+    textual call — so a live class's protocol methods (and the helpers they reach) were
+    false-flagged dead. The Ruby analogue of Python dunder rooting. Cardinal-safe: a plain
+    method with no caller still flags dead."""
+    _mk(tmp_path, {
+        "lib.rb": (
+            "class Money\n"
+            "  def initialize; @v = 1; end\n"
+            "  def to_s; fmt; end\n"            # invoked by puts/interpolation
+            "  def fmt; \"x\"; end\n"            # reached only via to_s
+            "  def to_f; as_float; end\n"       # numeric coercion (Float(obj)) -> calls Float, not to_f
+            "  def as_float; 1.0; end\n"        # reached only via to_f
+            "  def really_dead; nuked; end\n"   # genuinely dead
+            "  def nuked; 1; end\n"
+            "end\n"
+            "class Coll\n"
+            "  include Enumerable\n"
+            "  def initialize; @a = [1, 2]; end\n"
+            "  def each(&b); @a.each(&b); end\n"   # driven by Enumerable#map
+            "end\n"
+            "m = Money.new\n"
+            "puts m\n"
+            "Coll.new.map { |x| x }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Money.to_s" not in stale and "Money.fmt" not in stale   # conversion hook + callee live
+    assert "Money.to_f" not in stale and "Money.as_float" not in stale  # numeric coercion hook + callee
+    assert "Coll.each" not in stale                                 # Enumerable driver live
+    assert "Money.really_dead" in stale and "Money.nuked" in stale  # genuinely dead -> still flagged
+
+
+# -- R100 / manual-pass (CARDINAL): C++ range-for begin()/end() customization points
+def test_cpp_range_for_begin_end_rooted(tmp_path):
+    """`for (x : r)` is desugared by the compiler to `r.begin()`/`r.end()` — the name-based call
+    graph never sees those calls, and no other pass roots them, so an iterable's begin/end (and
+    what they reach) were false-flagged dead. Rooted via `_IMPLICIT_HOOKS["cpp"]`. Cardinal-safe:
+    a plain method with no caller still flags dead."""
+    _mk(tmp_path, {
+        "r.cpp": (
+            "struct Range {\n"
+            "    int* a; int n;\n"
+            "    int* begin() { return helper(); }\n"   # desugared call target
+            "    int* end() { return a + n; }\n"
+            "    int* helper() { return a; }\n"          # reached only via begin()
+            "    int* truly_dead() { return a; }\n"      # genuinely dead
+            "};\n"
+            "int main() { int d[2]={1,2}; Range r{d,2}; int s=0; for (int x : r) s+=x; return s; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Range.begin" not in stale and "Range.end" not in stale   # range-for CPOs rooted
+    assert "Range.helper" not in stale                               # reached via begin()
+    assert "Range.truly_dead" in stale                               # genuinely dead -> still flagged
+
+
+# -- R102 / manual-pass (CARDINAL): Bash callback/invocation arg recognition --------
+def test_bash_callback_arg_invocations_rooted(tmp_path):
+    """Bash commands that invoke a function via an ARGUMENT (the generic command scan keys on
+    the head and misses these): a trap registered INSIDE a function body, `complete -F FUNC`
+    completion handlers, `export -f FUNC` (subshell-invoked), and `time FUNC`. Each must root
+    FUNC; a genuinely-dead function and a plain `export VAR=…` must NOT be rooted (cardinal-
+    safe — only names matching a project function are rooted)."""
+    _mk(tmp_path, {
+        "s.sh": (
+            "#!/bin/bash\n"
+            "cleanup() { echo c; }\n"                       # trap handler inside main()
+            "_mycomp() { COMPREPLY=(a b); }\n"              # complete -F handler
+            "worker() { echo w; }\n"                         # export -f for subshells
+            "bench() { echo b; }\n"                          # time target
+            "dead() { echo d; }\n"                           # genuinely dead
+            "main() {\n"
+            "  trap cleanup EXIT\n"
+            "  time bench\n"
+            "}\n"
+            "complete -F _mycomp mytool\n"
+            "export -f worker\n"
+            "export PATH=/x\n"                               # plain export: roots nothing
+            "main\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "cleanup" not in stale     # trap handler registered inside a function body
+    assert "_mycomp" not in stale     # complete -F completion handler
+    assert "worker" not in stale      # export -f (subshell-invoked)
+    assert "bench" not in stale       # time FUNC
+    assert "dead" in stale            # genuinely dead -> still flagged (cardinal-safe)
+
+
+def test_bash_callback_helpers():
+    """Pin the Bash callback-arg parsers (R102) directly: complete -F / export -f / time."""
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from stitchgraph.core.extract import treesitter as ts
+    parser = Parser(get_language("bash"))
+    cases = {
+        "complete -F _comp mytool": ["_comp"],
+        "compgen -F _gen": ["_gen"],
+        'complete -F "_comp" mytool': ["_comp"],  # quoted handler unwrapped (parity w/ trap)
+        "complete -F ${VAR} cmd": [],            # dynamic handler -> consume slot, don't grab cmd
+        "compgen -F $(f) word": [],              # command-substitution handler -> nothing
+        "complete -A dir -F _c cmd": ["_c"],     # flag not first; still found
+        "complete -F f1 -F f2 cmd": ["f1", "f2"],  # bash uses last; root all (cardinal-safe)
+        "complete -o default mytool": [],        # no -F, no handler
+        "export -f worker": ["worker"],
+        "export -f a b": ["a", "b"],
+        "export PATH=/x": [],                    # plain var export, no -f
+        "export -p worker": [],                  # -p (print) is not -f -> no root
+        "export -f foo=bar": [],                 # non-identifier after -f -> no root
+        "export -f 2bad": [],                     # variable_name but not an identifier -> no root
+        "declare -f foo": [],                    # non-export declaration -> ignored entirely
+        "time bench": ["bench"],
+        "time -p bench": ["bench"],              # -p option skipped
+        "time": [],                              # bare keyword, no target
+    }
+    for code, expected in cases.items():
+        src = ("#!/usr/bin/env bash\n" + code + "\n").encode()
+        tree = parser.parse(src)
+        got = [n for n, _ in ts._bash_callback_refs(tree.root_node, src)]
+        assert got == expected, f"{code!r} -> {got}, expected {expected}"
+
+
+# -- R104 / dogfood (CARDINAL): Ruby &:symbol / enum_for / &method dispatch --------
+def test_ruby_symbol_dispatch_rooted(tmp_path):
+    """Ruby names a method via a literal symbol the call graph can't see: `xs.map(&:upcase)`
+    (Symbol#to_proc), `enum_for(:m)` (lazy enumerator), `&method(:m)`. Each must root the named
+    method; genuinely-dead methods still flag (cardinal-safe — only project methods rooted)."""
+    _mk(tmp_path, {
+        "lib.rb": (
+            "class Token\n"
+            "  def initialize(v); @v = v; end\n"
+            "  def upcase; @v.upcase; end\n"        # via &:upcase
+            "  def valid?; !@v.empty?; end\n"       # via &:valid? (note the ? suffix)
+            "  def really_dead; nuked; end\n"       # genuinely dead
+            "  def nuked; 1; end\n"
+            "end\n"
+            "class Stream\n"
+            "  def filter_tokens(t); t; end\n"      # via enum_for(:filter_tokens)
+            "  def run(t); enum_for(:filter_tokens, t); end\n"
+            "end\n"
+            "class Box\n"
+            "  def value=(x); @v = x; end\n"        # setter: def keyed 'value' (no '='), reached
+            "  def setter_ref; method(:value=); end\n"   # via method(:value=) -> must root 'value='
+            "end\n"
+            "toks = [Token.new(\"a\"), Token.new(\"\")]\n"
+            "res = toks.select(&:valid?).map(&:upcase)\n"
+            "Stream.new.run([1])\n"
+            "Box.new.setter_ref\n"
+            "puts res\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+    assert "Token.upcase" not in stale and "Token.valid?" not in stale   # &:symbol handlers
+    assert "Stream.filter_tokens" not in stale                          # enum_for(:m) target
+    assert "Box.value" not in stale                                    # setter (keyed w/o `=`) via method(:value=)
+    assert "Token.really_dead" in stale and "Token.nuked" in stale      # genuinely dead -> flagged
+
+
+def test_ruby_symbol_refs_helper():
+    """Pin _ruby_symbol_refs (R104): &:sym, enum_for/to_enum/method/instance_method literal-symbol
+    args; method names with ?/! suffix; NOT send/public_send; dynamic/operator symbols skipped."""
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from stitchgraph.core.extract import treesitter as ts
+    parser = Parser(get_language("ruby"))
+    cases = {
+        "xs.map(&:upcase)": ["upcase"],
+        "xs.select(&:valid?)": ["valid?"],
+        "xs.each(&:save!)": ["save!"],
+        "enum_for(:filter_tokens, a)": ["filter_tokens"],
+        "to_enum(:each_line)": ["each_line"],
+        "xs.map(&method(:transform))": ["transform"],
+        "instance_method(:foo)": ["foo"],
+        "obj.method(:name=)": ["name"],        # setter symbol -> def is keyed without the `=`
+        "xs.map(&:name=)": ["name"],           # setter via &: too
+        "obj.send(:step)": [],                 # send: documented dynamic dispatch, not covered
+        "obj.public_send(:go)": [],            # same
+        "xs.map(&blk)": [],                    # &var (not a symbol) -> nothing
+        "define_method(:gen) { 1 }": [],       # define_method body walked elsewhere; not a target
+    }
+    for code, expected in cases.items():
+        src = (code + "\n").encode()
+        tree = parser.parse(src)
+        got = [n for n, _ in ts._ruby_symbol_refs(tree.root_node, src)]
+        assert got == expected, f"{code!r} -> {got}, expected {expected}"
+
+
+def test_object_literal_method_bodies_are_walked(tmp_path):
+    """#48 (cardinal): a top-level function called ONLY inside an object-literal member —
+    `const obj = { run() { reach() } }` (method shorthand), `{ a: () => inner() }`
+    (function-valued property), or a nested object — was flagged dead, because the object
+    value was never traversed and the call was never seen. Object-literal function members
+    at module scope are dynamically invoked (passed as callbacks, spread into config), so
+    they're rooted `callback` and their bodies walked. A genuinely-uncalled top-level fn
+    must STILL be flagged (no over-rooting of the world)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "export const obj = {\n"
+            "  run() { return reach(); },\n"
+            "  arrow: () => inner(),\n"
+            "  nested: { onClick() { deep(); } }\n"
+            "};\n"
+            "obj.run();\n"
+            "function reach(){ return 1; }\n"
+            "function inner(){ return 2; }\n"
+            "function deep(){ return 3; }\n"
+            "function trulyDead(){ return 99; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "reach" not in stale       # called from a method-shorthand body: live
+        assert "inner" not in stale       # called from a function-valued property: live
+        assert "deep" not in stale        # called from a nested object's method: live
+        assert "trulyDead" in stale       # genuinely uncalled module fn: still flagged
+
+
+def test_commonjs_module_exports_object_methods_are_walked(tmp_path):
+    """#48: the CommonJS `module.exports = { handler() {...} }` object form must also have
+    its member bodies walked, so a helper called only there stays live; a sibling never
+    reached stays flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "c.js": (
+            "function used(){ return 1; }\n"
+            "function alsoDead(){ return 2; }\n"
+            "module.exports = {\n"
+            "  handler() { return used(); }\n"
+            "};\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "used" not in stale        # reached from the exported object's method: live
+        assert "alsoDead" in stale        # never reached: flagged
+
+
+def test_object_literal_underscore_member_dynamically_dispatched_is_live(tmp_path):
+    """#48 (cardinal, panel R-opus): object literals are the canonical DISPATCH-TABLE idiom —
+    `handlers["_" + action]()` reaches an underscore member with no by-name call site. Minting
+    an underscore member as an UNROOTED node (an earlier gate) confidently flagged the live
+    member — and its callees — dead. Module-scope members are therefore rooted UNCONDITIONALLY
+    (underscore included); over-rooting a genuinely-dead member is cardinal-safe."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "p.ts": (
+            "function logEvent(name) { return name; }\n"
+            "const handlers = {\n"
+            "  _open()  { return logEvent('open'); },\n"
+            "  _close() { return logEvent('close'); }\n"
+            "};\n"
+            "export function dispatch(action) {\n"
+            "  const key = '_' + action;\n"
+            "  return handlers[key]();\n"
+            "}\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "handlers._open" not in stale    # dynamically dispatched: rooted, not flagged
+        assert "handlers._close" not in stale
+        names = {i.split(".")[-1] for i in stale}
+        assert "logEvent" not in names          # sole callee of the live members: live
+
+
+def test_object_literal_computed_key_member_body_is_walked(tmp_path):
+    """#48 (cardinal): a computed-key function member (`{ [k]: () => h() }`) has no static
+    name, so it can't be rooted by name — but its body must still be walked, or a helper called
+    only there is flagged dead when the table is dispatched dynamically. The member is extracted
+    under a synthesized id and rooted (computed keys are accessed dynamically by definition)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "c.ts": (
+            "const k = 'm';\n"
+            "const obj = {\n"
+            "  [k]: () => h(),\n"
+            "  [k + '2']: { deep() { g(); } }\n"   # computed key -> nested object -> method
+            "};\n"
+            "Object.values(obj).forEach(f => f());\n"
+            "function h(){ return 1; }\n"
+            "function g(){ return 3; }\n"
+            "function deadFn(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        names = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "h" not in names         # called from the computed-key member body: live
+        assert "g" not in names         # called from a method nested under a computed key: live
+        assert "deadFn" in names        # genuinely uncalled: still flagged
+        # The un-nameable member is ided from the key TEXT (not a constant placeholder), so two
+        # distinct computed keys don't collide into one node.
+        node_ids = set(store.all_node_ids())
+        assert "c.ts::obj.[k]" in node_ids
+
+
+def test_object_literal_function_property_non_exported_helper_is_live(tmp_path):
+    """#48: a function-VALUED property (`{ a: () => helper() }`) on a NON-exported object —
+    where _module_uses can't rescue the call because the module isn't a load root — must
+    still have its body walked via the extracted member node. Pins the pair / arrow path
+    independently of module-scope rooting."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "a.ts": (
+            "const obj = { a: () => helper() };\n"
+            "function helper(){ return 1; }\n"
+            "function deadHelper(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale       # called from the arrow-valued property: live
+        assert "deadHelper" in stale       # never reached: flagged
+
+
+def test_object_literal_string_keyed_method_body_is_walked(tmp_path):
+    """#48: a string-KEYED method (`{ "do-it"() { reach() } }`) — `_name_of` returns None for
+    a string key, which would silently drop the member and leave its body unwalked (cardinal).
+    `_obj_key_name` reads the unquoted fragment so the member is extracted (under a clean,
+    unquoted id), rooted at module scope, and its body walked. A genuinely-uncalled top-level
+    function still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "s.ts": (
+            "const handlers = {\n"
+            "  \"do-it\"() { return reach(); }\n"
+            "};\n"
+            "function reach(){ return 1; }\n"
+            "function deadFn(){ return 2; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        ids = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        names = {i.split(".")[-1] for i in ids}
+        assert "reach" not in names              # string-keyed method body walked: live
+        assert "handlers.do-it" not in ids       # string-keyed member: rooted, clean id
+        assert "deadFn" in names                 # genuinely uncalled top-level fn: flagged
+        # The id carries the UNQUOTED key (`_obj_key_name` strips the string quotes); a wrong
+        # key reader would mint `handlers."do-it"` instead. Pins the string-key path.
+        assert "s.ts::handlers.do-it" in set(store.all_node_ids())
+
+
+def test_object_literal_ts_wrapper_does_not_hide_members(tmp_path):
+    """#48 (cardinal, panel R-sonnet): a TS value wrapper — `{…} as const`, `{…} satisfies T`,
+    `({…})` — sits between the `variable_declarator` value and the object, so the bare
+    `val.type == "object"` check missed it and the members' bodies were never walked. These
+    wrappers are pervasive in modern TS. `_unwrap_ts_value` peels them so a helper called only
+    from a member of an `as const` object stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    for suffix in ("as const", "satisfies T"):
+        _mk(tmp_path, {
+            "lib.ts": (
+                "function helper(){ return 42; }\n"
+                "interface T { run(): void; }\n"
+                f"export const obj = {{ run() {{ helper(); }} }} {suffix};\n"
+            ),
+            "lib.test.ts": "import { obj } from './lib';\ntest('o', () => { obj.run(); });\n",
+        })
+        with sg.Store(":memory:") as store:
+            sg.reindex(store, str(tmp_path))
+            stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+            assert "helper" not in stale, f"{suffix}: helper flagged dead"
+
+
+def test_object_literal_method_body_nested_function_is_extracted(tmp_path):
+    """#48 (cardinal, panel R-sonnet): a function DEFINED inside an object method body
+    (`run() { function inner(){ helper(); } inner(); }`) must be extracted as a node with a
+    CONTAINS edge to the member — pass 2's `_direct_calls` skips nested defs, so without
+    walking the member body the inner fn's body is never scanned and a helper it alone calls is
+    flagged dead. `_object_members` now recurses into member bodies via `_collect`, like every
+    other function-extraction path."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "lib.ts": (
+            "function helper(){ return 42; }\n"
+            "export const obj = {\n"
+            "  run() { function inner() { helper(); } inner(); }\n"
+            "};\n"
+            "obj.run();\n"
+            "function trulyDead(){ return 0; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale       # called by inner(), nested in the live member: live
+        assert "trulyDead" in stale        # genuinely uncalled: flagged
+
+
+def test_object_literal_member_nested_in_dead_function_stays_gated(tmp_path):
+    """#48: an object built inside a DEAD function must stay reachability-gated — the member
+    body is walked with `exported=False`, so a def nested in the member is NOT auto-rooted; if
+    the enclosing function is never called, the member, its nested def, and a helper that def
+    alone calls are all flagged. (Pins the member-body `_collect` `exported` arg: rooting them
+    would mask dead code inside dead code.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "function deadSetup() {\n"
+            "  const obj = { run() { function inner(){ secret(); } inner(); } };\n"
+            "  obj.run();\n"
+            "}\n"
+            "function secret(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadSetup" in stale         # never called: dead
+        assert "secret" in stale            # reached only from a def inside a dead member: dead
+
+
+def test_object_literal_wrapped_and_class_member_values(tmp_path):
+    """#48 (cardinal, panel R-opus round 2): a member VALUE that is itself wrapped — a
+    parenthesized arrow `run: (() => h())`, a `satisfies`/`as`-wrapped function — or a
+    `class` (`{ Parser: class {…} }`) was dropped: `_unwrap_ts_value` was applied to the whole
+    object but not to individual member values, and class-valued members weren't handled. Each
+    left a live member's body unwalked, flagging a helper called only there dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # paren-wrapped + satisfies-wrapped function-valued members
+    _mk(tmp_path, {
+        "mod.ts": (
+            "function parenHelper(){ return 1; }\n"
+            "function satHelper(){ return 2; }\n"
+            "type Fn = () => number;\n"
+            "export const handlers = {\n"
+            "  run: (() => parenHelper()),\n"
+            "  go: ((() => satHelper()) satisfies Fn)\n"
+            "};\n"
+        ),
+        "app.ts": "import { handlers } from './mod';\nhandlers.run(); handlers.go();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "parenHelper" not in stale     # paren-wrapped arrow member body walked: live
+        assert "satHelper" not in stale       # satisfies-wrapped arrow member body walked: live
+
+
+def test_object_literal_class_valued_member(tmp_path):
+    """#48 (cardinal, panel R-opus round 2): a class-valued member (`{ Parser: class {…} }`) is
+    public API — modeled as a CLASS with the `exported` role so its public methods (and their
+    private callees) are rescued. A genuinely-unused private method of that class still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "reg.ts": (
+            "function tok(){ return 1; }\n"
+            "function deadHelper(){ return 2; }\n"
+            "export const registry = {\n"
+            "  Parser: class {\n"
+            "    parse(){ return tok(); }\n"
+            "    _priv(){ return deadHelper(); }\n"
+            "  }\n"
+            "};\n"
+        ),
+        "main.ts": "import { registry } from './reg';\nnew registry.Parser().parse();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tok" not in stale         # reached from the public class method: live
+        assert "deadHelper" in stale      # reached only from an unused private method: flagged
+
+
+def test_object_literal_class_member_nested_in_function_is_gated(tmp_path):
+    """#48 (cardinal, panel R-sonnet round 3): a class-valued member inside a FUNCTION body must
+    have its methods reachability-gated to the class (chain: enclosing fn -> class -> methods).
+    The class is not `exported`-rooted there (it's gated to the enclosing fn), so walking its
+    body with enclosing_func=None orphaned the methods — confidently flagged dead while live.
+    Now gated to the class. A class member in a DEAD function stays dead (gating preserved)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # live enclosing function -> the class member's method (and its callee) live
+    _mk(tmp_path, {
+        "live.ts": (
+            "export function setup() {\n"
+            "  const handlers = { Parser: class { parse() { _helper(); } } };\n"
+            "  return handlers;\n"
+            "}\n"
+            "function _helper() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "_helper" not in stale     # reachable: setup -> Parser.parse -> _helper: live
+    # dead enclosing function -> the class, its method, and the callee all stay flagged
+    _mk(tmp_path, {
+        "dead.ts": (
+            "function deadSetup() {\n"
+            "  const handlers = { Parser: class { parse() { secret(); } } };\n"
+            "  return handlers;\n"
+            "}\n"
+            "function secret() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadSetup" in stale        # never called: dead
+        assert "secret" in stale           # reached only via a method of a dead-gated class: dead
+
+
+def test_member_assigned_class_nested_in_function_is_gated(tmp_path):
+    """#48 (cardinal, panel R-sonnet round 4): the `assignment_expression` branch had the same
+    function-scoped class-member orphaning bug — `function f(){ obj.X = class { run(){ _h() } } }`
+    walked the class body with enclosing_func=None, orphaning its methods (no role, no
+    containment) and confidently flagging them — and their callees — dead while live. Now gated
+    to the class (chain: enclosing fn -> class -> methods), mirroring the object-literal path. A
+    member-assigned class in a DEAD function stays flagged (gating preserved)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "live.ts": (
+            "export function f() {\n"
+            "  const obj: any = {};\n"
+            "  obj.X = class { run() { _h(); } };\n"
+            "  return obj;\n"
+            "}\n"
+            "function _h() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "_h" not in stale            # reachable: f -> obj.X.run -> _h: live
+    _mk(tmp_path, {
+        "dead.ts": (
+            "function deadF() {\n"
+            "  const obj: any = {};\n"
+            "  obj.X = class { run() { secret(); } };\n"
+            "  return obj;\n"
+            "}\n"
+            "function secret() { return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadF" in stale             # never called: dead
+        assert "secret" in stale            # reached only via a method of a dead-gated class: dead
+
+
+def test_ts_wrapped_value_in_assignment_and_const(tmp_path):
+    """#48 (cardinal, panel R6): TS value wrappers (`as T` / `satisfies T` / `(…)`) must be
+    peeled on the assignment-RHS fn/class value (`obj.X = (class {…}) satisfies T`) and on the
+    arrow/function variable_declarator value (`export const f = (() => h()) as any`) — not only
+    on object values. Without the unwrap the wrapped def is dropped, its body unwalked, and a
+    helper it alone calls is flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "export function setup() {}\n"
+            "function classHelper() {}\n"
+            "function fnHelper() {}\n"
+            "function arrowHelper() { return 1; }\n"
+            "obj.Parser = (class { run() { classHelper(); } }) satisfies any;\n"
+            "obj.h = (function(){ fnHelper(); }) as SomeType;\n"
+            "export const f = (() => arrowHelper()) as any;\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "classHelper" not in stale    # wrapped class assignment body walked: live
+        assert "fnHelper" not in stale        # wrapped function assignment body walked: live
+        assert "arrowHelper" not in stale     # wrapped arrow const body walked: live
+
+
+def test_generator_function_values_are_walked(tmp_path):
+    """#48 (cardinal, panel R8): a generator (`function*(){}` / `async function*(){}`) used as a
+    function VALUE — an object-literal pair value, an assignment RHS, or a const initializer —
+    parses as `generator_function`, which the function-value tuples (`_OBJ_FN_VALUES`, the
+    variable_declarator and assignment_expression checks) omitted, so the generator was dropped,
+    its body unwalked, and a helper it alone calls flagged dead. (Method-shorthand `{ *gen(){} }`
+    is a method_definition and was already handled.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "m.ts": (
+            "function objHelper(){ return 1; }\n"
+            "function asyncHelper(){ return 2; }\n"
+            "function assignHelper(){ return 3; }\n"
+            "function constHelper(){ return 4; }\n"
+            "function deadHelper(){ return 9; }\n"
+            "export const obj = {\n"
+            "  gen: function*(){ yield objHelper(); },\n"
+            "  agen: async function*(){ yield asyncHelper(); }\n"
+            "};\n"
+            "exports.h = function*(){ yield assignHelper(); };\n"
+            "export const g = function*(){ constHelper(); };\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "objHelper" not in stale      # object-literal generator pair value body walked
+        assert "asyncHelper" not in stale    # async-generator pair value body walked
+        assert "assignHelper" not in stale   # assignment-RHS generator body walked
+        assert "constHelper" not in stale    # const generator initializer body walked
+        assert "deadHelper" in stale         # genuinely uncalled: still flagged
+
+
+def test_module_uses_skips_generator_const_def(tmp_path):
+    """#48 (precision, panel R9): `_module_uses` (test/script files) must skip descending into a
+    `const g = function*(){…}` generator value — it is itself a def, scanned per-def — else its
+    body's calls are double-counted and over-rooted from the module even when `g` is uncalled
+    (the generator twin of the Panel-GG arrow/function skip). Cardinal-safe either way, but the
+    skip restores precision: an uncalled module-scope generator's sole callee stays flagged."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "foo.test.ts": (
+            "const g = function*(){ reallyDead(); };\n"
+            "function reallyDead(){ return 1; }\n"
+            "test('x', () => { expect(1).toBe(1); });\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "reallyDead" in stale     # uncalled generator's callee NOT over-rooted: flagged
+
+
+def test_expression_shaped_value_object_member_is_rooted_not_dead(tmp_path):
+    """#75 (was #48/round-11): a variable_declarator whose value is an EXPRESSION SHAPE wrapping
+    an object (`const handlers = (init(), { mmm(){ h() } })`, chained/parenthesized assignment,
+    ternary, IIFE) used to be SWALLOWED (no descent), so `h` — called only from the member `mmm`
+    — was flagged dead (cardinal). The old round-11 guard avoided minting `mmm` as an UNROOTED
+    node (the worse failure); #75 now routes the literal through `_object_members` so `mmm` is
+    minted ROOTED (callback, module-scope dispatch-table idiom) and its body walked. The cardinal
+    invariant is preserved the right way: `h` is LIVE (reachable through `mmm`), and `mmm` itself
+    is never flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "svc.ts": (
+            "function h(){ return 1; }\n"
+            "const handlers = (init(), { mmm(){ h(); } });\n"
+            "export function dispatch(name){ return handlers[name](); }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        # The helper reached only through the expression-shaped object member is LIVE.
+        assert "h" not in stale, "helper called only from an expression-shaped object member must be live"
+        # The member itself is rooted (dispatch-table idiom), never confidently flagged dead.
+        assert "mmm" not in stale, "expression-shaped object member must be rooted, not flagged dead"
+
+
+@pytest.mark.parametrize("decl", [
+    # call argument                              (register/freeze/configure idioms)
+    "function reg(x){ return x; }\nreg({ run(){ return helper(); } });",
+    "export const C = Object.freeze({ run(){ return helper(); } });",
+    # array element
+    "export const C = [ { run(){ return helper(); } } ];",
+    # ternary / logical branch / nullish
+    "const cond = true;\nexport const C = cond ? { run(){ return helper(); } } : null;",
+    "const opts = null;\nexport const C = opts || { run(){ return helper(); } };",
+    "const opts = null;\nexport const C = opts ?? { run(){ return helper(); } };",
+    # IIFE returning an object
+    "export const C = (() => ({ run(){ return helper(); } }))();",
+    # chained / parenthesized assignment
+    "const m = {};\nexport const routes = m.exports = { run(){ return helper(); } };",
+    # sequence expression
+    "function init(){ return 1; }\nconst C = (init(), { run(){ return helper(); } });",
+    # TS wrapper around an expression-position object
+    "export const C = ({ run(){ return helper(); } } as const);",
+])
+def test_expression_position_object_literal_helper_is_live(tmp_path, decl):
+    """#75 (cardinal): a JS/TS object literal reached only through an EXPRESSION shape — call
+    argument, array element, ternary/`||`/`??` branch, IIFE return, sequence, chained/parenthesized
+    assignment, TS wrapper — has its function-valued members extracted and bodies walked, so a
+    helper called ONLY from such a member is LIVE (not confidently flagged dead). These shapes were
+    previously swallowed (declarator) or minted unrooted (statement), the round-11 cardinal."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": "function helper(){ return 1; }\n" + decl + "\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale, \
+            f"helper reached only via expression-position object must be live; decl={decl!r}"
+
+
+def test_expression_position_anonymous_class_helper_is_live(tmp_path):
+    """#75 (cardinal): an anonymous CLASS expression in an expression position
+    (`reg(class { run(){ helper() } })`, `[ class {…} ]`) is modeled as a class and its body
+    walked, so a helper called only from a method is live. The bare `class` keyword token inside a
+    regular `class X {}` must NOT be mistaken for a class expression (it has no body) — verified by
+    the suite's existing dead-class tests staying green."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # NON-exported const: the class is reachable only by being modeled as a class (which roots
+    # its public methods) — there is no `export` flag to propagate liveness down generic descent,
+    # so this genuinely exercises the class-interception branch.
+    _mk(tmp_path, {"m.ts": (
+        "function helper(){ return 1; }\n"
+        "function reg(x){ return x; }\n"
+        "const C = reg(class { run(){ return helper(); } });\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "helper" not in stale, "helper reached via an expression-position class must be live"
+        # The method itself must be rooted (the class is modeled + public-method-rescued), never
+        # minted as an unrooted module-scope node that is then flagged dead (round-11 cardinal).
+        assert "run" not in stale, "expression-position class method must be rooted, not flagged dead"
+
+
+def test_expression_position_does_not_overroot_regular_dead_class(tmp_path):
+    """#75 over-rooting guard: routing expression-position literals through member extraction must
+    NOT change a regular top-level `class X {}` / `function f(){}` — a genuinely-dead class and a
+    genuinely-dead function still flag. (Pins that the `class` keyword-token guard and the object
+    interception don't bleed into ordinary declarations.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "export class Live { use(){ return 1; } }\n"
+        "class DeadCls { gone(){ return 2; } }\n"
+        "function deadFn(){ return 3; }\n"
+        "export function entry(){ return new Live().use(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "DeadCls" in stale, "a genuinely-dead top-level class must still flag"
+        assert "deadFn" in stale, "a genuinely-dead top-level function must still flag"
+
+
+def test_const_class_expression_is_modeled(tmp_path):
+    """#80 (cardinal): `export const Widget = class extends Base { render(){ helper() } }` — a
+    class expression bound to a const. The variable_declarator branch handled arrow/fn/object
+    values but not `class`, so the class was never a node and its methods' callees were flagged
+    dead. Now modeled as a CLASS (mirroring the assignment_expression class branch): INHERITS
+    edges, body walked, `exported` role rescuing public methods (private stay dead-eligible).
+    Parity with a regular `class W {}` — exported+consumed → clean; a genuinely-dead private
+    method still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "w.ts": (
+            "export class Base {}\n"
+            "function tok(){ return 1; }\n"
+            "function deadHelper(){ return 2; }\n"
+            "export const Widget = class extends Base {\n"
+            "  render(){ tok(); }\n"
+            "  _priv(){ deadHelper(); }\n"
+            "};\n"
+        ),
+        "u.ts": "import { Widget } from './w'; new Widget().render();\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tok" not in stale         # reached from the public class method: live
+        assert "Base" not in stale        # extends base referenced via INHERITS: live
+        assert "deadHelper" in stale      # reached only from an unused private method: flagged
+
+
+def test_const_class_expression_nested_in_function_is_gated(tmp_path):
+    """#80: a `const X = class {…}` inside a function body gates its methods to the class
+    (chain enclosing-fn → class → methods); live when the fn is reachable, all dead when it
+    isn't (no orphaned-but-flagged methods, no dead-initializer live roots)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "live.ts": (
+            "export function f(){ const W = class { render(){ h(); } }; return new W(); }\n"
+            "function h(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "h" not in stale            # reachable: f -> W.render -> h: live
+    # Distinct symbol names + a separate subdir so the live file above can't by-name-collide
+    # (`new W()` resolving across files is the cardinal-SAFE #71 over-rooting family, unrelated).
+    dead_dir = tmp_path / "deadpkg"
+    _mk(dead_dir, {
+        "dead.ts": (
+            "function deadFactory(){ const Renderer = class { paint(){ secretPaint(); } };"
+            " return new Renderer(); }\n"
+            "function secretPaint(){ return 1; }\n"
+        ),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(dead_dir))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "deadFactory" in stale       # never called: dead
+        assert "secretPaint" in stale       # reached only via a method of a dead-gated class: dead
+
+
+@pytest.mark.parametrize("body", [
+    # method VALUE — bound method passed as a callback
+    'func reg(f func()) {}\nfunc main() { v := t{}; reg(v.run) }',
+    # method EXPRESSION — unbound `T.method`
+    'func use(f func(t)) {}\nfunc main() { use(t.run) }',
+    # method value stored in a struct-literal field
+    'type cfg struct{ onRun func() }\nfunc sink(c cfg) {}\nfunc main() { v := t{}; sink(cfg{onRun: v.run}) }',
+    # method value assigned to a local, then the local passed on
+    'func reg(f func()) {}\nfunc main() { v := t{}; h := v.run; reg(h) }',
+])
+def test_go_method_value_reference_keeps_method_live(tmp_path, body):
+    """#49 (cardinal, cobra dogfood): an UNEXPORTED Go method reached only as a method VALUE
+    (`v.run`), method EXPRESSION (`t.run`), or struct-field value — a reference, not a call — was
+    flagged dead because `_direct_calls` only sees `v.run()` calls, and `_direct_refs` skipped the
+    selector's `field_identifier`. The selector field is now emitted as a by-name REFERENCES edge,
+    so the live method stays live. (Exported/capitalized methods were already rooted, masking this.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.go": "package main\ntype t struct{}\nfunc (x t) run() {}\n" + body + "\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "run" not in stale, "a Go method reached only via a method value/expression must be live"
+
+
+def test_go_genuinely_dead_unexported_method_still_flags(tmp_path):
+    """#49 over-rooting guard: emitting selector field names as references must NOT keep a
+    genuinely-unused unexported method alive. A `run` that is never called, never referenced as a
+    value, and not exported still flags dead — and a same-named selector on an unrelated field
+    access does not accidentally rescue it."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.go": (
+        "package main\n"
+        "type t struct{ name string }\n"
+        "func (x t) run() {}\n"           # never called or referenced -> dead
+        "func main() { v := t{}; _ = v.name }\n"   # selector on a struct FIELD, not the method
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "run" in stale, "a genuinely-unused unexported Go method must still flag dead"
+
+
+def test_go_method_call_not_double_counted_as_reference(tmp_path):
+    """#49: a `v.run()` CALL contains the same selector the reference pass now reads, but the edge
+    loop dedups REFERENCES against the CALLS set — so the helper a method alone calls is reached
+    exactly once and stays live (no spurious double-edge, and no regression to call handling)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.go": (
+        "package main\n"
+        "type t struct{}\n"
+        "func helper() int { return 1 }\n"
+        "func (x t) run() int { return helper() }\n"
+        "func main() { v := t{}; _ = v.run() }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "run" not in stale and "helper" not in stale
+
+
+@pytest.mark.parametrize("src,fn,nid,rooted", [
+    # Java: public API method + private same-name overload declared LAST. The private overload's
+    # roleless row must not clobber the public one's `exported` root (else the public method,
+    # reachable only as API, is flagged dead).
+    ("public class Api {\n  public void process() {}\n  private void process(int x) {}\n}\n",
+     "Api.java", "Api.java::Api.process", "exported"),
+    # Java: framework-callback overload (@PostConstruct) + plain overload LAST. The plain row must
+    # not clobber the `callback` root of the lifecycle method.
+    ("import javax.annotation.PostConstruct;\nclass Bean {\n  @PostConstruct void init() {}\n  void init(int x) {}\n}\n",
+     "Bean.java", "Bean.java::Bean.init", "callback"),
+    # C# generalization: public method + private same-name overload last (same store-level clobber).
+    ("public class Api {\n  public void Process() {}\n  private void Process(int x) {}\n}\n",
+     "Api.cs", "Api.cs::Api.Process", "exported"),
+])
+def test_overload_role_union_keeps_rooting_method_live(tmp_path, src, fn, nid, rooted):
+    """#61 (cardinal): two same-name method OVERLOADS collapse to one node id. A plain
+    INSERT OR REPLACE let the LAST-written overload's row clobber the earlier one's roles — so a
+    public (`exported`) or framework-callback method overloaded with a roleless same-name overload
+    declared after it lost its only root and was flagged dead though live. `add_node` now UNIONs
+    roles on conflict, so the rooting role survives regardless of declaration order."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {fn: src})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        node = store.get_node(nid)
+        assert node is not None and rooted in node.roles, f"{nid} must keep its '{rooted}' role across the overload"
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert nid not in stale, f"{nid} is rooted ({rooted}) and must not be flagged dead"
+
+
+def test_overload_role_union_is_order_independent(tmp_path):
+    """#61: the role union must hold in BOTH declaration orders — the bug was order-dependent
+    (only the role on the last-written overload survived). Pin both directions explicitly."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    for order in (
+        "  public void process() {}\n  private void process(int x) {}\n",   # rooted first
+        "  private void process(int x) {}\n  public void process() {}\n",   # rooted last
+    ):
+        d = tmp_path / order[:8].strip().replace(" ", "_")
+        _mk(d, {"Api.java": "public class Api {\n" + order + "}\n"})
+        with sg.Store(":memory:") as store:
+            sg.reindex(store, str(d))
+            node = store.get_node("Api.java::Api.process")
+            assert node is not None and "exported" in node.roles
+            assert "Api.java::Api.process" not in {c["id"] for c in sg.find_stale(store).result}
+
+
+def test_overload_role_union_does_not_overroot_unrelated(tmp_path):
+    """#61 guard: unioning roles for a SHARED id must not leak a role onto a genuinely-dead,
+    differently-named private method. A dead `secret()` (no overload, no caller) still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"Api.java": (
+        "public class Api {\n"
+        "  public void process() {}\n"
+        "  private void process(int x) {}\n"
+        "  private void secret() {}\n"   # never called, distinct name -> dead
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "Api.java::Api.secret" in stale, "a genuinely-dead private method must still flag"
+
+
+def test_anon_class_protected_override_in_field_initializer_is_live(tmp_path):
+    """#62 (cardinal): an anonymous-inner-class override in a CLASS-scope field initializer is
+    invoked only polymorphically (the class has no name, so the override can't be called by a
+    `Class.m` by-name call) and has no enclosing function to root it via containment. A protected
+    override (NOT `exported`) of a custom abstract base — and the private helper it alone calls —
+    was flagged dead though live. Anonymous-class members at class scope are now rooted `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"M.java": (
+        "abstract class Handler { protected abstract void handle(); }\n"
+        "public class M {\n"
+        "  static final Handler H = new Handler() {\n"
+        "    protected void handle() { work(); }\n"
+        "  };\n"
+        "  private static void work() {}\n"
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "M.java::M.handle" not in stale, "anon-class override in a field initializer must be live"
+        assert "M.java::M.work" not in stale, "a helper called only by the anon override must be live"
+
+
+@pytest.mark.parametrize("body", [
+    # JDK Runnable in a static field, never called by name
+    "static final Runnable R = new Runnable() { public void run() { tick(); } };\n"
+    "  private static void tick() {}",
+    # custom abstract base, protected override
+    "static final Task T = new Task() { protected void exec() { step(); } };\n"
+    "  private static void step() {}",
+])
+def test_anon_class_member_rooted_at_class_scope(tmp_path, body):
+    """#62: members of an anonymous class in a class-scope initializer are rooted so a helper
+    reached only through the override stays live, across JDK and custom bases."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"M.java": (
+        "abstract class Task { protected abstract void exec(); }\n"
+        "public class M {\n  " + body + "\n}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "tick" not in stale and "step" not in stale
+
+
+def test_anon_class_in_dead_method_stays_dead(tmp_path):
+    """#62 precision guard: an anonymous-class override inside a genuinely-DEAD method must stay
+    dead — it is reachability-gated to the enclosing function via the containment edge, NOT rooted
+    `callback` (that rooting is only for the class-scope case with no enclosing function). The
+    callback rooting must not leak into method-body anonymous classes and over-root a dead path."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    # A PROTECTED override (not `exported`) of a custom abstract base — so liveness depends purely
+    # on containment, not the public->exported rooting that would mask the gating behaviour.
+    _mk(tmp_path, {"M.java": (
+        "abstract class Task { protected abstract void exec(); }\n"
+        "public class M {\n"
+        "  public static void main(String[] a) {}\n"          # never calls deadCreator
+        "  private static void deadCreator() {\n"
+        "    Task t = new Task() { protected void exec() { helper(); } };\n"
+        "  }\n"
+        "  private static void helper() {}\n"
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "M.java::M.deadCreator" in stale, "a genuinely-dead method must still flag"
+        assert "M.java::M.helper" in stale, "a helper reached only via a dead method's anon class must stay dead"
+
+
+def test_named_class_method_still_flags_when_dead(tmp_path):
+    """#62 guard: the anonymous-class rooting must not affect a NORMAL (named) class — a
+    genuinely-unused private method of a named class still flags dead (the check requires an
+    `object_creation_expression` parent, so named class members are untouched)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"M.java": (
+        "public class M {\n"
+        "  public static void main(String[] a) {}\n"
+        "  private static void deadHelper() {}\n"   # named class, never called -> dead
+        "}\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"] for c in sg.find_stale(store).result}
+        assert "M.java::M.deadHelper" in stale, "a genuinely-dead named-class method must still flag"
+
+
+@pytest.mark.parametrize("fn,code,live,dead", [
+    # function-like macro body wraps a static helper called only via the macro
+    ("m.c",
+     'static void log_impl(const char *m){}\n#define LOG(x) log_impl(x)\n'
+     'int main(void){ LOG("hi"); return 0; }\n',
+     "log_impl", None),
+    # object-like macro names a function pointer (no call syntax)
+    ("m.c",
+     'static int handler(void){return 1;}\n#define DEFAULT handler\n'
+     'typedef int (*fn)(void);\nint main(void){ fn f = DEFAULT; return f(); }\n',
+     "handler", None),
+    # macro body calls two helpers
+    ("m.c",
+     'static int a(void){return 1;}\nstatic int b(void){return 2;}\n#define BOTH() (a()+b())\n'
+     'int main(void){ return BOTH(); }\n',
+     "a", None),
+    # C++ macro body
+    ("m.cpp",
+     'static int helper(){return 1;}\n#define CALL() helper()\nint main(){ return CALL(); }\n',
+     "helper", None),
+])
+def test_c_macro_body_call_keeps_function_live(tmp_path, fn, code, live, dead):
+    """#59 (cardinal): a C/C++ function called or named ONLY inside a `#define` macro body is
+    invisible to the AST call scan (the body is raw `preproc_arg` text), so it was false-flagged
+    dead. Macro-body identifiers are now rooted `callback`, keeping the indirectly-invoked function
+    live (the C analogue of the EXPORT_SYMBOL text-scan)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {fn: code})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert live not in stale, f"{live} reached only via a macro body must be live"
+
+
+def test_c_macro_body_cross_file_function_is_live(tmp_path):
+    """#59: a header macro routinely wraps a function defined in a separate `.c` — the macro-ref
+    rooting is project-wide across the C/C++ bucket, so the cross-file target stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "util.h": "#define LOG(m) log_impl(m)\nvoid log_impl(const char *m);\n",
+        "util.c": "void log_impl(const char *m){}\n",
+        "main.c": '#include "util.h"\nint main(void){ LOG("hi"); return 0; }\n',
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "log_impl" not in stale, "a function wrapped by a header macro must be live cross-file"
+
+
+def test_c_macro_rooting_does_not_overroot_unrelated_dead(tmp_path):
+    """#59 guard: rooting macro-body identifiers must not keep a genuinely-dead function live when
+    its name does NOT appear in any macro body. A numeric/string macro yields no identifiers and
+    must not crash."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.c": (
+        "static void used_via_macro(void){}\n"
+        "static void genuinely_dead(void){}\n"   # name not in any macro -> dead
+        "#define MAX 100\n"                        # numeric macro -> no identifiers
+        "#define USE() used_via_macro()\n"
+        "int main(void){ USE(); return MAX; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "genuinely_dead" in stale, "a dead fn not referenced by any macro must still flag"
+        assert "used_via_macro" not in stale
+
+
+def test_c_macro_body_line_continuation_identifier_is_live(tmp_path):
+    """#59 (cardinal, panel R-found): a C preprocessor `\\<newline>` line continuation that splits a
+    function name inside a macro body (`#define M f\\<nl>n()`) must be spliced out before scanning —
+    otherwise the identifier reads as two fragments (`f`, `n`), the real call target `fn` is missed,
+    and it is flagged dead though live. Mirrors the preprocessor, which splices continuations before
+    tokenizing. Normal (non-splitting) multi-line macros must keep working, and a dead fn still flags."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.c": (
+        "static void fn(void){}\n"
+        "static void gn(void){}\n"
+        "static void dead(void){}\n"          # not in any macro body -> dead
+        "#define SPLIT f\\\nn() + g\\\nn()\n"   # both fn and gn split across continuations
+        "int main(void){ SPLIT; return 0; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "fn" not in stale and "gn" not in stale, "continuation-split macro call targets must be live"
+        assert "dead" in stale, "a fn named in no macro must still flag"
+
+
+def test_macro_body_ref_names_helper_excludes_params_and_splices_continuations():
+    """#59 unit-pins `_macro_body_ref_names`: it returns BODY identifiers (call targets / function
+    pointers) and (a) EXCLUDES the macro's own parameters — `#define MIN(a,b) ((a)<(b)?…)` must not
+    yield `a`/`b` (placeholders bound at the call site, not project functions; rooting them would
+    over-keep dead helpers named like common params), and (b) SPLICES `\\<newline>` continuations so a
+    name split across lines is read whole. (The find_stale-level effect of the param exclusion is
+    currently masked by a separate pre-existing module-walk over-rooting, #88, so this asserts the
+    helper directly.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _macro_body_ref_names
+    src = (b"#define MIN(a,b) ((a)<(b)?(a):(b))\n"      # params a,b excluded; no body call
+           b"#define LOG(msg) log_impl(msg)\n"          # log_impl kept, param msg excluded
+           b"#define DEFAULT handler\n"                 # bare function-pointer ref kept
+           b"#define SPLIT f\\\nn()\n")                 # continuation-split -> 'fn'
+    root = get_parser("c").parse(src).root_node
+    names = _macro_body_ref_names(root, src)
+    assert "log_impl" in names and "handler" in names and "fn" in names
+    assert "a" not in names and "b" not in names and "msg" not in names
+
+
+@pytest.mark.parametrize("files,live", [
+    # same-file function-pointer table; the table's TU has no entry point of its own
+    ({"reg.c": "int op_a(int x){return x+1;}\nint op_b(int x){return x-1;}\n"
+               "int (*ops[])(int) = { op_a, op_b };\n",
+      "main.c": "extern int (*ops[])(int);\nint main(void){ return ops[0](5); }\n"},
+     ("op_a", "op_b")),
+    # plugin/vtable struct of static handlers, consumed cross-TU
+    ({"plugin.c": "static int init(void){return 1;}\nstatic int teardown(void){return 0;}\n"
+                  "struct ops { int (*i)(void); int (*t)(void); };\nstruct ops PLUGIN = { init, teardown };\n",
+      "host.c": "struct ops { int (*i)(void); int (*t)(void); };\nextern struct ops PLUGIN;\n"
+                "int main(void){ return PLUGIN.i(); }\n"},
+     ("init", "teardown")),
+    # designated-initializer table
+    ({"m.c": "typedef void (*cb)(void);\nstatic void on_start(void){}\nstatic void on_stop(void){}\n"
+             "static cb handlers[] = { [0]=on_start, [1]=on_stop };\nint main(void){ handlers[0](); return 0; }\n"},
+     ("on_start", "on_stop")),
+])
+def test_c_global_function_table_promotes_handlers(tmp_path, files, live):
+    """#69 (cardinal): a C/C++ function whose address is taken in a global function-pointer table /
+    vtable struct is invoked indirectly through that global — possibly in another translation unit
+    (globals are not graph nodes, so the cross-TU `extern` use is untrackable). It was false-flagged
+    dead whenever its own TU had no entry point. Such functions are now rooted `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, files)
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        for name in live:
+            assert name not in stale, f"{name} address-taken in a global table must be live"
+
+
+def test_c_global_table_does_not_overroot_unrelated_dead(tmp_path):
+    """#69 guard: rooting global-initializer function references must not keep a genuinely-dead
+    function live when its address is NOT taken in any global initializer. A scalar non-function
+    initializer (`int N = 5;`) roots nothing."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.c": (
+        "static int used(int x){return x;}\n"
+        "static int dead(void){return 0;}\n"     # address never taken -> dead
+        "int N = 5;\n"                            # scalar init, no function identifiers
+        "int (*t[])(int) = { used };\n"
+        "int main(void){ return t[0](1); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "dead" in stale, "a function whose address is in no global table must still flag"
+        assert "used" not in stale
+
+
+def test_c_global_init_fn_refs_skips_function_bodies():
+    """#69 unit-pins `_c_global_init_fn_refs`: it scans only TOP-LEVEL (module-scope) initializers,
+    NOT function-local ones (those are already covered by `_direct_refs`). A local `cb x = local_fn;`
+    inside a function body must not be collected by this scan."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_global_init_fn_refs
+    src = (b"typedef void (*cb)(void);\n"
+           b"void g_a(void){}\nvoid g_b(void){}\n"
+           b"cb GLOBAL = g_a;\n"                       # top-level -> collected
+           b"cb TABLE[] = { g_b };\n"                  # top-level -> collected
+           b"void f(void){ cb local = local_only; }\n")  # in-body -> NOT collected here
+    root = get_parser("c").parse(src).root_node
+    names = _c_global_init_fn_refs(root, src)
+    assert "g_a" in names and "g_b" in names
+    assert "local_only" not in names
+
+
+@pytest.mark.parametrize("code,helper", [
+    # function table inside a C++ namespace (still module scope)
+    ("namespace reg {\n  int handler_x(){ return 1; }\n  int (*table[])() = { handler_x };\n}\n"
+     "int main(){ return reg::table[0](); }\n", "handler_x"),
+    # function table inside an extern \"C\" linkage block
+    ('extern "C" {\n  int chandler(){ return 1; }\n  int (*ctab[])() = { chandler };\n}\n'
+     "int main(){ return ctab[0](); }\n", "chandler"),
+])
+def test_cpp_namespace_global_table_promotes_handler(tmp_path, code, helper):
+    """#69: a global function-pointer table declared inside a C++ `namespace {…}` or `extern "C" {…}`
+    block is still module scope — `_c_global_init_fn_refs` descends into those containers so the
+    address-taken handler is rooted `callback` and stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.cpp": code})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert helper not in stale, f"{helper} in a namespace/extern-C global table must be live"
+
+
+def test_cpp_global_table_cross_tu_rootless_promotes_handler(tmp_path):
+    """#69 (cardinal, C++): the C++ grammar mis-parses a function-pointer table
+    `int (*tab[])() = {hx}` as an expression_statement/assignment_expression (not a declaration),
+    so the only reliable signal is the `initializer_list` node. When the table lives in a ROOTLESS
+    TU (consumed cross-TU), the handler is live ONLY via `_c_global_init_fn_refs`' initializer_list
+    branch — there is no same-file entry point to seed the module node. Pins that branch."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "reg.cpp": "namespace reg {\n  int hx(){ return 1; }\n  int (*tab[])() = { hx };\n}\n",
+        "main.cpp": "namespace reg { extern int (*tab[])(); }\nint main(){ return reg::tab[0](); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "hx" not in stale, "a C++ function-pointer table handler in a rootless TU must be live"
+
+
+def test_cpp_rootless_table_does_not_overroot_sibling_static(tmp_path):
+    """#69 precision guard: the global-initializer scan must collect ONLY from initializers — not
+    from arbitrary module-scope nodes. In a rootless C++ TU (no entry point to seed the module
+    node), a static `secret()` that sits beside a function-pointer table but is NOT named in any
+    initializer must stay dead, while the table's target `hx` is live. (Pins that the scan keys on
+    `initializer_list` / `init_declarator` values, not a blanket walk of the namespace.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "reg.cpp": "namespace reg {\n  static int secret(){ return 0; }\n"
+                   "  int hx(){ return 1; }\n  int (*tab[])() = { hx };\n}\n",
+        "main.cpp": "namespace reg { extern int (*tab[])(); }\nint main(){ return reg::tab[0](); }\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "hx" not in stale, "the table's target must be live"
+        assert "secret" in stale, "a static sibling not in any initializer must still flag dead"
+
+
+def test_c_designated_init_field_name_does_not_overroot(tmp_path):
+    """#69 precision (panel R1): a designated initializer `{.on_unused = real_unused}` must collect
+    only the VALUE `real_unused` (a function pointer), NOT the FIELD designator `on_unused`. Field
+    names in ops/vtable structs (`open`/`read`/`write`/`free`/`init`/…) are the most common C
+    function names, so collecting them masked real dead code. A dead static fn named like an
+    UNCALLED field must stay dead; the table's value stays live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {
+        "ops.c": ("static int real_init(void){return 1;}\n"
+                  "static int real_unused(void){return 2;}\n"
+                  "struct cfg { int (*on_init)(void); int (*on_unused)(void); };\n"
+                  "struct cfg C = { .on_init = real_init, .on_unused = real_unused };\n"),
+        "dead.c": "static int on_unused(void){ return 0; }\n",   # collides with the .on_unused FIELD
+        "main.c": ("struct cfg { int (*on_init)(void); int (*on_unused)(void); };\n"
+                   "extern struct cfg C;\nint main(void){ return C.on_init(); }\n"),  # never calls on_unused
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "on_unused" in stale, "a fn colliding with an uncalled designated-init FIELD name must stay dead"
+        assert "real_unused" not in stale, "the function-pointer VALUE in the table must be live"
+
+
+@pytest.mark.parametrize("member,helper", [
+    # well-known Symbol methods (invoked by for-of / coercion / instanceof)
+    ("[Symbol.iterator]() { return emit(); }", "emit"),
+    ("[Symbol.toPrimitive](h: string) { return emit(); }", "emit"),
+    ("[Symbol.asyncIterator]() { return emit(); }", "emit"),
+    # accessors (invoked by property read/write)
+    ("get value() { return emit(); }", "emit"),
+    ("set value(x: number) { emit(); }", "emit"),
+    # serialization / coercion hooks by name
+    ("toJSON() { return emit(); }", "emit"),
+    ("toString() { return emit(); }", "emit"),
+    ("valueOf() { return emit(); }", "emit"),
+])
+def test_js_implicit_dispatch_method_and_callee_live(tmp_path, member, helper):
+    """#54 (cardinal): a JS/TS class member invoked only IMPLICITLY by the runtime — a well-known
+    Symbol method (`[Symbol.iterator]` etc.), a `get`/`set` accessor, or a serialization/coercion
+    hook (`toJSON`/`toString`/`valueOf`) — is never reached by a plain `obj.method()` by-name call,
+    so in a NON-exported (but used) class it and its private callees were flagged dead. Now rooted
+    `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "function emit() { return 1; }\n"
+        "class C {\n  " + member + "\n}\n"
+        "export function go() { const c = new C(); return c; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert helper not in stale, "a helper reached only via the implicit-dispatch member must be live"
+
+
+def test_js_implicit_dispatch_does_not_overroot_plain_method(tmp_path):
+    """#54 guard: only IMPLICIT-dispatch members are rooted — a plain by-name method of the same
+    (non-exported) class that is genuinely uncalled must STILL flag dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "class C {\n"
+        "  regularDead() { return 1; }\n"          # plain, uncalled -> dead
+        "  [Symbol.iterator]() { return 0; }\n"    # implicit -> live
+        "}\n"
+        "export function go() { const c = new C(); for (const x of c) {} return c; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "regularDead" in stale, "a plain uncalled method must still flag dead"
+        assert "iterator" not in stale, "the Symbol.iterator method must be live"
+
+
+def test_js_implicit_dispatch_is_language_gated(tmp_path):
+    """#54 guard: the implicit-dispatch rooting is JS/TS-only. A Python method named `toJSON` is
+    NOT a JS runtime hook and must stay dead-eligible (the `lang in (js,ts,tsx)` gate)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.py": "class C:\n    def toJSON(self):\n        return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1].split(".")[-1] for c in sg.find_stale(store).result}
+        assert "toJSON" in stale, "a Python toJSON is not a JS hook and must stay dead-eligible"
+
+
+def test_is_js_implicit_dispatch_method_unit():
+    """#54 unit-pins `_is_js_implicit_dispatch_method`: True for well-known-Symbol computed keys,
+    get/set accessors, and toJSON/toString/valueOf; False for a NON-Symbol computed key and a plain
+    method. (Pins the Symbol-specific `and` — a non-Symbol computed key must NOT be treated as
+    implicit dispatch by this helper; that general case is a separate concern, #78.)"""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _is_js_implicit_dispatch_method, _name_of
+    src = (b"class C {\n"
+           b"  [Symbol.iterator]() {}\n"
+           b"  [CONFIG_KEY]() {}\n"
+           b"  get value() {}\n"
+           b"  set value(x) {}\n"
+           b"  toJSON() {}\n"
+           b"  regular() {}\n"
+           b"}\n")
+    root = get_parser("typescript").parse(src).root_node
+    got = {}
+    def walk(n):
+        if n.type == "method_definition":
+            got[_name_of(n, src)] = _is_js_implicit_dispatch_method(n, _name_of(n, src), src)
+        for c in n.children:
+            walk(c)
+    walk(root)
+    assert got["iterator"] is True       # well-known Symbol
+    assert got["value"] is True          # get/set accessor
+    assert got["toJSON"] is True         # serialization hook
+    assert got["CONFIG_KEY"] is False    # non-Symbol computed key -> NOT this helper's concern
+    assert got["regular"] is False       # plain method
+
+
+# -- #74 (cardinal): shorthand member of an EXPORTED object literal -------------
+@pytest.mark.parametrize("decl", [
+    "export const handlers = { onClick, onHover };",   # named const export of object
+    "export let handlers = { onClick, onHover };",     # let
+    "export var handlers = { onClick, onHover };",      # var
+    "export default { onClick, onHover };",            # default export of object
+])
+def test_js_exported_object_shorthand_members_live(tmp_path, decl):
+    """#74 (cardinal): a function referenced via object-literal SHORTHAND (`{ onClick }`) in an
+    EXPORTED object is public API (an importer reaches `handlers.onClick`), but the shorthand is a
+    `shorthand_property_identifier` the call graph never sees, so the named function — and the
+    private helpers it alone calls — was false-flagged dead. Now rooted `exported` like the
+    `module.exports = {…}` / `export default {…}` forms already were."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.js": (
+        "function onClick() { return clickHelper(); }\n"
+        "function onHover() { return hoverHelper(); }\n"
+        "function clickHelper() { return 1; }\n"
+        "function hoverHelper() { return 2; }\n"
+        + decl + "\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        for live in ("onClick", "onHover", "clickHelper", "hoverHelper"):
+            assert live not in stale, f"{live} reached via an exported object shorthand must be live"
+
+
+def test_js_exported_object_pair_value_member_live(tmp_path):
+    """#74 sibling: a `pair` whose value is an identifier (`{ run: doRun }`) in an exported object
+    is the same public-API surface — `doRun` must be live."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.js": (
+        "function doRun() { return runHelper(); }\n"
+        "function runHelper() { return 1; }\n"
+        "export const api = { run: doRun };\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "doRun" not in stale and "runHelper" not in stale
+
+
+def test_js_exported_object_shorthand_does_not_overroot_unexported(tmp_path):
+    """#74 guard: the rooting is gated to EXPORTED objects. A function placed only in a
+    NON-exported object literal, never otherwise used, must STILL flag dead — the fix must not
+    root every shorthand everywhere."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.js": (
+        "function deadFn() { return 1; }\n"
+        "const localOnly = { deadFn };\n"           # NOT exported
+        "export function go() { return 0; }\n"      # gives the module an export surface
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "deadFn" in stale, "a shorthand in a non-exported object must not be rooted"
+
+
+def test_js_uninitialized_export_does_not_crash_reexport_scan(tmp_path):
+    """#74 robustness / mutation-pin: an uninitialized exported binding (`export let x;`) yields a
+    `variable_declarator` with value=None. The object-collection branch must guard `v is not None`
+    BEFORE reading `v.type` (an `and`, not an `or`) — else the reexport scan dereferences None and
+    the whole reindex crashes. Reindex must complete and the real shorthand export still root."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "export let pending;\n"                       # uninitialized -> declarator value is None
+        "function onClick() { return 1; }\n"
+        "function trulyDeadU() { return 9; }\n"       # genuinely dead -> proves JS extraction ran
+        "export const handlers = { onClick };\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))             # must not raise / silently drop JS extraction
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        # Under the None-deref mutant the AttributeError is swallowed and ALL JS extraction is
+        # dropped (no JS nodes), so `trulyDeadU` would vanish from the graph. Requiring it to be
+        # flagged proves extraction completed AND the shorthand export still roots its member.
+        assert "trulyDeadU" in stale, "JS extraction must complete (no swallowed None-deref)"
+        assert "onClick" not in stale
+
+
+@pytest.mark.parametrize("wrap", [
+    "{ onClick } as const",
+    "{ onClick } satisfies Record<string, () => number>",
+    "({ onClick })",                       # parenthesized
+])
+def test_js_exported_wrapped_object_shorthand_members_live(tmp_path, wrap):
+    """#74 (panel R2 haiku, cardinal): the canonical TS handler-object idiom
+    `export const handlers = { onClick } as const` wraps the object in an `as_expression` /
+    `satisfies_expression` / parens, so the member stayed false-flagged dead until the reexport
+    scan unwraps TS value wrappers (mirroring the declarator/assignment def branches)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "function onClick() { return clickHelper(); }\n"
+        "function clickHelper() { return 1; }\n"
+        "export const handlers = " + wrap + ";\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "onClick" not in stale and "clickHelper" not in stale
+
+
+def test_js_commonjs_wrapped_object_members_live(tmp_path):
+    """#74 sibling: `module.exports = { a } as const` (TS-in-CJS) must also root its members."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "function cjsFn() { return cjsHelper(); }\n"
+        "function cjsHelper() { return 1; }\n"
+        "module.exports = { cjsFn } as const;\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "cjsFn" not in stale and "cjsHelper" not in stale
+
+
+# -- #76 (cardinal): TS #private method via this.#m() --------------------------
+def test_ts_private_method_via_this_resolves(tmp_path):
+    """#76 (cardinal): a `#private` method called via `this.#m()` was unresolved — `_name_of` and
+    `_callee` both returned None for `private_property_identifier`, so the method def was dropped
+    (body unwalked -> helper dead) AND the call edge was lost. Now both flow through `_trailing_id`
+    and resolve to the same `#m`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "export class Svc {\n"
+        "  run() { return this.#impl(); }\n"
+        "  #impl() { return implHelper(); }\n"
+        "}\n"
+        "function implHelper() { return 1; }\n"
+        "export function go() { return new Svc().run(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "implHelper" not in stale, "a helper reached only via a #private method must be live"
+
+
+def test_ts_uncalled_private_method_still_flags(tmp_path):
+    """#76 precision: a `#private` method resolves by name, so an UNCALLED one (and the helper it
+    alone calls) must STILL flag dead — the fix must not blanket-root #private members."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "class Worker {\n"
+        "  go() { return 1; }\n"
+        "  #neverCalled() { return orphanHelper(); }\n"
+        "}\n"
+        "function orphanHelper() { return 2; }\n"
+        "export function make() { return new Worker().go(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "orphanHelper" in stale, "a helper reached only via an uncalled #private method stays dead"
+
+
+# -- #78 (cardinal): string / computed / numeric-keyed class methods -----------
+@pytest.mark.parametrize("member", [
+    '["do it"]() { return kHelper(); }',         # computed string key
+    '"do it"() { return kHelper(); }',           # plain string key
+    '[DYN_KEY]() { return kHelper(); }',         # computed identifier key
+    '42() { return kHelper(); }',                # numeric key
+])
+def test_ts_dynamic_keyed_class_method_body_walked(tmp_path, member):
+    """#78 (cardinal): a class method with a dynamic key (string/computed/number) was dropped by
+    `_name_of`->None, so its body was never walked and a helper it alone calls was flagged dead.
+    Now the def is modeled (named from the raw key) and rooted `callback` (dynamic dispatch), even
+    in a NON-exported class."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "const DYN_KEY = 'k';\n"
+        "class Bag {\n  " + member + "\n}\n"
+        "function kHelper() { return 1; }\n"
+        "export function use() { return new Bag(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "kHelper" not in stale, "a helper reached only via a dynamic-keyed method must be live"
+
+
+def test_ts_dynamic_keyed_method_does_not_overroot_plain_dead(tmp_path):
+    """#78 guard: only dynamic-keyed methods are rooted. A plain by-name method that is genuinely
+    uncalled must still flag dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"m.ts": (
+        "class Bag {\n"
+        "  plainDead() { return deadHelper(); }\n"     # plain, uncalled -> dead
+        '  ["dyn"]() { return liveHelper(); }\n'        # dynamic -> live
+        "}\n"
+        "function deadHelper() { return 1; }\n"
+        "function liveHelper() { return 2; }\n"
+        "export function use() { return new Bag(); }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "deadHelper" in stale, "a plain uncalled method's helper must still flag dead"
+        assert "liveHelper" not in stale
+
+
+# -- #70 / #86 (Python): abstract/Protocol interface methods not flagged dead ---
+def test_py_protocol_subscripted_base_interface_methods_not_dead(tmp_path):
+    """#70+#86: a method of a SUBSCRIPTED-base Protocol (`class Repo(Protocol[T])`) — recognized as
+    abstract only once `_is_abstract_class` uses `_base_name` — and any bodyless abstract/Protocol
+    method is an interface contract fulfilled by overrides, never called by name, so it must not be
+    flagged dead."""
+    _mk(tmp_path, {"m.py": (
+        "from typing import Protocol, TypeVar\n"
+        "T = TypeVar('T')\n"
+        "class Repo(Protocol[T]):\n"
+        "    def get(self, i: int) -> T: ...\n"
+        "    def put(self, x: T) -> None: ...\n"        # uncalled Protocol method
+        "def consume(r: Repo) -> None: r.get(1)\n"
+        "__all__ = ['consume']\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Repo.put" not in stale, "an uncalled Protocol interface method must not flag dead"
+
+
+def test_py_abstract_interface_methods_spared_concrete_dead_still_flags(tmp_path):
+    """#86 precision: only BODYLESS abstract/Protocol contracts are spared. A CONCRETE method with a
+    real body inside an ABC that is genuinely uncalled (and the helper it alone calls) must STILL
+    flag dead — the fix must not blanket-root every method of an abstract class."""
+    _mk(tmp_path, {"m.py": (
+        "from abc import ABC, abstractmethod\n"
+        "class Base(ABC):\n"
+        "    @abstractmethod\n"
+        "    def required(self) -> int: ...\n"          # contract -> spared
+        "    def concrete_dead(self) -> int:\n"         # real body, uncalled -> dead
+        "        return secret()\n"
+        "def secret() -> int: return 1\n"
+        "def live_entry() -> int: return 2\n"
+        "__all__ = ['live_entry']\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Base.required" not in stale, "a bodyless @abstractmethod is an interface contract"
+        assert "Base.concrete_dead" in stale, "a concrete uncalled method in an ABC must still flag"
+        assert "secret" in stale, "a helper reached only from dead concrete code must still flag"
+
+
+def test_is_abstract_class_subscripted_base_unit():
+    """#70 unit-pin: `_is_abstract_class` recognizes a subscripted Protocol/ABC base via _base_name."""
+    import ast as _ast
+
+    from stitchgraph.core.extract.python import _is_abstract_class
+    mod = _ast.parse(
+        "from typing import Protocol, Generic, TypeVar\n"
+        "class A(Protocol[int]): ...\n"          # subscripted Protocol
+        "class B(ABC, Generic[int]): ...\n"      # ABC + subscripted Generic
+        "class C(Protocol): ...\n"               # plain Protocol
+        "class D(object): ...\n"                 # not abstract
+    )
+    got = {c.name: _is_abstract_class(c) for c in mod.body if isinstance(c, _ast.ClassDef)}
+    assert got == {"A": True, "B": True, "C": True, "D": False}
+
+
+# -- #89 (C/C++): a struct used only as a type is not flagged dead -------------
+@pytest.mark.parametrize("ext,use", [
+    ("c",   "struct Config g;\nint get(void){ return g.port; }\nint main(void){ return get(); }"),
+    ("c",   "int f(struct Config *p){ return p->port; }\nint main(void){ struct Config c; c.port=1; return f(&c); }"),
+    ("cpp", "Config make(){ Config c; return c; }\nint main(){ return make().port; }"),
+])
+def test_c_struct_used_as_type_not_dead(tmp_path, ext, use):
+    """#89: a C/C++ struct used only as a TYPE (variable/param/return/field) is a live data-model
+    definition, but C has no constructor call to edge it, so it was false-flagged dead. A bodyless
+    (type-use) struct specifier now roots the matching definition `callback`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {f"s.{ext}": "struct Config { int port; };\n" + use + "\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "Config" not in stale, "a struct used as a type must not flag dead"
+
+
+def test_c_unused_struct_still_flags_dead(tmp_path):
+    """#89 precision: a struct that is NEVER used as a type and never instantiated must STILL flag
+    dead — the fix must not blanket-root every struct."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"t.cpp": (
+        "struct Used { int x; };\n"
+        "struct DeadStruct { int y; };\n"        # never used as a type
+        "Used make() { Used u; return u; }\n"
+        "int main() { return make().x; }\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "DeadStruct" in stale, "a struct never used as a type must still flag dead"
+        assert "Used" not in stale
+
+
+def test_c_type_ref_names_unit(tmp_path):
+    """#89 unit-pin: `_c_type_ref_names` collects bodyless type-use specifier names, NOT the
+    body-bearing definition."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _c_type_ref_names
+    src = (b"struct Config { int port; };\n"      # definition (body) -> NOT a type-use
+           b"struct Config g;\n"                   # type use
+           b"int f(struct Other *p);\n"            # type use (Other)
+           b"enum Color c;\n")                      # type use (Color)
+    root = get_parser("c").parse(src).root_node
+    names = _c_type_ref_names(root, src)
+    assert "Config" in names and "Other" in names and "Color" in names
+
+
+# -- #73 (Bash): declare -xf / typeset -fx / time { group; } recall ------------
+@pytest.mark.parametrize("decl,call", [
+    ("declare -xf fn", "declare -xf fn"),
+    ("declare -fx fn", "declare -fx fn"),
+    ("typeset -fx fn", "typeset -fx fn"),
+    ("typeset -xf fn", "typeset -xf fn"),
+])
+def test_bash_declare_export_function_rooted(tmp_path, decl, call):
+    """#73: a function exported for subshells via `declare -xf` / `typeset -fx` (the ksh/bash
+    spellings of `export -f`) is invoked elsewhere (`bash -c 'fn'` in a child) and must not be
+    flagged dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "fn() { echo hi; }\n"
+        + call + "\n"
+        "really_dead() { echo dead; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "fn" not in stale, "a declare -xf / typeset -fx exported function must be live"
+        assert "really_dead" in stale, "a genuinely-unused function must still flag dead"
+
+
+def test_bash_time_brace_group_target_rooted(tmp_path):
+    """#73: `time { fn; }` runs fn under the time keyword; tree-sitter mis-parses the brace group
+    so `{` becomes a word arg of `time` — skipping it and taking the next word roots fn."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "timed_fn() { echo t; }\n"
+        "time { timed_fn; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "timed_fn" not in stale, "a function timed via `time { fn; }` must be live"
+
+
+def test_bash_export_decl_unit():
+    """#73 unit-pin: `_bash_export_decl` roots functions for export -f / declare -fx / typeset -xf,
+    and roots nothing for a plain `export VAR=…` or `declare -r VAR`."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _bash_export_decl
+    def names(src_bytes):
+        root = get_parser("bash").parse(src_bytes).root_node
+        out = []
+        def walk(n):
+            if n.type == "declaration_command":
+                _bash_export_decl(n, src_bytes, out)
+            for c in n.children:
+                walk(c)
+        walk(root)
+        return {n for n, _ in out}
+    assert names(b"export -f a\n") == {"a"}
+    assert names(b"declare -fx b\n") == {"b"}
+    assert names(b"typeset -xf c\n") == {"c"}
+    assert names(b"export VAR=1\n") == set()        # plain export -> nothing
+    assert names(b"declare -r d\n") == set()        # readonly, no x -> nothing
+    assert names(b"declare -f e\n") == set()        # print only, no x -> nothing
+    # A flag is a `word` that STARTS WITH `-` — both conditions (an `and`, not an `or`). A bare
+    # var name whose tail happens to contain 'f' (`export xf target` exports vars xf and target,
+    # NOT a function) must NOT trip the exporting-flag detection, so `target` stays unrooted.
+    assert names(b"export xf target\n") == set()
+
+
+# -- #85 (coverage): nodes.file column populated after a plain reindex ----------
+def test_nodes_file_column_populated_after_reindex(tmp_path):
+    """#85 coverage: after a plain reindex every node row carries its owning file path in the
+    `nodes.file` column (the incremental/replace_file substrate). Pins that the column is not left
+    empty by the reindex path."""
+    _mk(tmp_path, {
+        "a.py": "def f():\n    return 1\n",
+        "pkg/b.py": "def g():\n    return 2\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        rows = list(store.conn.execute("SELECT id, file FROM nodes"))
+        assert rows, "reindex produced nodes"
+        for r in rows:
+            nid, f = r[0], r[1]
+            assert f, f"node {nid} has an empty file column"
+            assert nid.split("::", 1)[0] == f, f"node {nid} file column {f!r} should match its id prefix"
+
+
+# -- #73 panel R2: split-flag export + nested time brace group -----------------
+@pytest.mark.parametrize("call", [
+    "declare -f -x fn",      # split flags
+    "declare -x -f fn",      # split flags, reversed
+    "typeset -f -x fn",      # typeset split
+    "typeset -x -f fn",
+])
+def test_bash_split_flag_export_function_rooted(tmp_path, call):
+    """#73 (panel R2 cardinal): bash treats split flags `declare -f -x` identically to the combined
+    `declare -fx`, so the `f`/`x` characters must accumulate ACROSS the leading flag words. The
+    combined-only check flagged a split-flag-exported function dead."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "fn() { echo hi; }\n"
+        + call + "\n"
+        "dead() { echo d; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "fn" not in stale, "a split-flag exported function must be live"
+        assert "dead" in stale, "a genuinely-unused function must still flag"
+
+
+def test_bash_nested_time_brace_group_rooted(tmp_path):
+    """#73 (panel R2 cardinal): a nested `time { { fn; }; }` mis-parses so the first word arg of
+    `time` is `{ {` (multi-char), which an exact `{`/`}` skip missed — take the first bare-identifier
+    word instead so fn is rooted."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "nested_fn() { echo n; }\n"
+        "time { { nested_fn; }; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "nested_fn" not in stale, "a function in a nested time brace group must be live"
+
+
+def test_bash_export_decl_split_flag_unit():
+    """#73 R2 unit-pin: `_bash_export_decl` accumulates f/x across split flag words."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    from tree_sitter_language_pack import get_parser
+
+    from stitchgraph.core.extract.treesitter import _bash_export_decl
+    def names(src_bytes):
+        root = get_parser("bash").parse(src_bytes).root_node
+        out = []
+        def walk(n):
+            if n.type == "declaration_command":
+                _bash_export_decl(n, src_bytes, out)
+            for c in n.children:
+                walk(c)
+        walk(root)
+        return {n for n, _ in out}
+    assert names(b"declare -f -x a\n") == {"a"}
+    assert names(b"declare -x -f b\n") == {"b"}
+    assert names(b"typeset -f -x c\n") == {"c"}
+    assert names(b"declare -f -r d\n") == set()     # f but no x -> nothing
+    assert names(b"declare -x -r e\n") == set()     # x but no f -> nothing

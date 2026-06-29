@@ -91,6 +91,22 @@ _IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
         "append_features", "prepend_features", "extend_object", "initialize_copy",
         "initialize_clone", "initialize_dup", "coerce",
         "const_missing", "const_added",   # interpreter constant-resolution hooks (grape API)
+        # Implicit conversion/coercion protocol — invoked by the interpreter on string
+        # interpolation / `puts` / `p` (`to_s`/`inspect`), implicit coercion (`to_str`/`to_ary`/
+        # `to_hash`/`to_int`/`to_io`/`to_path`), splat (`to_a`), double-splat (`to_h`), and
+        # `&obj` block conversion (`to_proc`), and numeric coercion (`to_i`/`to_f`/`to_r` — note
+        # `Float(obj)`/`Integer(obj)` emit a call to `Float`/`Integer`, NOT to the object's
+        # `to_f`/`to_i`, so those hooks have no textual caller) — never by a textual call. The Ruby
+        # analogue of Python's `__str__`/`__repr__` dunders (Ruby manual pass, cardinal).
+        "to_s", "inspect", "to_str", "to_a", "to_ary", "to_h", "to_hash",
+        "to_i", "to_int", "to_f", "to_r", "to_proc", "to_io", "to_path", "to_sym",
+        # Enumerable / Comparable / Hash-key protocol — `each` is driven by every Enumerable
+        # method (`map`/`select`/…); `<=>` (an operator, already rooted) drives Comparable;
+        # `hash`/`eql?` are called by the interpreter when the object is a Hash key; `succ`
+        # drives `Range#each`. Marshalling hooks (`marshal_dump`/`marshal_load`/`_dump`/`_load`)
+        # are invoked by `Marshal.dump`/`.load` by name.
+        "each", "each_pair", "hash", "eql?", "succ",
+        "marshal_dump", "marshal_load", "_dump", "_load",
     }),
     "php": frozenset({
         "__destruct", "__call", "__callStatic", "__get", "__set", "__isset", "__unset",
@@ -101,6 +117,17 @@ _IMPLICIT_HOOKS: dict[str, frozenset[str]] = {
         "equals", "hashCode", "toString", "finalize", "clone",
         "readObject", "writeObject", "readResolve", "writeReplace", "readObjectNoData",
         "readExternal", "writeExternal",
+    }),
+    "cpp": frozenset({
+        # Range-based `for (x : r)` is desugared by the compiler to `r.begin()` / `r.end()` (or ADL
+        # `begin(r)`/`end(r)`) — the name-based call graph never sees those calls, and no other pass
+        # roots them, so an iterable's `begin`/`end` (+ whatever they reach) were false-flagged dead
+        # (C++ manual pass, cardinal). A class defining `begin`/`end` is iterable by design, so
+        # rooting them is semantically right; cardinal-safe over-rooting otherwise. Reaches `.cpp`/
+        # `.cc`/`.cxx`/`.hpp` (raw lang `cpp`) AND any `.h` that `_header_lang` content-sniffs as C++
+        # (it carries `class`/`namespace`/`template`/… markers); only a pure-C `.h` (no such markers,
+        # raw lang `c`) keeps a `begin`/`end` dead-eligible — no C over-rooting.
+        "begin", "end",
     }),
 }
 
@@ -115,6 +142,8 @@ class LangSpec:
     heritage: frozenset[str] = frozenset()          # child types holding base classes
     imports: frozenset[str] = frozenset()           # import statement node types
     bare_calls: bool = False            # Ruby: paren-less `foo` calls parse as identifier
+    callable_strings: bool = False      # PHP: `[$this, 'method']` array callables
+    attr_suffix: bool = False           # C#: `[Foo]` may resolve to class `FooAttribute`
 
 
 _JS = LangSpec(
@@ -159,6 +188,7 @@ SPECS: dict[str, LangSpec] = {
                               "interface_declaration", "declaration_list"}),
         heritage=frozenset({"base_list"}),
         imports=frozenset({"using_directive"}),
+        attr_suffix=True,  # `[Foo]` may name class `FooAttribute` (C# omits the suffix)
     ),
     "bash": LangSpec(
         defs={"function_definition": F},
@@ -196,6 +226,7 @@ SPECS: dict[str, LangSpec] = {
                               "interface_declaration", "trait_declaration"}),
         heritage=frozenset({"base_clause", "class_interface_clause"}),
         imports=frozenset({"namespace_use_declaration"}),
+        callable_strings=True,  # `[$this, 'm']` / `[self::class, 'm']` array callables
     ),
 }
 EXT_LANG = {
@@ -314,6 +345,10 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     file_lang: dict[str, str] = {}
     reexports: set[str] = set()  # names from JS/TS `export { X }` clauses
     c_exports: dict[str, set[str]] = {}  # rel -> EXPORT_SYMBOL'd C function names (per file)
+    c_decl_exports: set[str] = set()  # project-wide: names declared with an export attr (R77 F2)
+    c_macro_refs: set[str] = set()  # project-wide: fn names referenced in C/C++ #define bodies (#59)
+    c_table_refs: set[str] = set()  # project-wide: fn addresses taken in C/C++ global initializers (#69)
+    c_type_refs: set[str] = set()   # project-wide: struct/union/enum names USED as a type in C/C++ (#89)
     module_tests: list[tuple] = []  # (mod_id, rel, lang, calls, refs) for test files
 
     try:
@@ -397,9 +432,14 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
             # top level of an exported module isn't flagged dead (panel R12, cardinal).
             calls, refs = _module_uses(tree.root_node, src, spec)
             if is_bash_script:
-                # `trap cleanup EXIT` / `$(get_x)` invoke functions the generic command
-                # scan would miss the function arg of; root those too.
-                calls = calls + _bash_trap_handlers(tree.root_node, src)
+                # Commands that invoke a function via an ARGUMENT (trap HANDLER, complete -F
+                # FUNC, export -f FUNC, time FUNC) — the generic command scan keys on the head
+                # and misses these, so root the named functions too.
+                calls = calls + _bash_callback_refs(tree.root_node, src)
+            elif lang == "ruby":
+                # Ruby idioms naming a method via a literal symbol the call graph can't see
+                # (`xs.map(&:upcase)`, `enum_for(:m)`, `&method(:m)`) — root those methods too.
+                calls = calls + _ruby_symbol_refs(tree.root_node, src)
             module_tests.append((mod_id, rel, lang, calls, refs))
             _collect(tree.root_node, src, rel, spec, lang, parent="", nodes=nodes,
                      defs=defs, inherits=inherits, exported=False, is_test=is_test,
@@ -408,9 +448,30 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 imports.append((mod_id, name, lang))
             reexports |= _reexport_names(tree.root_node, src)
             if _canon_lang(lang) == "cpp":  # C/C++: EXPORT_SYMBOL'd functions are public ABI
-                names = _export_symbol_names(src)
+                names = _export_symbol_names(src) | _c_alias_target_names(src)
                 if names:
                     c_exports[rel] = names
+                # An export attribute on a *declaration* (commonly the header) must root the
+                # matching out-of-line definition, which carries no attribute (panel R77 F2).
+                # Project-wide because declaration and definition live in different files. Byte-gate
+                # the AST walk to the rare files that mention an export attribute.
+                if b"visibility" in src or b"dllexport" in src:
+                    c_decl_exports |= _c_export_decl_names(tree.root_node, src)
+                # A function called/named ONLY inside a `#define` macro body is invisible to the
+                # AST call scan (the body is raw `preproc_arg` text) and was false-flagged dead
+                # (#59). Byte-gate the walk to files that actually contain a `#define`.
+                if b"#define" in src:
+                    c_macro_refs |= _macro_body_ref_names(tree.root_node, src)
+                # A function whose address is taken in a global function-pointer table / vtable
+                # struct is invoked indirectly through that global, possibly cross-TU (#69). Cheap
+                # shallow walk (top-level declarations only), so no byte-gate.
+                c_table_refs |= _c_global_init_fn_refs(tree.root_node, src)
+                # A struct/union/enum used only as a TYPE (`struct Config g;`, `void f(struct
+                # Config*)`, a field of that type) is a live data-model definition, but C has no
+                # constructor call to edge it, so it was false-flagged dead (#89). Collect the
+                # names of bodyless (type-use) struct/union/enum specifiers and root the matching
+                # definitions below.
+                c_type_refs |= _c_type_ref_names(tree.root_node, src)
         except RecursionError:
             # A pathologically deep tree (a huge flat expression in generated code)
             # overflows the recursive walk; skip the one file, never abort the whole
@@ -464,6 +525,56 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                 if n.name in c_exports.get(rel, ()):
                     n.roles = n.roles | {"exported"}
 
+    # An export attribute on a C/C++ *declaration* (commonly a header) roots the matching
+    # definition, whose out-of-line `.cpp` form carries no attribute (panel R77 F2). Project-wide
+    # by name (declaration and definition are in different files) and scoped to C/C++ files — the
+    # C/C++ analogue of __all__; cardinal-safe (over-roots a homonym only in the safe direction).
+    if c_decl_exports:
+        for n in nodes:
+            if n.kind in (F, M) and n.name in c_decl_exports \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"exported"}
+
+    # A C/C++ function called or named ONLY inside a `#define` macro body is invoked indirectly
+    # wherever the macro expands; the macro body is raw preproc text the AST call scan never sees,
+    # so the function was false-flagged dead (#59 — `#define LOG(m) log_impl(m)`, function-pointer
+    # macros, helper-wrapping macros). Root every C/C++ F/M whose name appears in a macro body
+    # `callback`. Project-wide (a header macro routinely wraps a function defined in a `.c`) and
+    # scoped to C/C++ files. Cardinal-safe over-approximation (the C analogue of the EXPORT_SYMBOL
+    # text-scan): a homonym or a macro parameter sharing a name only over-roots, never false-deads.
+    if c_macro_refs:
+        for n in nodes:
+            if n.kind in (F, M) and n.name in c_macro_refs \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"callback"}
+
+    # A C/C++ function whose address is taken in a global function-pointer table / vtable struct
+    # (`int (*ops[])(int) = {op_a, op_b}`, `struct ops P = {init, teardown}`) is invoked indirectly
+    # through that global — which may be consumed in another translation unit via `extern`. Globals
+    # aren't graph nodes, so that cross-TU use is invisible and the function was false-flagged dead
+    # whenever its own TU had no entry point (#69, the passive registration-unit pattern). Root every
+    # C/C++ F/M whose name appears in a global initializer `callback`. Project-wide (the table and the
+    # function it points at routinely live in different files) and scoped to C/C++. Cardinal-safe
+    # over-approximation, mirroring the macro-body / object-literal indirect-dispatch rooting.
+    if c_table_refs:
+        for n in nodes:
+            if n.kind in (F, M) and n.name in c_table_refs \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"callback"}
+
+    # A C/C++ struct/union/enum used only as a TYPE (`struct Config g;`, `f(struct Config*)`, a
+    # field/return type) is a live data-model definition, but C has no constructor call to edge it,
+    # so the type was false-flagged dead though the code using it is live (#89). Root every C/C++
+    # CLASS whose name appears as a bodyless type-use specifier `callback`. Project-wide (a type is
+    # routinely defined in a header and used in a `.c`) and scoped to C/C++. Cardinal-safe
+    # over-approximation: a type named anywhere as a type is part of the data model; a struct that
+    # is genuinely never used as a type (and never instantiated) still flags dead.
+    if c_type_refs:
+        for n in nodes:
+            if n.kind is C and n.name in c_type_refs \
+                    and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+                n.roles = n.roles | {"callback"}
+
     # Normalize in-class member functions to METHOD. C/C++ map every `function_definition`
     # to FUNCTION even for methods defined inside a class body (there is no separate
     # `method_declaration` node), so the method-based class-rooting passes below
@@ -488,6 +599,17 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
     for n in nodes:
         if n.kind in (F, M) and _is_cpp_special_member(n.name) \
                 and _canon_lang(file_lang.get(n.id.split("::", 1)[0], "") or "") == "cpp":
+            n.roles = n.roles | {"callback"}
+
+    # Ruby operator methods (`def []`, `def []=`, `def <=>`, `def ==`, `def <<`, `def +`, …) are
+    # invoked through operator/index SYNTAX (`a[k]`, `a[k]=v`, `a <=> b`, `sort`, `a + b`), never
+    # by a name the call scan sees — so once captured (their name node is `operator`, see
+    # _trailing_id) they'd be flagged dead, and with them whatever their bodies use (panel R61,
+    # grape: `def []=` constructs `ValueArray.new`). Root them as callback — the Ruby analogue of
+    # the C++ special-member pass. An operator name never starts with a letter/underscore.
+    for n in nodes:
+        if n.kind in (F, M) and _is_ruby_operator_method(n.name) \
+                and file_lang.get(n.id.split("::", 1)[0], "") == "ruby":
             n.roles = n.roles | {"callback"}
 
     # Language implicit hooks (Ruby `method_missing`/`inherited`/…, Java `writeReplace`/…,
@@ -583,20 +705,13 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                           dst_id=nested_id, weight=1.0, provenance=Provenance.EXTRACTED,
                           location=f"{nrel}:{line}:0", source="tree-sitter"))
 
-    # Build a set of class IDs that inherit from external bases (framework classes).
-    # This will be used to mark their methods as callbacks.
-    external_base_classes: set[str] = set()
+    # Class IDs that are framework (externally-subclassed) classes — their methods are
+    # framework-invoked overrides, marked `callback` below.
     class_by_name: dict[str, set[str]] = {}
     for n in nodes:
         if n.kind is C:
             class_by_name.setdefault(n.name, set()).add(n.id)
-
-    for class_id, base, _lang in inherits:
-        # Check if the base is external (not defined in this project, not a plain base).
-        # A base is external if it doesn't resolve to any project class and isn't plain.
-        project_bases = class_by_name.get(base, set())
-        if not project_bases and base not in _PLAIN_BASES:
-            external_base_classes.add(class_id)
+    external_base_classes = _framework_classes(inherits, class_by_name)
 
     _seed_callback_roles(nodes, external_base_classes)
 
@@ -833,6 +948,53 @@ def _seed_main_classes(nodes) -> None:
             n.roles = n.roles | {"main"}
 
 
+def _framework_classes(inherits, class_by_name: dict[str, set[str]]) -> set[str]:
+    """Class ids that are framework (externally-subclassed) classes: those that (a) directly
+    inherit an external base (resolves to no project class and isn't a plain base), plus (c)
+    the transitive first-party descendants of such classes.
+
+    A grandchild of a framework class is framework-driven the same way — its overrides of the
+    framework's template methods are invoked polymorphically from unindexed framework code.
+    Without the transitive step only the *direct* subclass got `callback` roots, so a deeper
+    override (live, but with no in-tree caller) was flagged dead — CARDINAL. Confirmed on
+    Magento (PHP template methods through an in-tree AbstractModel intermediary) and on a C#
+    explicit `IDisposable.Dispose` reached via a project interface that extends the framework
+    interface. Mirrors the Python extractor's `_apply_callback_roles` (cases (a) + (b) + (c)).
+
+    Case (b) — same-name self-loop (`class Foo extends pkg.Foo`, base leaf binds to itself) —
+    fires only when the base name resolves *solely* to the class itself (`class_by_name[base] ==
+    {class_id}`). When the same short name also collides with an unrelated project class, this
+    name-based check resolves the base to that distinct class instead, so the self-loop is not
+    detected here; framework status then propagates only if the transitive closure reaches it.
+    Closing that residual collision case needs the resolved INHERITS `dst_id` (python.py keys on
+    `dst_id == src`); tracked as a follow-up. It is cardinal-safe in the common shapes and
+    pre-existing — this change is a strict superset of the prior rooting (only ever adds).
+    """
+    external: set[str] = set()
+    subclasses: dict[str, set[str]] = {}
+    for class_id, base, _lang in inherits:
+        # A base resolves first-party only if it names a *distinct* project class. A same-name
+        # self-loop (`class Foo extends pkg.Foo` — the base leaf collides with the subclass and
+        # binds to itself) is NOT a first-party base: it's the werkzeug-`EnvironBuilder` shape
+        # where the real base is an external same-named framework class. Treat it as external
+        # (case (b) in python.py's `_apply_callback_roles`) — otherwise a framework override on
+        # such a class is flagged dead (cardinal).
+        distinct = class_by_name.get(base, set()) - {class_id}
+        if distinct:
+            for pbase in distinct:
+                subclasses.setdefault(pbase, set()).add(class_id)
+        elif base not in _PLAIN_BASES:
+            external.add(class_id)  # (a) direct external base, or (b) same-name self loop
+    stack = list(external)
+    while stack:  # (c) transitive closure down the first-party INHERITS tree (only adds)
+        cid = stack.pop()
+        for sub in subclasses.get(cid, ()):
+            if sub not in external:
+                external.add(sub)
+                stack.append(sub)
+    return external
+
+
 def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
     """Methods of a class with a framework base are framework-invoked overrides
     (e.g. React.Component.render, Express middleware). Mark them 'callback' so
@@ -858,6 +1020,11 @@ def _seed_callback_roles(nodes, external_base_classes: set[str]) -> None:
             n.roles = n.roles | {"callback"}
 
 
+# Third-party Rust test-harness attribute paths whose last segment is not `test` (those ending in
+# `::test` — tokio/async_std/test_log/googletest::test — are already matched generically).
+_RUST_TEST_ATTR_PATHS = frozenset({"rstest", "test_case", "gtest", "quickcheck"})
+
+
 def _is_rust_test_attr(attr_text: str) -> bool:
     """True for a Rust *test* attribute — matched on the attribute PATH, not a raw
     substring, so `#[cfg(feature="testing")]`, `#[doc="...test..."]`, a feature named
@@ -870,6 +1037,14 @@ def _is_rust_test_attr(attr_text: str) -> bool:
     path = re.split(r"[(\s=]", body, maxsplit=1)[0].strip()  # attribute path before ( / = / ws
     if path == "test" or path.endswith("::test"):
         return True
+    # Common third-party test-harness attributes whose path does NOT end in `test` — rstest
+    # (`#[rstest]`), test-case (`#[test_case(...)]`), googletest-rust (`#[gtest]`), quickcheck
+    # (`#[quickcheck]`). The free-form-named fn they decorate misses the test*/name convention,
+    # so it (and its helpers) was flagged dead (documented recall gap, panel R84). Matched on the
+    # last path segment so the crate-qualified form (`rstest::rstest`) is covered too. Cardinal-safe
+    # (only adds test roots).
+    if path.rsplit("::", 1)[-1] in _RUST_TEST_ATTR_PATHS:
+        return True
     if path == "cfg" and "(" in body:
         # `cfg(test)` is test-gated; `cfg(feature="testing")` is not. Drop quoted string
         # values first (so a feature *value* containing "test" can't match), then drop
@@ -879,6 +1054,60 @@ def _is_rust_test_attr(attr_text: str) -> bool:
         inner = re.sub(r"not\s*\([^)]*\)", "", inner)
         return "test" in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", inner)
     return False
+
+
+def _is_rust_export_attr(attr_text: str) -> bool:
+    """True for a Rust FFI/linker-export attribute — `#[no_mangle]` or `#[export_name = "…"]`.
+    These export the function's symbol to the linker / foreign (C) code regardless of `pub`
+    visibility, so the function is a public-ABI entry point with no in-tree caller (the Rust
+    analogue of C's `EXPORT_SYMBOL`). Without this, a non-`pub` `#[no_mangle]` export — valid
+    Rust, the symbol is still exported — has no `pub` to trigger export-rooting and is
+    false-flagged dead along with whatever its body reaches (doc-driven, panel R69).
+
+    Recognises the wrapped forms too: `#[unsafe(no_mangle)]` / `#[unsafe(export_name = "…")]`
+    (REQUIRED syntax in the Rust 2024 edition — the bare form is an error there, so this is the
+    mainstream spelling, not an edge case; panel R70) and `#[cfg_attr(<pred>, no_mangle)]`
+    (conditionally applied — still a real export on the gated targets). Cardinal-safe: matching
+    only ever *adds* an export root, so a broad match can over-root (mask dead code) but never
+    flag live code dead. We therefore match the export token anywhere in the attribute content
+    after dropping string-literal values, so `#[doc = "no_mangle"]` does NOT read as an export."""
+    m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
+    if not m:
+        return False
+    # Drop string-literal contents (`export_name = "sym"`, `doc = "…no_mangle…"`) so only
+    # identifier tokens remain, then look for an export attribute path as a bare word. This
+    # naturally covers the `unsafe(...)` (2024) and `cfg_attr(<pred>, …)` wrappers.
+    inner = re.sub(r"\"(?:[^\"\\]|\\.)*\"", "", m.group(1))
+    return bool(re.search(r"(?<![\w])(?:no_mangle|export_name)(?![\w])", inner))
+
+
+# Rust attributes that mark a function as a RUNTIME entry point the language/runtime invokes
+# automatically — never by an in-tree call, and (unlike `#[proc_macro]`, which requires `pub`)
+# NOT necessarily `pub`, so export-rooting doesn't fire and the fn + its callees are flagged dead.
+_RUST_RUNTIME_ENTRY_ATTRS = frozenset({
+    "panic_handler", "start", "alloc_error_handler",
+    # `ctor`/`dtor` crate: `#[ctor::ctor]` / `#[ctor]` / `#[ctor::dtor]` run a function
+    # automatically before/after `main` — the direct Rust analogue of C `__attribute__((constructor))`
+    # (which the C extractor already roots). Idiomatically *private*, so the `pub` safety net never
+    # fires and the fn + its callees were false-flagged dead (Rust manual pass). Matched as a path
+    # token, so `#[ctor::ctor]` and bare `#[ctor]` both hit; `#[constructor_helper]` does not.
+    "ctor", "dtor",
+})
+
+
+def _is_rust_runtime_entry_attr(attr_text: str) -> bool:
+    """True for a Rust runtime-entry attribute — `#[panic_handler]`, `#[start]`,
+    `#[alloc_error_handler]`, or the `ctor`/`dtor` before/after-main attributes. The runtime (or the
+    `ctor` crate's linker glue) calls these automatically, so a non-`pub` one has no in-tree caller
+    and was false-flagged dead along with what its body reaches (doc-driven, panels R88/R96).
+    Cardinal-safe: only adds roots.
+    Matched on the attribute path (covers `#[unsafe(...)]` / `#[cfg_attr(...)]` wrappers via the
+    last token), not a raw substring, so a `#[doc="…start…"]` can't trigger it."""
+    m = re.match(r"#!?\[\s*(.*?)\s*\]\s*$", attr_text.strip(), re.S)
+    if not m:
+        return False
+    inner = re.sub(r"\"(?:[^\"\\]|\\.)*\"", "", m.group(1))
+    return any(re.search(rf"(?<![\w])(?:{a})(?![\w])", inner) for a in _RUST_RUNTIME_ENTRY_ATTRS)
 
 
 # Annotation/attribute names that mark a method as a test entry or framework-invoked
@@ -914,6 +1143,8 @@ _CALLBACK_ANNOTATIONS = {
         "EventListener", "Scheduled", "Bean",                 # Spring
         "Setup", "TearDown", "Benchmark",                     # JMH
         "BeforeExperiment", "AfterExperiment",                # Caliper
+        "OnMethodEnter", "OnMethodExit",                      # ByteBuddy @Advice.* (instrumentation)
+        "ToJson", "FromJson",                                 # Moshi adapter methods (reflection)
     }),
     "csharp": frozenset({
         "OnSerializing", "OnSerialized", "OnDeserializing",   # serialization callbacks
@@ -921,6 +1152,8 @@ _CALLBACK_ANNOTATIONS = {
         "ModuleInitializer",                                  # runtime module init
         "GlobalSetup", "GlobalCleanup", "IterationSetup",     # BenchmarkDotNet
         "IterationCleanup", "Benchmark",
+        "UnmanagedCallersOnly",                               # native (C-ABI) entry point
+        "JSInvokable",                                        # Blazor JS interop
     }),
 }
 
@@ -1046,6 +1279,8 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
         attrs, pending_attrs = pending_attrs, []
         decos, pending_decos = pending_decos, []
         attr_test = any(_is_rust_test_attr(a) for a in attrs)
+        attr_export = any(_is_rust_export_attr(a) for a in attrs)
+        attr_runtime = any(_is_rust_runtime_entry_attr(a) for a in attrs)
         if t == "export_statement":
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported=True, is_test=is_test, contains=contains,
@@ -1077,7 +1312,23 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=enclosing_func)
                 continue
+            # A JS/TS class method with a DYNAMIC key — a string (`"do-it"(){}`), a computed key
+            # (`["do-it"](){}`, `[EXPR](){}`), or a number (`42(){}`) — is reached only via a
+            # dynamic subscript (`obj["do-it"]()` / `obj[k]()`), never a static `.name` call. Two
+            # problems (#78): `_name_of` returns None for a string/computed-string/number key, so
+            # the method def was silently DROPPED and a helper it alone calls was flagged dead; and
+            # even when named (`[IDENT]`), nothing roots it, so in a NON-exported class it was
+            # flagged dead though reachable. Synthesize a stable name from the raw key text and mark
+            # it for `callback` rooting below — the class-body analogue of the object-literal
+            # computed-key rule. Cardinal-safe (only adds a root).
+            dyn_key = False
+            if lang in ("javascript", "typescript", "tsx") and t == "method_definition":
+                _kf = child.child_by_field_name("name")
+                if _kf is not None and _kf.type in ("computed_property_name", "string", "number"):
+                    dyn_key = True
             name = _name_of(child, src)
+            if not name and dyn_key:
+                name = _text(child.child_by_field_name("name"), src)  # raw key text, e.g. ["k"]
             if not name:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=enclosing_func)
@@ -1093,6 +1344,15 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # stays flagged, consistent with a dead helper in any test file.
             if _is_test_name(name) or attr_test or _has_test_annotation(child, lang, src):
                 roles.add("test")
+            # A Rust `#[no_mangle]`/`#[export_name]` fn is a linker/FFI export — public ABI with
+            # no in-tree caller — so root it even without `pub` (the Rust analogue of C
+            # EXPORT_SYMBOL; doc-driven panel R69).
+            if attr_export:
+                roles.add("exported")
+            # A Rust `#[panic_handler]`/`#[start]`/`#[alloc_error_handler]` fn is invoked by the
+            # runtime, not by an in-tree call, and need not be `pub` — root it (panel R88).
+            if attr_runtime:
+                roles.add("callback")
             # A method carrying a framework-callback annotation (@PostConstruct,
             # [OnSerializing], …) is reflection-invoked — root it (multi-language hunt).
             if _has_callback_annotation(child, lang, src):
@@ -1101,6 +1361,33 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # is framework-instantiated/-invoked, never called by name — root it.
             if lang in ("javascript", "typescript", "tsx") \
                     and _has_callback_decorator(child, src, decos):
+                roles.add("callback")
+            # A def inside an ANONYMOUS class body (`new Base(){ void m(){…} }`) is reachable
+            # only polymorphically through the base type — the class has no name, so its
+            # override can never be resolved by a `Class.m` by-name call. Inside a method body
+            # the enclosing-function containment edge already keeps it live; at CLASS scope (a
+            # field / static initializer, enclosing_func is None) nothing roots it, so the
+            # override — and the private helpers it alone calls — was flagged dead though live
+            # (#62, cardinal; Java `new Runnable(){…}` / `new Comparator(){…}` / a custom
+            # abstract base in a field). Root it `callback`. Cardinal-safe (only adds a root);
+            # the in-method case stays containment-gated, preserving its precision.
+            if enclosing_func is None and _is_anonymous_class_member(child):
+                roles.add("callback")
+            # JS/TS: a class member invoked IMPLICITLY by the runtime — a well-known-Symbol method
+            # (`[Symbol.iterator]`/`[Symbol.toPrimitive]`/…, run by for-of / spread / coercion /
+            # instanceof), a `get`/`set` accessor (run by property read/write), or a serialization/
+            # coercion hook (`toJSON` via JSON.stringify, `toString`/`valueOf` via string & numeric
+            # coercion). None is ever reached by a plain `obj.method()` by-name call, so in a
+            # non-exported class the member — and the private helpers it alone calls — was flagged
+            # dead though live (#54). Root it `callback`. Cardinal-safe (only adds a root).
+            if lang in ("javascript", "typescript", "tsx") \
+                    and _is_js_implicit_dispatch_method(child, name, src):
+                roles.add("callback")
+            # JS/TS: a class method with a DYNAMIC key (string / computed / numeric — detected
+            # above) is reached only via `obj["k"]()` / `obj[expr]()`, never a static `.name`
+            # call, so root it `callback` — the class-body analogue of the object-literal
+            # computed-key rule (#78). Cardinal-safe (only adds a root).
+            if dyn_key:
                 roles.add("callback")
             kind = spec.defs[t]
             cid = f"{rel}::{qual}"
@@ -1127,9 +1414,13 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
                      False, is_test, contains=contains, enclosing_func=child_func)
         elif spec.arrow_decls and t == "variable_declarator":
-            val = child.child_by_field_name("value")
+            # Peel TS value wrappers up front (`as const`/`as T`/`satisfies T`/`(…)`) so a
+            # wrapped arrow/function/object value is still modeled — `export const f =
+            # (() => helper()) as any` otherwise never becomes a node and `helper` is flagged
+            # dead (cardinal). Applies uniformly to the arrow/function and the object branch.
+            val = _unwrap_ts_value(child.child_by_field_name("value"))
             name = _field_text(child, "name", src)
-            if name and val and val.type in ("arrow_function", "function", "function_expression"):
+            if name and val and val.type in ("arrow_function", "function", "function_expression", "generator_function"):
                 qual = _join(parent, name)
                 roles = {"exported"} if exported else set()
                 if _is_test_name(name):
@@ -1148,6 +1439,53 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                 # regular-def branch above already does this; this is its arrow twin).
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains, enclosing_func=cid)
+            elif name and val is not None and val.type == "object":
+                # `const obj = { run() {…}, h: () => {…} }` (also `{…} as const` / `satisfies T`,
+                # already unwrapped above) — extract the object's function-valued members so
+                # their bodies are walked (else a helper called only there is flagged dead;
+                # cardinal). See _object_members.
+                _object_members(val, src, rel, spec, lang, _join(parent, name),
+                                nodes, defs, inherits, contains, is_test, enclosing_func)
+            elif name and val is not None and val.type in ("class", "class_expression"):
+                # `export const Widget = class extends Base { render() {…} }` — a class
+                # expression bound to a const. The declarator branch handled arrow/fn/object
+                # but not `class`, so the class was never a node and its methods' callees were
+                # flagged dead (cardinal, #80). Mirror the assignment_expression class branch:
+                # model it as a CLASS, emit INHERITS edges, walk the body. An `export`ed const
+                # class takes the `exported` role so `_seed_exported_class_methods` rescues its
+                # public methods (private methods stay dead-eligible, R46A); a non-exported one
+                # is reached by name / `new X()` like any class. The body recursion gates the
+                # methods to the class when nested in a function (round-3/4 rule), else None
+                # (module scope — exported rescue / call resolution).
+                qual = _join(parent, name)
+                roles = {"exported"} if exported else set()
+                if _is_test_name(name):
+                    roles.add("test")
+                cid = f"{rel}::{qual}"
+                nodes.append(Node(id=cid, kind=C, name=name, location=_loc(rel, val),
+                                  end_line=val.end_point[0] + 1, roles=frozenset(roles)))
+                defs.append((rel, cid, val, lang))
+                for base in _bases(val, src, spec):
+                    inherits.append((cid, base, lang))
+                if enclosing_func is not None:
+                    contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                         False, is_test, contains=contains,
+                         enclosing_func=(cid if enclosing_func is not None else None))
+            else:
+                # The value wraps an object/class literal in an EXPRESSION shape:
+                # `const x = f({…})` (call arg), `[ {…} ]` (array), `cond ? {…} : y` (ternary),
+                # `a || {…}` / `a ?? {…}` (logical), `(() => ({…}))()` (IIFE),
+                # `const routes = m.exports = {…}` (chained/parenthesized assignment). The
+                # declarator previously SWALLOWED these (no descent), so the inner literal was
+                # never reached and a helper called only from its members was flagged dead (#75,
+                # cardinal). Descend generically so the literal is reached — this is now SAFE
+                # because the main-loop `object`/`class_expression` interception routes any
+                # literal it finds through proper member rooting, instead of letting raw descent
+                # mint its method_definitions as UNROOTED module-scope nodes (the round-11
+                # cardinal the old no-else guarded against, before that interception existed).
+                _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
+                         exported, is_test, contains=contains, enclosing_func=enclosing_func)
         elif spec.arrow_decls and t == "assignment_expression":
             # A function/class assigned to an object MEMBER — `app.render = function(){…}`
             # (Express/CommonJS prototype augmentation), `Foo.prototype.m = () => {…}`,
@@ -1157,13 +1495,18 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             # module-private helper it alone calls (Express `tryRender`/`logerror`, jQuery
             # internals) was then flagged dead. Model it and walk the body.
             left = child.child_by_field_name("left")
-            val = child.child_by_field_name("right")
+            # Peel TS value wrappers on the RHS (`obj.X = (class {…}) satisfies T`,
+            # `obj.f = (() => …) as any`) before the type check — else a wrapped function/class
+            # assignment is dropped and a helper it alone calls is flagged dead (cardinal). The
+            # object-literal RHS path below is unwrapped too (via the variable_declarator-style
+            # walrus on `_unwrap_ts_value`).
+            val = _unwrap_ts_value(child.child_by_field_name("right"))
             prop = left.child_by_field_name("property") if left is not None \
                 and left.type == "member_expression" else None
             name = _text(prop, src) if prop is not None else None
             if name and val is not None and val.type in (
                     "arrow_function", "function", "function_expression",
-                    "class", "class_expression"):
+                    "generator_function", "class", "class_expression"):
                 qual = _join(parent, _text(left, src))   # full LHS keeps ids distinct
                 kind = C if val.type in ("class", "class_expression") else M
                 roles = {"exported"} if exported else set()
@@ -1195,15 +1538,245 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
                         inherits.append((cid, base, lang))
                 if enclosing_func is not None:
                     contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+                # Same containment rule as the object-literal member path: a member-assigned
+                # CLASS nested in a FUNCTION (`function f(){ obj.X = class { run(){…} } }`) is not
+                # exported-rooted — it's gated to the enclosing fn via the CONTAINS edge above —
+                # so its methods must be gated to the CLASS (cid), or they are orphaned and
+                # confidently flagged dead while live (cardinal; panel round 4). A module-scope
+                # member-assigned class keeps enclosing_func=None so the `exported` rescue leaves
+                # its private methods dead-eligible (R46A). A function value (kind M) is cid-gated.
                 _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
                          False, is_test, contains=contains,
-                         enclosing_func=(cid if kind is M else None))
+                         enclosing_func=(cid if (kind is M or enclosing_func is not None)
+                                         else None))
+            elif left is not None and val is not None and val.type == "object":
+                # An object literal assigned to a member or name — `module.exports = {…}`,
+                # `exports = {…}`, `Foo.prototype = { m(){…} }` (also `{…} as const`, already
+                # unwrapped above). Extract
+                # its function-valued members so their bodies are walked (else a helper called
+                # only there is flagged dead; cardinal). The full LHS keeps the qual unique.
+                _object_members(val, src, rel, spec, lang, _join(parent, _text(left, src)),
+                                nodes, defs, inherits, contains, is_test, enclosing_func)
             else:
                 _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                          exported, is_test, contains=contains, enclosing_func=enclosing_func)
+        elif spec.arrow_decls and t == "object":
+            # An object literal reached via generic descent — i.e. in an EXPRESSION position
+            # (call argument, array element, ternary/logical branch, IIFE return, sequence,
+            # parenthesized/chained-assignment RHS), NOT as a `const`/member VALUE (those are
+            # consumed by the declarator/assignment branches above, which never descend here).
+            # Route it through _object_members so its function-valued members are ROOTED
+            # (callback/exported at module scope, CONTAINS-gated inside a function body) and
+            # their bodies walked — else raw descent would mint the method_definitions as
+            # UNROOTED module-scope nodes (the live method itself flagged dead — the round-11
+            # cardinal) and a helper called only from a member would be flagged dead (#75,
+            # cardinal). A position-synthesized qual keeps the anonymous object's members from
+            # colliding with a same-named real module function.
+            _object_members(child, src, rel, spec, lang,
+                            _join(parent, f"<obj@{child.start_point[0] + 1}_{child.start_point[1]}>"),
+                            nodes, defs, inherits, contains, is_test, enclosing_func)
+        elif spec.arrow_decls and t in ("class", "class_expression") \
+                and child.child_by_field_name("body") is not None:
+            # An anonymous/expression-position class literal (`reg(class {…})`, `[ class {…} ]`,
+            # `cond ? class {…} : null`). The `body`-field guard skips the bare `class` KEYWORD
+            # token (also type "class", but bodyless) that sits inside every class_declaration —
+            # without it, descending into a regular `class X {}` would mint a spurious
+            # `X.<class@…>` node that masks X (the class would never flag dead). Named class
+            # expressions bound to a const/member are
+            # consumed by the declarator/assignment branches and never reach here. Model it as a
+            # CLASS and walk its body so its methods (and their private callees) aren't flagged
+            # dead — same round-11 reasoning as the object case. At module scope it takes the
+            # `exported` role so `_seed_exported_class_methods` rescues its public methods (a
+            # class handed to a function is instantiated/invoked externally); nested in a
+            # function it is reachability-gated via CONTAINS and its methods gated to the class
+            # (round-3/4 rule). A position-synthesized qual keeps it uniquely ided.
+            qual = _join(parent, f"<class@{child.start_point[0] + 1}_{child.start_point[1]}>")
+            roles = {"exported"} if enclosing_func is None else set()
+            cid = f"{rel}::{qual}"
+            nodes.append(Node(id=cid, kind=C, name="<anonymous>", location=_loc(rel, child),
+                              end_line=child.end_point[0] + 1, roles=frozenset(roles)))
+            defs.append((rel, cid, child, lang))
+            for base in _bases(child, src, spec):
+                inherits.append((cid, base, lang))
+            if enclosing_func is not None:
+                contains.append((enclosing_func, cid, "<anonymous>", child.start_point[0] + 1))
+            _collect(child, src, rel, spec, lang, qual, nodes, defs, inherits,
+                     False, is_test, contains=contains,
+                     enclosing_func=(cid if enclosing_func is not None else None))
         else:
             _collect(child, src, rel, spec, lang, parent, nodes, defs, inherits,
                      exported, is_test, contains=contains, enclosing_func=enclosing_func)
+
+
+_OBJ_FN_VALUES = ("arrow_function", "function", "function_expression", "generator_function")
+_TS_VALUE_WRAPPERS = ("as_expression", "satisfies_expression", "parenthesized_expression")
+
+
+def _unwrap_ts_value(val):
+    """Peel TypeScript expression wrappers that sit between a `variable_declarator` value
+    and the object/function it actually holds: `{…} as const`, `{…} as T`, `{…} satisfies T`
+    (TS 4.9+), and `({…})`. The inner expression is the first NAMED child. Without this the
+    `val.type == "object"` check misses `export const obj = {…} as const` — pervasive in
+    modern TS — leaving the object untraversed and a helper called only from its members
+    flagged dead (cardinal)."""
+    seen = 0
+    while val is not None and val.type in _TS_VALUE_WRAPPERS and seen < 8:
+        val = val.named_child(0)
+        seen += 1
+    return val
+
+
+def _obj_key_name(key, src):
+    """The static name of an object-literal member key, or None. A plain
+    `property_identifier`/`identifier` is its text; a string key (`"on-click"() {…}`,
+    `"k": fn`) is the unquoted fragment — `_name_of` returns None for a string-keyed
+    method, which would silently drop the member and leave its body unwalked (cardinal).
+    A computed key (`[Symbol.iterator]`, `[expr]`) or number key has no static name → None
+    (computed-symbol dispatch is its own concern)."""
+    if key is None:
+        return None
+    if key.type == "string":
+        frag = next((c for c in key.children if c.type == "string_fragment"), None)
+        return _text(frag, src) if frag is not None else None
+    if key.type in ("property_identifier", "identifier", "private_property_identifier"):
+        return _text(key, src)
+    return None
+
+
+def _object_members(obj, src, rel, spec, lang, parent, nodes, defs, inherits, contains,
+                    is_test, enclosing_func):
+    """Extract the function-valued members of a JS/TS object literal as METHOD nodes so
+    their bodies are walked in pass 2 — without this, a module-private function called
+    ONLY inside `const obj = { run() { helper() } }` (method shorthand) or
+    `{ run: () => helper() }` (function-valued property) is flagged dead, because the
+    object value is never traversed and the call to `helper` is never seen (cardinal;
+    rxjs/lodash-style config objects). A member at MODULE scope is invoked dynamically —
+    spread into config, passed as a callback, or looked up by a (often computed/string)
+    key — never by a plain local name, so root it `callback`. This rooting is
+    UNCONDITIONAL at module scope (including underscore-`_private` and computed-key
+    members): object literals are the canonical dispatch-table idiom (`handlers[evt]()`,
+    `handlers["_" + name]()`), so an underscore or computed member is just as likely to be
+    reached dynamically as a public one — gating it out would mint an UNROOTED node that is
+    then confidently flagged dead while live (the cardinal sin; this is why object literals
+    differ from the `assignment_expression` member gate, where the member is named
+    statically and resolves by name). Over-rooting a genuinely-dead member is the
+    precision-over-recall, cardinal-safe direction. A member nested in a function body
+    instead stays reachability-gated via the CONTAINS edge below — a dead initializer must
+    not mint live roots. Recurses into nested object values so `{ a: { onClick(){…} } }` is
+    covered too."""
+    for child in obj.children:
+        kind = M
+        if child.type == "method_definition":
+            key = child.child_by_field_name("name")
+            val = child
+        elif child.type == "pair":
+            key = child.child_by_field_name("key")
+            # Peel TS wrappers on the MEMBER VALUE too (`run: (() => h())`,
+            # `run: (fn satisfies T)`, `run: ({…} as const)`) — not just the whole object —
+            # or a wrapped function/object member is dropped and its body never walked (cardinal).
+            val = _unwrap_ts_value(child.child_by_field_name("value"))
+            if val is None:
+                continue
+            if val.type == "object":
+                # Recurse into a nested object value; a computed/string key still yields a
+                # parent qual (the raw key text) so deeper members stay uniquely ided.
+                nm = _obj_key_name(key, src) or (_text(key, src) if key is not None else None)
+                if nm:
+                    _object_members(val, src, rel, spec, lang, _join(parent, nm),
+                                    nodes, defs, inherits, contains, is_test, enclosing_func)
+                continue
+            if val.type in ("class", "class_expression"):
+                # A class-valued member (`{ Parser: class {…} }`) is public API — model it as a
+                # CLASS and recurse its body so its methods (and their private callees) aren't
+                # flagged dead; it takes the `exported` role so `_seed_exported_class_methods`
+                # rescues its public methods (mirrors the assignment_expression branch, R46A).
+                kind = C
+            elif val.type not in _OBJ_FN_VALUES:
+                continue
+        else:
+            continue
+        name = _obj_key_name(key, src)
+        if not name:
+            # A computed/dynamic key (`[k]() {}`, `[Symbol.x]: () => …`) has no static name,
+            # but its body must still be walked or a helper called only there is flagged dead
+            # (cardinal). Synthesize an id from the key text; a computed-key member is
+            # inherently accessed dynamically, so it is rooted below at module scope.
+            name = _text(key, src) if key is not None else "[computed]"
+        qual = _join(parent, name)
+        roles: set[str] = set()
+        # Module scope (not nested in a function body): dynamically invoked, root it
+        # unconditionally (see the docstring — underscore/computed members included). A class
+        # member takes `exported` (public API → its public methods are rescued); a function/
+        # method member takes `callback`.
+        if enclosing_func is None:
+            roles.add("exported" if kind is C else "callback")
+        cid = f"{rel}::{qual}"
+        nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, val),
+                          end_line=val.end_point[0] + 1, roles=frozenset(roles)))
+        defs.append((rel, cid, val, lang))
+        if kind is C:
+            for base in _bases(val, src, spec):
+                inherits.append((cid, base, lang))
+        if enclosing_func is not None:
+            contains.append((enclosing_func, cid, name, child.start_point[0] + 1))
+        # Walk the member BODY so a def nested inside it (`run() { function inner(){…} }`)
+        # becomes a real node with a CONTAINS edge to this member — without this, pass 2's
+        # `_direct_calls` skips the nested def, its body is never walked, and a helper called
+        # only from it is flagged dead (cardinal). Mirrors the arrow-decl path's body recursion.
+        # Containment for the recursion:
+        #   * method member (kind M): gate its nested defs to the method (cid).
+        #   * class member at MODULE scope (kind C, enclosing_func is None): pass None — the
+        #     class is `exported`-rooted and `_seed_exported_class_methods` rescues its PUBLIC
+        #     methods, keeping a private method dead-eligible (R46A precision).
+        #   * class member NESTED IN A FUNCTION (kind C, enclosing_func not None): the class is
+        #     NOT exported-rooted (it's reachability-gated to the enclosing func via the CONTAINS
+        #     edge above), so its methods must be gated to the CLASS (cid) — else they are
+        #     orphaned (no role, no containment) and confidently flagged dead while live (the
+        #     cardinal sin; panel round 3). Chain: enclosing func -> class -> methods.
+        _collect(val, src, rel, spec, lang, qual, nodes, defs, inherits,
+                 False, is_test, contains=contains,
+                 enclosing_func=(cid if (kind is M or enclosing_func is not None) else None))
+
+
+_JS_IMPLICIT_DISPATCH_NAMES = frozenset({"toJSON", "toString", "valueOf"})
+
+
+def _is_js_implicit_dispatch_method(node, name, src) -> bool:
+    """True for a JS/TS class member the runtime invokes IMPLICITLY — never by a plain
+    `obj.method()` by-name call — so it (and the private helpers it alone calls) would be
+    false-flagged dead in a non-exported class (#54). Three forms:
+
+      * a well-known-Symbol computed key — `[Symbol.iterator]`, `[Symbol.asyncIterator]`,
+        `[Symbol.toPrimitive]`, `[Symbol.hasInstance]`, `[Symbol.toStringTag]`, … — run by
+        `for…of` / spread / `+`coercion / `instanceof` / `Object.prototype.toString`;
+      * a `get`/`set` accessor — run by a property read/write (`obj.x` / `obj.x = …`), which the
+        graph models as a member access, not a call;
+      * a serialization/coercion hook by name — `toJSON` (JSON.stringify), `toString` / `valueOf`
+        (string & numeric coercion, template literals, `String(x)`).
+
+    Cardinal-safe over-approximation: rooting only ADDS a root, so a genuinely-unused accessor/
+    hook is over-rooted (bounded, one per member) but live code is never flagged dead."""
+    for c in node.children:
+        if c.type in ("get", "set"):
+            return True
+        if c.type == "computed_property_name" and b"Symbol." in src[c.start_byte:c.end_byte]:
+            return True
+    return name in _JS_IMPLICIT_DISPATCH_NAMES
+
+
+def _is_anonymous_class_member(node) -> bool:
+    """True if `node` (a def) sits directly in an ANONYMOUS class body — a Java
+    `new Base(){ … }` whose body is a `class_body` child of an `object_creation_expression`.
+    Such a class has no name, so an overriding method in it can never be resolved by a
+    `Class.method` by-name call; it is invoked only polymorphically through the base type
+    (Runnable.run, Comparator.compare, a custom abstract base). Used to root those members
+    `callback` when they sit at CLASS scope (a field / static initializer), where — unlike an
+    anonymous class inside a method body — there is no enclosing-function containment edge to
+    keep them live (#62, cardinal)."""
+    body = node.parent
+    return (body is not None and body.type == "class_body"
+            and body.parent is not None
+            and body.parent.type == "object_creation_expression")
 
 
 def _bases(node, src, spec):
@@ -1241,6 +1814,137 @@ def _export_symbol_names(src: bytes) -> set[str]:
     return {m.decode("ascii", "ignore") for m in _EXPORT_SYMBOL_RE.findall(src)}
 
 
+_MACRO_IDENT_RE = re.compile(rb"[A-Za-z_]\w*")
+_LINE_CONT_RE = re.compile(rb"\\\r?\n")
+
+
+def _macro_body_ref_names(root, src) -> set[str]:
+    """Identifiers appearing in C/C++ `#define` macro BODIES — a function called or named inside a
+    macro body (`#define LOG(m) log_impl(m)`, `#define DEFAULT handler`, `#define BOTH() (a()+b())`).
+    Tree-sitter parses a macro body as a single raw-text `preproc_arg`, so the call/reference inside
+    is invisible to the normal AST call scan; a function reached ONLY through a macro is then
+    false-flagged dead (#59). Every identifier in the body text is returned and later rooted
+    `callback` (the function is invoked indirectly wherever the macro expands) — the C analogue of
+    the EXPORT_SYMBOL text-scan. Cardinal-safe over-approximation: rooting resolves by name against
+    project F/M nodes only, so a macro parameter or a keyword that happens to share a name merely
+    over-roots (keeps a genuinely-dead function live), never flags live code dead."""
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("preproc_function_def", "preproc_def"):
+            val = n.child_by_field_name("value")
+            if val is not None:
+                # Splice out C preprocessor line continuations first: a `\<newline>` that splits an
+                # identifier (`#define M f\<nl>n()`) would otherwise read as two identifiers
+                # (`f`, `n`) and miss the real call target `fn`, leaving it flagged dead. The
+                # preprocessor itself splices these out before tokenizing, so we do the same.
+                body = _LINE_CONT_RE.sub(b"", src[val.start_byte:val.end_byte])
+                found = {m.decode("ascii", "ignore") for m in _MACRO_IDENT_RE.findall(body)}
+                # Drop the macro's own PARAMETERS — `#define MIN(a,b) ((a)<(b)?…)` mentions `a`/`b`
+                # in the body, but those are placeholders bound at the call site, NOT project
+                # functions. Including them rooted any dead static fn named `a`/`b`/`x`/`cb`/…
+                # (the dominant over-rooting source — common short param names collide often). The
+                # actual argument a caller passes is already scanned at the call site, so dropping
+                # params loses no real reference (panel-quantified precision fix).
+                params = n.child_by_field_name("parameters")
+                if params is not None:
+                    found -= {_text(c, src) for c in params.children if c.type == "identifier"}
+                names.update(found)
+        else:
+            stack.extend(n.children)
+    return names
+
+
+def _c_global_init_fn_refs(root, src) -> set[str]:
+    """Function names whose address is taken in a C/C++ MODULE-SCOPE (global) variable initializer —
+    a dispatch / function-pointer table `int (*ops[])(int) = {op_a, op_b}`, a plugin/vtable struct
+    `struct ops P = {init, teardown}`, a designated-initializer table `{[0]=on_start}`, or a scalar
+    `cb h = handler`. Such a function is invoked INDIRECTLY through the global, which may be consumed
+    ANYWHERE — including a different translation unit (a C global is shared via `extern`, but globals
+    are not graph nodes, so that cross-TU use is untrackable). Without rooting, a function whose
+    address is taken only in a global table is false-flagged dead whenever its OWN TU has no
+    entry point (#69 — the table's file is a passive registration unit). Local (in-function)
+    function-pointer assignments are already covered by `_direct_refs`; this scans ONLY top-level
+    declarations (never descends into a function body). Rooted `callback` — the C analogue of the
+    object-literal / macro-body indirect-dispatch rooting. Cardinal-safe over-approximation:
+    resolves by name to C/C++ F/M nodes only, so a non-function initializer identifier (a global
+    const, an enum value) merely over-roots a homonym, never flags live code dead."""
+    names: set[str] = set()
+
+    def visit(node):
+        for c in node.children:
+            if c.type == "function_definition":
+                continue  # never descend into a function body — locals are _direct_refs' job
+            if c.type == "initializer_list":
+                # A brace table `{op_a, op_b}` / `{[0]=on_start}` at module scope — the common
+                # denominator across dialects. C parses the global as `declaration` ->
+                # `init_declarator`, but C++ MIS-parses `int (*tab[])() = {…}` (and the same inside
+                # `namespace {…}` / `extern "C" {…}`) as an `expression_statement` ->
+                # `assignment_expression` whose right side is still an `initializer_list`, so
+                # matching the list directly catches every dialect.
+                _collect_init_idents(c, src, names)
+            elif c.type == "init_declarator":
+                # Scalar function-pointer global `cb h = handler;` (C) — the value is a bare
+                # identifier, not a brace list.
+                val = c.child_by_field_name("value")
+                if val is not None:
+                    _collect_init_idents(val, src, names)
+            else:
+                visit(c)  # recurse through declarations / expression_statements / namespaces /
+                          # extern "C" / declaration_list — all still module scope (bodies skipped)
+
+    visit(root)
+    return names
+
+
+def _collect_init_idents(node, src, out: set[str]) -> None:
+    """Collect the function-VALUE identifiers inside a global-initializer (`{op_a, op_b}`,
+    `handler`, `{[0]=on_start}`, `&op_c`, `{.run=do_run}`). A function pointer named in an
+    initializer is always a plain `identifier` (the value side). We deliberately collect ONLY
+    `identifier`, NOT `field_identifier`: in a designated initializer `{.open=my_open}` the FIELD
+    NAME `open` is a `field_identifier` (under `field_designator`) — collecting it rooted any dead
+    static fn named `open`/`read`/`write`/`free`/… (the most common C names — `file_operations` /
+    GObject / VFS ops structs are full of them; panel-quantified, ~N spurious per N-field struct),
+    while the actual value `my_open` is the `identifier` we want. Member-access components
+    (`x.field`) are `field_identifier` too and equally not function-pointer values, so skipping
+    `field_identifier` tightens both. Call-position names are still collected (a fn CALLED in a
+    static initializer runs at program start, so it is live)."""
+    if node.type == "identifier":
+        out.add(_text(node, src))
+        return
+    for c in node.children:
+        _collect_init_idents(c, src, out)
+
+
+_C_TYPE_SPECIFIERS = ("struct_specifier", "union_specifier", "enum_specifier", "class_specifier")
+
+
+def _c_type_ref_names(root, src) -> set[str]:
+    """Names of C/C++ struct/union/enum/class types USED as a type rather than defined — a bodyless
+    specifier: `struct Config g;` (variable type), `void f(struct Config *p)` (parameter type), a
+    field `struct Inner inner;`, a `sizeof(struct X)`, a cast. The DEFINITION carries a `body` field
+    (`struct Config { … }`) and is skipped; only a name-bearing, body-less specifier is a use. C/C++
+    has no constructor call to edge a plain struct type, so a struct used only as a type had no
+    inbound edge and was false-flagged dead though it is a live data-model definition (#89). Walks
+    the whole tree (a type is used in function bodies, params, fields, and globals alike). Rooted
+    `callback` by name below — cardinal-safe over-approximation (a homonym only over-roots)."""
+    names: set[str] = set()
+
+    def visit(node):
+        if node.type in _C_TYPE_SPECIFIERS and node.child_by_field_name("body") is None:
+            nm = node.child_by_field_name("name")
+            if nm is not None:
+                t = _trailing_id(nm, src)
+                if t:
+                    names.add(t)
+        for c in node.children:
+            visit(c)
+
+    visit(root)
+    return names
+
+
 def _reexport_names(root, src):
     """Local symbol names an `export`/`module.exports` form marks as public API: the
     `name` field of each `export { A, B as C }` specifier; the identifier of
@@ -1272,16 +1976,40 @@ def _reexport_names(root, src):
             # `export default Foo;` / TS `export = Foo;` — a bare identifier child names a
             # predefined symbol. Inline `export default class/function …` has a declaration
             # child (the export_statement -> exported recursion marks it) and anonymous
-            # `export default () => {}` / `{…}` has no identifier child, so both are skipped.
+            # `export default () => {}` is skipped; `export default { onTap }` collects its
+            # shorthand/pair members via add_value (public API reachable as the default export).
             for c in n.children:
                 add_value(c)
+        elif n.type == "export_statement":
+            # `export const handlers = { onClick, onHover, run: doRun }` — the object's members
+            # are public API (any importer reaches `handlers.onClick`), but a shorthand member is
+            # a `shorthand_property_identifier` reference the call graph never sees, so the named
+            # function it points at was false-flagged dead (#74). The inline-export recursion
+            # marks the const itself, not the functions its object references. Collect the object's
+            # member names (shorthand idents + pair value idents) so they're rooted `exported` like
+            # the `module.exports = {…}` / `export default {…}` forms already are.
+            decl = n.child_by_field_name("declaration")
+            if decl is not None and decl.type in ("lexical_declaration", "variable_declaration"):
+                for d in decl.children:
+                    if d.type == "variable_declarator":
+                        # Peel TS value wrappers (`{…} as const` / `satisfies T` / `(…)`): the
+                        # canonical TS handler-object idiom is `export const h = { onClick } as const`,
+                        # whose value node is an `as_expression`, not a bare `object` — without
+                        # unwrapping, the member stays false-flagged dead (the #74 cardinal in its
+                        # most common real-world shape). Mirrors the declarator/assignment def
+                        # branches, which already unwrap.
+                        v = _unwrap_ts_value(d.child_by_field_name("value"))
+                        if v is not None and v.type == "object":
+                            add_value(v)
         elif n.type == "assignment_expression":
             left = n.child_by_field_name("left")
             if left is not None and left.type in ("member_expression", "subscript_expression"):
                 lt = _text(left, src)
                 if (lt == "module.exports" or lt.startswith("module.exports.")
                         or lt.startswith("exports.")):  # CommonJS export targets
-                    right = n.child_by_field_name("right")
+                    # Unwrap the RHS too so `module.exports = { a } as const` (TS-in-CJS) roots its
+                    # members, matching the named-export branch above.
+                    right = _unwrap_ts_value(n.child_by_field_name("right"))
                     if right is not None:
                         add_value(right)
         for c in n.children:
@@ -1360,7 +2088,8 @@ def _module_uses(root, src, spec):
             if spec.arrow_decls and c.type == "variable_declarator":
                 val = c.child_by_field_name("value")
                 if val is not None and val.type in (
-                        "arrow_function", "function", "function_expression"):
+                        "arrow_function", "function", "function_expression",
+                        "generator_function"):
                     continue
             if c.type in spec.call_types:
                 nm, _ = _callee(c, src, spec.call_types[c.type])
@@ -1370,35 +2099,195 @@ def _module_uses(root, src, spec):
                 calls.append((_text(c, src), c.start_point[0] + 1))
             if c.type in ("identifier", "type_identifier", "constant", "name"):
                 refs.append((_text(c, src), c.start_point[0] + 1))
+            elif spec.attr_suffix and c.type == "attribute":
+                # Same C# `[Foo]` -> `FooAttribute` suffix as _direct_refs (R64), but for
+                # attributes on declarations NOT in `spec.defs` — `enum`/`delegate` — whose
+                # bodies _module_uses walks instead of _direct_refs (panel R66, sonnet).
+                suffixed = _csharp_attribute_suffix_ref(c, src)
+                if suffixed is not None:
+                    refs.append((suffixed, c.start_point[0] + 1))
             rec(c)
 
     rec(root)
     return calls, refs
 
 
-def _bash_trap_handlers(root, src):
-    """`trap cleanup EXIT` registers `cleanup` to run on a signal — a real use the
-    generic command scan misses (it sees the `trap` command, not its function argument).
-    Yield the **handler** of each top-level trap as (name, line) so `_ref` roots it if it
-    names a project function. Issue #22. Only the handler (the first non-option argument)
-    is rooted — never a trailing signal word — so a function sharing a signal's name isn't
-    spuriously kept live (panels XX/YY/ZZ). Top-level scope only (skips function bodies),
-    matching `_module_uses`."""
+_RUBY_SYMBOL_DISPATCH = frozenset({"enum_for", "to_enum", "method", "instance_method"})
+# A Ruby method name: an identifier with an optional `?`/`!`/`=` suffix (`valid?`, `save!`,
+# `name=`). Operator-method symbols (`:+`, `:[]`) are not matched — rare and not the target here.
+_RUBY_METHOD_NAME_RE = re.compile(r"[A-Za-z_]\w*[?!=]?$")
+
+
+def _ruby_symbol_name(node, src):
+    """`:upcase` -> "upcase", `:valid?` -> "valid?", `:name=` -> "name"; None for a non-method-name
+    or dynamic symbol. A setter def (`def name=`) is keyed WITHOUT the trailing `=` (the def-name
+    extractor strips the `=` operator), while `?`/`!` are part of the name and kept — so drop a
+    trailing `=` here too, or `method(:name=)` would emit `name=` and match no def (the live setter
+    would stay flagged dead)."""
+    t = _text(node, src)
+    if t.startswith(":"):
+        name = t[1:]
+        if _RUBY_METHOD_NAME_RE.fullmatch(name):
+            return name[:-1] if name.endswith("=") else name
+    return None
+
+
+def _ruby_symbol_refs(root, src):
+    """Ruby idioms that name a method via a literal SYMBOL the call graph otherwise can't see, so
+    the method (and its callees) is false-flagged dead (Ruby dogfood, cardinal):
+      * `xs.map(&:upcase)` — `Symbol#to_proc` turns `:upcase` into a block that calls `upcase`.
+      * `enum_for(:m, …)` / `to_enum(:m)` — wrap method `m` as a lazy enumerator (invoked later).
+      * `method(:m)` / `instance_method(:m)` — a (bound/unbound) Method for `m`, commonly invoked
+        as `&method(:m)`.
+    Yield (name, line) for each literal symbol so `_ref` roots it iff it names a project method
+    (cardinal-safe; over-rooting a same-named method is the precision-over-recall direction). NOT
+    `send`/`public_send` — those remain the documented dynamic-dispatch limitation."""
     out: list[tuple[str, int]] = []
 
     def rec(n):
         for c in n.children:
-            if c.type == "function_definition":
-                continue  # top-level body only
+            if c.type == "block_argument":
+                s = next((k for k in c.children if k.type == "simple_symbol"), None)
+                if s is not None:
+                    name = _ruby_symbol_name(s, src)
+                    if name:
+                        out.append((name, s.start_point[0] + 1))
+            elif c.type == "call" and _field_text(c, "method", src) in _RUBY_SYMBOL_DISPATCH:
+                al = c.child_by_field_name("arguments")
+                s = next((k for k in al.children if k.type == "simple_symbol"), None) if al else None
+                if s is not None:
+                    name = _ruby_symbol_name(s, src)
+                    if name:
+                        out.append((name, s.start_point[0] + 1))
+            rec(c)
+
+    rec(root)
+    return out
+
+
+def _bash_callback_refs(root, src):
+    """Bash commands that invoke a project function whose name sits in an ARGUMENT position,
+    not the command head — so the generic command scan (which keys on the head) misses it.
+    Yield each such function name as (name, line) so `_ref` roots it IFF it resolves to a
+    project function (cardinal-safe: a non-matching name roots nothing; over-rooting a
+    shell-invoked entry point is the documented precision-over-recall direction):
+      * `trap HANDLER SIGNAL…` — HANDLER runs on the signal (issue #22). Only the handler
+        (first non-option arg) is taken, never a trailing signal word.
+      * `complete -F FUNC cmd` / `compgen -F FUNC …` — FUNC is the completion callback the
+        shell invokes on TAB.
+      * `export -f FUNC…` — each FUNC is exported for subshells (a strong invoked-elsewhere
+        signal; `bash -c 'FUNC'` in a child shell is otherwise invisible).
+      * `time FUNC` — the `time` keyword runs FUNC, but tree-sitter parses `time` as the
+        command and FUNC as a plain word, so the call is otherwise lost.
+    Descends function bodies too (unlike the old trap-only top-level pass): a trap/complete
+    handler registered inside a function is still shell-invoked, so rooting it regardless of
+    the enclosing function's own liveness is correct."""
+    out: list[tuple[str, int]] = []
+
+    def rec(n):
+        for c in n.children:
             if c.type == "command":
                 cn = next((k for k in c.children if k.type == "command_name"), None)
                 head = _text(cn.children[0] if cn and cn.children else cn, src) if cn else ""
                 if head == "trap":
                     _trap_handler(c, cn, src, out)
+                elif head in ("complete", "compgen"):
+                    _bash_flag_arg(c, cn, src, out, "-F")
+                elif head == "time":
+                    _bash_time_target(c, cn, src, out)
+            elif c.type == "declaration_command":
+                _bash_export_decl(c, src, out)   # `export -f FUNC` (parses as a declaration)
             rec(c)
 
     rec(root)
     return out
+
+
+def _bash_command_words(call, cn, src):
+    """The `word`/string children of a bash `command`, in order, paired with their 1-based line —
+    skipping the command name itself. A quoted argument (`string`/`raw_string`) yields its
+    quote-stripped text so a quoted bare identifier (`time "bench"`) is recognised, matching
+    `_trap_handler`. The unit the callback-arg parsers below scan."""
+    for arg in call.children:
+        if arg is cn:
+            continue
+        if arg.type == "word":
+            yield _text(arg, src), arg.start_point[0] + 1
+        elif arg.type in ("string", "raw_string"):
+            yield _text(arg, src).strip().strip("\"'`"), arg.start_point[0] + 1
+
+
+def _bash_flag_arg(call, cn, src, out, flag):
+    """Root the function named in the slot DIRECTLY after each `flag` occurrence (e.g.
+    `complete -F FUNC`). The immediate next argument is the completion handler regardless of its
+    node type — so a dynamic form (`complete -F ${VAR} cmd`, `-F $(f) cmd`) consumes the slot and
+    roots nothing rather than falling through to a later word (the command being completed). A
+    quoted bare identifier (`-F "_comp"`) is unwrapped; only a static identifier is rooted.
+
+    Bash uses the LAST `-F` when several appear on one command, so every `-F` slot is rooted —
+    over-rooting an overwritten handler is cardinal-safe and guarantees the effective one stays
+    live (rooting only the first would flag the live last handler dead)."""
+    args = [c for c in call.children if c is not cn]
+    for i, c in enumerate(args):
+        if c.type == "word" and _text(c, src) == flag and i + 1 < len(args):
+            nxt = args[i + 1]
+            if nxt.type in ("word", "string", "raw_string"):
+                name = _text(nxt, src).strip().strip("\"'`")
+                if name.isidentifier():
+                    out.append((name, nxt.start_point[0] + 1))
+
+
+def _bash_export_decl(call, src, out):
+    """A function exported for subshells (invoked via `bash -c 'FUNC'` in a child shell —
+    otherwise invisible) parses as a `declaration_command`. Equivalent forms (#73):
+      * `export -f FUNC…`       — the `-f` flag exports the named function(s);
+      * `declare -fx FUNC…` / `declare -xf FUNC…` — declare with BOTH `f` (function) and `x`
+        (export) exports it; the flag combines in either order;
+      * `declare -f -x FUNC…` / `declare -x -f FUNC…` — the SAME with the flags written as
+        SEPARATE words (panel R2 cardinal: bash treats split and combined flags identically, so
+        the `f`/`x` characters must be accumulated ACROSS the leading flag words, not required in
+        one token);
+      * `typeset -fx FUNC…` / `typeset -f -x FUNC…` — the ksh-compatible spelling of the same.
+    Root each named FUNC once the exporting flag(s) are seen. A plain `export VAR=…`,
+    `declare -r VAR`, or `declare -f FUNC` (print only, no `x`) roots nothing."""
+    if not call.children:
+        return
+    head = _text(call.children[0], src)
+    if head not in ("export", "declare", "typeset"):
+        return
+    seen_f = False
+    seen_x = False
+    exporting_fn = False
+    for ch in call.children[1:]:
+        t = _text(ch, src)
+        if not exporting_fn:
+            # Accumulate flag characters across the run of leading `-`-words. A flag is a `word`
+            # that STARTS WITH `-` (an `and`, not a substring match) so a bare var name whose tail
+            # contains `f`/`x` (`export xf target` exports vars, not a function) never trips it.
+            if ch.type == "word" and t.startswith("-"):
+                flags = t[1:]
+                seen_f = seen_f or "f" in flags
+                seen_x = seen_x or "x" in flags
+                # `export -f` exports a function (export implies `x`); `declare`/`typeset` need
+                # BOTH `f` and `x` (a bare `declare -f` only prints).
+                if (head == "export" and seen_f) or (seen_f and seen_x):
+                    exporting_fn = True
+            continue
+        if ch.type in ("variable_name", "word") and t.isidentifier():
+            out.append((t, ch.start_point[0] + 1))
+
+
+def _bash_time_target(call, cn, src, out):
+    """`time FUNC` / `time { FUNC; }` runs FUNC under the `time` keyword. tree-sitter parses the
+    timed command's words as plain args of `time`, and mis-parses a brace group into word tokens
+    (`{`, or `{ {` for a nested group `time { { FUNC; }; }` — panel R2). Take the FIRST bare-
+    identifier word, skipping options (`-p`) and any brace/grouping token — else the grouped
+    function is never seen and is flagged dead (#73). Only the first identifier word (the
+    command/function head) is taken, so `time cmd arg` doesn't over-collect `arg`."""
+    for w, line in _bash_command_words(call, cn, src):
+        if w.isidentifier():
+            out.append((w, line))
+            return
 
 
 def _trap_handler(call, cn, src, out):
@@ -1457,6 +2346,83 @@ def _is_bare_call(parent, ident):
     return True
 
 
+def _php_callable_names(node, src):
+    """The method named by a PHP 2-element array callable
+    `[$this|self::class|static::class|'Class'|$obj, 'method']` — the form PHP resolves at
+    runtime (usort/uasort/preg_replace_callback/array_map comparators) but a syntactic call
+    scan misses, so the live target is false-flagged dead (panel R53, the Magento idiom).
+    Emit the method name so it isn't flagged dead; over-approximated through `_ref` (only
+    project symbols resolve), so a non-callable 2-element array merely over-roots —
+    cardinal-safe, never a false-dead. A `'Class::method'` *string* callable needs no handling:
+    a string static call requires a PUBLIC target, which is already rooted as exported."""
+    if node.type != "array_creation_expression":
+        return []
+    elems = [c for c in node.children if c.type == "array_element_initializer"]
+    if len(elems) != 2:
+        return []
+    sval = next((c for c in elems[1].children
+                 if c.type in ("string", "encapsed_string")), None)
+    if sval is None:
+        return []
+    meth = _text(sval, src).strip().strip("\"'`").strip()
+    return [(meth, sval.start_point[0] + 1)] if meth else []
+
+
+# PHP builtins that take a callback by string name. A bare-string callable passed to one of these
+# names a project global function the syntactic call scan can't see; scoping to this set keeps an
+# ordinary string literal that merely matches a function name from over-rooting (panel R86).
+_PHP_CALLBACK_BUILTINS = frozenset({
+    "usort", "uasort", "uksort", "call_user_func", "call_user_func_array",
+    "array_map", "array_filter", "array_walk", "array_walk_recursive", "array_reduce",
+    "preg_replace_callback", "preg_replace_callback_array", "array_udiff", "array_uintersect",
+    "register_shutdown_function", "set_error_handler", "set_exception_handler",
+    "spl_autoload_register", "forward_static_call", "iterator_apply",
+})
+
+
+def _php_string_callable_names(call_node, src):
+    """Project function names passed as a bare-STRING callback to a known PHP callback builtin —
+    `usort($x, 'topcmp')`, `call_user_func('handler')`. The syntactic call scan can't see the
+    string, so the live target is false-flagged dead (panel R86, the bare-string analogue of the
+    v2.0.1 array form). Scoped to `_PHP_CALLBACK_BUILTINS` so an ordinary string literal matching a
+    function name doesn't over-root. Over-approximated through `_ref` (only project symbols resolve);
+    a `'Class::method'` string needs no handling (a static string call requires a public target,
+    already rooted)."""
+    if call_node.type != "function_call_expression":
+        return []
+    callee = call_node.child_by_field_name("function")  # PHP always exposes the callee here
+    if callee is None or _text(callee, src).strip().lstrip("\\") not in _PHP_CALLBACK_BUILTINS:
+        return []
+    args = next((c for c in call_node.children if c.type == "arguments"), None)
+    if args is None:
+        return []
+    out: list[tuple[str, int]] = []
+    for arg in args.children:
+        if arg.type != "argument":
+            continue
+        for s in arg.children:
+            if s.type in ("string", "encapsed_string"):
+                nm = _text(s, src).strip().strip("\"'`").strip()
+                if nm and "::" not in nm and "\\" not in nm:
+                    out.append((nm, s.start_point[0] + 1))
+    return out
+
+
+def _csharp_attribute_suffix_ref(attr_node, src):
+    """The `<Name>Attribute` form of a C# `[Name]` attribute usage, or None. C# omits the
+    `Attribute` suffix when applying an attribute, so `[NoEnumeration]` references class
+    `NoEnumerationAttribute`; the bare name never resolves on its own (panel R64). Returns None
+    when the name can't be read or already ends in `Attribute` (the bare name already resolves).
+    `_trailing_id` reduces a qualified attribute (`[My.Ns.Foo]`) to its trailing name (`Foo`)."""
+    an = attr_node.child_by_field_name("name")  # reliable for C# attribute (identifier/qualified)
+    if an is None:
+        return None
+    nm = _trailing_id(an, src)
+    if not nm or nm.endswith("Attribute"):
+        return None
+    return nm + "Attribute"
+
+
 def _direct_refs(body, src, spec):
     """Identifier/type references in a def body (not crossing nested defs, excluding
     the def's own name): a symbol used by name as a value or type. Emitted as
@@ -1476,6 +2442,36 @@ def _direct_refs(body, src, spec):
             if c.type in ("identifier", "type_identifier", "constant", "name") \
                     and (c.start_byte, c.end_byte) != name_span:
                 out.append((_text(c, src), c.start_point[0] + 1))
+            elif c.type == "selector_expression":
+                # Go method VALUE / method EXPRESSION / package-qualified reference:
+                # `v.run` (bound method value passed as a callback), `T.run` (unbound method
+                # expression), `cfg{onRun: v.run}` (struct-field value). The method is
+                # REFERENCED, not called, so `_direct_calls` never sees it and an unexported
+                # method reached only as a callback value was confidently flagged dead (#49,
+                # cobra dogfood — `selector_expression` is unique to the Go grammar). Emit the
+                # trailing field name as a by-name reference (resolves only to a project
+                # symbol; a plain struct-field access that happens to share a name with a
+                # function is cardinal-safe over-rooting). A `v.run()` CALL also contains this
+                # selector, but the edge loop dedups REFERENCES against the CALLS set, so it
+                # never double-counts.
+                fld = c.child_by_field_name("field")
+                if fld is not None:
+                    out.append((_text(fld, src), fld.start_point[0] + 1))
+            elif spec.callable_strings:
+                # PHP array callables (`[$this, 'm']`) name a method the syntactic call scan
+                # can't see; emit it so the live target isn't flagged dead. Bare-string callables
+                # passed to a known callback builtin (`usort($x, 'topcmp')`) name a global function
+                # the scan also misses (panel R86).
+                out.extend(_php_callable_names(c, src))
+                out.extend(_php_string_callable_names(c, src))
+            elif spec.attr_suffix and c.type == "attribute":
+                # C# applies an attribute with the `Attribute` suffix OMITTED — `[NoEnumeration]`
+                # names class `NoEnumerationAttribute`. The generic walk already emits the bare
+                # `NoEnumeration` (which won't resolve); also emit the suffixed form so the
+                # in-tree attribute class isn't false-flagged dead (panel R64, serilog dogfood).
+                suffixed = _csharp_attribute_suffix_ref(c, src)
+                if suffixed is not None:
+                    out.append((suffixed, c.start_point[0] + 1))
             rec(c, False)
 
     rec(body, True)
@@ -1538,14 +2534,24 @@ def _trailing_id(node, src):
     if node is None:
         return None
     if node.type in ("identifier", "type_identifier", "field_identifier",
-                     "property_identifier", "word", "name", "constant"):
+                     "property_identifier", "private_property_identifier",
+                     "word", "name", "constant"):
+        # `private_property_identifier` is a JS/TS `#name` (ECMAScript private field/method).
+        # Both the def name (`#impl(){}`) and the call site (`this.#impl()`) flow through here,
+        # so handling it once makes them resolve to the SAME `#impl` and the private method (plus
+        # the helpers it alone calls) is no longer false-flagged dead (#76).
         return _text(node, src)
     # C++ operator/destructor/conversion names (`operator+`, `~Class`, `operator bool`) are
     # leaf-ish multi-token nodes; take their literal text so an out-of-line def gets a real
     # node name instead of None. `operator_cast` (conversion ops) has a `type` field that the
     # generic walk below would follow to the target type (`bool`) and lose the name, so it
     # must be handled here too (panels R13A/R14A).
-    if node.type in ("operator_name", "destructor_name", "operator_cast"):
+    # C++ `operator_name`/`destructor_name`/`operator_cast`; Ruby `operator` (the name node
+    # of `def []`, `def []=`, `def <=>`, `def ==`, …). Without `operator`, every Ruby operator
+    # method was dropped from the graph — so it was un-navigable AND anything used only inside
+    # its body (e.g. `ValueArray.new(value)` inside `def []=`) was false-flagged dead (panel
+    # R61, the grape dogfood: ValueArray's constructor flagged dead though it is instantiated).
+    if node.type in ("operator_name", "destructor_name", "operator_cast", "operator"):
         return _text(node, src)
     prop = node.child_by_field_name("property") or node.child_by_field_name("name")
     if prop is not None:
@@ -1602,6 +2608,14 @@ def _ref(edges, src_id, name, by_name, rel, line, relation=Relation.CALLS,
 
 
 # -- helpers ---------------------------------------------------------------
+def _is_ruby_operator_method(name: str) -> bool:
+    """True if `name` is a Ruby operator method name (`[]`, `[]=`, `<=>`, `==`, `<<`, `+`, …) —
+    i.e. it does not start with a letter or underscore. Such methods are invoked via operator/
+    index syntax, not a by-name call, so they're rooted (panel R61). A normal method, predicate
+    (`valid?`) or bang (`save!`) starts with a letter and is excluded (it IS called by name)."""
+    return bool(name) and not (name[0].isalpha() or name[0] == "_")
+
+
 def _name_of(node, src):
     nm = node.child_by_field_name("name")
     if nm is not None:
@@ -1702,6 +2716,20 @@ _DECLARATOR_WRAPPERS = ("function_declarator", "pointer_declarator", "reference_
                         "array_declarator", "parenthesized_declarator", "init_declarator")
 
 
+_GO_EXPORT_RE = re.compile(r"^//\s*export\s+(\w+)\s*$")
+
+
+def _go_has_export_directive(node, name: str, src) -> bool:
+    """True if the Go func `node` is immediately preceded by a `//export <name>` cgo comment
+    naming it. cgo requires the directive on the line directly above the func, which the
+    tree-sitter grammar exposes as the func's previous `comment` sibling."""
+    prev = node.prev_sibling
+    if prev is None or prev.type != "comment":
+        return False
+    m = _GO_EXPORT_RE.match(_text(prev, src).strip())
+    return m is not None and m.group(1) == name
+
+
 def _roles(node, src, name, lang, exported):
     roles = set()
     if exported:
@@ -1715,13 +2743,209 @@ def _roles(node, src, name, lang, exported):
     # method named init too.
     if lang == "go" and name == "init":
         roles.add("main")
+    # Go cgo `//export Name` directly above a func makes it callable from C — a native entry point
+    # with no in-tree caller. A *capitalised* one is already `exported` by the rule below, but a
+    # lowercase `//export name` would be flagged dead (panel R88). The directive is the func's
+    # immediately-preceding `comment` sibling. Go-gated; cardinal-safe (only adds a root).
+    if lang == "go" and name and _go_has_export_directive(node, name, src):
+        roles.add("exported")
     if lang == "rust" and any(c.type == "visibility_modifier" for c in node.children):
         roles.add("exported")
     elif lang == "go" and name[:1].isupper():        # Go: capitalised = exported
         roles.add("exported")
     elif lang in ("java", "php", "csharp") and _has_public(node, src):
         roles.add("exported")
+    # A Java `native` method is a JNI entry point: it has no Java body and is implemented in C,
+    # invoked across the JNI boundary — no in-tree by-name caller. A non-public one would be
+    # false-flagged dead (manual pass; the Java analogue of Go cgo `//export` / C#
+    # `[UnmanagedCallersOnly]` rooted in v2.1.9). Cardinal-safe: only adds a root.
+    if lang == "java" and _is_java_native(node, src):
+        roles.add("callback")
+    if lang in ("c", "cpp"):
+        roles |= _c_attr_roots(node, src)
     return frozenset(roles)
+
+
+# Function-attribute node types across the C and C++ grammars: the GNU `__attribute__((…))`
+# (`attribute_specifier`), the C++11 `[[…]]` form (`attribute_declaration`), and the MSVC
+# `__declspec(…)` modifier (`ms_declspec_modifier`).
+_C_ATTR_NODES = frozenset({"attribute_specifier", "attribute_declaration", "ms_declspec_modifier"})
+
+
+def _c_dangling_attr_texts(node, src) -> list[bytes]:
+    """Recover an attribute the tree-sitter C++ grammar mis-attached to `node`'s previous sibling.
+    An *empty-body* inline method `void f() {}` is parsed as a `field_declaration` whose body is an
+    `initializer_list`, and it ABSORBS the FOLLOWING declaration's leading attribute as a trailing
+    `attribute_specifier` (after its own declarator). So `__attribute__((visibility("default")))
+    void g() {}` right after an empty-body method loses its attribute and `g` is false-flagged dead
+    (panel R75). Reattach any attribute in the prior `field_declaration` that sits AFTER its
+    declarator — the field's own (leading) attribute is before the declarator, so this can't steal
+    it. Cardinal-safe: at worst it copies an attribute onto an extra node (over-roots)."""
+    prev = node.prev_sibling
+    if prev is None or prev.type != "field_declaration":
+        return []
+    decl = next((c for c in prev.children if c.type == "function_declarator"), None)
+    if decl is None:
+        return []
+    return [src[c.start_byte:c.end_byte] for c in prev.children
+            if c.type in _C_ATTR_NODES and c.start_byte >= decl.end_byte]
+
+
+def _c_attr_roots(node, src) -> set[str]:
+    """Roots for a C/C++ function carrying a GCC/Clang/MSVC attribute that makes it an implicit
+    entry point or an exported symbol — there is no in-tree by-name caller, so without rooting it
+    (and everything its body reaches) is false-flagged dead (doc-driven, panel R73):
+      * `constructor` / `destructor` — run automatically before/after `main` by the C runtime
+        (the C analogue of a static initializer or Go `init`); the function definitely executes.
+        Rooted `callback`.
+      * `used` / `retain` — explicitly tells the compiler the symbol IS used and must be kept;
+        the use is one it can't see by name (inline asm, a linker section). Rooted `callback`.
+      * `visibility("default")` / `dllexport` — the explicit public-ABI surface (the analogue of
+        Rust `#[no_mangle]` / a `pub` item). Rooted `exported`.
+    Cardinal-safe: only ever ADDS roots, so a broad text match can over-root (mask dead code) but
+    can never flag live code dead. Visibility is matched only for `"default"` — `"hidden"` is
+    genuinely internal and must stay dead-code-eligible."""
+    texts: list[bytes] = []
+    for c in node.children:
+        if c.type in _C_ATTR_NODES:
+            texts.append(src[c.start_byte:c.end_byte])
+        elif c.type == "function_declarator":   # the GNU *trailing* form attaches to the declarator
+            texts.extend(src[g.start_byte:g.end_byte] for g in c.children if g.type in _C_ATTR_NODES)
+    texts.extend(_c_dangling_attr_texts(node, src))
+    if not texts:
+        return set()
+    blob = b" ".join(texts).decode("utf-8", "replace")
+    roles: set[str] = set()
+    # GCC accepts a `__name__` synonym for every attribute (`__constructor__`, `__used__`,
+    # `__visibility__`, …) — common in system/library headers to dodge user macros — so allow an
+    # optional `_*` around each keyword (panel R74). `_*` still can't over-match inside a longer
+    # identifier like `my_constructor_helper`: both neighbours stay word chars, so no `\b` exists.
+    #   * constructor/destructor — runtime-invoked around main; used/retain — explicitly kept;
+    #     section — placed in a custom linker section (initcall tables, …), reached by the linker
+    #     not by name; interrupt/interrupt_handler/signal/signal_handler — an ISR invoked by the
+    #     hardware vector table (embedded C: ARM/MIPS/m68k `interrupt`/`interrupt_handler`, AVR
+    #     `signal`), never by an in-tree call. The explicit `(?:_handler)?` is required because the
+    #     `_*\b` synonym handling covers underscores AROUND a keyword (`__interrupt__`) but not a
+    #     trailing word like `_handler` (after `interrupt`, the `_` is a word char so `\b` fails).
+    #     All implicit entry points -> callback.
+    if re.search(r"\b_*(?:constructor|destructor|used|retain|section"
+                 r"|interrupt(?:_handler)?|signal(?:_handler)?)_*\b", blob):
+        roles.add("callback")
+    #   * visibility("default")/dllexport — public ABI; weak — a linker-visible (overridable)
+    #     symbol callable from outside the tree. -> exported.
+    if re.search(r"\b_*(?:dllexport|weak)_*\b", blob) \
+            or re.search(r"\b_*visibility_*\s*\(\s*\"default\"", blob):
+        roles.add("exported")
+    return roles
+
+
+# An `alias("target")` / `ifunc("resolver")` attribute names ANOTHER in-tree function that the
+# linker/loader reaches through this symbol — `void old() __attribute__((alias("new")))` keeps
+# `new` live; `__attribute__((ifunc("res")))` keeps the resolver `res` live. The attributed symbol
+# is itself usually a body-less declaration (no node), but the named target has a real definition
+# with no by-name caller and is otherwise flagged dead (panel R74). Text-scanned like EXPORT_SYMBOL
+# — the name in the string literal isn't a call expression in the grammar.
+_C_ALIAS_RE = re.compile(rb"_*(?:alias|ifunc)_*\s*\(\s*\"([A-Za-z_]\w*)\"")
+
+
+def _c_alias_target_names(src: bytes) -> set[str]:
+    """Function names kept live as the target of a C/C++ `alias(...)` / `ifunc(...)` attribute."""
+    return {m.decode("ascii", "ignore") for m in _C_ALIAS_RE.findall(src)}
+
+
+# An export attribute on a function/method *declaration* (`visibility("default")` / `dllexport`).
+_C_EXPORT_ATTR_RE = re.compile(r"\b_*dllexport_*\b|\b_*visibility_*\s*\(\s*\"default\"")
+
+
+def _c_export_decl_names(root, src: bytes) -> set[str]:
+    """Simple names of C/C++ functions/methods *declared* (body-less) with an export attribute —
+    `__attribute__((visibility("default"))) int Widget::compute(int);` in a header, or the same on
+    an in-class member declaration. The export attribute commonly lives on the **header
+    declaration** while the out-of-line definition in the `.cpp` carries none, so the definition has
+    no in-tree caller and is false-flagged dead (panel R77 F2). Collected project-wide (declaration
+    and definition live in different files) and used to root the matching definition by name — the
+    C/C++ analogue of Python's project-wide `__all__`; cardinal-safe (over-roots a homonym only in
+    the safe direction). Gated by a cheap byte test in the caller so the AST walk is skipped on the
+    vast majority of files."""
+    names: set[str] = set()
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in ("declaration", "field_declaration"):
+            if any(c.type in _C_ATTR_NODES
+                   and _C_EXPORT_ATTR_RE.search(src[c.start_byte:c.end_byte].decode("utf-8", "replace"))
+                   for c in n.children):
+                # Reuse the definition-side name extraction so the collected name MATCHES the
+                # node id exactly. `_name_of` descends the declarator-wrapper chain (pointer/
+                # reference/array-return), so a `char* W::make(int)` header export is collected as
+                # `make` and roots its out-of-line def — the direct-child-only scan missed this and
+                # left a pointer/reference-returning export false-flagged dead (panel R78, cardinal).
+                # Guard on an actual function_declarator so a plain exported *variable* adds nothing.
+                if _has_function_declarator(n):
+                    nm = _name_of(n, src)
+                    if nm:
+                        names.add(nm)
+        elif n.type in ("class_specifier", "struct_specifier"):
+            # A C++ class/struct carrying a *class-level* export attribute — `class
+            # __attribute__((visibility("default"))) Foo {…}` / `__declspec(dllexport)` — exports
+            # its whole PUBLIC interface, so every public method is public ABI even with no
+            # per-method attribute. Their out-of-line definitions carry no attribute and otherwise
+            # false-flag dead at 0.6 (panel R80 F1, cardinal). Collect the public method names;
+            # private members aren't ABI and stay dead-code-eligible. `struct` defaults to public,
+            # `class` to private.
+            if any(c.type in _C_ATTR_NODES
+                   and _C_EXPORT_ATTR_RE.search(src[c.start_byte:c.end_byte].decode("utf-8", "replace"))
+                   for c in n.children):
+                names |= _c_public_method_names(n, src)
+        stack.extend(n.children)
+    return names
+
+
+def _c_public_method_names(class_node, src: bytes) -> set[str]:
+    """Public/protected method names in a C++ class/struct body (for a class-level export attr).
+    Covers all three member shapes: a declared-only method (`field_declaration`), an INLINE-defined
+    method (`function_definition` — body written in the class), and a templated method
+    (`template_declaration`, descended into) — the last two parse differently and a field-only scan
+    missed them, leaving inline/templated public methods false-flagged dead at 0.6 (panel R81,
+    cardinal). `protected` is included: for an exported class it is reachable by out-of-tree
+    subclasses (extensibility ABI). `private` is internal and excluded. `struct` defaults public,
+    `class` private."""
+    body = next((c for c in class_node.children if c.type == "field_declaration_list"), None)
+    if body is None:
+        return set()
+    names: set[str] = set()
+    exported = class_node.type == "struct_specifier"   # struct defaults public; class private
+    for c in body.children:
+        if c.type == "access_specifier":
+            txt = src[c.start_byte:c.end_byte]
+            exported = b"public" in txt or b"protected" in txt
+            continue
+        if not exported:
+            continue
+        member = c
+        if c.type == "template_declaration":   # templated member: the fn is nested one level down
+            member = next((g for g in c.children
+                           if g.type in ("function_definition", "field_declaration", "declaration")),
+                          None)
+        if member is not None \
+                and member.type in ("field_declaration", "function_definition", "declaration") \
+                and _has_function_declarator(member):
+            nm = _name_of(member, src)
+            if nm:
+                names.add(nm)
+    return names
+
+
+def _has_function_declarator(node) -> bool:
+    """True if `node`'s declarator chain reaches a `function_declarator` — i.e. it declares a
+    function/method, not a variable. Descends the pointer/reference/array-return wrappers."""
+    decl = node.child_by_field_name("declarator")
+    while decl is not None:
+        if decl.type == "function_declarator":
+            return True
+        decl = decl.child_by_field_name("declarator") \
+            or next((c for c in decl.children if c.type in _DECLARATOR_WRAPPERS), None)
+    return False
 
 
 def _has_public(node, src) -> bool:
@@ -1730,6 +2954,16 @@ def _has_public(node, src) -> bool:
                 and "public" in _text(c, src):
             return True
         if c.type == "public":
+            return True
+    return False
+
+
+def _is_java_native(node, src) -> bool:
+    """A Java `native` method declaration (JNI entry point). The `native` keyword lives in the
+    method's `modifiers` child; match it as a whitespace-delimited token so an annotation like
+    `@Native`/`@NativeFoo` can't trigger it. Cardinal-safe: callers only add a root."""
+    for c in node.children:
+        if c.type in ("modifiers", "modifier") and "native" in _text(c, src).split():
             return True
     return False
 
