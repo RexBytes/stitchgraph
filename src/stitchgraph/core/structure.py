@@ -179,6 +179,18 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
                 g.link(ev(ch, ctrl), n, _DATA)
         return n
 
+    def read_target(t: ast.AST, ctrl: int | None) -> int | None:
+        # Read a target's CURRENT value-producer with LOAD semantics. An AugAssign
+        # (`x += e`) semantically reads x, combines with e, writes back — so the read
+        # edge must reach the BINOP. But a bare Name target has ctx=Store, and ev()
+        # gates Name on Load, returning None and silently dropping that edge — which
+        # made `x += e` diverge from `x = x + e` (the documented temp-var-factoring
+        # invariance). Attribute/Subscript targets already read correctly via ev (their
+        # ev branches aren't ctx-gated), so only the bare Name needs the load lookup.
+        if isinstance(t, ast.Name):
+            return env[t.id] if t.id in env else freevar(t.id)
+        return ev(t, ctrl)
+
     def do(s: ast.stmt, ctrl: int | None) -> None:
         if isinstance(s, ast.Assign):
             val = ev(s.value, ctrl)
@@ -189,7 +201,7 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
                 bind(s.target, ev(s.value, ctrl))
         elif isinstance(s, ast.AugAssign):
             n = g.add("BINOP:" + type(s.op).__name__)
-            g.link(ev(s.target, ctrl), n, _DATA)
+            g.link(read_target(s.target, ctrl), n, _DATA)
             g.link(ev(s.value, ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
             bind(s.target, n)

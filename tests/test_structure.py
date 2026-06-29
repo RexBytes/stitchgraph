@@ -102,6 +102,35 @@ def test_reordered_independent_blocks_are_order_invariant():
     assert _sim(REORDER, "interleave_a", REORDER, "interleave_b") >= 0.99
 
 
+def test_augassign_equals_explicit_rebind():
+    # R162 (opus, MEDIUM): `x += e` semantically reads x, so its value-flow graph must match
+    # `x = x + e`. A bare Name target has ctx=Store; the walker used to ev() it (Name gated on
+    # Load -> None) and silently drop the read edge, making the accumulator idiom diverge (0.50).
+    aug = ("def f(items):\n    total = 0\n    for item in items:\n"
+           "        total += item.cost\n    return total\n")
+    explicit = ("def f(items):\n    total = 0\n    for item in items:\n"
+                "        total = total + item.cost\n    return total\n")
+    assert _sim(aug, "f", explicit, "f") >= 0.99
+
+
+def test_augassign_attribute_and_subscript_targets_match_explicit():
+    # The Attribute/Subscript target paths were already correct (their ev branches aren't
+    # ctx-gated); pin them so the Name fix doesn't regress the consistency it restores.
+    assert _sim("def f(o):\n    o.x += 1\n", "f", "def f(o):\n    o.x = o.x + 1\n", "f") >= 0.99
+    assert _sim("def f(d, k):\n    d[k] += 1\n", "f",
+                "def f(d, k):\n    d[k] = d[k] + 1\n", "f") >= 0.99
+
+
+def test_augassign_read_edge_carries_signal():
+    # The read-edge fix must not over-merge into a no-op. An accumulator that READS itself
+    # (`total += x`, a BINOP folding in the prior total) is a different value-flow shape from one
+    # that OVERWRITES (`total = x`, no read of total). The restored read edge is what separates
+    # them; without it both would collapse. This pins that the edge actually carries signal.
+    accumulate = ("def f(xs):\n    total = 0\n    for x in xs:\n        total += x\n    return total\n")
+    overwrite = ("def f(xs):\n    total = 0\n    for x in xs:\n        total = x\n    return total\n")
+    assert _sim(accumulate, "f", overwrite, "f") < 1.0
+
+
 def test_self_similarity_is_one():
     fp = _fps(CLONES)["sum_even_squares"]
     assert abs(structure.similarity(fp, fp) - 1.0) < 1e-9
