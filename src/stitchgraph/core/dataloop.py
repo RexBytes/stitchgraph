@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from ._scc import tarjan_scc
 from .model import NodeKind, Relation
 from .store import Store
 
@@ -42,43 +43,7 @@ def find_data_loops(store: Store) -> list[list[str]]:
 
 
 def _tarjan(adj: dict[str, list[str]]) -> list[list[str]]:
-    index: dict[str, int] = {}
-    low: dict[str, int] = {}
-    on_stack: set[str] = set()
-    stack: list[str] = []
-    counter = [0]
-    out: list[list[str]] = []
+    # Seed the SCC walk from the adjacency keys (every other node is reached by recursion);
+    # size the recursion-limit raise by the full node population (keys + destinations).
     nodes = list(adj.keys()) + [d for ds in adj.values() for d in ds]
-
-    import sys
-    _old_limit = sys.getrecursionlimit()  # restore in finally (panel QQQ LOW: don't leak
-    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))  # a raised limit to the host)
-
-    def strongconnect(v: str) -> None:
-        index[v] = low[v] = counter[0]
-        counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in adj.get(v, ()):
-            if w not in index:
-                strongconnect(w)
-                low[v] = min(low[v], low[w])
-            elif w in on_stack:
-                low[v] = min(low[v], index[w])
-        if low[v] == index[v]:
-            comp: list[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                comp.append(w)
-                if w == v:
-                    break
-            out.append(comp)
-
-    try:
-        for v in list(adj.keys()):
-            if v not in index:
-                strongconnect(v)
-    finally:
-        sys.setrecursionlimit(_old_limit)
-    return out
+    return tarjan_scc(adj, list(adj.keys()), len(nodes))

@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable
 
+from ._scc import tarjan_scc
 from .model import Edge, Relation
 from .store import Store
 
@@ -125,45 +126,8 @@ def strongly_connected_components(
     """Tarjan SCC over the given relations. Components of size > 1 (or a self-loop)
     are cycles — circular dependencies / recursion (design §6.C/F)."""
     adj = _adjacency(store, relations)
-    index: dict[str, int] = {}
-    low: dict[str, int] = {}
-    on_stack: set[str] = set()
-    stack: list[str] = []
-    counter = [0]
-    out: list[list[str]] = []
     nodes = store.all_node_ids()
-
-    import sys
-    _old_limit = sys.getrecursionlimit()  # restore in finally (panel QQQ LOW: don't leak
-    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))  # a raised limit to the host)
-
-    def strongconnect(v: str) -> None:
-        index[v] = low[v] = counter[0]
-        counter[0] += 1
-        stack.append(v)
-        on_stack.add(v)
-        for w in adj.get(v, ()):
-            if w not in index:
-                strongconnect(w)
-                low[v] = min(low[v], low[w])
-            elif w in on_stack:
-                low[v] = min(low[v], index[w])
-        if low[v] == index[v]:
-            comp: list[str] = []
-            while True:
-                w = stack.pop()
-                on_stack.discard(w)
-                comp.append(w)
-                if w == v:
-                    break
-            out.append(comp)
-
-    try:
-        for v in nodes:
-            if v not in index:
-                strongconnect(v)
-    finally:
-        sys.setrecursionlimit(_old_limit)
+    out = tarjan_scc(adj, nodes, len(nodes))
     # Keep only genuine cycles: multi-node components or self-loops.
     _rels = {r.value for r in relations}
     self_loops = {src for src, rel, dst, _w in store.iter_resolved()
