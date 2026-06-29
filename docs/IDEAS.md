@@ -152,3 +152,23 @@ i.e. a genuine **MAJOR / v3.0.0** release, and it's the natural home for:
   streaming indexer — needs a budget/opt-in), the **cardinal rule** (data-flow soundness is much
   harder; it must never let `find_stale` under-root), and 12-language breadth (Python-first;
   per-language CFG/DFG is a large surface). Prototype + validate in `research/` first.
+
+### 5c. Tag the matrix by granularity layer (the layered / Code-Property-Graph design)
+When the deeper granularity (§5b) is promoted, do NOT build a second, separate graph. Carry a
+**granularity/layer tag** on nodes and edges so all layers coexist in one matrix and a consumer
+picks the depth:
+
+- **call layer** (shipped): `NodeKind` (Module/Class/Function/Method/Variable) + `Relation`
+  (CALLS/REFERENCES/INHERITS/IMPORTS). The class-level + function call-surface view.
+- **statement layer**: control + data dependence between statements within a function (the PDG).
+- **expression / value-flow layer**: operations and the values flowing between them (what
+  `core/structure.py` fingerprints today, computed on demand).
+
+Tagging (a `layer` field, analogous to how `Relation`/`provenance` already qualify edges) lets the
+same primitives work at any depth: `get_matrix`/`graph_diff` default to the call layer (cheap,
+whole-repo) and **drill down** into a function's value-flow layer on request; clone/redundancy and
+plan-vs-actual checks choose the layer that fits. This is the Code-Property-Graph pattern (AST +
+CFG + PDG in one graph distinguished by edge/level tags). Maintainer idea (2026-06-29). Open design
+qs: persist deep layers in the store vs compute on demand (scale — the body layers are large and
+fight the streaming indexer, so on-demand-per-function is the likely default); how `provenance`/
+cardinal rules apply per layer (deeper = less sound → advisory-only until proven).
