@@ -47,3 +47,12 @@ Full suite — 575 tests (PROMPT_COMMAND bare / quoted-multi / `export` forms ro
 non-`PROMPT_COMMAND` var assignment does not; a genuinely-unused function still flags) + ruff +
 mypy clean; differential oracle suite (27) green; mutation meta-oracle on `_bash_prompt_command_ref`
 (4/4 killed). CI green across all four jobs (test 3.11 / 3.12 / lint / core-only).
+
+Two-round full-diversity multi-model adversarial review (opus / sonnet / haiku), clean in both
+rounds (readiness R147–R148 → RELEASABLE): end-to-end additivity proof (rooting is append-only and
+no-ops on unresolved names, so it cannot under-root or abort), `PROMPT_COMMAND`-only scoping,
+crash-free on array / empty / non-UTF-8 / `${…}` / heredoc / comment / append values, real
+prompt-framework idioms (starship-style dispatcher, `${PROMPT_COMMAND:+…}` preserve-existing),
+cross-language isolation, streaming==in-memory + dogfood parity, prior bash fixes intact, no metric
+inflation. One cardinal-safe note: the `PROMPT_COMMAND+=fn` append form is not yet rooted (a rare
+under-rooting, filed as a deferred recall follow-up).

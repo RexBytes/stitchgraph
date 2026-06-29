@@ -12,9 +12,9 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`_bash_time_target` killed; `_bash_export_decl` functional behavior pinned) ✅ · oracles 27 ✅ · no-open-defects ✅ |
 | Tests | 571 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.1.29: Python abstract/Protocol interface methods → R140✓ R141✓. 2.1.30: C/C++ struct-used-as-a-type → R142✓ R143✓. 2.1.31: Bash function-export recall → R144 (2 cardinals found, fixed) → **R145✓ R146✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
+| Convergence | 2.1.30: C/C++ struct-used-as-a-type → R142✓ R143✓. 2.1.31: Bash function-export recall → R144 (2 cardinals found, fixed) → R145✓ R146✓. 2.2.1: Bash `PROMPT_COMMAND=fn` hook (#95) → **R147✓ R148✓ full-diversity (streak 2, gate met, readiness RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
-| Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). One newly-discovered pre-existing recall gap filed for later: Bash `PROMPT_COMMAND=fn` / `var=fn; $var` indirect invocation not rooted. |
+| Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
 ## Trajectory
 
@@ -1642,6 +1642,25 @@ places the exporting flag after the name, so the recall is complete, not just pa
 seen. With this, the post-sweep follow-up backlog (#70–#89) is closed: #70/#74/#76/#78/#86/#89/#73
 fixed behind the full gate; the remainder resolved without code change, documented as deliberate
 cardinal-safe boundaries, or coverage-only.
+
+### 2.2.1 — Bash `PROMPT_COMMAND=fn` hook recall (#95)
+
+A function registered via `PROMPT_COMMAND=fn` (also `="fn1; fn2"` / `export PROMPT_COMMAND=fn`) is
+run by the interactive shell before each prompt — a runtime hook with no textual call site — so it
+was false-flagged dead. `_bash_prompt_command_ref` now roots the function name(s) in a
+`PROMPT_COMMAND` assignment; scoped to that well-known variable, cardinal-safe (only a name that
+resolves to a project function is rooted). The generic `var=fn; $var` indirection and the
+`PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R147 | 3 | ✓ | round 1. opus: end-to-end additivity proof (append-only into `calls`→`_ref`, no-ops on unresolved names, cannot under-root/abort), `PROMPT_COMMAND`-only scoping, crash-free on array/empty/expansion/append values, parity. sonnet: chained-dotfile + full v2.1.x bash coexistence + hoisting/reset precision, 79/79 bash tests. haiku: 7 core + 15 crash cases, 466 tests. |
+| R148 | 3 | ✓ | round 2 — **streak 2, gate met, RELEASABLE.** opus: 4-level PROMPT_COMMAND-only chain live, no crash on array/non-UTF-8/`${:-}`/heredoc/comment/PC-named-fn, prior bash fixes intact, no metric inflation, parity. sonnet: starship-style dispatcher + `${PROMPT_COMMAND:+…}` preserve-existing, cross-language isolation (bash `render` rooted, same-named Python `render` stays dead), multi-file sourced-hook, exact precision; 575/575. haiku: downstream ops crash-free, idempotent, 18KB/50-fn stress. |
+
+A process note worth recording: 2.2.1 initially shipped on the deterministic gate alone (ruff/mypy/
+pytest/oracles/mutation + both-directions regression) — the two-round panel was added retroactively
+when the maintainer asked whether it had run. The bar is *two clean full-diversity panels per
+code-changing release*; an additive cardinal-safe recall fix is not an exemption from it.
 
 ## Standing themes
 
