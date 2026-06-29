@@ -312,6 +312,12 @@ def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 out[prefix + child.name] = fingerprint(child)
                 visit(child, prefix + child.name + ".")
+            else:
+                # descend through control-flow / expression nodes at the SAME qual level — control
+                # flow adds no qualname level, matching the extractor (python.py). Without this, a
+                # def nested in if/for/while/with/try (e.g. `if TYPE_CHECKING:`, lazy imports) is
+                # skipped and becomes invisible to find_similar(structure) / graph_diff (panel R155).
+                visit(child, prefix)
 
     visit(tree, "")
     return out

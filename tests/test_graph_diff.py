@@ -198,6 +198,19 @@ def test_operation_handles_db_path_with_uri_reserved_chars(tmp_path):
     assert res.result["equivalent"]
 
 
+def test_body_diff_catches_control_flow_nested_def_change(tmp_path):
+    # R155 (opus): a body change to a def nested in a control-flow block must be caught, not
+    # silently swallowed (qualname "outer.inner", no control-flow qual level).
+    plan = {"m.py": "def outer(c):\n    if c:\n        def inner(x):\n            return x + 1\n"
+                    "        return inner(c)\n    return 0\n"}
+    actual = {"m.py": "def outer(c):\n    if c:\n        def inner(x):\n            return x - 1\n"
+                      "        return inner(c)\n    return 0\n"}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", actual)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert any(c["name"] == "outer.inner" for c in d["body_changed"]), d["body_changed"]
+
+
 def test_operation_diffs_against_a_db_path(tmp_path):
     # build two on-disk indexes; graph_diff op takes a path to the 'other' db
     other_db = tmp_path / "other.db"

@@ -183,6 +183,30 @@ def test_fingerprint_trivial_function_does_not_crash():
     assert isinstance(fp, collections.Counter)
 
 
+def test_control_flow_nested_defs_are_fingerprinted():
+    # R155 (opus): defs inside if/try/for/with must be fingerprinted (qualname has no control-flow
+    # level, matching the extractor), else they're invisible to find_similar/graph_diff.
+    src = '''
+import typing
+def f(c):
+    if typing.TYPE_CHECKING:
+        def g(x):
+            return x + 1
+    try:
+        def h(y):
+            return y * 2
+    except Exception:
+        pass
+    for _ in range(c):
+        def k(z):
+            return z - 3
+'''
+    fps = _fps(src)
+    assert "f.g" in fps
+    assert "f.h" in fps
+    assert "f.k" in fps
+
+
 def test_trystar_body_not_dropped():
     # R153 (sonnet N1): except* (PEP 654) must be walked like try/except, not silently skipped.
     src = '''
