@@ -79,7 +79,8 @@ def _id_fingerprints(store: Store) -> dict[str, collections.Counter[str]]:
 def graph_diff(store_a: Store, store_b: Store, mode: str = "id",
                body: bool = True, body_threshold: float = 0.95) -> dict:
     """Structural diff of two indexes. Returns a dict with located node/edge deltas and (when
-    ``body`` and there are Python functions in common) the functions whose body shape diverged."""
+    ``body`` and there are Python or JS/TS functions in common) the functions whose body shape
+    diverged."""
     na, nb = _node_keys(store_a, mode), _node_keys(store_b, mode)
     ea, eb = _edge_keys(store_a, mode), _edge_keys(store_b, mode)
     nodes_only_a, nodes_only_b = _counter_delta(na, nb)

@@ -103,8 +103,10 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
 
     mode="semantic" (default): token/dense similarity over name + docstring + callees — uses the
     dense embedder if one is registered (or model2vec auto-loads), else token cosine.
-    mode="structure": body-shape similarity (`structure.py`) — ranks stored Python functions by
-    how structurally like the snippet's function they are. Python-only, advisory.
+    mode="structure": body-shape similarity (`structure.py` for Python, `structure_js.py` for
+    JS/TS/TSX) — ranks stored functions by how structurally like the snippet's function they are.
+    Advisory; the snippet's language is auto-detected and ranked same-language only (JS/TS needs the
+    tree-sitter extra).
     """
     if mode == "structure":
         return find_similar_structure(store, snippet, limit)

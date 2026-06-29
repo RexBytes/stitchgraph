@@ -105,7 +105,7 @@ import stitchgraph as sg
 
 with sg.Store("stitchgraph.db") as store:
     sg.reindex(store, "src")
-    # rank stored Python functions by body shape (renamed/reordered clones)
+    # rank stored functions by body shape (renamed/reordered clones; Python or JS/TS)
     print(sg.find_similar(store, open("some_func.py").read(), mode="structure"))
     # body-aware structural diff against another built index
     print(sg.graph_diff(store, "other_index.db"))   # body-aware by default
