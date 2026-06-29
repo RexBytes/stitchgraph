@@ -9031,3 +9031,51 @@ def test_bash_export_decl_split_flag_unit():
     assert names(b"typeset -f -x c\n") == {"c"}
     assert names(b"declare -f -r d\n") == set()     # f but no x -> nothing
     assert names(b"declare -x -r e\n") == set()     # x but no f -> nothing
+
+
+# -- #95 (Bash): PROMPT_COMMAND=fn runtime hook -------------------------------
+@pytest.mark.parametrize("assign", [
+    "PROMPT_COMMAND=hook",
+    'PROMPT_COMMAND="hook"',
+    "export PROMPT_COMMAND=hook",
+])
+def test_bash_prompt_command_hook_rooted(tmp_path, assign):
+    """#95: a function registered via `PROMPT_COMMAND=fn` is run by the interactive shell before
+    each prompt — a runtime hook with no textual call site — so it was false-flagged dead. Scoped to
+    the well-known PROMPT_COMMAND variable; cardinal-safe (only roots a name that is a project fn)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "hook() { history -a; }\n"
+        + assign + "\n"
+        "dead() { echo d; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "hook" not in stale, "a PROMPT_COMMAND hook function must be live"
+        assert "dead" in stale, "a genuinely-unused function must still flag dead"
+
+
+def test_bash_prompt_command_multi_and_precision(tmp_path):
+    """#95: a quoted multi-command PROMPT_COMMAND roots each function token; a plain non-PROMPT_COMMAND
+    variable holding a function name does NOT root it (the generic var=fn;$var indirection is a
+    documented deferred gap, kept out so the fix stays bounded to the well-known hook)."""
+    pytest.importorskip("tree_sitter")
+    pytest.importorskip("tree_sitter_language_pack")
+    _mk(tmp_path, {"s.sh": (
+        "#!/usr/bin/env bash\n"
+        "track_one() { echo 1; }\n"
+        "track_two() { echo 2; }\n"
+        'PROMPT_COMMAND="track_one; track_two"\n'
+        "other=some_fn\n"               # NOT PROMPT_COMMAND -> not rooted by this fix
+        "some_fn() { echo s; }\n"
+        "main() { echo m; }\nmain\n"
+    )})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "track_one" not in stale and "track_two" not in stale
+        assert "some_fn" in stale, "a non-PROMPT_COMMAND var assignment must not root the function"

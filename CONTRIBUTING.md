@@ -159,6 +159,57 @@ The maintainer tags/releases manually; the version reads `1.0.0` only at that po
 
 ---
 
+## The cardinal-hardening loop (dogfood + docs)
+
+The whole v2.1.x → v2.2.0 hardening line — the per-language cardinal sweep plus the #70–#89
+follow-up backlog — was driven by one repeatable loop. If you're extending stitchgraph to a new
+idiom, language, or framework, run *this*, not ad-hoc guessing:
+
+**The one invariant everything serves:** *live code is never confidently flagged dead.* Reporting a
+**live** symbol as dead — a "cardinal" — is the single failure that destroys trust in a dead-code
+tool: once it happens, users stop believing any finding. So the bias is fixed and asymmetric:
+
+- **Under-rooting (a live symbol with no root/edge → flagged dead) is the cardinal sin.** Never ship it.
+- **Over-rooting (a genuinely-dead symbol kept alive) is SAFE** — it only lowers dead-code recall.
+  When unsure whether something is reachable, root it.
+
+**The loop:**
+
+1. **Dogfood on real repos to surface cases.** Index real-world projects (we used cobra, tokio,
+   rxjs, Magento, the Linux kernel, …) and read what `find_stale` flags. A *live* symbol in the
+   flagged set is a cardinal — that's your lead. Synthetic tests won't find these; real idioms do.
+2. **Read the actual language/framework docs to find ground truth.** Don't guess *why* it's live —
+   look up how the runtime actually invokes it: the ECMAScript spec (well-known Symbols, `get`/`set`,
+   `toJSON`), the Bash manual (`declare -fx`, `trap`, `PROMPT_COMMAND`), JNI, `#[ctor]`, C++
+   range-`for` customization points, the CPython data model (dunders), pytest's hook-discovery rules.
+   The docs tell you the *exact* form to root, so you root the right thing instead of pattern-matching
+   noise.
+3. **Reduce to a minimal scratchpad fixture** that reproduces the false-dead in isolation (the
+   smallest file where a live symbol is flagged), and confirm it via `reindex` + `find_stale`.
+4. **Fix by adding a root (or edge), never by removing one.** Prefer the additive direction — an
+   additive root *cannot* introduce a cardinal, only over-root. Mirror an existing rooting pass
+   (`EXPORT_SYMBOL` text-scan, `_bash_callback_refs`, the `callback`/`exported` role unions) rather
+   than inventing a mechanism.
+5. **Gate it** (`ruff` + `mypy` + full `pytest` + the differential streaming oracle + a mutation
+   meta-oracle on the new helper) and add a regression test that pins **both** directions: the live
+   symbol is now live **and** a genuinely-dead sibling still flags (the precision guard — this is how
+   you prove you didn't just blanket-root).
+6. **Adversarially review** with the multi-model panel (below). For a cardinal fix, run two
+   consecutive clean full-diversity rounds; for a clearly-additive, cardinal-safe recall fix a lighter
+   pass is acceptable — but always include the "does a genuinely-dead symbol still flag?" probe.
+7. **If tightening would risk the invariant, don't — document it instead.** Several #70–#89 items
+   (e.g. `_framework_classes` name-collision over-masking, the one-word `trap` reset, the broad Go
+   selector rooting) are *over*-rooting. "Fixing" them means un-masking, which risks a cardinal, so
+   they're left as deliberate cardinal-safe boundaries recorded in `LIMITATIONS.md` /
+   `REVIEW_HISTORY.md`. A documented safe boundary beats a precise-but-dangerous change.
+
+The payoff compounds: real repos tell you *where* live code is mis-flagged; the docs tell you *what's
+truly invoked*; the additive-only discipline guarantees each fix can't regress the invariant; and the
+panels catch the spellings your first fix missed (e.g. `declare -f -x` split flags, `as const`-wrapped
+exports). That's the engine — reuse it.
+
+---
+
 ## White-box symmetry closure (do this *before* the panel, not after)
 
 The multi-model panel is **black-box**: it samples a structured space and keeps
