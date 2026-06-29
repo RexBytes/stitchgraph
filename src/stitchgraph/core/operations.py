@@ -649,7 +649,10 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True)
     # breaking the read-only-on-other-files promise. The probe also turns a corrupt file into a
     # Result instead of a raw sqlite3 traceback (panel R153 F1/F2).
     try:
-        probe = sqlite3.connect(f"file:{other_db}?mode=ro", uri=True)
+        # as_uri() percent-encodes the path, so a filename containing URI-reserved chars (?, #)
+        # isn't mis-parsed as a query/fragment and falsely refused (panel R154 LOW).
+        probe_uri = Path(other_db).resolve().as_uri() + "?mode=ro"
+        probe = sqlite3.connect(probe_uri, uri=True)
         try:
             root_row = probe.execute("SELECT value FROM meta WHERE key='root'").fetchone()
         finally:

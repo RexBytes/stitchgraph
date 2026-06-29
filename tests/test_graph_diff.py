@@ -182,6 +182,22 @@ def test_empty_body_function_not_flagged_against_itself(tmp_path):
     assert d["equivalent"]
 
 
+def test_operation_handles_db_path_with_uri_reserved_chars(tmp_path):
+    # R154 (opus LOW): a valid index whose filename contains ?/# must not be misparsed by the
+    # read-only URI probe and falsely refused.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "m.py").write_text("def f(x):\n    return x + 1\n")
+    weird = tmp_path / "weird?x#y.db"
+    other = sg.Store(str(weird))
+    sg.reindex(other, str(tmp_path / "src"))
+    other.close()
+    cur = sg.Store(":memory:")
+    sg.reindex(cur, str(tmp_path / "src"))
+    res = sg.graph_diff(cur, str(weird), mode="id")
+    assert res.ok, res.review_reasons
+    assert res.result["equivalent"]
+
+
 def test_operation_diffs_against_a_db_path(tmp_path):
     # build two on-disk indexes; graph_diff op takes a path to the 'other' db
     other_db = tmp_path / "other.db"
