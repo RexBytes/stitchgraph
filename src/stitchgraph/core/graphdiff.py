@@ -45,8 +45,9 @@ def _edge_keys(store: Store, mode: str) -> collections.Counter[tuple[str, str, s
     out: collections.Counter[tuple[str, str, str]] = collections.Counter()
     for e in store.resolved_edges():
         rel = getattr(e.relation, "value", str(e.relation))
-        src = names.get(e.src, e.src)
-        dst = names[e.dst_id] if e.dst_id in names else (e.dst_symbol or "")
+        src = names.get(e.src) or e.src
+        resolved = names.get(e.dst_id) if e.dst_id else None
+        dst = resolved or e.dst_symbol or ""
         if mode == "id":
             out[(src, rel, dst)] += 1
         else:

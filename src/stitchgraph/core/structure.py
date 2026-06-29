@@ -281,9 +281,10 @@ def fingerprint(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> collections.Count
 
 
 def similarity(a: collections.Counter[str], b: collections.Counter[str]) -> float:
-    """Cosine similarity of two fingerprints, in [0.0, 1.0]. 1.0 = identical structure."""
-    if not a or not b:
-        return 0.0
+    """Cosine similarity of two fingerprints, in [0.0, 1.0]. 1.0 = identical structure.
+    An empty fingerprint has norm 0, so the `na and nb` guard returns 0.0 for it — no separate
+    empty check needed (and that guard prevents the division-by-zero a one-sided norm would cause).
+    """
     keys = set(a) | set(b)
     dot = sum(a[k] * b[k] for k in keys)
     na = sum(v * v for v in a.values()) ** 0.5

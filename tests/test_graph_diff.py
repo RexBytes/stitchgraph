@@ -79,6 +79,84 @@ def test_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
     assert not d["equivalent"]
 
 
+def test_leaf_helper_normalises_ctor_only():
+    # _leaf reduces to the name tail and canonicalises constructor spellings, nothing else.
+    assert graphdiff._leaf("Box.__init__") == "<init>"
+    assert graphdiff._leaf("Widget.constructor") == "<init>"
+    assert graphdiff._leaf("pkg.sub.helper") == "helper"
+    assert graphdiff._leaf("a/m.py::run") == "run"
+    assert graphdiff._leaf("helper") == "helper"  # a non-ctor name is returned as-is
+    assert graphdiff._leaf("") == ""
+
+
+def test_leaf_mode_resolves_module_path_difference(tmp_path):
+    # Module nodes are dotted (pkg_a.util vs pkg_b.util): id mode flags them as different, leaf
+    # mode (name tail "util") treats them as the same. Pins the node-key mode branch in both
+    # directions — a flipped branch would invert which mode shows the delta.
+    a = _index(tmp_path / "a", {"pkg_a/util.py": "def helper(x):\n    return x + 1\n"})
+    b = _index(tmp_path / "b", {"pkg_b/util.py": "def helper(x):\n    return x + 1\n"})
+    d_id = graphdiff.graph_diff(a, b, mode="id", body=False)
+    d_leaf = graphdiff.graph_diff(a, b, mode="leaf", body=False)
+    # id mode: the two module nodes differ by their dotted package
+    assert any("pkg_a.util" in n for n in d_id["nodes_only_a"])
+    assert any("pkg_b.util" in n for n in d_id["nodes_only_b"])
+    # leaf mode: module leaf "util" matches, helper matches -> no node deltas at all
+    assert not d_leaf["nodes_only_a"] and not d_leaf["nodes_only_b"]
+
+
+def test_leaf_mode_resolves_module_path_edges(tmp_path):
+    # An IMPORTS edge to a submodule carries the dotted package (pkg_a.util): id mode flags it as
+    # different across two packages, leaf mode reduces it to (main, IMPORTS, util) and resolves it.
+    # Pins the edge-key mode branch.
+    a = _index(tmp_path / "a", {
+        "pkg_a/__init__.py": "",
+        "pkg_a/util.py": "def helper(n):\n    return n + 1\n",
+        "pkg_a/main.py": "from pkg_a import util\n\ndef run():\n    return util.helper(1)\n",
+    })
+    b = _index(tmp_path / "b", {
+        "pkg_b/__init__.py": "",
+        "pkg_b/util.py": "def helper(n):\n    return n + 1\n",
+        "pkg_b/main.py": "from pkg_b import util\n\ndef run():\n    return util.helper(1)\n",
+    })
+    d_id = graphdiff.graph_diff(a, b, mode="id", body=False)
+    d_leaf = graphdiff.graph_diff(a, b, mode="leaf", body=False)
+    # id mode: the dotted submodule import differs between the packages
+    assert any("pkg_a.util" in e for e in d_id["edges_only_a"])
+    # leaf mode: that submodule import resolves to (main, IMPORTS, util) on both sides
+    assert not any("IMPORTS" in e and "util" in e for e in d_leaf["edges_only_a"])
+
+
+def test_body_analysis_on_by_default(tmp_path):
+    # graph_diff(...) with no body= must still run the body layer (default True). Pins the default.
+    plan = _index(tmp_path / "plan", PLAN)
+    buggy = _index(tmp_path / "buggy", BUGGY)
+    d = graphdiff.graph_diff(plan, buggy)  # no body kwarg
+    assert any(c["name"] == "score" for c in d["body_changed"])
+
+
+def test_identical_bodies_not_flagged(tmp_path):
+    # threshold direction: functions whose body is unchanged must NOT appear in body_changed.
+    a = _index(tmp_path / "a", PLAN)
+    b = _index(tmp_path / "b", PLAN)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["body_changed"] == []
+    assert d["equivalent"]
+
+
+def test_internal_call_edge_resolves_to_target_name(tmp_path):
+    # A resolved CALLS edge keys on the TARGET's node name; diffing two repos where run() calls a
+    # differently-named helper must surface that edge delta (exercises the dst resolution).
+    a = _index(tmp_path / "a", {"m.py": "def helper_a():\n    return 1\n\n"
+                                "def run():\n    return helper_a()\n"})
+    b = _index(tmp_path / "b", {"m.py": "def helper_b():\n    return 1\n\n"
+                                "def run():\n    return helper_b()\n"})
+    d = graphdiff.graph_diff(a, b, mode="id", body=False)
+    assert any("helper_a" in e for e in d["edges_only_a"])
+    assert any("helper_b" in e for e in d["edges_only_b"])
+    # the edge src is the bare node NAME ("run"), not the path-qualified id ("a/m.py::run")
+    assert any(e.startswith("('run'") for e in d["edges_only_a"])
+
+
 def test_operation_diffs_against_a_db_path(tmp_path):
     # build two on-disk indexes; graph_diff op takes a path to the 'other' db
     other_db = tmp_path / "other.db"
