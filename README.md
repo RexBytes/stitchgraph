@@ -38,7 +38,7 @@ for the agent rules that teach an LLM when to call which tool.
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v2.3.0 — shared SCC core; cardinal sweep complete across all 10 languages)
+## Status (v3.0.0 — intra-procedural body matrix for Python; cardinal sweep complete across all 10 languages)
 
 Working end-to-end and dogfooding on its own source. See
 [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
@@ -87,11 +87,16 @@ millions of edges are ever all resident at once.
   incremental updates and forward-compatible schema migration.
 - **Universal `Result` envelope** — `confidence / provenance / needs_review /
   urgency`; provenance gates the urgency ceiling.
-- **14 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
+- **15 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
   `orient`, `find_stale`, `find_holes`, `impact_of`, `trace_path`, `scan`,
   `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
-  plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
+  `graph_diff`, plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
   `report`, a `watch` command, and a `doctor` grammar self-check.
+- **Intra-procedural body matrix (Python, v3.0.0)** — a per-function value-flow fingerprint
+  (`core/structure.py`) that sees *inside* a function, not just its call edges. Powers
+  `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered / temp-var
+  clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and read-only
+  (never feeds `find_stale`); Python-only for now.
 - **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
   Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
   the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →
@@ -115,7 +120,8 @@ millions of edges are ever all resident at once.
 | `risk` | Which files are most dangerous to touch (churn × centrality × coupling)? |
 | `scan` | Give me a ranked sweep of issues across the whole repo. |
 | `summarize_subsystem` | What is this package/folder, in one shot? |
-| `find_similar` | What else looks like this (duplication / refactor targets)? |
+| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python). |
+| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + Python body-shape changes. |
 | `ingest_trace` | Fuse runtime coverage so "live" reflects what actually ran. |
 
 > Trust model: every answer carries a confidence and provenance. `find_stale` is
