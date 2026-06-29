@@ -195,9 +195,17 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return env[name] if name in env else freevar(name)
         if t in ("this", "super"):
             return freevar(t)
-        if t in ("number", "string", "template_string", "true", "false", "null", "undefined",
-                 "regex", "this_type"):
+        if t in ("number", "string", "true", "false", "null", "undefined", "regex", "this_type"):
             return g.add("CONST")
+        if t == "template_string":
+            # a template literal carries value flow through its ${…} substitutions (like an
+            # f-string); a plain template with none collapses to CONST.
+            n = g.add("CONST")
+            for sub in node.named_children:
+                if sub.type == "template_substitution":
+                    for e in sub.named_children:
+                        g.link(ev(e, ctrl), n, _DATA)
+            return n
         if t == "member_expression":
             n = g.add("ATTR")
             g.link(ev(node.child_by_field_name("object"), ctrl), n, _DATA)
