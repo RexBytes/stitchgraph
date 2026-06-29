@@ -183,6 +183,35 @@ def test_fingerprint_trivial_function_does_not_crash():
     assert isinstance(fp, collections.Counter)
 
 
+def test_match_statement_contributes_to_fingerprint():
+    # R158 (opus): match/case bodies must be walked — two functions with different case bodies
+    # must NOT fingerprint identically.
+    a = '''
+def handle(cmd):
+    match cmd:
+        case "add":
+            return register(cmd)
+        case "del":
+            return remove(cmd)
+        case _:
+            return None
+'''
+    b = '''
+def handle(cmd):
+    match cmd:
+        case "add":
+            return 0
+        case "del":
+            return 0
+        case _:
+            return 0
+'''
+    fa = structure.fingerprint_source(a)["handle"]
+    fb = structure.fingerprint_source(b)["handle"]
+    assert fa  # non-empty: the match body contributes value-flow nodes
+    assert structure.similarity(fa, fb) < 0.95  # different case bodies are not identical
+
+
 def test_deep_but_valid_expression_does_not_raise():
     # R156 (opus CRITICAL): a long `a + a + ...` chain parses fine but overflows the recursive
     # value-flow walk. fingerprint_source must degrade (return a dict), never raise RecursionError.

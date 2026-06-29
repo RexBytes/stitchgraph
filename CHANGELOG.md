@@ -40,10 +40,14 @@ in the module and `research/04-expr-dfg/FINDINGS.md`.
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **635** passing; differential oracle suite **30** (incl. a new
-  graph_diff dogfood oracle: stitchgraph's own source self-diffs to equivalent). Mutation
-  meta-oracle: `structure.similarity` 1/1 and `graphdiff` core 8/8 killed by their unit tests.
-  Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
+- ruff + mypy clean; full suite **659** passing; differential oracle suite **53** — incl. a
+  graph_diff dogfood oracle (stitchgraph's own source self-diffs to equivalent) and a **body-matrix
+  completeness oracle**: a metamorphic battery that fails if any value-bearing Python statement type
+  is dropped by the fingerprint, plus an introspective guard that fails when a future Python adds a
+  statement type — closing the one defect class adversarial review kept surfacing (`except*` →
+  control-flow defs → `match` → subscript index). Mutation meta-oracle: `structure.similarity` 1/1
+  and `graphdiff` core 8/8 killed by their unit tests. Multi-round full-diversity adversarial panel
+  (opus/sonnet/haiku).
 
 ## [2.3.0] — 2026-06-29
 

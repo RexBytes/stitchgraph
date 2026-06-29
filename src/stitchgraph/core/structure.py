@@ -133,6 +133,7 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
         if isinstance(node, ast.Subscript):
             n = g.add("SUBSCRIPT")
             g.link(ev(node.value, ctrl), n, _DATA)
+            g.link(ev(node.slice, ctrl), n, _DATA)  # the index carries value flow too (d[compute()])
             return n
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             n = g.add("SEQ")
@@ -237,13 +238,47 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
                 if isinstance(ch, ast.expr):
                     g.link(ev(ch, ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
+        elif isinstance(s, ast.Match):  # match/case (PEP 634, 3.10+)
+            subj = ev(s.subject, ctrl)
+            for case in s.cases:
+                b = g.add("CASE")
+                g.link(subj, b, _DATA)
+                g.link(ctrl, b, _CTRL)
+                for cap in _match_captures(case.pattern):  # bind capture names to the subject
+                    env[cap] = b
+                if case.guard is not None:
+                    g.link(ev(case.guard, ctrl), b, _DATA)
+                for x in case.body:
+                    do(x, b)
         elif isinstance(s, _OPAQUE):
             g.add("NESTED")
+        elif not isinstance(s, (ast.Pass, ast.Break, ast.Continue, ast.Global,
+                                ast.Nonlocal, ast.Import, ast.ImportFrom)):
+            # Generic fallback: capture value flow from any statement type not explicitly handled
+            # above, so a future syntax addition can never silently vanish from the fingerprint the
+            # way `match` once did (panel R158). The named no-value-flow statements are skipped.
+            for ch in ast.iter_child_nodes(s):
+                if isinstance(ch, ast.expr):
+                    ev(ch, ctrl)
+                elif isinstance(ch, ast.stmt):
+                    do(ch, ctrl)
         # pass / break / continue / global / nonlocal / import: no value-flow contribution
 
     for s in fn.body:
         do(s, None)
     return g
+
+
+def _match_captures(pattern: ast.AST) -> list[str]:
+    """Capture names bound by a match `case` pattern (`MatchAs`/`MatchStar`/`MatchMapping.rest`),
+    so a use of a captured name in the case body flows from the subject rather than reading FREE."""
+    names: list[str] = []
+    for node in ast.walk(pattern):
+        if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+            names.append(node.name)
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            names.append(node.rest)
+    return names
 
 
 def _all_args(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
