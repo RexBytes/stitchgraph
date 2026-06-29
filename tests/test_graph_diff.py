@@ -210,3 +210,30 @@ def test_operation_refuses_bad_mode(tmp_path):
     res = sg.graph_diff(cur, "whatever.db", mode="bogus")
     assert not res.ok
     assert "mode" in " ".join(res.review_reasons).lower()
+
+
+def test_operation_refuses_corrupt_db_without_crashing(tmp_path):
+    # R153 (sonnet F1): a real file that isn't a SQLite db must return a Result, not raise.
+    bad = tmp_path / "corrupt.db"
+    bad.write_bytes(b"this is not a sqlite database, at all\x00\x01")
+    cur = _index(tmp_path, PLAN)
+    res = sg.graph_diff(cur, str(bad))
+    assert not res.ok
+    assert "stitchgraph index" in " ".join(res.review_reasons).lower()
+
+
+def test_operation_refuses_alien_db_without_mutating_it(tmp_path):
+    # R153 (sonnet F2): a valid SQLite file that isn't a stitchgraph index must be refused AND
+    # left untouched (no migration tables added) — the read-only-on-other-files promise.
+    import sqlite3
+    alien = tmp_path / "app.db"
+    conn = sqlite3.connect(str(alien))
+    conn.execute("CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT)")
+    conn.commit()
+    conn.close()
+    before = alien.read_bytes()
+    cur = _index(tmp_path, PLAN)
+    res = sg.graph_diff(cur, str(alien))
+    assert not res.ok
+    assert "stitchgraph index" in " ".join(res.review_reasons).lower()
+    assert alien.read_bytes() == before  # not mutated — no tables added

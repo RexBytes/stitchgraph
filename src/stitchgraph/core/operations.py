@@ -633,6 +633,7 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True)
     *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
     tracks the extractor). With `body`, Python functions present in both whose *body shape* diverged
     are listed too. Advisory and read-only; never edits source, never feeds find_stale."""
+    import sqlite3
     from pathlib import Path
 
     from . import graphdiff as gd
@@ -643,6 +644,21 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True)
         return refuse("mode must be 'id' or 'leaf'", confidence=0.0)
     if not Path(other_db).is_file():
         return refuse(f"no index database at '{other_db}'", confidence=0.0)
+    # Validate it's a real stitchgraph index via a READ-ONLY probe *before* constructing a Store —
+    # Store() runs CREATE TABLE migrations, which would add tables to (mutate) an alien sqlite file,
+    # breaking the read-only-on-other-files promise. The probe also turns a corrupt file into a
+    # Result instead of a raw sqlite3 traceback (panel R153 F1/F2).
+    try:
+        probe = sqlite3.connect(f"file:{other_db}?mode=ro", uri=True)
+        try:
+            root_row = probe.execute("SELECT value FROM meta WHERE key='root'").fetchone()
+        finally:
+            probe.close()
+    except sqlite3.Error:
+        return refuse(f"'{other_db}' is not a readable stitchgraph index", confidence=0.0)
+    if root_row is None:
+        return refuse(f"'{other_db}' does not look like a stitchgraph index (no indexed root)",
+                      confidence=0.0)
     other = Store(other_db)
     try:
         d = gd.graph_diff(store, other, mode=mode, body=bool(body))

@@ -183,6 +183,21 @@ def test_fingerprint_trivial_function_does_not_crash():
     assert isinstance(fp, collections.Counter)
 
 
+def test_trystar_body_not_dropped():
+    # R153 (sonnet N1): except* (PEP 654) must be walked like try/except, not silently skipped.
+    src = '''
+def with_star(items):
+    try:
+        for x in items:
+            handle(x)
+    except* ValueError:
+        cleanup()
+'''
+    fp = _fps(src)["with_star"]
+    # the try body (the for-loop + calls) must contribute, so the fingerprint is non-trivial
+    assert sum(fp.values()) > 5
+
+
 def test_async_function_supported():
     src = '''
 async def fetch_a(client):

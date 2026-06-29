@@ -225,7 +225,7 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
                     bind(item.optional_vars, v)
             for x in s.body:
                 do(x, ctrl)
-        elif isinstance(s, ast.Try):
+        elif isinstance(s, (ast.Try, ast.TryStar)):  # TryStar = except* (PEP 654, 3.11+)
             for x in s.body + s.orelse + s.finalbody:
                 do(x, ctrl)
             for h in s.handlers:
