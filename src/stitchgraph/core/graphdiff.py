@@ -84,9 +84,10 @@ def graph_diff(store_a: Store, store_b: Store, mode: str = "id",
         fa, fb = _id_fingerprints(store_a), _id_fingerprints(store_b)
         for nid in sorted(set(fa) & set(fb)):
             # Identical fingerprints are unchanged — skip BEFORE the similarity guard. This avoids
-            # the empty-body trap: a `pass`/`...`/docstring-only function has an empty fingerprint
-            # and similarity(empty, empty)==0.0 (zero-norm), which would otherwise flag an
-            # unchanged stub as "changed" against itself.
+            # the stub trap: a `pass`-only body has an EMPTY fingerprint and similarity(empty,
+            # empty)==0.0 (zero-norm), which would otherwise flag an unchanged stub as "changed"
+            # against itself. (`...`/docstring-only bodies have a tiny CONST fingerprint, not empty,
+            # but this equality pre-check handles every unchanged function the same way regardless.)
             if fa[nid] == fb[nid]:
                 continue
             sim = structure.similarity(fa[nid], fb[nid])
