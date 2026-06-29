@@ -104,6 +104,36 @@ live was confidently flagged dead:
   dynamic `obj["k"]()` / `obj[expr]()` subscript. Cardinal-safe (only adds a root); a plain
   by-name method that is genuinely uncalled still flags dead.
 
+## [2.2.0] — 2026-06-29
+
+**Milestone release — the cardinal sweep is complete across all ten supported languages, and the
+post-sweep precision/recall follow-up backlog (#70–#89) is closed.** A consolidation of the
+2.1.1–2.1.31 hardening line into one minor release. No API or schema change; indexes rebuild cleanly
+and `find_stale` output is strictly more precise than 2.1.0 (fewer false-positive dead-code reports).
+
+The guiding invariant throughout: **live code is never confidently flagged dead.** Every fix in this
+line either removes a way live code could be reported dead (a "cardinal") or improves dead-code recall
+without ever risking that invariant; each shipped behind the full gate (ruff + mypy + the differential
+streaming oracle + a mutation meta-oracle) and two consecutive clean full-diversity multi-model
+adversarial review rounds.
+
+### Highlights since 2.1.0
+
+- **Per-language cardinal sweep (2.1.1–2.1.26)** — one gated cardinal fix per language across Python,
+  JS/TS, Go, Rust, C/C++, C#, Java, PHP, Ruby, and Bash: framework/attribute classes, runtime/FFI
+  and native entry points, test-runner discovery, indirect/dynamic dispatch (Ruby `&:sym`, JS
+  well-known Symbols + accessors + coercion hooks), C/C++ macro-body and function-pointer-table call
+  sites, Java overload/role unions and anonymous-inner-class overrides, and more.
+- **Post-sweep follow-up backlog #70–#89 (2.1.27–2.1.31)** — JS/TS shorthand members of exported
+  objects incl. `as const`/`satisfies` (#74); TS `#private` via `this.#m()` and string/computed/
+  numeric-keyed class methods (#76/#78); Python subscripted-`Protocol[T]`/ABC recognition and bodyless
+  abstract interface methods (#70/#86); C/C++ structs used only as a type (#89); Bash `declare -fx` /
+  `declare -f -x` / `typeset -fx` exports and `time { … }` targets (#73). The remaining items were
+  resolved without code change as deliberate, panel-confirmed cardinal-safe boundaries, or are
+  coverage-only.
+
+The granular per-version entries below remain as the detailed development record.
+
 ## [2.1.27] — 2026-06-28
 
 **JS/TS shorthand member of an exported object literal — cardinal fix (#74).**
