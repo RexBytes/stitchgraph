@@ -1,0 +1,66 @@
+# Findings — graph-diff oracle prototype
+
+**Role:** the shared primitive behind questions **#2** (translate a codebase) and **#3**
+(matrix-first development). Both reduce to the same operation: *given two indexes, where do
+their graphs differ?* — translation fidelity is "does B preserve A's structure?", plan-vs-actual
+is "does the built graph match the planned one?".
+
+**Date:** 2026-06-29  ·  **Files:** `graphdiff.py` (primitive), `demo.py` (3 scenarios)
+
+## What it does
+
+A symmetric, *located* structural diff between two stitchgraph snapshots, in two modes:
+
+- **id mode** — compares node identities `(kind, qualified-name)` and edges keyed by
+  `(src-name, relation, dst-name)`. Exact; for same-codebase / same-language comparisons.
+- **leaf mode** — compares node *shapes* `(kind, leaf-name)` and edges keyed by
+  `(relation, src-leaf, dst-leaf)`. For cross-language comparisons where module paths and
+  qualified names differ but the call/def shape should survive.
+
+Every delta carries the node/edge it concerns, so a human/LLM can act on it.
+
+## Demo results (all reproduce via `python research/graphdiff/demo.py`)
+
+| Scenario | Mode | Expected | Result |
+|---|---|---|---|
+| 1. same source indexed twice | id | empty | **EQUIVALENT ✓** (no phantom deltas) |
+| 2. drop a call + rename a fn | id | locate both | flagged `helper→compute` rename **and** the dropped `run→log` edge, exactly |
+| 3a. literal Py→JS translation | id | (coincidental match) | equivalent — top-level names coincide |
+| 3b. literal Py→JS translation | leaf | shape preserved | **EQUIVALENT ✓** — call shape survives the language hop |
+| 3c. *restructured* Py→JS (fn→class method) | id | noisy | located `validate`→`Validator`+`validate-method`, new `main→Validator` |
+| 3d. *restructured* Py→JS | leaf | locate real delta | same — and critically, the *preserved* `validate→parse` / `main→validate` edges are **not** flagged |
+
+The headline is **3d**: when a translation restructures `validate()` into `Validator.validate()`,
+the oracle flags exactly that (one fn becomes a class+method, one new construction edge) while
+correctly reporting the unchanged call shape as unchanged. That is the "matrix as oracle, not
+generator" thesis working: the LLM writes the translation; this primitive *verifies* what survived.
+
+## Honest limits (the §2 caveat, made concrete)
+
+- **3a is a coincidence, not a triumph.** id mode matched only because both toys use bare
+  top-level names. Real cross-language translation diverges in qualified names *and* in extractor
+  depth (Python's `ast` is deeper than the JS tree-sitter grammar), so id mode is the wrong tool
+  cross-language — use leaf mode and read deltas as *candidates*, not verdicts.
+- **Extractor asymmetry is a confound, not signal.** A non-empty leaf-mode diff between two
+  languages mixes genuine translation differences with extractor differences. The oracle therefore
+  answers "did the shape change?" with a *located* delta list a human triages — it never asserts
+  "the translation is wrong." This is exactly the §2 finding (topology tracks the extractor)
+  encoded as a usage rule.
+- **Set/multiset keys lose order and control flow.** Two functions that call the same helpers in
+  a different order/branching read as equivalent. Sufficient for an oracle; insufficient as proof.
+
+## Verdict & path to `src/`
+
+The primitive is sound and the baseline guard (scenario 1 empty) makes it safe to build on.
+**It is the right thing to promote** — it is the verifier half of both #2 and #3. Before promotion
+it needs, per the project's own bar:
+
+1. a real home + API (`sg.graph_diff(a, b, mode=...) -> Result`-shaped, with confidence/provenance);
+2. the full release gate (ruff/mypy + pytest + a *new differential oracle*: `diff(idx, idx)` is
+   empty for every language in the corpus — the streaming-vs-inmemory oracle already proves the
+   inputs are deterministic, so this is cheap);
+3. a two-round full-diversity adversarial panel, same as every cardinal fix.
+
+Recommended next research step before promotion: run leaf-mode diff on a *real* known translation
+pair (e.g. a small library that exists in both Python and JS) to measure the genuine
+delta-to-noise ratio, so the promoted op ships with an honest precision number.

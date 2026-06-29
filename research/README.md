@@ -103,3 +103,50 @@ pip install -e '.[all,dev]'
 python research/archetype_fingerprint.py      # §2 spike
 python research/risk_centrality_check.py      # §1 spike (defaults to this repo)
 ```
+
+---
+
+# Matrix-as-oracle thread (2026-06-29, post-v2.2.1)
+
+A second research push, asking whether the *structural matrix itself* can do generative-adjacent
+work. Three questions, framed by one thesis and one prior result.
+
+**Thesis — matrix as oracle, not generator.** stitchgraph's matrices encode **structure**
+(topology, coupling, call shape), not **semantics**. So the matrix should never *write* code — but
+it can **plan** structure and **verify** structure. The LLM supplies meaning; the matrix proposes
+candidates and checks that the result has the intended shape. Every output stays advisory and
+confidence-carrying, exactly as the cardinal stance demands.
+
+**Prior result that constrains everything here — the §2 finding (above):** graph *topology* tracks
+the **language/extractor**, not application function. Anything cross-language must treat raw
+topology as a *candidate signal a human triages*, never as proof. This is why the questions below
+split cleanly into "same-language (sound)" and "cross-language (oracle-only)".
+
+| # | Question | Verdict | Where |
+|---|---|---|---|
+| 1 | Can the matrix surface **reducible / redundant code**? | **Strongest — real.** Within one language the structural matrix finds mergeable code a token-differ misses (callee-fingerprint clones). Needs IDF-weighting to cut hub-callee noise. | `01-structural-redundancy/` |
+| 2 | Can it drive **translation** (e.g. Rust→JS)? | **Reframed: scaffold + verifier, not translator.** The matrix can't translate (it has no semantics), but graph-diff in *leaf mode* verifies a translation preserved the call/def shape. Cross-language confounded by extractor asymmetry → oracle, not proof. | `graphdiff/` |
+| 3 | Is **matrix-first development** faster for an LLM? | **Reframed: plan + verify spine.** The valuable artifact is a graph-diff between *planned* structure and *built* structure — the LLM proposes a graph, builds, and the diff is the located gap. | `graphdiff/` |
+
+**The unifying primitive is the graph-diff oracle** (`graphdiff/`). Both #2 (translation fidelity)
+and #3 (plan-vs-actual) reduce to "where do two graphs differ?". It is prototyped here, demoed
+(empty-baseline guard + located-delta cases + cross-language leaf-mode), and is the **planned
+promotion to `src/`** — *after* research, and only through the full gate + two-round adversarial
+panel, like every other change. See `graphdiff/FINDINGS.md` for the path-to-`src/` checklist.
+
+### Layout
+- `01-structural-redundancy/` — `experiment.py` + `FINDINGS.md` (question #1, run on this repo).
+- `graphdiff/` — `graphdiff.py` (the oracle primitive), `demo.py` (3 scenarios), `FINDINGS.md`
+  (questions #2 & #3, + promotion checklist).
+
+### Run
+```bash
+PYTHONPATH=src python research/01-structural-redundancy/experiment.py   # Q1, defaults to src/stitchgraph
+PYTHONPATH=src:research/graphdiff python research/graphdiff/demo.py     # Q2/Q3 oracle demo
+```
+
+> **▶ RESUME HERE (parked 2026-06-29):** (a) add IDF callee-weighting to experiment 01 and validate
+> against a real "extract-helper" commit from git history; (b) run graph-diff leaf mode on a *real*
+> Python↔JS translation pair to get an honest delta-to-noise number; (c) then promote `graph_diff`
+> to `src/` as `sg.graph_diff(...) -> Result`, add a `diff(idx, idx)==∅` differential oracle per
+> language, and run the two-round full-diversity panel before any release.
