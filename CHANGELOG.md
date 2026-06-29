@@ -134,6 +134,14 @@ adversarial review rounds.
 
 The granular per-version entries below remain as the detailed development record.
 
+### CI / tests
+
+- Guarded 14 pre-existing tree-sitter-dependent regression tests with
+  `pytest.importorskip(...)` so the **core-only (no-extras)** CI job skips them cleanly instead of
+  erroring. (They had been latently unguarded since the cardinal sweep but were never surfaced
+  because CI had never actually executed — Actions was blocked by a $0 spending budget until the
+  repository was made public.) Test-only; no behavior change with the extras installed.
+
 ## [2.1.27] — 2026-06-28
 
 **JS/TS shorthand member of an exported object literal — cardinal fix (#74).**
