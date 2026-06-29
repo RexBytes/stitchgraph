@@ -14,8 +14,10 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from pathlib import Path
 
+from . import structure
 from .model import NodeKind, Relation
 from .store import Store
 
@@ -95,12 +97,17 @@ def _node_tokens(store: Store, node, callees: dict[str, list[str]]) -> list[str]
     return toks
 
 
-def find_similar(store: Store, snippet: str, limit: int = 10) -> list[tuple[str, float]]:
+def find_similar(store: Store, snippet: str, limit: int = 10,
+                 mode: str = "semantic") -> list[tuple[str, float]]:
     """Return [(node_id, score)] most similar to the snippet, best first.
 
-    Uses the dense embedder if one is registered (or model2vec auto-loads), else
-    falls back to token cosine — identical interface, better ranking with a model.
+    mode="semantic" (default): token/dense similarity over name + docstring + callees — uses the
+    dense embedder if one is registered (or model2vec auto-loads), else token cosine.
+    mode="structure": body-shape similarity (`structure.py`) — ranks stored Python functions by
+    how structurally like the snippet's function they are. Python-only, advisory.
     """
+    if mode == "structure":
+        return find_similar_structure(store, snippet, limit)
     limit = max(0, limit)  # a negative limit must bound to nothing, not slice from the end
     callees: dict[str, list[str]] = {}
     for edge in store.resolved_edges(Relation.CALLS):
@@ -140,3 +147,48 @@ def _dot_cos(a, b) -> float:
     na = math.sqrt(sum(x * x for x in a)) or 1.0
     nb = math.sqrt(sum(y * y for y in b)) or 1.0
     return dot / (na * nb)
+
+
+def _python_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored Python function/method.
+
+    Node ids are `path::qualname` and node files are relative to the indexed root (stored as
+    meta), so we read each Python file once, fingerprint all its functions, and map back by the
+    qualname in the id — the same qualname scheme `structure.fingerprint_source` produces. Files
+    that moved/can't be read are skipped (advisory, never raises)."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or not path.endswith(".py"):
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
+def find_similar_structure(store: Store, snippet: str,
+                           limit: int = 10) -> list[tuple[str, float]]:
+    """Rank stored Python functions/methods by *structural* (body-shape) similarity to the
+    snippet, which must be Python function source. Advisory and Python-only; empty if the snippet
+    has no parseable function. The largest function in the snippet is used as the query."""
+    limit = max(0, limit)
+    q_fps = structure.fingerprint_source(snippet)
+    if not q_fps:
+        return []
+    query = max(q_fps.values(), key=lambda c: sum(c.values()))
+    scored = [(nid, structure.similarity(query, fp))
+              for nid, fp in _python_fn_fingerprints(store)]
+    scored = [s for s in scored if s[1] > 0]
+    scored.sort(key=lambda kv: kv[1], reverse=True)
+    return scored[:limit]

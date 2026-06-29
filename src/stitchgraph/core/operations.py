@@ -595,9 +595,12 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
 
 
 @operation("Find code most similar to a snippet (where's the code that does X).")
-def find_similar(store: Store, snippet: str, limit: int = 10) -> Result:
-    """Semantic-ish retrieval over the graph (design §1). Ranks functions/methods/
-    classes by token similarity (name + docstring + callees) to the snippet."""
+def find_similar(store: Store, snippet: str, limit: int = 10,
+                 mode: str = "semantic") -> Result:
+    """Semantic-ish retrieval over the graph (design §1). mode="semantic" (default) ranks
+    functions/methods/classes by token similarity (name + docstring + callees) to the snippet;
+    mode="structure" ranks stored *Python* functions by body-shape similarity (structure.py) to
+    the snippet's function — language-agnostic of names, advisory, Python-only."""
     from . import similar
 
     # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
@@ -608,10 +611,14 @@ def find_similar(store: Store, snippet: str, limit: int = 10) -> Result:
         return refuse("snippet must be a string", confidence=0.0)
     if not isinstance(limit, int) or isinstance(limit, bool):
         return refuse("limit must be an integer", confidence=0.0)
-    matches = similar.find_similar(store, snippet, limit)
+    if mode not in ("semantic", "structure"):
+        return refuse("mode must be 'semantic' or 'structure'", confidence=0.0)
+    matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
-        return refuse("no similar code found (or snippet had no usable tokens)",
-                      confidence=0.0)
+        hint = ("no structurally-similar Python function found (snippet must be Python "
+                "function source; structure mode is Python-only)" if mode == "structure"
+                else "no similar code found (or snippet had no usable tokens)")
+        return refuse(hint, confidence=0.0)
     payload = [{"id": nid, "score": round(s, 3)} for nid, s in matches]
     top = matches[0][1]
     return ok(payload, confidence=min(top + 0.3, 0.9),
