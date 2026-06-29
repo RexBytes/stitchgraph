@@ -104,6 +104,34 @@ live was confidently flagged dead:
   dynamic `obj["k"]()` / `obj[expr]()` subscript. Cardinal-safe (only adds a root); a plain
   by-name method that is genuinely uncalled still flags dead.
 
+## [2.2.1] — 2026-06-29
+
+**Bash `PROMPT_COMMAND` hook recall (#95) + contributor methodology docs.** A small patch on top of
+the v2.2.0 milestone. No API or schema change.
+
+### Fixed
+
+- **#95** — a function registered via `PROMPT_COMMAND=fn` (also `PROMPT_COMMAND="fn1; fn2"` and
+  `export PROMPT_COMMAND=fn`) is run by the interactive shell before each prompt — a runtime hook
+  with no textual call site — so it was false-flagged dead. `_bash_callback_refs` now roots the
+  function name(s) in a `PROMPT_COMMAND` assignment. Scoped to that well-known variable (high
+  precision); cardinal-safe (only a name that resolves to a project function is rooted). The generic
+  `var=fn; $var` indirection remains a documented deferred dynamic-dispatch gap.
+
+### Docs
+
+- `CONTRIBUTING.md` gains **"The cardinal-hardening loop (dogfood + docs)"** — the repeatable method
+  behind the v2.1.x→v2.2.0 line: dogfood real repos to surface false-deads, read the language/runtime
+  docs to find the exact form that's actually invoked, fix additively (an added root can't introduce
+  a cardinal), gate + pin both directions, and document over-rooting boundaries rather than risk the
+  invariant by tightening them.
+
+### Issue triage
+
+- GitHub issues #18–#22 (filed against v1.0.4) were verified already fixed in the shipped code
+  (`--version`, `risk` indexed-root default, `[project.scripts]` roots, bash top-level body seeding,
+  `find_holes` scope documented) and can be closed.
+
 ## [2.2.0] — 2026-06-29
 
 **Milestone release — the cardinal sweep is complete across all ten supported languages, and the

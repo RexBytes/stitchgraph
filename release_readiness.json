@@ -1771,6 +1771,26 @@
             ],
             "findings": {},
             "theme": "v2.1.31 (#73) fresh round 2 \u2014 CLEAN, second consecutive full-diversity \u2192 gate met, RELEASABLE. CLOSES the #70-#89 follow-up backlog. opus: comprehensive single script (every bash rooting mechanism at once) flags exactly the dead set; interaction (exported+called, trap+timed) no double-issue; cross-file sourced-lib liveness; 10-file dogfood streaming==in-memory parity; subtle under-rooting probe (`time { m1; m2; }` \u2014 m2 still live via normal call edges, time helper is additive belt-and-suspenders); deferrals (#72/#84/#79/#82) re-confirmed cardinal-safe; 571 tests. sonnet: 7 fixtures + 4 edge probes (over-rooting guard, time arg non-collection). haiku: 571+27, downstream ops + idempotency + 2000-fn stress, additive-only."
+        },
+        {
+            "id": "R147",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.2.1 (#95) round 1 \u2014 CLEAN, full diversity. Bash PROMPT_COMMAND=fn hook rooting. opus: end-to-end additivity proof (_bash_prompt_command_ref is append-only into calls -> _ref, which no-ops on unresolved names via `if not cands: return`; mutually-exclusive elif branch, can't perturb trap/complete/time/export handling; cannot under-root or abort), correct PROMPT_COMMAND-only scoping (MY_PROMPT/lowercase don't root), crash-free on array/empty/expansion/append values, streaming==in-memory + dogfood parity. sonnet: realistic chained-dotfile, full v2.1.x bash coexistence, hoisting/reset precision, 79/79 bash regression tests. haiku: 7 core + 15 crash-robustness cases (unicode/long/malformed), bash-only, 466 tests. Cardinal-safe note: PROMPT_COMMAND+=fn append form not yet rooted (rare, under-rooting, documented follow-up)."
+        },
+        {
+            "id": "R148",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.2.1 (#95) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus (manufacture-a-cardinal angle): 4-level PROMPT_COMMAND-only private chain fully live; no crash on array/empty/non-UTF-8/${:-default}/heredoc/comment/PROMPT_COMMAND-named-fn; prior bash fixes intact (declare -f -x, nested time { { } }, trap-in-fn); no metric inflation (get_matrix/scan fine, hook not a god-object); streaming==in-memory + dogfood parity. sonnet (real frameworks + isolation): starship-style dispatcher + ${PROMPT_COMMAND:+...} preserve-existing form, cross-language isolation (bash render rooted, same-named Python render stays dead), multi-file sourced-hook liveness, exact precision (5 dead flag, nothing more); 575/575. haiku: full suite + oracles, downstream ops crash-free on hook node, reindex idempotent, 18KB/50-fn/30-reassignment stress no crash."
         }
     ]
 }

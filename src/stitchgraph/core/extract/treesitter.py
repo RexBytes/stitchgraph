@@ -2197,10 +2197,35 @@ def _bash_callback_refs(root, src):
                     _bash_time_target(c, cn, src, out)
             elif c.type == "declaration_command":
                 _bash_export_decl(c, src, out)   # `export -f FUNC` (parses as a declaration)
+            elif c.type == "variable_assignment":
+                _bash_prompt_command_ref(c, src, out)  # `PROMPT_COMMAND=fn` hook
             rec(c)
 
     rec(root)
     return out
+
+
+_BASH_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _bash_prompt_command_ref(assign, src, out):
+    """`PROMPT_COMMAND=fn` (or `="fn1; fn2"`, `export PROMPT_COMMAND=fn`) registers a function the
+    interactive shell runs before EACH prompt — a runtime hook with no textual call site, so a
+    function used only this way was false-flagged dead (#95). Scoped to the well-known variable
+    name `PROMPT_COMMAND` (high precision); collect every identifier token in its value so `_ref`
+    roots the ones that name a project function (cardinal-safe — a non-matching token roots
+    nothing). The generic `var=fn; $var` indirection stays a documented dynamic-dispatch gap."""
+    name = assign.child_by_field_name("name")
+    if name is None or _text(name, src) != "PROMPT_COMMAND":
+        return
+    val = assign.child_by_field_name("value")
+    if val is None:
+        return
+    # A bare word (`PROMPT_COMMAND=fn`) or a quoted string (`="track; log"`) — scan the raw value
+    # text for identifier tokens; rooting by name keeps it safe (only real functions match).
+    text = _text(val, src)
+    for m in _BASH_IDENT_RE.finditer(text):
+        out.append((m.group(0), val.start_point[0] + 1))
 
 
 def _bash_command_words(call, cn, src):
