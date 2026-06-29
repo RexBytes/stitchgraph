@@ -144,18 +144,22 @@ lives:
 |---|---|---|
 | call graph (shipped) | defs ↔ defs | `01-structural-redundancy/` |
 | **body matrix** (normalised AST token sequence) | statements inside a function | `02-body-matrix/` |
-| **PDG** (control + data-dependence matrix, WL-fingerprinted) | statement dependence | `03-pdg/` |
-| full CFG/DFG/SSA (future) | basic blocks, expression-level def-use | deferred ("variable-granularity data flow" → **v3.0.0**) |
+| **stmt-PDG** (control + data-dependence matrix, WL-fingerprinted) | statement dependence | `03-pdg/` |
+| **expr-DFG** (value flow between operations, copy-propagated) | expression dependence | `04-expr-dfg/` |
+| full CFG/DFG/SSA (future) | basic blocks, φ-nodes, alias analysis | deferred ("variable-granularity data flow" → **v3.0.0**) |
 
 **Key results:** experiment 01 (call graph) returned a confident *negative* on this repo; experiment
 02 (body matrix) found a **real** cross-module duplication the call graph is blind to — a
 byte-identical Tarjan SCC core in `dataloop._tarjan` and `reach.strongly_connected_components`
-(verified by reading both). Experiment 03 (PDG) **independently re-finds the same Tarjan dup** by
+(verified by reading both). Experiment 03 (stmt-PDG) **independently re-finds the same Tarjan dup** by
 *dependence structure* (cross-validation), renders the literal dependence matrix of a function, and
-wins cleanly on reordered code (order-invariant) — but honestly *loses* to the AST-token fingerprint
-on temp-variable refactors, so it is complementary, not a free upgrade. Matrixifying function
-*contents* is the stronger redundancy signal and the substrate for the **v3.0.0** higher-granularity
-feature (see `docs/IDEAS.md` §5).
+wins cleanly on reordered code — but *loses* on temp-variable refactors. Experiment 04 (expr-DFG)
+folds temp variables away with copy propagation and is the **only** level that gets all three
+fixture cases right (temp-var clone ✓, reordered clone ✓, unrelated low ✓). Folding that value-flow
+fingerprint back into the graph-diff oracle (`graphdiff/structure_diff.py`) gives the **Q3 spine**: a
+plan-vs-actual diff that catches a data-flow bug *inside* a function whose call graph is unchanged.
+Matrixifying function *contents* is the stronger redundancy/fidelity signal and the substrate for the
+**v3.0.0** higher-granularity feature (see `docs/IDEAS.md` §5).
 
 ### Layout
 - `01-structural-redundancy/` — `experiment.py` (call-graph clones) + `experiment_idf.py`
@@ -165,8 +169,11 @@ feature (see `docs/IDEAS.md` §5).
 - `03-pdg/` — `pdg.py` (control+data-dependence matrix, WL-kernel fingerprint, renders the
   matrix) + `fixtures/pdg_clones.py` + `FINDINGS.md` (order-invariant win; honest temp-var loss;
   independently re-finds the Tarjan dup).
-- `graphdiff/` — `graphdiff.py` (the oracle primitive), `demo.py` (3 scenarios),
+- `04-expr-dfg/` — `expr_dfg.py` (expression-level value flow with copy propagation; head-to-head
+  vs the coarser levels) + `FINDINGS.md` (only level that gets all three fixtures right).
+- `graphdiff/` — `graphdiff.py` (the call-level oracle primitive), `demo.py` (3 scenarios),
   `measure_translation.py` + `fixtures/calc_{py,js}/` (real Py↔JS twin: 100% leaf-mode recall),
+  `structure_diff.py` (body-aware diff = expr-DFG folded in; the Q3 plan-vs-actual result),
   `FINDINGS.md` (questions #2 & #3, + promotion checklist).
 
 ### Run

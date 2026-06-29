@@ -61,6 +61,31 @@ writes the JS, this primitive confirms the call graph it produced matches the Ru
 The complementary harder case (a *restructured* translation) is demo scenario 3c/3d, where the
 oracle instead *locates* the genuine structural change.
 
+## Body-aware diff — folding the PDG in (the Q3 result; `structure_diff.py`)
+
+The call-level diff above answers "same defs, same call edges?". It is blind to *how* each function
+is implemented. `structure_diff.py` adds the missing dimension: for every function present on both
+sides, it compares the **expression-level value-flow fingerprint** (experiment 04) and flags bodies
+whose shape diverged even when the call graph did not.
+
+Demo — a *plan* vs two builds:
+
+| comparison | call-level oracle | body-aware oracle |
+|---|---|---|
+| plan vs faithful build | EQUIVALENT ✓ | all 3 bodies match ✓ |
+| plan vs **buggy** build | **EQUIVALENT ✓** | **`score()` body CHANGED (0.63)** |
+
+The buggy build has an identical call graph — `score` still calls `heavy` twice and `combine` once —
+but a data-flow bug: the second `heavy()` is fed `a` instead of `b`, so `b` no longer flows into the
+result. The call-level oracle cannot see this (the call multiset is unchanged); the body-aware
+oracle locates the exact offending function.
+
+**This is the Q3 spine.** "Matrix-first development" = the LLM proposes a structure, builds, and the
+diff is the located gap between planned and actual — and the gap that matters is usually *inside* a
+function, not in which functions/calls exist. The call graph alone cannot make that check; the
+value-flow matrix can. (Same engine doubles as a stronger Q2 translation-fidelity check for
+same-language refactors; cross-language stays call-level, since expr-DFG is Python-only for now.)
+
 ## Honest limits (the §2 caveat, made concrete)
 
 - **3a is a coincidence, not a triumph.** id mode matched only because both toys use bare
