@@ -18,6 +18,29 @@ See [`docs/design.md`](docs/design.md) for the full design & capability map,
 [`docs/STATUS.md`](docs/STATUS.md) for what's built, and [`AGENTS.md`](AGENTS.md)
 for the agent rules that teach an LLM when to call which tool.
 
+## What it delivers
+
+Point it at a repo and ask plain questions about it. Every answer is ranked and rides a
+**confidence + a reason to double-check** — so you (or an LLM) know how much to trust it.
+
+- **What's dead?** — `find_stale`: likely-unused code, precision-biased so it never confidently
+  flags *live* code dead (the cardinal rule).
+- **What breaks if I change this?** — `impact_of`: everything reachable / at risk downstream.
+- **How does a request flow end-to-end?** — `trace_path`: UI → route → handler → ORM → SQL table →
+  column, *across languages*.
+- **Where's the code that does X?** — `find_similar`: by name/docs (semantic) or, new in v3.0.0, by
+  **body shape** (finds renamed / reordered clones a text search misses).
+- **How do two builds differ?** — `graph_diff`: call-level deltas **plus** Python body-shape
+  changes, so a data-flow bug that leaves the call graph identical still shows up.
+- **I'm new here — orient me.** — `orient` / `summarize_subsystem` / `risk`: central modules, entry
+  points, and the files most dangerous to touch.
+- **What's referenced but missing?** — `find_holes`: dangling references that don't resolve.
+
+It runs **fully local** against a plain SQLite index (no code leaves your machine), spans **12
+languages** in one graph, and exposes the same operations as a **library, a CLI, and an MCP server**
+for LLM agents. The full operation list and the question each answers is in the table
+[below](#what-each-operation-answers).
+
 ## Why stitchgraph
 
 - **Local-first & private.** Everything runs on your machine against a plain
