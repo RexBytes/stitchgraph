@@ -34,20 +34,63 @@ for the agent rules that teach an LLM when to call which tool.
 - **Polyglot, in one graph.** Python (deep) + 11 more languages via tree-sitter,
   plus cross-language resolvers, all resolving into a single typed graph — so a
   trace can cross an HTML form → route → handler → ORM → SQL table → column.
+- **Sees inside functions, not just between them.** v3.0.0's **body matrix**
+  (Python) fingerprints each function's value flow order- and name-invariantly, so
+  `find_similar(mode="structure")` catches renamed / reordered clones and
+  `graph_diff` flags a data-flow change that leaves the call graph identical —
+  advisory and read-only, never feeding dead-code detection.
 - **Scales to monorepos.** The v2 **constant-memory streaming indexer** indexes
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.0.0 — intra-procedural body matrix for Python; cardinal sweep complete across all 10 languages)
+## Status (v3.0.0 — intra-procedural body matrix for Python)
 
-Working end-to-end and dogfooding on its own source. See
-[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
+Working end-to-end and dogfooding on its own source. The per-language **cardinal
+sweep is complete across all supported languages** (Python + 11 via tree-sitter),
+and v3.0.0 adds the body matrix on top. See [`docs/STATUS.md`](docs/STATUS.md) for
+the full table + roadmap.
 
-### Headline: the streaming indexer (GB → MB)
+### Headline (v3.0.0): the intra-procedural body matrix (Python)
 
-The big v2 change. `reindex` can now stream the graph straight to SQLite instead
-of building it all in Python first, so peak memory tracks one file's working set
-— **not** the size of the whole repo.
+Every prior release modeled code *between* definitions — a graph of functions /
+classes linked by CALLS / REFERENCES / INHERITS / IMPORTS. **v3.0.0 adds the level
+below that:** a per-Python-function **value-flow fingerprint**
+(`core/structure.py`) — operations + control points, data + control edges, copy
+propagation — fingerprinted **order- and name-invariantly** via a Weisfeiler-Lehman
+kernel. Renamed locals, reordered independent statements, and temp-variable
+factoring all read as the *same shape*. It powers two new advisory capabilities:
+
+- **`find_similar(mode="structure")`** — rank stored Python functions by **body
+  shape**, finding renamed / reordered / temp-var clones (Type-2/Type-3) a token
+  differ misses.
+- **body-aware `graph_diff`** — structurally diff two built indexes: call-level
+  node/edge deltas *plus*, for Python functions in both, those whose **body shape
+  diverged** — so a data-flow change that leaves the call graph identical (the
+  classic translation / plan-vs-actual bug) is still caught.
+
+Both are **advisory and read-only** — they never feed `find_stale`, so the
+cardinal rule is structurally unaffected. Python-only for now (built on the deep
+stdlib `ast`); extending the matrix to the tree-sitter languages is future work
+(`docs/IDEAS.md` §5). It is a structural *approximation*, not sound data flow —
+full scope and limits in
+[`docs/RELEASE_NOTES_v3.0.0.md`](docs/RELEASE_NOTES_v3.0.0.md).
+
+```python
+import stitchgraph as sg
+
+with sg.Store("stitchgraph.db") as store:
+    sg.reindex(store, "src")
+    # rank stored Python functions by body shape (renamed/reordered clones)
+    print(sg.find_similar(store, open("some_func.py").read(), mode="structure"))
+    # body-aware structural diff against another built index
+    print(sg.graph_diff(store, "other_index.db"))   # body-aware by default
+```
+
+### Scale (v2): the streaming indexer (GB → MB)
+
+`reindex` can stream the graph straight to SQLite instead of building it all in
+Python first, so peak memory tracks one file's working set — **not** the size of
+the whole repo.
 
 Measured on a Magento module (`lib/`, 4,304 PHP files → 30,412 nodes, ~15.5M raw
 edges from name-based fan-out):
