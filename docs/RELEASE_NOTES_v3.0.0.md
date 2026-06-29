@@ -39,8 +39,8 @@ Structurally diff this index against **another built index** (a stitchgraph `.db
   The headline: a data-flow bug that leaves the **call graph identical** is invisible to the
   call-level diff but caught here.
 
-Exposed on the library API (`sg.graph_diff`), the CLI (`--other-db / --mode / --body`), and the MCP
-tool schema.
+Exposed on the library API (`sg.graph_diff`), the CLI (`graph-diff OTHER_DB --mode / --body /
+--body-threshold`), and the MCP tool schema.
 
 ## Cardinal-safety & scope
 

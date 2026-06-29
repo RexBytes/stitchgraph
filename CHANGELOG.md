@@ -30,7 +30,7 @@ v2.3.0 `tarjan_scc` dedup).
   cross-codebase shape) plus, for Python functions in both, those whose *body shape* changed —
   the translation-fidelity / plan-vs-actual signal. A data-flow bug that leaves the call graph
   identical is invisible to the call-level diff but caught by the body layer. Exposed on the
-  library API, CLI (`--other-db/--mode/--body`), and MCP. The `other_db` file is treated as strictly
+  library API, CLI (`graph-diff OTHER_DB --mode/--body/--body-threshold`), and MCP. The `other_db` file is treated as strictly
   read-only — it is validated by a read-only probe and diffed over a temporary copy, so a valid but
   older-schema index is never migrated/mutated on disk.
 
