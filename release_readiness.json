@@ -1791,6 +1791,53 @@
             ],
             "findings": {},
             "theme": "v2.2.1 (#95) round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus (manufacture-a-cardinal angle): 4-level PROMPT_COMMAND-only private chain fully live; no crash on array/empty/non-UTF-8/${:-default}/heredoc/comment/PROMPT_COMMAND-named-fn; prior bash fixes intact (declare -f -x, nested time { { } }, trap-in-fn); no metric inflation (get_matrix/scan fine, hook not a god-object); streaming==in-memory + dogfood parity. sonnet (real frameworks + isolation): starship-style dispatcher + ${PROMPT_COMMAND:+...} preserve-existing form, cross-language isolation (bash render rooted, same-named Python render stays dead), multi-file sourced-hook liveness, exact precision (5 dead flag, nothing more); 575/575. haiku: full suite + oracles, downstream ops crash-free on hook node, reindex idempotent, 18KB/50-fn/30-reassignment stress no crash."
+        },
+        {
+            "id": "R149",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1,
+                "NIT": 2
+            },
+            "theme": "v2.3.0 (tarjan_scc extraction) round 1. opus: CLEAN \u2014 extracted strongconnect byte-identical to both old inline copies; seeds/node_count match per call site; find_stale liveness uses reachable_from BFS, structurally insulated from SCC (SCC only feeds advisory smell/data_loop). sonnet: CLEAN at C/H/M \u2014 1 LOW (dataloop node_count over-counts destinations; PRE-EXISTING, behaviour-preserved, safe-direction) + 1 NIT (no DIRECT unit tests for the shared primitive). haiku: 12 edge cases pass; flagged a MEDIUM overflow at >536M nodes which is PRE-EXISTING + theoretical (old code identical), graded NIT. Action: added tests/test_scc.py (12 direct tests)."
+        },
+        {
+            "id": "R150",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1,
+                "LOW": 1,
+                "NIT": 1
+            },
+            "theme": "v2.3.0 round 2 \u2014 NOT clean (test-coverage gap found). opus: CLEAN \u2014 no shared-state/defaultdict-mutation/closure bleed; adj read only via .get (no __missing__); cardinal untouched. haiku: CLEAN \u2014 test quality + docs accurate, no dead imports. sonnet: 650-graph random differential old-vs-new = 0 divergences (code CORRECT), but MEDIUM test-coverage gap: the 12 unit tests did not pin the `elif w in on_stack` cross-edge guard (a mutant dropping it survived the unit file). Action: added test_cross_edge_to_finished_scc + dag variant + defaultdict-not-mutated; mutation on _scc.py now 6/6 KILLED by tests/test_scc.py ALONE."
+        },
+        {
+            "id": "R151",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.3.0 clean-cycle round 1 \u2014 CLEAN, full diversity (code frozen since R150; only tests grew). opus: empirically reproduced the on_stack-guard mutant and confirmed test_cross_edge_to_finished_scc now KILLS it; no remaining inline Tarjan copies. sonnet: 800-graph random differential (cross-edge/ER/DAG generators, randomised seed order) = 0 divergences; mutation 6/6 killed incl. the guard; full suite 590, oracles 27. haiku: 3 new tests non-tautological + load-bearing; docstrings accurate; no dead imports."
+        },
+        {
+            "id": "R152",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v2.3.0 clean-cycle round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus: full 4-file release diff reviewed, behaviour-preserving, cardinal unaffected, all CHANGELOG/notes claims verified true (590 passing); lone NIT = pre-existing CHANGELOG 2.2.x ordering, FIXED during finalize (blocks reordered SemVer-descending). sonnet: deterministic gate re-run \u2014 590 tests, 27 oracles, ruff+mypy clean, readiness RELEASABLE (RRS 94.8); live scan + find_data_loops on src/stitchgraph coherent (26 issues, 1 data loop \u2014 all pre-existing/expected). haiku: version 2.3.0 consistent across pyproject/README/__version__ (metadata-derived), no stale refs or debug."
         }
     ]
 }

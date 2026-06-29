@@ -120,3 +120,35 @@ domains × languages), then the maintainer provisions access.
 _When resuming: start with §2's "check if it's true" step — it's the load-bearing
 hypothesis the rest depends on — and §1's benchmark harness, which is useful
 regardless of whether §2 pans out._
+
+---
+
+## 5. To-do / candidates surfaced by the matrix-as-oracle research (2026-06-29)
+
+Captured during the post-v2.2.1 research thread (`research/` — matrix-as-oracle). stitchgraph
+**works as shipped**; nothing here is urgent. Two items, one small + concrete, one large + strategic.
+
+### 5a. Refactor: extract a shared `_tarjan_scc(adj)` helper (candidate v2.3.x)
+The body-matrix spike (`research/02-body-matrix/`) found a **byte-identical Tarjan SCC core**
+duplicated in `core/dataloop.py` (`_tarjan`) and `core/reach.py` (`strongly_connected_components`)
+— same `index`/`low`/`on_stack`/`stack` setup, the same recursion-limit raise (down to the
+identical `panel QQQ LOW` comment), the same ~40-line `strongconnect`. Only the adjacency
+construction and output post-filter differ. **Extract** a single `_tarjan_scc(adj) -> list[list]`
+and have both sites build their adjacency + post-filter around it.
+- Low-risk (graph-algorithm code, **not** the cardinal dead-code path) but still production code,
+  so it goes through the **full gate** (ruff/mypy + pytest + oracles + mutation) and a **two-round
+  panel** as its own change. A real, if small, reason to cut **v2.3.0**.
+
+### 5b. Higher-granularity (body / CFG / DFG / PDG) matrix as a real feature → **v3.0.0**
+Today's matrix is inter-procedural (defs ↔ defs via CALLS/REFERENCES/INHERITS/IMPORTS). The
+research (`research/02-body-matrix/`, `research/03-pdg/`) shows the **stronger** redundancy/fidelity
+signal lives *inside* functions — control- and data-dependence, not just call edges. Promoting an
+intra-procedural matrix (body AST → CFG → def-use/PDG) to `src/` would be a **new representation**,
+i.e. a genuine **MAJOR / v3.0.0** release, and it's the natural home for:
+- structural clone/redundancy detection (`find_similar(..., mode="structure")`);
+- a stronger translation-fidelity oracle and plan-vs-actual diff (Q2/Q3);
+- the long-deferred **variable-granularity data flow** roadmap item.
+- **Hard gates before it can ship:** scale (intra-procedural graphs fight the constant-memory
+  streaming indexer — needs a budget/opt-in), the **cardinal rule** (data-flow soundness is much
+  harder; it must never let `find_stale` under-root), and 12-language breadth (Python-first;
+  per-language CFG/DFG is a large surface). Prototype + validate in `research/` first.

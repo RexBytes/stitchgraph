@@ -103,3 +103,90 @@ pip install -e '.[all,dev]'
 python research/archetype_fingerprint.py      # §2 spike
 python research/risk_centrality_check.py      # §1 spike (defaults to this repo)
 ```
+
+---
+
+# Matrix-as-oracle thread (2026-06-29, post-v2.2.1)
+
+A second research push, asking whether the *structural matrix itself* can do generative-adjacent
+work. Three questions, framed by one thesis and one prior result.
+
+**Thesis — matrix as oracle, not generator.** stitchgraph's matrices encode **structure**
+(topology, coupling, call shape), not **semantics**. So the matrix should never *write* code — but
+it can **plan** structure and **verify** structure. The LLM supplies meaning; the matrix proposes
+candidates and checks that the result has the intended shape. Every output stays advisory and
+confidence-carrying, exactly as the cardinal stance demands.
+
+**Prior result that constrains everything here — the §2 finding (above):** graph *topology* tracks
+the **language/extractor**, not application function. Anything cross-language must treat raw
+topology as a *candidate signal a human triages*, never as proof. This is why the questions below
+split cleanly into "same-language (sound)" and "cross-language (oracle-only)".
+
+| # | Question | Verdict | Where |
+|---|---|---|---|
+| 1 | Can the matrix surface **reducible / redundant code**? | **Capability real, but precision-sensitive — and a confident *negative* on this repo.** Raw callee-fingerprint clones are dominated by hub-callee noise; the required IDF + distinctive-helper refinement collapses it to *zero* actionable candidates here — stitchgraph's own code is already well-factored (only intentional forward/reverse twins, shared logic already extracted). Honest validation needs a corpus that actually contains duplication. | `01-structural-redundancy/` |
+| 2 | Can it drive **translation** (e.g. Rust→JS)? | **Reframed: scaffold + verifier, not translator.** The matrix can't translate (it has no semantics), but graph-diff in *leaf mode* verifies a translation preserved the call/def shape. Cross-language confounded by extractor asymmetry → oracle, not proof. | `graphdiff/` |
+| 3 | Is **matrix-first development** faster for an LLM? | **Reframed: plan + verify spine.** The valuable artifact is a graph-diff between *planned* structure and *built* structure — the LLM proposes a graph, builds, and the diff is the located gap. | `graphdiff/` |
+
+**The unifying primitive is the graph-diff oracle** (`graphdiff/`). Both #2 (translation fidelity)
+and #3 (plan-vs-actual) reduce to "where do two graphs differ?". It is prototyped here, demoed
+(empty-baseline guard + located-delta cases + cross-language leaf-mode), and is the **planned
+promotion to `src/`** — *after* research, and only through the full gate + two-round adversarial
+panel, like every other change. See `graphdiff/FINDINGS.md` for the path-to-`src/` checklist.
+
+### The granularity ladder (what level the matrix is built at)
+
+The shipped matrix is **inter-procedural**: nodes are defs, edges are CALLS/REFERENCES/INHERITS/
+IMPORTS. Experiment 02 drops one level *into* the function body, which is where redundancy actually
+lives:
+
+| Level | Built at | Experiment |
+|---|---|---|
+| call graph (shipped) | defs ↔ defs | `01-structural-redundancy/` |
+| **body matrix** (normalised AST token sequence) | statements inside a function | `02-body-matrix/` |
+| **stmt-PDG** (control + data-dependence matrix, WL-fingerprinted) | statement dependence | `03-pdg/` |
+| **expr-DFG** (value flow between operations, copy-propagated) | expression dependence | `04-expr-dfg/` |
+| full CFG/DFG/SSA (future) | basic blocks, φ-nodes, alias analysis | deferred ("variable-granularity data flow" → **v3.0.0**) |
+
+**Key results:** experiment 01 (call graph) returned a confident *negative* on this repo; experiment
+02 (body matrix) found a **real** cross-module duplication the call graph is blind to — a
+byte-identical Tarjan SCC core in `dataloop._tarjan` and `reach.strongly_connected_components`
+(verified by reading both). Experiment 03 (stmt-PDG) **independently re-finds the same Tarjan dup** by
+*dependence structure* (cross-validation), renders the literal dependence matrix of a function, and
+wins cleanly on reordered code — but *loses* on temp-variable refactors. Experiment 04 (expr-DFG)
+folds temp variables away with copy propagation and is the **only** level that gets all three
+fixture cases right (temp-var clone ✓, reordered clone ✓, unrelated low ✓). Folding that value-flow
+fingerprint back into the graph-diff oracle (`graphdiff/structure_diff.py`) gives the **Q3 spine**: a
+plan-vs-actual diff that catches a data-flow bug *inside* a function whose call graph is unchanged.
+Matrixifying function *contents* is the stronger redundancy/fidelity signal and the substrate for the
+**v3.0.0** higher-granularity feature (see `docs/IDEAS.md` §5).
+
+### Layout
+- `01-structural-redundancy/` — `experiment.py` (call-graph clones) + `experiment_idf.py`
+  (IDF precision pass) + `FINDINGS.md` (question #1; confident negative on this repo).
+- `02-body-matrix/` — `body_matrix.py` (normalised-AST body clones) + `fixtures/clones.py`
+  + `FINDINGS.md` (found the Tarjan duplication the call graph missed).
+- `03-pdg/` — `pdg.py` (control+data-dependence matrix, WL-kernel fingerprint, renders the
+  matrix) + `fixtures/pdg_clones.py` + `FINDINGS.md` (order-invariant win; honest temp-var loss;
+  independently re-finds the Tarjan dup).
+- `04-expr-dfg/` — `expr_dfg.py` (expression-level value flow with copy propagation; head-to-head
+  vs the coarser levels) + `FINDINGS.md` (only level that gets all three fixtures right).
+- `graphdiff/` — `graphdiff.py` (the call-level oracle primitive), `demo.py` (3 scenarios),
+  `measure_translation.py` + `fixtures/calc_{py,js}/` (real Py↔JS twin: 100% leaf-mode recall),
+  `structure_diff.py` (body-aware diff = expr-DFG folded in; the Q3 plan-vs-actual result),
+  `FINDINGS.md` (questions #2 & #3, + promotion checklist).
+
+### Run
+```bash
+PYTHONPATH=src python research/01-structural-redundancy/experiment.py        # Q1 call-graph clones
+PYTHONPATH=src python research/01-structural-redundancy/experiment_idf.py    # Q1 IDF precision pass
+python research/02-body-matrix/body_matrix.py                                # Q1 body-level clones (stdlib only)
+PYTHONPATH=src:research/graphdiff python research/graphdiff/demo.py          # Q2/Q3 oracle demo
+PYTHONPATH=src:research/graphdiff python research/graphdiff/measure_translation.py  # Q2 real twin number
+```
+
+> **▶ RESUME HERE (parked 2026-06-29):** (a) add IDF callee-weighting to experiment 01 and validate
+> against a real "extract-helper" commit from git history; (b) run graph-diff leaf mode on a *real*
+> Python↔JS translation pair to get an honest delta-to-noise number; (c) then promote `graph_diff`
+> to `src/` as `sg.graph_diff(...) -> Result`, add a `diff(idx, idx)==∅` differential oracle per
+> language, and run the two-round full-diversity panel before any release.
