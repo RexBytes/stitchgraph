@@ -55,7 +55,7 @@ in the module and `research/04-expr-dfg/FINDINGS.md`.
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **691** passing.
+- ruff + mypy clean; full suite **692** passing.
 - Differential oracle suite **85**, including a new **graph_diff dogfood oracle**: stitchgraph's own
   source, indexed twice, self-diffs to *equivalent* (id and leaf, no body changes) — a real-code
   determinism guard.

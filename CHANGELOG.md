@@ -30,7 +30,9 @@ v2.3.0 `tarjan_scc` dedup).
   cross-codebase shape) plus, for Python functions in both, those whose *body shape* changed —
   the translation-fidelity / plan-vs-actual signal. A data-flow bug that leaves the call graph
   identical is invisible to the call-level diff but caught by the body layer. Exposed on the
-  library API, CLI (`--other-db/--mode/--body`), and MCP.
+  library API, CLI (`--other-db/--mode/--body`), and MCP. The `other_db` file is treated as strictly
+  read-only — it is validated by a read-only probe and diffed over a temporary copy, so a valid but
+  older-schema index is never migrated/mutated on disk.
 
 All three are **advisory and read-only** — they never feed `find_stale`, so the cardinal rule is
 structurally unaffected. **Python-only** (the deep stdlib `ast`); other languages are future work
@@ -40,7 +42,7 @@ in the module and `research/04-expr-dfg/FINDINGS.md`.
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **691** passing; differential oracle suite **85** — incl. a
+- ruff + mypy clean; full suite **692** passing; differential oracle suite **85** — incl. a
   graph_diff dogfood oracle (stitchgraph's own source self-diffs to equivalent) and a **body-matrix
   completeness oracle**: a metamorphic battery that fails if any value-bearing Python statement type
   is dropped by the fingerprint, plus an introspective guard that fails when a future Python adds a

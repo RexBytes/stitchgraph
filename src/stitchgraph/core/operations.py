@@ -639,7 +639,9 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
     matrix is computed on demand, not persisted, for scale). If a side's source has moved or been
     deleted since indexing, its unreadable files are skipped, so `body_changed` may be empty and a
     pure body-only change can read as equivalent. Node/edge deltas (from the index) are unaffected."""
+    import shutil
     import sqlite3
+    import tempfile
     from pathlib import Path
 
     from . import graphdiff as gd
@@ -671,12 +673,24 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
     if root_row is None:
         return refuse(f"'{other_db}' does not look like a stitchgraph index (no indexed root)",
                       confidence=0.0)
-    other = Store(other_db)
+    # Diff over a TEMP COPY, never the original. Store() runs schema migrations (ALTER TABLE /
+    # schema_version insert / commit) on open, which would MUTATE a valid but older-schema
+    # stitchgraph index — the probe above only rejects non-indexes, so an older real index would
+    # pass and then be silently upgraded on disk. Copying first keeps the user's file byte-identical
+    # (panel R160 HIGH). The copy retains the original `meta` (incl. 'root'), so the body layer still
+    # fingerprints the same source files at diff time.
+    tmp_dir = tempfile.mkdtemp(prefix="sg-graphdiff-")
     try:
-        d = gd.graph_diff(store, other, mode=mode, body=bool(body),
-                          body_threshold=float(body_threshold))
+        tmp_db = str(Path(tmp_dir) / "other.db")
+        shutil.copyfile(other_db, tmp_db)
+        other = Store(tmp_db)
+        try:
+            d = gd.graph_diff(store, other, mode=mode, body=bool(body),
+                              body_threshold=float(body_threshold))
+        finally:
+            other.close()
     finally:
-        other.close()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     delta = (len(d["nodes_only_a"]) + len(d["nodes_only_b"]) + len(d["edges_only_a"])
              + len(d["edges_only_b"]) + len(d["body_changed"]))
     return ok(d, confidence=0.9 if d["equivalent"] else 0.6,

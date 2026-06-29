@@ -280,6 +280,46 @@ def test_operation_refuses_corrupt_db_without_crashing(tmp_path):
     assert "stitchgraph index" in " ".join(res.review_reasons).lower()
 
 
+def test_operation_does_not_migrate_older_schema_other_db(tmp_path):
+    # R160 (opus HIGH): a VALID but older-schema stitchgraph index passes the read-only probe, but
+    # opening it with Store() would run _migrate (ALTER TABLE ADD COLUMN) + commit, mutating the
+    # user's file on disk. graph_diff must diff over a temp COPY and leave the original untouched.
+    import sqlite3
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "m.py").write_text("def f(x):\n    return x + 1\n")
+    other_db = tmp_path / "old.db"
+    other = sg.Store(str(other_db))
+    sg.reindex(other, str(tmp_path / "src"))
+    other.close()
+    # Simulate an older schema by rebuilding `nodes` without the (later-added) end_line column —
+    # exactly what current Store()._migrate would ALTER-TABLE back in. (A plain DROP COLUMN trips a
+    # SQLite quirk with comments in the stored DDL, so rebuild the table explicitly.)
+    conn = sqlite3.connect(str(other_db))
+    conn.executescript(
+        "CREATE TABLE nodes_old (id TEXT PRIMARY KEY, kind TEXT, name TEXT, location TEXT, "
+        "file TEXT, is_stub INTEGER, arity INTEGER, summary TEXT, roles TEXT);"
+        "INSERT INTO nodes_old SELECT id, kind, name, location, file, is_stub, arity, summary, "
+        "roles FROM nodes;"
+        "DROP TABLE nodes;"
+        "ALTER TABLE nodes_old RENAME TO nodes;"
+    )
+    conn.commit()
+    conn.close()
+    before = other_db.read_bytes()
+
+    cur = sg.Store(":memory:")
+    sg.reindex(cur, str(tmp_path / "src"))
+    res = sg.graph_diff(cur, str(other_db), mode="id")
+    assert res.ok, res.review_reasons
+    # the original file is byte-identical — never migrated/mutated
+    assert other_db.read_bytes() == before
+    # and it is still genuinely older-schema (the column wasn't re-added on disk)
+    conn = sqlite3.connect(str(other_db))
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(nodes)")}
+    conn.close()
+    assert "end_line" not in cols
+
+
 def test_operation_refuses_alien_db_without_mutating_it(tmp_path):
     # R153 (sonnet F2): a valid SQLite file that isn't a stitchgraph index must be refused AND
     # left untouched (no migration tables added) — the read-only-on-other-files promise.
