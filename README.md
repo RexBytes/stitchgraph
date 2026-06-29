@@ -160,11 +160,12 @@ millions of edges are ever all resident at once.
   `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
   `graph_diff`, plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
   `report`, a `watch` command, and a `doctor` grammar self-check.
-- **Intra-procedural body matrix (Python, v3.0.0)** — a per-function value-flow fingerprint
-  (`core/structure.py`) that sees *inside* a function, not just its call edges. Powers
-  `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered / temp-var
-  clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and read-only
-  (never feeds `find_stale`); Python-only for now.
+- **Intra-procedural body matrix (Python v3.0.0; JS/TS/TSX v3.2.0)** — a per-function value-flow
+  fingerprint (`core/structure.py`, `core/structure_js.py`) that sees *inside* a function, not just
+  its call edges. Powers `find_similar(mode="structure")` (rank by body shape — finds renamed /
+  reordered / temp-var clones a token differ misses) and the body-aware layer of `graph_diff`.
+  Advisory and read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS
+  layer needs the tree-sitter extra; Python is stdlib-only.
 - **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
   Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
   the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →

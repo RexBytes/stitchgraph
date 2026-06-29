@@ -92,6 +92,7 @@ _EXPR: dict[str, str] = {
     "Object-computed-key": "function t(a){ return { [{probe}]: 1 }; }",
     "Spread": "function t(a){ return [...{probe}]; }",
     "New-arg": "function t(a){ return new C({probe}); }",
+    "New-callee": "function t(a){ return new ({probe})(); }",
     "Sequence": "function t(a){ return ({probe}, 1); }",
     "Await": "async function t(a){ return await {probe}; }",
     "Yield": "function* t(a){ yield {probe}; }",

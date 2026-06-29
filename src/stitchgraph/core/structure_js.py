@@ -218,7 +218,11 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return n
         if t in ("call_expression", "new_expression"):
             n = g.add("CALL")
-            g.link(ev(node.child_by_field_name("function"), ctrl), n, _DATA)
+            # call_expression keeps its callee under field `function`; new_expression keeps it under
+            # `constructor` — read both so `new (factories[a])()` doesn't drop the constructor's
+            # value flow (R169 opus).
+            callee = node.child_by_field_name("function") or node.child_by_field_name("constructor")
+            g.link(ev(callee, ctrl), n, _DATA)
             args = node.child_by_field_name("arguments")
             if args is not None:
                 for a in args.named_children:
