@@ -625,6 +625,35 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
               provenance=Provenance.INFERRED, count=len(payload))
 
 
+@operation("Structurally diff this index against another (translation / plan-vs-actual).")
+def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True) -> Result:
+    """Compare this index with another built index at `other_db` (a stitchgraph `.db` path).
+    Reports located node/edge deltas — mode="id" is exact (same codebase: did a refactor change the
+    graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
+    *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
+    tracks the extractor). With `body`, Python functions present in both whose *body shape* diverged
+    are listed too. Advisory and read-only; never edits source, never feeds find_stale."""
+    from pathlib import Path
+
+    from . import graphdiff as gd
+
+    if not isinstance(other_db, str):
+        return refuse("other_db must be a path string", confidence=0.0)
+    if mode not in ("id", "leaf"):
+        return refuse("mode must be 'id' or 'leaf'", confidence=0.0)
+    if not Path(other_db).is_file():
+        return refuse(f"no index database at '{other_db}'", confidence=0.0)
+    other = Store(other_db)
+    try:
+        d = gd.graph_diff(store, other, mode=mode, body=bool(body))
+    finally:
+        other.close()
+    delta = (len(d["nodes_only_a"]) + len(d["nodes_only_b"]) + len(d["edges_only_a"])
+             + len(d["edges_only_b"]) + len(d["body_changed"]))
+    return ok(d, confidence=0.9 if d["equivalent"] else 0.6,
+              provenance=Provenance.INFERRED, count=delta)
+
+
 @operation("Fuse a coverage.json runtime trace: mark what actually executed.")
 def ingest_trace(store: Store, trace: str = "coverage.json") -> Result:
     """Ingest a coverage.py JSON report (design §2c). Marks executed nodes with a

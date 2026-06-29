@@ -36,6 +36,7 @@ from .core.operations import (
     get_callees,
     get_callers,
     get_matrix,
+    graph_diff,
     impact_of,
     ingest_trace,
     orient,
@@ -61,5 +62,5 @@ __all__ = [
     # operations (the public API)
     "find_symbol", "get_callers", "get_callees", "find_holes", "find_stale",
     "orient", "impact_of", "trace_path", "scan", "reindex", "get_matrix", "risk",
-    "ingest_trace", "find_similar", "summarize_subsystem",
+    "ingest_trace", "find_similar", "summarize_subsystem", "graph_diff",
 ]
