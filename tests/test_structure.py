@@ -183,6 +183,14 @@ def test_fingerprint_trivial_function_does_not_crash():
     assert isinstance(fp, collections.Counter)
 
 
+def test_deep_but_valid_expression_does_not_raise():
+    # R156 (opus CRITICAL): a long `a + a + ...` chain parses fine but overflows the recursive
+    # value-flow walk. fingerprint_source must degrade (return a dict), never raise RecursionError.
+    deep = "def f():\n    return " + " + ".join(["a"] * 4000) + "\n"
+    fps = structure.fingerprint_source(deep)
+    assert isinstance(fps, dict)  # no traceback escaped
+
+
 def test_control_flow_nested_defs_are_fingerprinted():
     # R155 (opus): defs inside if/try/for/with must be fingerprinted (qualname has no control-flow
     # level, matching the extractor), else they're invisible to find_similar/graph_diff.

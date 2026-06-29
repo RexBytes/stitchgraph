@@ -297,11 +297,14 @@ def similarity(a: collections.Counter[str], b: collections.Counter[str]) -> floa
 
 def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
     """Fingerprint every function/method in a Python source string, keyed by qualified name
-    (`Class.method`, nested `outer.inner`). Returns {} on a syntax error — advisory, never raises.
+    (`Class.method`, nested `outer.inner`). Returns {} (or partial results) on a syntax error or a
+    too-deep AST — advisory, never raises. A deep-but-valid expression (a long `a + a + …` chain in
+    a generated builder) parses fine but can overflow the recursive walk; the extractor indexes such
+    files (extract/python.py guards `ast.parse`), so the body layer must degrade, not crash (R156).
     """
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return {}
     out: dict[str, collections.Counter[str]] = {}
 
@@ -310,7 +313,10 @@ def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
             if isinstance(child, ast.ClassDef):
                 visit(child, prefix + child.name + ".")
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                out[prefix + child.name] = fingerprint(child)
+                try:
+                    out[prefix + child.name] = fingerprint(child)
+                except RecursionError:
+                    pass  # deep-but-valid body — skip this function, keep the rest (advisory)
                 visit(child, prefix + child.name + ".")
             else:
                 # descend through control-flow / expression nodes at the SAME qual level — control
@@ -319,5 +325,8 @@ def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
                 # skipped and becomes invisible to find_similar(structure) / graph_diff (panel R155).
                 visit(child, prefix)
 
-    visit(tree, "")
+    try:
+        visit(tree, "")
+    except RecursionError:
+        return out  # a too-deep AST overflowed the walk itself — return what we have, never raise
     return out

@@ -198,6 +198,16 @@ def test_operation_handles_db_path_with_uri_reserved_chars(tmp_path):
     assert res.result["equivalent"]
 
 
+def test_graph_diff_survives_deep_expression_file(tmp_path):
+    # R156 (opus CRITICAL): the extractor indexes deep-but-valid files; the body layer re-parses
+    # them at diff time and must not crash with a RecursionError traceback.
+    deep = "def f():\n    return " + " + ".join(["a"] * 4000) + "\n"
+    a = _index(tmp_path / "a", {"d.py": deep})
+    b = _index(tmp_path / "b", {"d.py": deep})
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)  # must not raise
+    assert isinstance(d, dict)
+
+
 def test_body_diff_catches_control_flow_nested_def_change(tmp_path):
     # R155 (opus): a body change to a def nested in a control-flow block must be caught, not
     # silently swallowed (qualname "outer.inner", no control-flow qual level).

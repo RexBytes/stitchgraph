@@ -40,7 +40,7 @@ in the module and `research/04-expr-dfg/FINDINGS.md`.
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **633** passing; differential oracle suite **30** (incl. a new
+- ruff + mypy clean; full suite **635** passing; differential oracle suite **30** (incl. a new
   graph_diff dogfood oracle: stitchgraph's own source self-diffs to equivalent). Mutation
   meta-oracle: `structure.similarity` 1/1 and `graphdiff` core 8/8 killed by their unit tests.
   Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
