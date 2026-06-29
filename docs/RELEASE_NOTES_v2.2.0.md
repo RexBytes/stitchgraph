@@ -79,3 +79,8 @@ invocation.
 helper; readiness **RELEASABLE** (two consecutive clean full-diversity panels per fix). Dogfood on
 stitchgraph's own source: `find_stale` advisory-only (no false-dead), 0 holes, streaming ==
 in-memory parity.
+
+The GitHub Actions CI matrix — `test (py3.11)`, `test (py3.12)`, `lint + type-check`, and
+`core-only (no extras)` — is green. (The `core-only` job runs the suite with no optional extras
+installed to prove the stdlib-only core; 14 tree-sitter-dependent tests were guarded with
+`pytest.importorskip` so they skip cleanly there.)
