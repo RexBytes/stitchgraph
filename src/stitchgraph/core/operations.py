@@ -632,7 +632,12 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True)
     graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
     *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
     tracks the extractor). With `body`, Python functions present in both whose *body shape* diverged
-    are listed too. Advisory and read-only; never edits source, never feeds find_stale."""
+    are listed too. Advisory and read-only; never edits source, never feeds find_stale.
+
+    Note: the body layer fingerprints functions from their **source files at diff time** (the body
+    matrix is computed on demand, not persisted, for scale). If a side's source has moved or been
+    deleted since indexing, its unreadable files are skipped, so `body_changed` may be empty and a
+    pure body-only change can read as equivalent. Node/edge deltas (from the index) are unaffected."""
     import sqlite3
     from pathlib import Path
 

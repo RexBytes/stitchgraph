@@ -605,5 +605,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   (algorithmically-equivalent, differently-structured) code.
 - **Cardinal-safety:** both features are advisory and never feed `find_stale`, so an over- or
   under-precise fingerprint can only mis-rank a suggestion — never flag live code dead.
+- **Computed at query time, not persisted:** the body matrix is fingerprinted from the function's
+  **source on each call** (kept on-demand for scale, not stored in the index). So
+  `find_similar(mode="structure")` and the `graph_diff` body layer need the source files readable
+  where the index says they are. If source moved or was deleted since indexing, those functions are
+  silently skipped — `graph_diff` `body_changed` may be empty and a pure body-only change can read
+  as equivalent (panel R154). The call-level node/edge deltas (from the index itself) are unaffected.
 - **Escape hatch / roadmap:** the call-level graph (all 12 languages) is unaffected; per-language
   body matrices and an SSA-grade fingerprint are tracked in `docs/IDEAS.md` §5b/§5c.
