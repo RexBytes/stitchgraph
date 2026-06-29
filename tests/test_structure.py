@@ -131,6 +131,40 @@ def test_augassign_read_edge_carries_signal():
     assert _sim(accumulate, "f", overwrite, "f") < 1.0
 
 
+def test_value_flow_topology_distinguishes_identical_node_bag():
+    # R163 (sonnet, MEDIUM test-gap): the WL kernel's power is that EDGES matter, not just the
+    # node bag. `foo(a, b)` and `foo(a, a)` have identical node types (2 PARAM, CALL, FREE,
+    # RETURN) and differ ONLY in value-flow wiring. They must score well below 1.0 — otherwise
+    # `_VFG.link` could silently stop adding edges (the kernel degrading to a bag-of-nodes) and
+    # graph_diff would miss data-flow-only bugs. Pins the `dst is not None` edge-add branch.
+    two_args = _fps("def f(a, b):\n    return foo(a, b)\n")["f"]
+    one_arg_twice = _fps("def f(a, b):\n    return foo(a, a)\n")["f"]
+    assert structure.similarity(two_args, one_arg_twice) < 0.9
+
+
+def test_match_case_guard_contributes_to_fingerprint():
+    # R163 (sonnet, LOW test-gap): a `case ... if <guard>` guard expression carries value flow and
+    # must be wired into the CASE node. Two functions identical except for the guard must differ;
+    # else the guard link can be dropped unnoticed. Pins the `case.guard is not None` branch.
+    guarded = _fps("def f(x):\n    match x:\n        case 1 if check(x):\n"
+                   "            return 1\n        case _:\n            return 0\n")["f"]
+    plain = _fps("def f(x):\n    match x:\n        case 1:\n"
+                 "            return 1\n        case _:\n            return 0\n")["f"]
+    # threshold well below 1.0: dropping the guard makes the two fingerprints *identical*, which
+    # cosines to ~1.0 (modulo float noise) — a `< 1.0` bar would let that slip through.
+    assert structure.similarity(guarded, plain) < 0.9
+
+
+def test_with_as_binding_flows_context_value():
+    # R163 (sonnet-adjacent, mutation test-gap): `with ctx() as c` copy-propagates ctx()'s value
+    # into c, so a later use of c reads the context value — exactly like `c = ctx()`. The two must
+    # fingerprint near-identically; if the `optional_vars` bind is dropped, c degrades to a free
+    # var and they diverge. Pins the `item.optional_vars is not None` bind branch.
+    with_form = _fps("def f(p):\n    with open(p) as fh:\n        return fh.read()\n")["f"]
+    assign_form = _fps("def f(p):\n    fh = open(p)\n    return fh.read()\n")["f"]
+    assert structure.similarity(with_form, assign_form) >= 0.95
+
+
 def test_self_similarity_is_one():
     fp = _fps(CLONES)["sum_even_squares"]
     assert abs(structure.similarity(fp, fp) - 1.0) < 1e-9
