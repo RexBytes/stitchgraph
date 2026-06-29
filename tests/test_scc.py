@@ -7,6 +7,7 @@ temporary recursion-limit raise is always restored, including on an exception mi
 """
 from __future__ import annotations
 
+import collections
 import sys
 
 import pytest
@@ -61,6 +62,32 @@ def test_reverse_topological_order():
     # Tarjan emits components in reverse-topological order: a sink before its predecessor.
     comps = tarjan_scc({"a": ["b"], "b": ["c"], "c": []}, ["a", "b", "c"], 3)
     assert comps == [["c"], ["b"], ["a"]]
+
+
+def test_cross_edge_to_finished_scc_does_not_merge():
+    # 'd' is seeded AFTER the {a,b} SCC has finished and popped; its cross-edge d->a points
+    # back into a node that is visited but NO LONGER on the stack. The `elif w in on_stack`
+    # guard must ignore it so d stays its own component. A mutant dropping that guard would
+    # falsely lower d's low-link and silently drop d from the output (panel R150, sonnet F1).
+    adj = {"a": ["b"], "b": ["a"], "d": ["a"]}
+    comps = {frozenset(c) for c in tarjan_scc(adj, ["a", "b", "d"], 3)}
+    assert comps == {frozenset({"a", "b"}), frozenset({"d"})}
+
+
+def test_dag_cross_edge_keeps_all_singletons():
+    # Simpler variant: a cross-edge into an already-finished singleton must not merge them.
+    adj = {"c": ["a"], "a": ["b"], "b": []}
+    comps = {frozenset(c) for c in tarjan_scc(adj, ["a", "b", "c"], 3)}
+    assert comps == {frozenset({"a"}), frozenset({"b"}), frozenset({"c"})}
+
+
+def test_defaultdict_adj_not_mutated():
+    # dataloop passes a defaultdict; the helper must read it only via adj.get(...) and never
+    # trigger __missing__ key insertion (panel R150, opus minor gap). Keys stay exactly as built.
+    adj: dict[str, list[str]] = collections.defaultdict(list, {"a": ["b"], "b": ["a"]})
+    before = set(adj)
+    tarjan_scc(adj, ["a", "b"], 2)
+    assert set(adj) == before  # 'b' lookups via .get did not insert phantom keys
 
 
 def test_recursion_limit_restored_after_normal_call():
