@@ -17,40 +17,55 @@ This is a deliberately *within-language, within-codebase* use — one extractor,
 the prior §2 caveat ("topology tracks the extractor, not the function, across languages") does
 **not** bite. Structural similarity here reflects real code-shape similarity.
 
-## What it found
+## What the raw pass found (and why it was misleading)
 
-7 exact-clone groups and 46 near-duplicate pairs. The signal sorts into three buckets:
+7 exact-clone groups and 46 near-duplicate pairs — at first glance "impressive". But reading the
+top candidates shows the headline was **hub-callee noise**: in an edge-building module
+`{Edge, Provenance, Relation, append}` are touched by nearly every function (`append`×63,
+`Relation`×52, `Store`×41, `Provenance`×34 across 135 functions). Any two edge-emitters therefore
+look ~0.8 similar without being redundant. The supposed "genuine refactor candidate" —
+`_add_call`/`_add_ref` — are in fact two *distinct* 4-line convenience wrappers (one is `CALLS`
+with a caller-supplied weight/provenance, the other is `REFERENCES` fixed at `0.95`/`EXTRACTED`).
+They share a *vocabulary*, not a *behaviour*; merging them would reduce clarity, not redundancy.
 
-**1. Genuine refactor candidates (true positives).** The edge-building family —
-`_add_call` / `_add_ref` / `_module_load_edge_qual` / `_ref_edges` — share an *identical*
-5-callee fingerprint `{Edge, Provenance, Relation, _Project, append}`. They really are the same
-shape: construct an `Edge` with a `Provenance`, look up a `Relation`, append to the project. That
-is exactly the "extract a common `_emit_edge` helper" candidate a human would want surfaced.
+## The precision pass (`experiment_idf.py`) — the honest answer
 
-**2. Structural twins that *should* stay separate (true neutrals).** `fan_in`/`fan_out`,
-`reachable_from`/`reverse_reachable_from`, `Store.callers_of`/`Store.callees_of` — symmetric
-direction-pairs with identical call shape. The tool is *correct* that they're structural clones;
-the right disposition is "leave them, the symmetry is the point." This is the on-brand outcome:
-**the graph proposes, a human disposes.**
+Down-weighting callees by IDF (`weight(c)=log(N/df(c))`) and then asking "how many *distinctive*
+(rare) helpers does each pair actually share?" collapses the noise. After that filter, the entire
+corpus yields **exactly three** pairs with any distinctive shared helper:
 
-**3. Hub-callee noise (the limitation).** Many near-dup pairs collapse onto a few ubiquitous
-callees (`Edge`, `Provenance`, `Relation`, `append`). Any two edge-emitters look 0.83-similar
-because *everything* in that module calls those four. Raw set-Jaccard over-weights popular callees.
+| Pair | distinctive shared | disposition |
+|---|---|---|
+| `reachable_from` ~ `reverse_reachable_from` | `_bfs`, `_Adjacency` | direction-symmetric twins; shared logic **already** extracted into `_bfs`/`_Adjacency` |
+| `Store.callers_of` ~ `Store.callees_of` | `_row_to_edge` | direction-symmetric twins; shared logic **already** in `_row_to_edge` |
+| `ExpressRouteResolver.resolve` ~ `SpringRouteResolver.resolve` | `_scan` | different frameworks; common scan **already** factored into `_scan` |
+
+Every survivor is a deliberate symmetric pair whose common code is *already* in a shared helper —
+i.e. the redundancy the tool would propose has **already been removed**. There is **no actionable
+structural redundancy in stitchgraph's own source.**
 
 ## Verdict
 
-**Q1 is real and the strongest of the three questions** — the structural matrix surfaces
-mergeable code (bucket 1) that a token-level differ misses, *and* it does so cheaply (one index,
-two set passes). The caveat is precision: the ranking needs an **IDF-style down-weight** on common
-callees so hub edges don't drown the signal. That is a small, well-understood fix, not a dead end.
+Two findings, both honest:
 
-This is also the cleanest candidate to eventually promote to a real operation
-(`find_similar` already exists for token/embedding similarity; a *structural* sibling
-`find_similar(..., mode="structure")` is the natural home).
+1. **The capability is real but lower-precision than the raw numbers suggest.** Structural clone
+   detection works, but raw set-Jaccard is dominated by hub callees; the IDF + distinctive-helper
+   refinement is *required*, not optional, to get a trustworthy signal. With it, the tool correctly
+   reports "nothing to merge here."
+
+2. **stitchgraph's code does not need tidying on these grounds.** The codebase is already
+   well-factored — the only structural twins are intentional forward/reverse API pairs whose shared
+   work is already extracted. Refactoring the (cardinal-critical, panel-hardened) extractor on the
+   strength of the raw heuristic would have churned proven code for **zero** real reduction. The
+   tool's most valuable output here was a confident *negative*.
+
+The capability remains the cleanest eventual `src/` promotion (a structural sibling to
+`find_similar`), but its honest demo corpus is **another** project, not this one — validating it
+needs a codebase that genuinely contains copy-paste duplication.
 
 ## Next refinement (deferred)
 
-- IDF-weight callees: `weight(c) = log(N_funcs / df(c))`; score = weighted-Jaccard.
-- Add edge-multiplicity and callee *order* (currently a set — loses sequence).
-- Validate against a known refactor: pick a real "extract helper" commit from git history and
-  check the tool flagged the pair *before* the refactor (the §1 bug-fix-commit validation pattern).
+- Add edge-multiplicity and callee *order* (currently a set — loses sequence/branching).
+- Validate against a known refactor: pick a real "extract helper" commit from a third-party repo's
+  git history and check the tool flagged the pair *before* the refactor (the §1 bug-fix-commit
+  validation pattern) — on a corpus that actually has duplication.

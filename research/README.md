@@ -124,7 +124,7 @@ split cleanly into "same-language (sound)" and "cross-language (oracle-only)".
 
 | # | Question | Verdict | Where |
 |---|---|---|---|
-| 1 | Can the matrix surface **reducible / redundant code**? | **Strongest — real.** Within one language the structural matrix finds mergeable code a token-differ misses (callee-fingerprint clones). Needs IDF-weighting to cut hub-callee noise. | `01-structural-redundancy/` |
+| 1 | Can the matrix surface **reducible / redundant code**? | **Capability real, but precision-sensitive — and a confident *negative* on this repo.** Raw callee-fingerprint clones are dominated by hub-callee noise; the required IDF + distinctive-helper refinement collapses it to *zero* actionable candidates here — stitchgraph's own code is already well-factored (only intentional forward/reverse twins, shared logic already extracted). Honest validation needs a corpus that actually contains duplication. | `01-structural-redundancy/` |
 | 2 | Can it drive **translation** (e.g. Rust→JS)? | **Reframed: scaffold + verifier, not translator.** The matrix can't translate (it has no semantics), but graph-diff in *leaf mode* verifies a translation preserved the call/def shape. Cross-language confounded by extractor asymmetry → oracle, not proof. | `graphdiff/` |
 | 3 | Is **matrix-first development** faster for an LLM? | **Reframed: plan + verify spine.** The valuable artifact is a graph-diff between *planned* structure and *built* structure — the LLM proposes a graph, builds, and the diff is the located gap. | `graphdiff/` |
 
