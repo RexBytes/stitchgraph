@@ -599,8 +599,10 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:
     """Semantic-ish retrieval over the graph (design §1). mode="semantic" (default) ranks
     functions/methods/classes by token similarity (name + docstring + callees) to the snippet;
-    mode="structure" ranks stored *Python* functions by body-shape similarity (structure.py) to
-    the snippet's function — language-agnostic of names, advisory, Python-only."""
+    mode="structure" ranks stored functions by body-shape similarity to the snippet's function —
+    name-agnostic, advisory. The snippet's language is auto-detected (Python, or the JS/TS family)
+    and ranked only against stored functions of the SAME language (a fingerprint's topology tracks
+    its extractor, so cross-language scores aren't comparable). JS/TS needs the tree-sitter extra."""
     from . import similar
 
     # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
@@ -615,8 +617,8 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         return refuse("mode must be 'semantic' or 'structure'", confidence=0.0)
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
-        hint = ("no structurally-similar Python function found (snippet must be Python "
-                "function source; structure mode is Python-only)" if mode == "structure"
+        hint = ("no structurally-similar function found (snippet must be Python or JS/TS function "
+                "source; JS/TS structure mode needs the tree-sitter extra)" if mode == "structure"
                 else "no similar code found (or snippet had no usable tokens)")
         return refuse(hint, confidence=0.0)
     payload = [{"id": nid, "score": round(s, 3)} for nid, s in matches]
@@ -632,8 +634,9 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
     Reports located node/edge deltas — mode="id" is exact (same codebase: did a refactor change the
     graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
     *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
-    tracks the extractor). With `body`, Python functions present in both whose *body shape* diverged
-    are listed too. Advisory and read-only; never edits source, never feeds find_stale.
+    tracks the extractor). With `body`, Python and JS/TS/TSX functions present in both whose *body
+    shape* diverged are listed too (same-language only). Advisory and read-only; never edits source,
+    never feeds find_stale.
 
     Note: the body layer fingerprints functions from their **source files at diff time** (the body
     matrix is computed on demand, not persisted, for scale). If a side's source has moved or been

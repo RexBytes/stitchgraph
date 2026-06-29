@@ -79,3 +79,63 @@ def test_bad_mode_refused(tmp_path):
     res = sg.find_similar(store, QUERY, mode="nonsense")
     assert not res.ok
     assert "mode" in " ".join(res.review_reasons).lower()
+
+
+# --- JS/TS body matrix (v3.2.0) — needs the tree-sitter extra ---------------------------------
+
+_JS_REPO = {
+    "acc.js": (
+        "function sumEvenSquares(items){\n"
+        "  let total = 0;\n"
+        "  for (const x of items){\n"
+        "    if (x % 2 === 0){ total = total + x * x; }\n"
+        "  }\n"
+        "  return total;\n"
+        "}\n"
+        "function parseCsv(line){\n"
+        "  const out = [];\n"
+        "  for (const field of line.split(',')){ out.push(field.trim()); }\n"
+        "  return out;\n"
+        "}\n"
+    ),
+}
+# same body shape as sumEvenSquares, renamed + an arrow + different literals — the JS clone.
+_JS_QUERY = (
+    "const accumulateEven = (data) => {\n"
+    "  let acc = 0;\n"
+    "  for (const v of data){\n"
+    "    if (v % 3 === 0){ acc = acc + v * v; }\n"
+    "  }\n"
+    "  return acc;\n"
+    "};\n"
+)
+
+
+def test_js_structure_mode_ranks_the_clone_first(tmp_path):
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    store = _index(tmp_path, _JS_REPO)
+    res = sg.find_similar(store, _JS_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids[0].endswith("::sumEvenSquares")    # the accumulator clone, not parseCsv
+    top = res.result[0]["score"]
+    csv = next((r["score"] for r in res.result if r["id"].endswith("::parseCsv")), 0.0)
+    assert top > csv
+
+
+def test_structure_mode_ranks_same_language_only(tmp_path):
+    # A JS snippet must rank JS functions, NOT a same-shaped Python one (cross-language body scores
+    # aren't comparable — extractor-dependent). Index BOTH languages, query with JS.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    files = dict(_JS_REPO)
+    files.update(REPO)   # adds acc.py with sum_even_squares (the Python accumulator)
+    store = _index(tmp_path, files)
+    res = sg.find_similar(store, _JS_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids and all("::" in i for i in ids), ids
+    # every result's file is JS-family, never the Python accumulator
+    assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
+    assert any(i.endswith("::sumEvenSquares") for i in ids)

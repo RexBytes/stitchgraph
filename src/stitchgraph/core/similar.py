@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
-from . import structure
+from . import structure, structure_js
 from .model import NodeKind, Relation
 from .store import Store
 
@@ -177,18 +177,56 @@ def _python_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
                 yield node_id, fp
 
 
+def _js_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored JS/TS/TSX function/method, the
+    JS-family analogue of `_python_fn_fingerprints`. The grammar is chosen per file extension, so
+    a .ts file is fingerprinted with the TypeScript grammar and a .tsx with TSX. Requires the
+    tree-sitter extra; without it `structure_js.fingerprint_source` returns {} and nothing yields."""
+    root = store.get_meta("root") or "."
+    by_path: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep:
+            continue
+        lang = structure_js._lang_for_ext(Path(path).suffix)
+        if lang is None:
+            continue
+        by_path.setdefault((path, lang), []).append((n.id, qual.split("#", 1)[0]))
+    for (path, lang), items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_js.fingerprint_source(src, lang=lang)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
 def find_similar_structure(store: Store, snippet: str,
                            limit: int = 10) -> list[tuple[str, float]]:
-    """Rank stored Python functions/methods by *structural* (body-shape) similarity to the
-    snippet, which must be Python function source. Advisory and Python-only; empty if the snippet
-    has no parseable function. The largest function in the snippet is used as the query."""
+    """Rank stored functions/methods by *structural* (body-shape) similarity to the snippet, which
+    must be function source. Advisory. The snippet's language is auto-detected — Python first, else
+    the JS/TS family — and it is ranked only against stored functions of the SAME language (a body
+    fingerprint's topology tracks its extractor, so cross-language scores are not comparable). Empty
+    if the snippet has no parseable function or (for JS) the tree-sitter extra is absent. The largest
+    function in the snippet is used as the query."""
     limit = max(0, limit)
     q_fps = structure.fingerprint_source(snippet)
+    corpus = _python_fn_fingerprints
+    if not q_fps:
+        for lang in ("typescript", "tsx", "javascript"):  # TS/TSX parse a superset; try then JS
+            q_fps = structure_js.fingerprint_source(snippet, lang=lang)
+            if q_fps:
+                corpus = _js_fn_fingerprints
+                break
     if not q_fps:
         return []
     query = max(q_fps.values(), key=lambda c: sum(c.values()))
-    scored = [(nid, structure.similarity(query, fp))
-              for nid, fp in _python_fn_fingerprints(store)]
+    scored = [(nid, structure.similarity(query, fp)) for nid, fp in corpus(store)]
     scored = [s for s in scored if s[1] > 0]
     scored.sort(key=lambda kv: kv[1], reverse=True)
     return scored[:limit]
