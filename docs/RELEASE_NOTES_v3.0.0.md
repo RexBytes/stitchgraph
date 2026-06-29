@@ -59,7 +59,7 @@ in the module and `research/04-expr-dfg/FINDINGS.md`.
 - Differential oracle suite **85**, including a new **graph_diff dogfood oracle**: stitchgraph's own
   source, indexed twice, self-diffs to *equivalent* (id and leaf, no body changes) — a real-code
   determinism guard.
-- Mutation meta-oracle: `structure.similarity` 1/1 and the `graphdiff` core 8/8 mutants killed by
+- Mutation meta-oracle: `structure.similarity` 1/1 and the `graphdiff` core 9/9 mutants killed by
   their own unit tests.
 - **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.
 
