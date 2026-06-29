@@ -143,20 +143,28 @@ lives:
 | Level | Built at | Experiment |
 |---|---|---|
 | call graph (shipped) | defs ↔ defs | `01-structural-redundancy/` |
-| **body matrix** (normalised AST / control+data shape) | statements inside a function | `02-body-matrix/` |
-| CFG / DFG / PDG (future) | basic blocks, def-use | deferred ("variable-granularity data flow" roadmap item) |
+| **body matrix** (normalised AST token sequence) | statements inside a function | `02-body-matrix/` |
+| **PDG** (control + data-dependence matrix, WL-fingerprinted) | statement dependence | `03-pdg/` |
+| full CFG/DFG/SSA (future) | basic blocks, expression-level def-use | deferred ("variable-granularity data flow" → **v3.0.0**) |
 
-**Key result:** experiment 01 (call graph) returned a confident *negative* on this repo; experiment
+**Key results:** experiment 01 (call graph) returned a confident *negative* on this repo; experiment
 02 (body matrix) found a **real** cross-module duplication the call graph is blind to — a
 byte-identical Tarjan SCC core in `dataloop._tarjan` and `reach.strongly_connected_components`
-(verified by reading both). Matrixifying function *contents*, not just their call edges, is the
-stronger redundancy signal — and the same representation sharpens Q2/Q3.
+(verified by reading both). Experiment 03 (PDG) **independently re-finds the same Tarjan dup** by
+*dependence structure* (cross-validation), renders the literal dependence matrix of a function, and
+wins cleanly on reordered code (order-invariant) — but honestly *loses* to the AST-token fingerprint
+on temp-variable refactors, so it is complementary, not a free upgrade. Matrixifying function
+*contents* is the stronger redundancy signal and the substrate for the **v3.0.0** higher-granularity
+feature (see `docs/IDEAS.md` §5).
 
 ### Layout
 - `01-structural-redundancy/` — `experiment.py` (call-graph clones) + `experiment_idf.py`
   (IDF precision pass) + `FINDINGS.md` (question #1; confident negative on this repo).
 - `02-body-matrix/` — `body_matrix.py` (normalised-AST body clones) + `fixtures/clones.py`
   + `FINDINGS.md` (found the Tarjan duplication the call graph missed).
+- `03-pdg/` — `pdg.py` (control+data-dependence matrix, WL-kernel fingerprint, renders the
+  matrix) + `fixtures/pdg_clones.py` + `FINDINGS.md` (order-invariant win; honest temp-var loss;
+  independently re-finds the Tarjan dup).
 - `graphdiff/` — `graphdiff.py` (the oracle primitive), `demo.py` (3 scenarios),
   `measure_translation.py` + `fixtures/calc_{py,js}/` (real Py↔JS twin: 100% leaf-mode recall),
   `FINDINGS.md` (questions #2 & #3, + promotion checklist).
