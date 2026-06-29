@@ -591,3 +591,25 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   license and offline-download headaches, for a feature most queries don't need.
 - **Escape hatch:** `similar.set_embedder(fn)` with any backend, or install
   `model2vec` / `sentence-transformers`.
+
+### The body matrix (structure mode / graph_diff body layer) is Python-only and a structural approximation (v3.0.0)
+- **Concern:** `find_similar(mode="structure")` and the body-shape layer of `graph_diff` only
+  analyse **Python**, and their fingerprint is *structural*, not sound data flow.
+- **Decision:** ship them Python-only (built on the deep stdlib `ast`), advisory, and read-only.
+- **Rationale:** the other 11 languages go through tree-sitter (shallower, uneven); a sound
+  per-language CFG/DFG is a large surface that must be proven before it could ever inform
+  liveness. Doing it in one language first — and dogfooding on stitchgraph's own Python — mirrors
+  how the cardinal sweep succeeded. The fingerprint does copy propagation but has **no SSA
+  φ-nodes, no loop fixpoint, no alias analysis**, and collapses constants — so it detects
+  Type-2/Type-3 (renamed / reordered / temp-var) clones but not Type-4
+  (algorithmically-equivalent, differently-structured) code.
+- **Cardinal-safety:** both features are advisory and never feed `find_stale`, so an over- or
+  under-precise fingerprint can only mis-rank a suggestion — never flag live code dead.
+- **Computed at query time, not persisted:** the body matrix is fingerprinted from the function's
+  **source on each call** (kept on-demand for scale, not stored in the index). So
+  `find_similar(mode="structure")` and the `graph_diff` body layer need the source files readable
+  where the index says they are. If source moved or was deleted since indexing, those functions are
+  silently skipped — `graph_diff` `body_changed` may be empty and a pure body-only change can read
+  as equivalent (panel R154). The call-level node/edge deltas (from the index itself) are unaffected.
+- **Escape hatch / roadmap:** the call-level graph (all 12 languages) is unaffected; per-language
+  body matrices and an SSA-grade fingerprint are tracked in `docs/IDEAS.md` §5b/§5c.

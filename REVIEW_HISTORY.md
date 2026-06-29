@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`tarjan_scc` 6/6 killed by `test_scc.py` alone) ✅ · oracles 27 ✅ · no-open-defects ✅ |
-| Tests | 590 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (3.0.0: `structure.py` 15/15 + `graphdiff` 9/9 killed by their own unit suites) ✅ · oracles 85 ✅ · no-open-defects ✅ |
+| Tests | 698 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.2.1: Bash `PROMPT_COMMAND=fn` hook (#95) → R147✓ R148✓. **2.3.0: shared `tarjan_scc` extraction → R149 (NIT: no direct tests) → R150 (✗ MEDIUM: `on_stack` guard untested) → R151✓ R152✓ full-diversity (streak 2, gate met, readiness RELEASABLE, RRS 94.8)** |
+| Convergence | 2.2.1: Bash `PROMPT_COMMAND=fn` hook (#95) → R147✓ R148✓. 2.3.0: shared `tarjan_scc` extraction → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. **3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds: qualname collision, recursion, operator-blind, control-flow defs, match, temp-copy read-only, AugAssign read-edge, mutation test-gaps) → R164✓ R165✓ full-diversity on a frozen HEAD (streak 2, gate met, readiness RELEASABLE, RRS 93.3)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1681,6 +1681,42 @@ Process note: unlike 2.2.1, the panels ran *before* shipping. The two-round bar 
 R150 caught a genuine unit-test gap (the `on_stack` guard) in tests I had just written; the fix was
 verified by a standalone mutation run, then re-confirmed by a fresh two clean rounds (R151/R152).
 The code itself was differentially proven equivalent across 800+ random graphs.
+
+## v3.0.0 — the intra-procedural body matrix (the first MAJOR since the streaming rewrite)
+
+The matrix-as-oracle research promoted to `src/`: `core/structure.py` (a per-Python-function
+value-flow fingerprint — operations + control points, data + control edges, copy propagation,
+order/name-invariant Weisfeiler-Lehman kernel), `find_similar(mode="structure")`, and a body-aware
+`graph_diff`. Advisory and read-only by construction — none of it feeds `find_stale`, so the
+cardinal rule is structurally unaffected. A genuinely hard analysis shipped as a safe approximation;
+the panels did the hardening.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R153 | opus · sonnet | ✗ | round 1. opus: **HIGH** qualname-collision (body matching keyed by bare name collapsed same-named funcs → key by full node id) + MEDIUM empty-body phantom + MEDIUM operator-blind labels + LOW sim>1.0. sonnet: MEDIUM corrupt-db traceback + MEDIUM **alien sqlite silently migrated/mutated** → read-only probe before `Store()`. |
+| R154 | 3 | ✗ | opus LOW: URI-reserved-char (`?`/`#`) db path falsely refused → `Path().resolve().as_uri()`. |
+| R155 | 3 | ✗ | opus MEDIUM: control-flow-nested defs dropped (visit didn't descend non-def nodes). sonnet NIT: `body_threshold` not exposed → threaded through. |
+| R156 | 3 | ✗ | opus **CRITICAL**: a deep-but-valid expression overflowed the recursive walk → traceback from the advisory layer; `fingerprint_source` now catches `RecursionError`/`SyntaxError`/`ValueError`. |
+| R157 | 3 | ✓ | clean — but predates the R158 change; doesn't count. |
+| R158 | 3 | ✗ | opus MEDIUM: `match` statements dropped → explicit branch + `_match_captures()` + a **generic fallback** so a future syntax addition can't silently vanish. |
+| R159 | 3 | ✓ | clean — but predates the R160 fix. Between R159/R160 the **white-box completeness oracle** (`tests/oracles/test_structure_completeness.py`) was added; it deterministically caught two further drops the panels had missed (Subscript index, Dict keys). |
+| R160 | 3 | ✗ | opus **HIGH**: `graph_diff` passed the read-only probe but then opened a valid **older-schema** index with `Store()`, whose `_migrate` (ALTER TABLE + commit) mutated the user's file on disk → fix: diff over a **temp copy**, never the original. |
+| R161 | 3 | ✓ | clean-cycle round (post temp-copy). Lone NIT: docs said `--other-db` but the CLI is a positional `OTHER_DB` — fixed during finalize. haiku flagged a stale editable-install `dist-info` (2.1.31) = ENV artifact, not a source defect. |
+| R162 | 3 | ✗ | opus **MEDIUM**: AugAssign on a bare Name dropped the target read-edge (`x += e` ≠ `x = x + e`, sim 0.50) — broke the documented temp-var/reorder invariance, internally inconsistent (attr/subscript targets kept it). Fix: `read_target()` Load-semantics lookup. sonnet corrected the doc'd graphdiff mutation count 8/8 → 9/9. |
+| R163 | 3 | ✗ | sonnet ran the mutation meta-oracle over `structure.py` and surfaced **test gaps** (not code bugs): MEDIUM `_VFG.link`'s edge-add branch un-pinned — nothing asserted that two functions with an identical node bag but different wiring score low (the *core* property); LOW the match-guard link + the with-as bind likewise un-pinned. Added 3 tests → mutation now **`structure.py` 15/15 + `graphdiff` 9/9**. |
+| R164 | 3 | ✓ | **final clean-cycle round 1** on a frozen HEAD. opus+sonnet CLEAN (gate 698/85, mutation 15/15+9/9, cardinal byte-identical, dogfood). haiku reported a "CRITICAL" mutation failure that was a **reviewer methodology error** — it ran the wrong kill-signal (the dogfood oracle / a partial suite, not the modules' own unit tests); re-verified false. Surfaced a real doc-precision NIT (name the kill-signal in the docs), folded into finalize. |
+| R165 | 3 | ✓ | **final clean-cycle round 2** — streak 2, gate met, **RELEASABLE** (RRS 93.3). All three used the correct kill-signals (15/15 + 9/9). opus: 2000-case structural fuzz + edge cases, zero crashes; cardinal `find_stale` byte-identical. sonnet: dogfood + read-only stress + determinism clean. haiku: counts/version/CLI/claims all true. |
+
+Process notes (this release earned several): (1) **two genuinely-frozen clean rounds** — when the
+maintainer asked whether the panels review the same code, the answer is yes *within* a round, and
+any real finding resets the streak; R164/R165 ran on one byte-frozen commit with nothing committed
+between launch and both reports. (2) The **completeness oracle** replaced panel whack-a-mole for the
+"dropped node type" class — it found two bugs seven panel rounds had missed, and an introspective
+guard fails if a future Python adds a node type. (3) **Mutation survivors are findings**: R163's
+gaps were in tests I'd just written; closing them (and naming the kill-signal in the docs after a
+reviewer ran the wrong one) is the same shape as the v2.3.0 `on_stack` lesson. (4) A surfaced but
+**out-of-scope** item — `similar.py`'s optional semantic/dense path has pre-existing mutation gaps
+(documented optional-dep blind spot) — was parked in `docs/IDEAS.md` §5d rather than chased.
 
 ## Standing themes
 

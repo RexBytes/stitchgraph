@@ -4,6 +4,54 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.0.0] — 2026-06-29
+
+**The intra-procedural body matrix (Python).** stitchgraph's graph has always been
+*inter*-procedural — definitions linked by CALLS / REFERENCES / INHERITS / IMPORTS. v3.0.0 adds the
+level *below* it: a per-function **value-flow matrix** built from the body AST, and two advisory
+features built on it. New representation → MAJOR version. **Backward-compatible**: existing
+operations, the schema, and indexes are unchanged; the new capabilities are opt-in.
+
+Grew out of the matrix-as-oracle research (`research/`, not packaged): the body-level signal finds
+redundancy/fidelity issues the call graph is blind to (it independently re-found, then drove the
+v2.3.0 `tarjan_scc` dedup).
+
+### Added
+
+- **`core/structure.py`** — a structural fingerprint for Python functions: a value-flow graph
+  (operations + control points, data + control edges) with copy propagation, fingerprinted
+  order- and name-invariantly via a Weisfeiler-Lehman kernel. So renamed locals, reordered
+  independent statements, and temp-variable factoring all read as the same shape.
+- **`find_similar(mode="structure")`** — rank stored Python functions by *body shape* (not name /
+  docstring / callees). Finds Type-2/Type-3 clones a token differ misses. Default
+  `mode="semantic"` is unchanged.
+- **`graph_diff`** (new operation) — structurally diff this index against another built index
+  (a `.db` path): located node/edge deltas (`mode="id"` exact, `mode="leaf"` name-tail for
+  cross-codebase shape) plus, for Python functions in both, those whose *body shape* changed —
+  the translation-fidelity / plan-vs-actual signal. A data-flow bug that leaves the call graph
+  identical is invisible to the call-level diff but caught by the body layer. Exposed on the
+  library API, CLI (`graph-diff OTHER_DB --mode/--body/--body-threshold`), and MCP. The `other_db` file is treated as strictly
+  read-only — it is validated by a read-only probe and diffed over a temporary copy, so a valid but
+  older-schema index is never migrated/mutated on disk.
+
+All three are **advisory and read-only** — they never feed `find_stale`, so the cardinal rule is
+structurally unaffected. **Python-only** (the deep stdlib `ast`); other languages are future work
+(`docs/IDEAS.md` §5). The fingerprint is a structural approximation, not sound data flow (copy
+propagation but no SSA φ-nodes / loop fixpoint / alias analysis; constants collapsed) — documented
+in the module and `research/04-expr-dfg/FINDINGS.md`.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **698** passing; differential oracle suite **85** — incl. a
+  graph_diff dogfood oracle (stitchgraph's own source self-diffs to equivalent) and a **body-matrix
+  completeness oracle**: a metamorphic battery that fails if any value-bearing Python statement type
+  is dropped by the fingerprint, plus an introspective guard that fails when a future Python adds a
+  statement type — closing the one defect class adversarial review kept surfacing (`except*` →
+  control-flow defs → `match` → subscript index → dict keys), at BOTH statement and expression level. Mutation meta-oracle: the `structure.py` core 15/15
+  (`pytest tests/test_structure.py tests/oracles/test_structure_completeness.py`) and `graphdiff`
+  core 9/9 (`pytest tests/test_graph_diff.py`) killed by their own unit suites. Multi-round
+  full-diversity adversarial panel (opus/sonnet/haiku).
+
 ## [2.3.0] — 2026-06-29
 
 **Internal: shared Tarjan SCC core (`tarjan_scc`).** The strongly-connected-components algorithm

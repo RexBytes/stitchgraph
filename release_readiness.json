@@ -1838,6 +1838,157 @@
             ],
             "findings": {},
             "theme": "v2.3.0 clean-cycle round 2 \u2014 CLEAN, second consecutive full-diversity -> gate met, RELEASABLE. opus: full 4-file release diff reviewed, behaviour-preserving, cardinal unaffected, all CHANGELOG/notes claims verified true (590 passing); lone NIT = pre-existing CHANGELOG 2.2.x ordering, FIXED during finalize (blocks reordered SemVer-descending). sonnet: deterministic gate re-run \u2014 590 tests, 27 oracles, ruff+mypy clean, readiness RELEASABLE (RRS 94.8); live scan + find_data_loops on src/stitchgraph coherent (26 issues, 1 data loop \u2014 all pre-existing/expected). haiku: version 2.3.0 consistent across pyproject/README/__version__ (metadata-derived), no stale refs or debug."
+        },
+        {
+            "id": "R153",
+            "models": [
+                "opus",
+                "sonnet"
+            ],
+            "findings": {
+                "HIGH": 1,
+                "MEDIUM": 4,
+                "LOW": 1
+            },
+            "theme": "v3.0.0 body-matrix round 1. opus: HIGH body-matching keyed by bare qualname collapsed same-named functions across files (-> key by full node id); MEDIUM empty-body phantom (stub similarity 0.0 read as changed -> skip identical fingerprints); MEDIUM operator-blind labels (a+b==a-b, <==>) -> tag operators; LOW similarity could exceed 1.0 -> clamp. sonnet: MEDIUM corrupt other_db raised a sqlite traceback; MEDIUM alien sqlite silently migrated/mutated -> read-only probe validates meta 'root' before constructing Store."
+        },
+        {
+            "id": "R154",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1
+            },
+            "theme": "v3.0.0 round 2. opus: LOW a db path with URI-reserved chars (?/#) was misparsed by the read-only probe and falsely refused -> Path().resolve().as_uri(). sonnet/haiku clean."
+        },
+        {
+            "id": "R155",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1,
+                "NIT": 1
+            },
+            "theme": "v3.0.0 round 3. opus: MEDIUM a def nested in a control-flow block was dropped because visit() did not descend non-def nodes -> descend at same qual level. sonnet: NIT body_threshold not exposed on the op -> threaded through (auto-exposes to CLI/MCP)."
+        },
+        {
+            "id": "R156",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "CRITICAL": 1
+            },
+            "theme": "v3.0.0 round 4. opus: CRITICAL a deep-but-valid expression chain overflowed the recursive walk -> RecursionError from the advisory layer; fingerprint_source now catches (SyntaxError, ValueError, RecursionError) and degrades."
+        },
+        {
+            "id": "R157",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.0.0 clean attempt -- CLEAN, but predates a subsequent code change (match handling, R158); does not count toward the final streak."
+        },
+        {
+            "id": "R158",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.0.0 round 5. opus: MEDIUM match statements dropped by _build_vfg -> explicit Match branch + _match_captures() + a generic fallback for any unhandled statement type."
+        },
+        {
+            "id": "R159",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.0.0 clean attempt -- CLEAN, but predates the R160 fix; does not count. Between R159 and R160 the white-box completeness oracle was added; it independently caught two further drops (Subscript index, Dict keys) the panels had missed."
+        },
+        {
+            "id": "R160",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "HIGH": 1
+            },
+            "theme": "v3.0.0 final-cycle attempt -- NOT clean. opus: HIGH read-only violation -- graph_diff validated other_db with a read-only probe but then opened it with Store(other_db), whose constructor runs _migrate (ALTER TABLE) + commit; a valid but OLDER-SCHEMA index passed the probe and was silently upgraded/mutated on disk. sonnet+haiku CLEAN. Fix: diff over a temp copy, never the original (regression test test_operation_does_not_migrate_older_schema_other_db)."
+        },
+        {
+            "id": "R161",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "NIT": 1
+            },
+            "theme": "v3.0.0 clean-cycle round (post temp-copy fix) -- CLEAN (weighted 0.2 < tau). opus: lone NIT, docs described the CLI as --other-db but the generated CLI exposes a positional OTHER_DB (FIXED during finalize). sonnet: gate 692/85, RELEASABLE; read-only stress byte-identical; find_stale unchanged by the features. haiku: claims/counts verified; flagged a stale editable-install dist-info (2.1.31) -- an ENV artifact (pyproject=3.0.0, __version__ derives from metadata), not a source defect."
+        },
+        {
+            "id": "R162",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.0.0 clean-cycle attempt -- NOT clean (streak reset). opus: MEDIUM AugAssign on a bare Name dropped the target read-edge (ev() gates Name on Load; a Store-ctx target returned None), so x+=e diverged from x=x+e (sim 0.50), breaking the documented temp-var/reorder invariance; internally inconsistent (attribute/subscript targets kept the edge). Fixed via read_target() Load-semantics lookup + 3 regression tests. sonnet: CLEAN; noted graphdiff mutation is 9/9 (doc said 8/8 -> corrected). haiku: CLEAN as source (the dist-info env artifact again)."
+        },
+        {
+            "id": "R163",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1,
+                "LOW": 1
+            },
+            "theme": "v3.0.0 clean-cycle round 1 attempt -- NOT clean (streak reset). opus+haiku CLEAN. sonnet ran the mutation meta-oracle over structure.py and surfaced un-pinned sites (test gaps, not code bugs): MEDIUM _VFG.link's edge-add branch was not pinned -- nothing asserted that two functions with an identical node bag but different value-flow wiring score low (the core property); LOW the match-guard link and (found while fixing) the with-as bind were likewise un-pinned. Added 3 regression tests; mutation meta-oracle now structure.py 15/15 + graphdiff 9/9."
+        },
+        {
+            "id": "R164",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.0.0 final clean-cycle round 1 (frozen HEAD 941516b) -- CLEAN. opus: gate 698/85, mutation 15/15 + 9/9 (own unit suites), cardinal byte-identical, broad new-class sweep (unicode idents, async-gen, deep expr, threshold boundaries, bad db files) all degrade gracefully. sonnet: dogfood self-diff equivalent + other_db byte-identical, body-only bug flagged exactly, determinism across subprocesses, 7-case read-only stress clean. haiku reported a 'CRITICAL' mutation failure but it was a REVIEWER METHODOLOGY ERROR (ran the wrong kill-signal -- the dogfood oracle / a partial suite instead of the modules' own unit tests); re-verified false: with the documented kill-signals the counts are 15/15 + 9/9. Surfaced a real doc-precision NIT (name the kill-signal), folded into finalize."
+        },
+        {
+            "id": "R165",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.0.0 final clean-cycle round 2 (frozen HEAD 941516b) -- CLEAN; streak 2, gate met, RELEASABLE. All three ran the CORRECT mutation kill-signals: structure.py 15/15, graphdiff 9/9. opus: 2000-case structural fuzz + 19 edge cases, zero crashes; cardinal find_stale byte-identical; the lone transient KeyError investigated and ruled a non-reproducible recursion artifact already guarded by fingerprint_source. sonnet: gate 698/85 RELEASABLE, dogfood + read-only stress + determinism all clean. haiku: counts/version/CLI/claims all verified true with the exact kill-signals."
         }
     ]
 }
