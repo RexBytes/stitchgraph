@@ -172,3 +172,26 @@ CFG + PDG in one graph distinguished by edge/level tags). Maintainer idea (2026-
 qs: persist deep layers in the store vs compute on demand (scale — the body layers are large and
 fight the streaming indexer, so on-demand-per-function is the likely default); how `provenance`/
 cardinal rules apply per layer (deeper = less sound → advisory-only until proven).
+
+### 5d. Mutation-harden `core/similar.py`'s semantic / dense-embedding path (surfaced R163/R164)
+
+While hardening v3.0.0, the mutation meta-oracle was driven to zero survivors on the **new** body
+matrix (`structure.py` 15/15, `graphdiff.py` 9/9). Running it over `core/similar.py` leaves ~15
+survivors — **all pre-existing, none in the v3.0.0 code path**, so deliberately *not* chased for the
+release. They cluster in two buckets:
+
+- **optional `model2vec` / dense-embedder path** (`_try_model2vec`, `load_config`, the embedding
+  cosine `na/nb`): distinguishing these mutants needs a real model load (network/install) the core
+  suite deliberately never triggers — the documented "optional-dep blind spot" (see
+  `REVIEW_HISTORY.md` standing themes).
+- **`_dense` ranking** (`reverse=`, `> 0` filter): the one test that exercises it
+  (`test_pluggable_dense_embedder`) has a *score tie at the top*, so the sort-direction / filter
+  mutants are indistinguishable — a weak test, not a product bug. (The **structure**-mode ranking
+  in `find_similar_structure` IS pinned — `test_structure_mode_ranks_the_clone_first` asserts the
+  top result and `top > csv`.)
+
+Hardening pass (a future cardinal-loop-style chore, not a release blocker): (1) add a `_dense` test
+with a strict, tie-free ranking so `reverse=True` / the `> 0` filter are pinned; (2) add an offline
+fake-embedder fixture (or skip-marks gated on the `model2vec` extra) that distinguishes the
+config/model-load mutants. Goal: `similar.py` joins `structure.py`/`graphdiff.py` at a clean
+mutation score under a documented kill-signal.

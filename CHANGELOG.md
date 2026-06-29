@@ -48,8 +48,9 @@ in the module and `research/04-expr-dfg/FINDINGS.md`.
   is dropped by the fingerprint, plus an introspective guard that fails when a future Python adds a
   statement type — closing the one defect class adversarial review kept surfacing (`except*` →
   control-flow defs → `match` → subscript index → dict keys), at BOTH statement and expression level. Mutation meta-oracle: the `structure.py` core 15/15
-  and `graphdiff` core 9/9 killed by their unit tests. Multi-round full-diversity adversarial panel
-  (opus/sonnet/haiku).
+  (`pytest tests/test_structure.py tests/oracles/test_structure_completeness.py`) and `graphdiff`
+  core 9/9 (`pytest tests/test_graph_diff.py`) killed by their own unit suites. Multi-round
+  full-diversity adversarial panel (opus/sonnet/haiku).
 
 ## [2.3.0] — 2026-06-29
 
