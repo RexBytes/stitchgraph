@@ -66,14 +66,21 @@ file, hence one language).
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **1023** passing; differential oracle suite **387**.
+- ruff + mypy clean; full suite **1024** passing; differential oracle suite **388**.
 - Two new **body-matrix completeness oracles** — Java
-  (`tests/oracles/test_structure_java_completeness.py`, 45 metamorphic cases + invariants) and C#
-  (`tests/oracles/test_structure_csharp_completeness.py`, 43 metamorphic cases + invariants): a
+  (`tests/oracles/test_structure_java_completeness.py`, 44 metamorphic cases + invariants) and C#
+  (`tests/oracles/test_structure_csharp_completeness.py`, 44 metamorphic cases + invariants): a
   `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and expression position must
   change the fingerprint, plus dedicated invariants (compound-assign rebind, cast carries operand not
   type, constructor keyed, nested-lambda opaque, Java nested-class/interface-default keying, C#
   namespace-not-in-key / local-function keyed / expression-bodied member walked).
+- **Hardened the completeness-oracle predicate across all seven languages.** The metamorphic check was
+  `similarity(a, b) < 1.0`, but cosine self-similarity of a large WL vector rounds to `0.999…98 < 1.0`,
+  so it could *pass on byte-identical fingerprints* and mask a fully-dropped construct; it now returns
+  `1.0` (fails) when the two fingerprints are exactly equal. This caught three C# drops the weak
+  predicate had hidden — `using (var r = e)` paren-form resource, `$"{…}"` interpolated-string holes,
+  and the `new int[]{…}` element initializer — all now walked. The other six languages were
+  re-verified clean under the stricter predicate.
 - Mutation meta-oracle: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` **53/61** — the new
   Java/C# fingerprint corpora are mutation-pinned by `graph_diff` body tests; the 8 survivors are
   justified-equivalent (`not sep or … is None` short-circuit guards, unreachable because every node id

@@ -39,11 +39,11 @@ _TYPE_NODES = frozenset({"class_declaration", "struct_declaration", "interface_d
 # Namespace wrappers — recursed into WITHOUT contributing to the qualname (the extractor drops them).
 _NS_NODES = frozenset({"namespace_declaration", "file_scoped_namespace_declaration"})
 
-# Leaf literals — one CONST node regardless of value.
+# Leaf literals — one CONST node regardless of value. (An interpolated string is NOT here: its
+# `{...}` holes carry value flow and are walked explicitly, like a JS template literal.)
 _CONST = frozenset({
     "integer_literal", "real_literal", "string_literal", "verbatim_string_literal",
-    "interpolated_string_expression", "character_literal", "boolean_literal", "null_literal",
-    "raw_string_literal",
+    "character_literal", "boolean_literal", "null_literal", "raw_string_literal",
 })
 
 
@@ -249,15 +249,28 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     if rank.type == "array_rank_specifier":
                         for d in rank.named_children:
                             g.link(ev(d, ctrl), n, _DATA)
-            init = node.child_by_field_name("initializer")
-            if init is not None:
-                g.link(ev(init, ctrl), n, _DATA)
+            # the `{...}` element initializer is a positional `initializer_expression` child (no field
+            # name), so scan children rather than `child_by_field_name("initializer")`.
+            for c in node.named_children:
+                if c.type == "initializer_expression":
+                    g.link(ev(c, ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
             return n
         if t in ("initializer_expression", "implicit_array_creation_expression"):
             n = g.add("COMPOSITE")
             for c in node.named_children:
                 g.link(ev(c, ctrl), n, _DATA)
+            return n
+        if t == "interpolated_string_expression":
+            # An interpolated string `$"{e}"` carries value flow through its `{...}` holes (like a JS
+            # template literal / f-string); a plain string with no holes collapses to CONST.
+            n = g.add("CONST")
+            for c in node.named_children:
+                if c.type == "interpolation":
+                    for ic in c.named_children:
+                        if ic.type not in ("interpolation_brace", "interpolation_format_clause",
+                                           "interpolation_alignment_clause"):
+                            g.link(ev(ic, ctrl), n, _DATA)
             return n
         if t == "binary_expression":
             n = g.add("BINOP:" + _op_text(node, text))
@@ -397,14 +410,19 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                         else:
                             do(st, b)
         elif t == "using_statement":
-            decl = node.child_by_field_name("declaration")
-            if decl is not None and decl.type == "variable_declaration":
-                _do_var_declaration(decl, ctrl)
-            else:
-                cond = node.child_by_field_name("expression") or node.child_by_field_name("condition")
-                if cond is not None:
-                    ev(cond, ctrl)
-            _do_body(node.child_by_field_name("body"), ctrl)
+            # `using (...) { ... }`: the grammar exposes only a `body` field; the resource (a
+            # `variable_declaration` for `using (var r = e)` or a bare expression for `using (e)`) is a
+            # positional, unnamed-field child — so scan children, skipping the body (R193 opus).
+            body = node.child_by_field_name("body")
+            bspan = (body.start_byte, body.end_byte) if body is not None else None
+            for c in node.named_children:
+                if bspan is not None and (c.start_byte, c.end_byte) == bspan:
+                    continue
+                if c.type == "variable_declaration":
+                    _do_var_declaration(c, ctrl)
+                else:
+                    ev(c, ctrl)
+            _do_body(body, ctrl)
         elif t == "try_statement":
             _do_body(node.child_by_field_name("body"), ctrl)
             for ch in node.named_children:

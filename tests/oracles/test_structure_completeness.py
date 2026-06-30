@@ -30,6 +30,9 @@ from stitchgraph.core import structure
 def _sim(src_a: str, src_b: str, name: str = "t") -> float:
     a = structure.fingerprint_source(src_a)[name]
     b = structure.fingerprint_source(src_b)[name]
+    if a == b:
+        return 1.0  # identical fingerprints == construct dropped; avoid the cosine float-rounding
+        #             blind spot: self-cosine of a large WL vector rounds to 0.999...98 < 1.0
     return structure.similarity(a, b)
 
 

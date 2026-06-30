@@ -71,8 +71,8 @@ for LLM agents. The full operation list and the question each answers is in the 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
 and the body matrix (v3.0.0) now spans Python, the JS family (v3.2.0), Go (v3.3.0),
-Rust (v3.4.0), and C/C++ (v3.5.0). See [`docs/STATUS.md`](docs/STATUS.md) for the full
-table + roadmap.
+Rust (v3.4.0), C/C++ (v3.5.0), and Java + C# (v3.6.0). See [`docs/STATUS.md`](docs/STATUS.md)
+for the full table + roadmap.
 
 ### Headline: the intra-procedural body matrix (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C#)
 
@@ -100,17 +100,17 @@ capabilities:
 
 Both are **advisory and read-only** — they never feed `find_stale`, so the cardinal
 rule is structurally unaffected. **Python is stdlib-only; the JS/TS, Go, Rust,
-and C/C++ layers need the tree-sitter extra.** Cross-language *body* comparison stays
+C/C++, Java, and C# layers need the tree-sitter extra.** Cross-language *body* comparison stays
 oracle-only (topology tracks the extractor); the features rank/diff within one
 language. It is a structural *approximation*, not sound data flow — full scope and
-limits in [`docs/RELEASE_NOTES_v3.5.0.md`](docs/RELEASE_NOTES_v3.5.0.md).
+limits in [`docs/RELEASE_NOTES_v3.6.0.md`](docs/RELEASE_NOTES_v3.6.0.md).
 
 ```python
 import stitchgraph as sg
 
 with sg.Store("stitchgraph.db") as store:
     sg.reindex(store, "src")
-    # rank stored functions by body shape (renamed/reordered clones; Python, JS/TS, Go, Rust, or C/C++)
+    # rank stored functions by body shape (renamed/reordered clones; Python, JS/TS, Go, Rust, C/C++, Java, or C#)
     print(sg.find_similar(store, open("some_func.py").read(), mode="structure"))
     # body-aware structural diff against another built index
     print(sg.graph_diff(store, "other_index.db"))   # body-aware by default

@@ -31,10 +31,18 @@ every existing operation unchanged; the new behavior is opt-in and advisory).
   same-language only (a node id maps to exactly one file → one language).
 
 ### Quality gate
-- ruff + mypy clean; full suite **1023** passing; differential oracle suite **387** — incl. two new
-  body-matrix completeness oracles: **Java** (45 metamorphic cases + invariants) and **C#** (43
+- ruff + mypy clean; full suite **1024** passing; differential oracle suite **388** — incl. two new
+  body-matrix completeness oracles: **Java** (44 metamorphic cases + invariants) and **C#** (44
   metamorphic cases + invariants), each requiring a `helper()` CALL vs a `0` CONST in every
-  value-bearing position to change the fingerprint. Mutation meta-oracle: `structure.py` 15/15,
+  value-bearing position to change the fingerprint.
+- **Hardened the completeness-oracle predicate across all seven languages.** The metamorphic check was
+  `similarity(a, b) < 1.0`, but cosine self-similarity of a large WL vector rounds to `0.999…98 < 1.0`,
+  so it could *pass on byte-identical fingerprints* — masking a fully-dropped construct. It now returns
+  `1.0` (fails) when the two fingerprints are exactly equal. This caught three C# drops the weak
+  predicate had hidden — `using (var r = e)` paren-form resource (a positional, unnamed-field child),
+  `$"{…}"` interpolated-string holes (was one CONST), and the `new int[]{…}` element initializer (a
+  positional `initializer_expression`) — all now walked. The other six languages re-verified clean.
+- Mutation meta-oracle: `structure.py` 15/15,
   `graphdiff` 9/9, `similar.py` **53/61** (the new Java/C# fingerprint corpora are now mutation-pinned
   by `graph_diff` body tests; the 8 survivors are justified-equivalent — the `not sep or … is None`
   short-circuit guards, unreachable because every node id contains `::`, plus the `_cosine`/`_dot_cos`

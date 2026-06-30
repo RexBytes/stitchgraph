@@ -32,6 +32,9 @@ def _sim(src_a: str, src_b: str, name: str = "T.t") -> float:
     b = sj.fingerprint_source(src_b)
     assert name in a, f"fingerprint_source did not capture {name!r} in: {src_a!r}"
     assert name in b
+    if a[name] == b[name]:
+        return 1.0  # identical fingerprints == construct dropped; avoid the cosine float-rounding
+        #             blind spot: self-cosine of a large WL vector rounds to 0.999...98 < 1.0
     return similarity(a[name], b[name])
 
 
