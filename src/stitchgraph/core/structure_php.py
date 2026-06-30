@@ -368,9 +368,16 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     _do_body(c.child_by_field_name("body") or c, ctrl)
         elif t == "compound_statement":
             _do_body(node, ctrl)
-        elif t in ("break_statement", "continue_statement", "global_declaration",
-                   "function_static_declaration"):
+        elif t in ("break_statement", "continue_statement", "global_declaration"):
             pass
+        elif t == "function_static_declaration":
+            # `static $x = <expr>;` — unlike break/continue/global this carries an initializer that
+            # is evaluated (once) in the function body, so its value flow must be walked (bind the
+            # name to the init value), parallel to a plain assignment.
+            for c in node.named_children:
+                if c.type == "static_variable_declaration":
+                    val = ev(c.child_by_field_name("value"), ctrl)
+                    bind(c.child_by_field_name("name"), val)
         elif t.endswith("statement"):
             for c in node.named_children:
                 if c.type == "compound_statement" or c.type.endswith("statement"):

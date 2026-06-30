@@ -55,6 +55,10 @@ _STMT: dict[str, str] = {
     "Switch-case": "switch ($a) { case 1: return {probe}; default: return 0; }",
     "Throw": "if ($a > 0) throw new E({probe}); return 0;",
     "TryCatch": "try { sink({probe}); } catch (E $e) {} return 0;",
+    # `static $x = <expr>;` runs its initializer (once) in the function body — value flow, unlike
+    # break/continue/global. Was wrongly grouped no-flow (v3.7.0 panel).
+    "StaticInit": "static $x = {probe}; return $x;",
+    "StaticInit2nd": "static $x = 1, $y = {probe}; return $y;",
 }
 
 
