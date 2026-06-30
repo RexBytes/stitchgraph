@@ -601,9 +601,9 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     functions/methods/classes by token similarity (name + docstring + callees) to the snippet;
     mode="structure" ranks stored functions by body-shape similarity to the snippet's function —
     name-agnostic, advisory. The snippet's language is auto-detected (Python, the JS/TS family, Go,
-    Rust, or C/C++) and ranked only against stored functions of the SAME language (a fingerprint's topology
-    tracks its extractor, so cross-language scores aren't comparable). JS/TS, Go, Rust, and C/C++ need the
-    tree-sitter extra."""
+    Rust, C/C++, Java, or C#) and ranked only against stored functions of the SAME language (a
+    fingerprint's topology tracks its extractor, so cross-language scores aren't comparable). JS/TS, Go,
+    Rust, C/C++, Java, and C# need the tree-sitter extra."""
     from . import similar
 
     # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
@@ -618,8 +618,8 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         return refuse("mode must be 'semantic' or 'structure'", confidence=0.0)
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
-        hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, or C/C++ "
-                "function source; the tree-sitter languages need the extra)"
+        hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, "
+                "C/C++, Java, or C# function source; the tree-sitter languages need the extra)"
                 if mode == "structure"
                 else "no similar code found (or snippet had no usable tokens)")
         return refuse(hint, confidence=0.0)
@@ -636,8 +636,8 @@ def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
     Reports located node/edge deltas — mode="id" is exact (same codebase: did a refactor change the
     graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
     *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
-    tracks the extractor). With `body`, Python, JS/TS/TSX, Go, Rust, and C/C++ functions present in both
-    whose *body shape* diverged are listed too (same-language only). Advisory and read-only; never
+    tracks the extractor). With `body`, Python, JS/TS/TSX, Go, Rust, C/C++, Java, and C# functions present
+    in both whose *body shape* diverged are listed too (same-language only). Advisory and read-only; never
     edits source, never feeds find_stale.
 
     Note: the body layer fingerprints functions from their **source files at diff time** (the body

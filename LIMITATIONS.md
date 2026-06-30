@@ -592,21 +592,22 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Escape hatch:** `similar.set_embedder(fn)` with any backend, or install
   `model2vec` / `sentence-transformers`.
 
-### The body matrix (structure mode / graph_diff body layer) covers Python + JS/TS/TSX + Go + Rust + C/C++ and is a structural approximation (v3.0.0 / v3.2.0 / v3.3.0 / v3.4.0 / v3.5.0)
+### The body matrix (structure mode / graph_diff body layer) covers Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# and is a structural approximation (v3.0.0 / v3.2.0 / v3.3.0 / v3.4.0 / v3.5.0 / v3.6.0)
 - **Concern:** `find_similar(mode="structure")` and the body-shape layer of `graph_diff` analyse
-  **Python (v3.0.0)**, the **JS/TS/TSX family (v3.2.0)**, **Go (v3.3.0)**, **Rust (v3.4.0)**, and **C/C++ (v3.5.0)** only
-  — not the remaining 5 languages (Java, C#, Ruby, PHP, Bash) yet — and their fingerprint is *structural*, not sound data flow.
-- **Decision:** ship Python (deep stdlib `ast`, no extra) + JS/TS/TSX + Go + Rust + C/C++ (tree-sitter
-  extra required), advisory and read-only. The JS/Go/Rust/C++ layers degrade to nothing when the tree-sitter
-  extra is absent.
+  **Python (v3.0.0)**, the **JS/TS/TSX family (v3.2.0)**, **Go (v3.3.0)**, **Rust (v3.4.0)**, **C/C++ (v3.5.0)**,
+  and **Java + C# (v3.6.0)** only
+  — not the remaining 3 languages (Ruby, PHP, Bash) yet — and their fingerprint is *structural*, not sound data flow.
+- **Decision:** ship Python (deep stdlib `ast`, no extra) + JS/TS/TSX + Go + Rust + C/C++ + Java + C#
+  (tree-sitter extra required), advisory and read-only. The JS/Go/Rust/C++/Java/C# layers degrade to
+  nothing when the tree-sitter extra is absent.
 - **Rationale:** porting one language at a time — and dogfooding each — mirrors how the cardinal
   sweep succeeded; the remaining tree-sitter languages are future work (`docs/IDEAS.md` §5b). The
   fingerprint does copy propagation but has **no SSA φ-nodes, no loop fixpoint, no alias analysis**,
   and collapses constants — so it detects Type-2/Type-3 (renamed / reordered / temp-var) clones but
   not Type-4 (algorithmically-equivalent, differently-structured) code.
 - **Cross-language is oracle-only:** a body fingerprint's topology tracks its extractor, so Python,
-  JS, Go, Rust, and C/C++ fingerprints are not directly comparable; the features rank/diff within one
-  language.
+  JS, Go, Rust, C/C++, Java, and C# fingerprints are not directly comparable; the features rank/diff
+  within one language.
 - **Cardinal-safety:** both features are advisory and never feed `find_stale`, so an over- or
   under-precise fingerprint can only mis-rank a suggestion — never flag live code dead.
 - **Computed at query time, not persisted:** the body matrix is fingerprinted from the function's

@@ -4,6 +4,40 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.6.0] — 2026-06-30
+
+**The body matrix learns Java and C#.** v3.5.0 added C/C++; v3.6.0 adds **Java and C#** — languages 5
+and 6 of the multi-language sweep (`docs/IDEAS.md` §5b), the first release to add a *pair* in one
+MINOR. New languages for an existing representation → MINOR; backward-compatible (schema, indexes, and
+every existing operation unchanged; the new behavior is opt-in and advisory).
+
+### Added
+- **`core/structure_java.py` — Java body matrix.** A tree-sitter Java walker emitting the **same**
+  `_VFG` the other frontends do, reusing the WL kernel. Methods/constructors are keyed by the dotted
+  chain of enclosing TYPE names (the `package`/imports are NOT part of the key) — `Outer.compute`,
+  nested `Outer.Inner.m`, interface default `Shape.area`, constructor `C.C`. Statement-oriented;
+  compound-assign normalises to base-op + rebind; casts are operand-transparent; enhanced-`for`,
+  `switch` (statement and arrow expression), try-with-resources, `synchronized`/labeled blocks carry
+  flow; lambdas / anonymous classes are opaque `NESTED` leaves. Java has no free functions, so a
+  top-level method (only seen in error-tolerant parses of non-Java source) is intentionally not keyed.
+- **`core/structure_csharp.py` — C# body matrix.** A tree-sitter C# walker emitting the same `_VFG`.
+  Methods/constructors **and local functions** are keyed by the dotted TYPE chain (the `namespace` is
+  NOT part of the key) — `Calc.Compute`, constructor `Calc.Calc`, local function `Calc.Local.Inner` —
+  matching the extractor. Call/index arguments are unwrapped from their `argument` nodes;
+  expression-bodied members (`int M() => e;`), `foreach`, `switch` statement/expression, `using`/`lock`
+  blocks carry flow; lambdas / anonymous methods are opaque. Properties, operators, and destructors are
+  not method nodes in the extractor, so they are not keyed.
+- **`find_similar(mode="structure")` and `graph_diff`** now cover Java and C#, ranked/diffed
+  same-language only (a node id maps to exactly one file → one language).
+
+### Quality gate
+- ruff + mypy clean; full suite **1021** passing; differential oracle suite **387** — incl. two new
+  body-matrix completeness oracles: **Java** (45 metamorphic cases + invariants) and **C#** (43
+  metamorphic cases + invariants), each requiring a `helper()` CALL vs a `0` CONST in every
+  value-bearing position to change the fingerprint. Mutation meta-oracle unchanged (`structure.py`
+  15/15, `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity adversarial panel
+  (opus/sonnet/haiku), clean.
+
 ## [3.5.0] — 2026-06-30
 
 **The body matrix learns C and C++.** v3.4.0 added Rust; v3.5.0 adds C/C++ — language 4 of the

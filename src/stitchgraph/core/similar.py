@@ -17,7 +17,15 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
-from . import structure, structure_cpp, structure_go, structure_js, structure_rust
+from . import (
+    structure,
+    structure_cpp,
+    structure_csharp,
+    structure_go,
+    structure_java,
+    structure_js,
+    structure_rust,
+)
 from .model import NodeKind, Relation
 from .store import Store
 
@@ -104,7 +112,8 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     mode="semantic" (default): token/dense similarity over name + docstring + callees — uses the
     dense embedder if one is registered (or model2vec auto-loads), else token cosine.
     mode="structure": body-shape similarity (`structure.py` for Python, `structure_js.py` for
-    JS/TS/TSX, `structure_go.py` for Go, `structure_rust.py` for Rust, `structure_cpp.py` for C/C++)
+    JS/TS/TSX, `structure_go.py` for Go, `structure_rust.py` for Rust, `structure_cpp.py` for C/C++,
+    `structure_java.py` for Java, `structure_csharp.py` for C#)
     — ranks stored functions by how structurally like the snippet's function they are. Advisory; the
     snippet's language is auto-detected and ranked same-language only (the tree-sitter languages need
     the extra).
@@ -286,13 +295,68 @@ def _cpp_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
                 yield node_id, fp
 
 
+def _java_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored Java method/constructor, the Java
+    analogue of `_python_fn_fingerprints`. Keyed by the extractor's scheme (`Outer.compute`, nested
+    `Outer.Inner.m`, constructor `C.C`). Requires the tree-sitter extra; without it
+    `structure_java.fingerprint_source` returns {} and nothing yields."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or structure_java._lang_for_ext(Path(path).suffix) is None:
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_java.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
+def _csharp_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored C# method/constructor/local-function,
+    the C# analogue of `_python_fn_fingerprints`. Keyed by the extractor's scheme (`Calc.Compute`,
+    constructor `Calc.Calc`, local function `Calc.Local.Inner`; the namespace is not part of the key).
+    Requires the tree-sitter extra; without it `structure_csharp.fingerprint_source` returns {}."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or structure_csharp._lang_for_ext(Path(path).suffix) is None:
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_csharp.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
 def find_similar_structure(store: Store, snippet: str,
                            limit: int = 10) -> list[tuple[str, float]]:
     """Rank stored functions/methods by *structural* (body-shape) similarity to the snippet, which
     must be function source. Advisory. The snippet's language is auto-detected — Python first, else
-    the JS/TS family, else Go, else Rust, else C/C++ — and it is ranked only against stored functions
-    of the SAME language (a body fingerprint's topology tracks its extractor, so cross-language scores
-    are not comparable). Empty if the snippet has no parseable function or (for the tree-sitter
+    the JS/TS family, else Go, else Rust, else Java, else C#, else C/C++ — and it is ranked only against
+    stored functions of the SAME language (a body fingerprint's topology tracks its extractor, so
+    cross-language scores are not comparable). The JS/TS grammar is permissive enough to also parse a
+    bare Java/C#/C++ `class { ... }` snippet, so a class-method snippet may be sniffed as JS/TS; this
+    only affects the advisory snippet auto-detect, never the extension-keyed `graph_diff` body layer.
+    Empty if the snippet has no parseable function or (for the tree-sitter
     languages) the extra is absent. The largest function in the snippet is used as the query."""
     limit = max(0, limit)
     q_fps = structure.fingerprint_source(snippet)
@@ -311,6 +375,14 @@ def find_similar_structure(store: Store, snippet: str,
         q_fps = structure_rust.fingerprint_source(snippet)
         if q_fps:
             corpus = _rust_fn_fingerprints
+    if not q_fps:
+        q_fps = structure_java.fingerprint_source(snippet)
+        if q_fps:
+            corpus = _java_fn_fingerprints
+    if not q_fps:
+        q_fps = structure_csharp.fingerprint_source(snippet)
+        if q_fps:
+            corpus = _csharp_fn_fingerprints
     if not q_fps:
         q_fps = structure_cpp.fingerprint_source(snippet)  # C/C++ last (the cpp grammar is permissive)
         if q_fps:
