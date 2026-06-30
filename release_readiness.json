@@ -2021,6 +2021,98 @@
             ],
             "findings": {},
             "theme": "v3.1.0 final clean-cycle round 2 (frozen HEAD 7bffb12) -- CLEAN; streak 2, gate met, RELEASABLE (RRS 93.3). opus (fresh skeptic angles): subprocess latch test robust to cleared env, the autouse fixture does not mask real path-switching, the token-ranking test's 0.784 vs 0.632 gap can't silently tie -> sort pin robust. sonnet: 703 x2, mutation 29/32 + 15/15 + 9/9, dogfood + cardinal clean. haiku: docs/version/README consistent; the lone 'bare mypy error in tests' note was a methodology slip (mypy is configured files=[\"src\"], so the gate excludes tests by design and is clean)."
+        },
+        {
+            "id": "R169",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 2
+            },
+            "theme": "v3.2.0 dev round 1 (JS/TS/TSX body matrix). opus: the JS `new_expression` callee read only the `function` field (None for a bare `new C()`/`new (expr)()`), so the constructor sub-expression's value flow was dropped -- a real dropped-sub-expression catch; fixed to read `function` OR `constructor` + a New-callee oracle case. Separately the completeness oracle caught a template_string `${...}` substitution drop during development (fixed before review). haiku: stale 'Python-only'/'(Python)' body-matrix scope mentions in find_similar_structure docstring (MEDIUM); fixed."
+        },
+        {
+            "id": "R170",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.2.0 dev round 2. haiku: a second stale body-matrix scope mention -- the find_similar dispatcher docstring still said the structure mode was Python-only (MEDIUM). Fixed; opus + sonnet clean on the walker for this round."
+        },
+        {
+            "id": "R171",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.2.0 dev round 3. haiku: residual stale 'Python-only'/'(Python)' scope claims in the README (Core-capabilities bullet, 'what it delivers' bullet, operations table rows) (MEDIUM). Fixed; then an exhaustive grep confirmed ZERO residual stale body-matrix scope mentions across all docs."
+        },
+        {
+            "id": "R172",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1
+            },
+            "theme": "v3.2.0 dev round 4. opus (LOW): JS `x += e` / `x++` did not rebind the target, so later reads saw the pre-mutation value -- diverged from the Python layer's `x += e == x = x + e` invariance. Fixed via bind-back + base-operator normalization (`+=`->`+`) + a rebind-like-explicit oracle test. sonnet observed the switch case-value double-walk (carried to R173). cardinal-safe (advisory metric only)."
+        },
+        {
+            "id": "R173",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1
+            },
+            "theme": "v3.2.0 dev round 5 (frozen HEAD 8ab121b after fix). sonnet (LOW): the switch handler's case-value skip filter compared by node identity (`st is val`), a no-op because tree-sitter returns a fresh wrapper per access, so the case value was walked twice (spurious ARGUMENTS/PROPERTY_IDENTIFIER nodes). Fixed by comparing byte spans + a Switch-case-value oracle case + a no-double-walk regression test. cardinal-safe (advisory only)."
+        },
+        {
+            "id": "R174",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.2.0 clean-cycle attempt (frozen HEAD 8ab121b). sonnet + haiku CLEAN (gate 758/136, mutation 15/15 + 9/9, cardinal byte-identical, zero stale scope mentions). opus (MEDIUM, deep hunt): TS `as`/`satisfies` casts were in the `_TRANSPARENT` set that descends to the LAST named child, but their children are [operand, type] -- so it kept the no-value-flow type node and DROPPED the operand's value flow (`helper() as number` collapsed to `0 as number`, sim 1.0), making graph_diff miss a real body change and find_similar mis-rank. The inverse of every documented approximation -- a genuine dropped-sub-expression. Fixed via `_CAST_OPERAND_FIRST` (descend to first child for as/satisfies, last for (x)/x!/<T>x) + 3 TS-cast metamorphic oracle cases + a TS-cast-no-value-flow invariant test. Streak resets."
+        },
+        {
+            "id": "R175",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.2.0 final clean-cycle round 1 (frozen HEAD 81e4916 after the R174 fix) -- CLEAN. opus (deepest pass): probed ~60 constructs beyond the 51-case oracle (cast forms incl. nested/as-const, decorators, optional chaining, computed members, tagged templates, JSX/tsx, destructuring, spreads, sequence) -- every value-bearing position discriminated; the three sim==1.0 cases (param-default, object-shorthand-method, class-field-init) are all DOCUMENTED approximations matching Python exactly; the R174 cast fix holds across nested casts. sonnet: gate 762/140, ruff+mypy clean, mutation structure.py 15/15 + graphdiff 9/9, clean degradation without the extra, cardinal byte-identical. haiku: counts 762/140/51 + mutation + version 3.2.0 + zero stale scope mentions all verified."
+        },
+        {
+            "id": "R176",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.2.0 final clean-cycle round 2 (frozen HEAD 81e4916) -- CLEAN; streak 2, gate met, RELEASABLE. Independent re-run, not a rerun of R175. opus: fresh-angle dropped-sub-expression hunt on realistic multi-statement async/generator/try-catch-finally functions + private-method this-dispatch -- all discriminate; the three sim==1.0 cases (subscript-WRITE index, destructuring defaults, name/position invariance) verified to mirror Python identically; cardinal find_stale byte-identical before/after find_similar+graph_diff on a mixed Python+JS+TS index, scratch db kept outside the source tree. sonnet: gate 762/140, mutation 15/15 + 9/9, cross-language comparison structurally impossible (node id -> one file -> one language), HEAD unchanged. haiku: 762/140/51 + mutation + version + zero stale scope all re-verified."
         }
     ]
 }

@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 85 ✅ · no-open-defects ✅ |
-| Tests | 703 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 140 (3.2.0 added the 51-case JS/TS completeness battery) ✅ · no-open-defects ✅ |
+| Tests | 762 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. **3.1.0: mutation-harden `find_similar`'s dense path + clearer README → R166 (test-determinism gap fixed: dense-backend global state isolated) → R167✓ R168✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE, RRS 93.3)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path + clearer README → R166 (test-determinism gap fixed) → R167✓ R168✓ on a frozen HEAD. **3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case completeness oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1740,6 +1740,43 @@ to non-defects: a cold-run suite flake and transient ruff/oracle failures, both 
 sequentially). (3) The 3 residual `similar.py` survivors are **justified-equivalent**, documented in
 the `tests/test_similar.py` docstring and re-verified by adversarial distinguishing-input attempts in
 both clean rounds — "kill or justify," with the justification itself audited.
+
+## v3.2.0 — the body matrix learns JS / TS / TSX (the first language beyond Python)
+
+The intra-procedural body matrix (v3.0.0, Python) gains a second frontend: `core/structure_js.py`, a
+tree-sitter CST walker for the JS/TS/TSX family that emits the **same** `_VFG` the language-neutral
+core fingerprints. Wired into `find_similar(mode="structure")` and `graph_diff(body=True)` by
+auto-sniffing the snippet/file language and ranking **same-language only** (a body fingerprint's
+topology tracks its extractor, so cross-language scores are not comparable — and a node id maps to
+exactly one file = one language, so the comparison is same-language by construction). Advisory and
+read-only: it never feeds `find_stale`, so the cardinal rule is structurally untouchable. The
+**completeness oracle** recipe ported too: a 51-case metamorphic battery (`helper()` CALL vs `0`
+CONST in every value-bearing position) + a generic fallback so an unhandled node can't silently
+vanish — the tree-sitter introspective guard doesn't port (no small enumerable supertype set), so the
+fallback is the structural "nothing vanishes" guarantee. tree-sitter is an optional extra; without it
+`fingerprint_source` returns `{}` and the JS layer adds nothing (Python stays stdlib-only).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R169 | 3 | ✗ | dev round 1. opus **MEDIUM**: JS `new_expression` read only the `function` field (None for `new C()` / `new (expr)()`) → constructor sub-expression dropped; fixed to read `function` OR `constructor` + a New-callee oracle case. (The oracle also caught a `template_string` `${…}` substitution drop mid-development.) haiku MEDIUM: stale "Python-only" body-matrix scope in the `find_similar_structure` docstring. |
+| R170 | 3 | ✗ | dev round 2. haiku **MEDIUM**: a second stale scope mention — the `find_similar` dispatcher docstring still called the structure mode Python-only. Fixed. |
+| R171 | 3 | ✗ | dev round 3. haiku **MEDIUM**: residual "Python-only"/"(Python)" claims in the README (core-capabilities bullet, "what it delivers", operations table). Fixed; an exhaustive grep then confirmed **zero** residual stale body-matrix scope mentions. |
+| R172 | 3 | ✗ | dev round 4. opus **LOW**: JS `x += e` / `x++` didn't rebind the target, so later reads saw the pre-mutation value — diverged from the Python layer's `x += e ≡ x = x + e` invariance. Fixed via bind-back + base-operator normalization (`+=`→`+`) + a rebind-like-explicit oracle test. (sonnet observed the switch case-value double-walk → R173.) Cardinal-safe (advisory metric only). |
+| R173 | 3 | ✗ | dev round 5 (frozen HEAD 8ab121b). sonnet **LOW**: the switch case-value skip compared by node identity (`st is val`) — a no-op, because tree-sitter returns a fresh wrapper per access, so the case value was walked twice (spurious ARGUMENTS / PROPERTY_IDENTIFIER nodes). Fixed by comparing **byte spans** + a Switch-case-value oracle case + a no-double-walk regression test. Cardinal-safe. |
+| R174 | 3 | ✗ | clean-cycle attempt (frozen HEAD 8ab121b). sonnet + haiku CLEAN (gate 758/136, mutation 15/15 + 9/9, cardinal byte-identical, zero stale scope). opus **MEDIUM** (deep hunt): TS `as`/`satisfies` casts sat in the `_TRANSPARENT` set that descends to the **last** named child — but their children are `[operand, type]`, so it kept the no-flow type node and **dropped the operand's value flow** (`helper() as number` collapsed to `0 as number`, sim 1.0), making `graph_diff` miss a real body change and `find_similar` mis-rank. The inverse of every documented approximation — a genuine dropped-sub-expression. Fixed via `_CAST_OPERAND_FIRST` (first child for as/satisfies, last for `(x)`/`x!`/`<T>x`) + 3 TS-cast metamorphic oracle cases + a TS-cast-no-value-flow invariant test. Streak resets. |
+| R175 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 81e4916). opus (deepest pass): ~60 constructs beyond the 51-case oracle (nested/as-const casts, decorators, optional chaining, computed members, tagged templates, JSX/tsx, destructuring, spreads, sequence) — every value-bearing position discriminates; the three sim==1.0 cases (param-default, object-shorthand-method, class-field-init) are documented approximations that match Python exactly; the R174 cast fix holds across nested casts. sonnet: gate **762/140**, ruff+mypy clean, mutation 15/15 + 9/9, clean degradation without the extra, cardinal byte-identical. haiku: counts 762/140/51 + mutation + version 3.2.0 + zero stale scope all verified. |
+| R176 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** Independent re-run, not a rerun of R175. opus: fresh-angle dropped-sub-expression hunt on realistic multi-statement async/generator/try-catch-finally functions + private-method `this`-dispatch — all discriminate; the three sim==1.0 cases (subscript-**write** index, destructuring defaults, name/position invariance) mirror Python identically; cardinal `find_stale` byte-identical before/after `find_similar`+`graph_diff` on a mixed Python+JS+TS index (scratch db kept outside the source tree). sonnet: gate 762/140, mutation 15/15 + 9/9, cross-language comparison structurally impossible, HEAD unchanged. haiku: 762/140/51 + mutation + version + zero stale scope re-verified. |
+
+Process notes: (1) the **completeness-oracle-first recipe paid off again** — three of the four real
+dev-round findings (New-callee, template-substitution, and the class the oracle is built for) are
+dropped-sub-expressions the metamorphic battery catches deterministically; each fix added an oracle
+case, so the guard is now denser for the next language. (2) The deepest defect (R174 `as`/`satisfies`)
+slipped through five rounds because the *clean* panels (sonnet/haiku) don't hunt dropped-sub-expr and
+the lone TS test only exercised parameter/return annotations — **opus's deep-hunt angle is the one
+that finds this class**; keep it in every body-matrix panel. (3) Same `mutate.py`-concurrency hazard
+as v3.1.0, plus a new one: an *interrupted* `mutate.py` left an `ast.unparse`'d mutant of
+`structure_js.py` on disk (its `finally` restore was bypassed by a worker SIGKILL) — reviewers are now
+told **not to run `mutate.py` on `structure_js.py`** until that tool is made interrupt-safe.
 
 ## Standing themes
 
