@@ -370,15 +370,18 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         elif t == "for_statement":
             loop = g.add("LOOP")
             g.link(ctrl, loop, _CTRL)
-            init = node.child_by_field_name("initializer")
-            if init is not None:
-                if init.type == "variable_declaration":
-                    _do_var_declaration(init, loop)
-                else:
-                    ev(init, loop)
-            for fld in ("condition", "update"):
-                sub = node.child_by_field_name(fld)
-                if sub is not None:
+            # `initializer` and `update` are REPEATED field children for comma forms
+            # (`i = 0, j = sink()` / `i++, j--`), so iterate every named child by field name —
+            # `child_by_field_name` would return only the first and drop the rest (R197 opus).
+            for i in range(node.named_child_count):
+                sub = node.named_children[i]
+                fld = node.field_name_for_named_child(i)
+                if fld == "initializer":
+                    if sub.type == "variable_declaration":
+                        _do_var_declaration(sub, loop)
+                    else:
+                        ev(sub, loop)
+                elif fld in ("condition", "update"):
                     ev(_strip_cond(sub), loop)
             _do_body(node.child_by_field_name("body"), loop)
         elif t == "foreach_statement":  # `foreach (var x in iterable)`
@@ -426,6 +429,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             _do_body(node.child_by_field_name("body"), ctrl)
             for ch in node.named_children:
                 if ch.type == "catch_clause":
+                    # `catch (E e) when (predicate)` — the exception filter is an executed predicate
+                    # carrying value flow; walk it before the catch body (R197 opus).
+                    for cc in ch.named_children:
+                        if cc.type == "catch_filter_clause":
+                            for fc in cc.named_children:
+                                ev(fc, ctrl)
                     _do_body(ch.child_by_field_name("body"), ctrl)
                 elif ch.type == "finally_clause":
                     for c in ch.named_children:

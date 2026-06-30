@@ -31,10 +31,15 @@ every existing operation unchanged; the new behavior is opt-in and advisory).
   same-language only (a node id maps to exactly one file → one language).
 
 ### Quality gate
-- ruff + mypy clean; full suite **1024** passing; differential oracle suite **388** — incl. two new
-  body-matrix completeness oracles: **Java** (44 metamorphic cases + invariants) and **C#** (44
+- ruff + mypy clean; full suite **1029** passing; differential oracle suite **393** — incl. two new
+  body-matrix completeness oracles: **Java** (46 metamorphic cases + invariants) and **C#** (47
   metamorphic cases + invariants), each requiring a `helper()` CALL vs a `0` CONST in every
   value-bearing position to change the fingerprint.
+- Adversarial rounds found and fixed two more dropped positions in **both** frontends: a comma-separated
+  `for` loop's 2nd-and-later **init/update** expressions (`for (…; …; i++, sink(x))`) were dropped
+  because the grammar models them as *repeated* `update`/`init` field children and the walker read only
+  the first via `child_by_field_name`; and a C# `catch (E e) when (filter)` **exception-filter**
+  predicate was never walked. Both now iterate the repeated field children / walk the filter.
 - **Hardened the completeness-oracle predicate across all seven languages.** The metamorphic check was
   `similarity(a, b) < 1.0`, but cosine self-similarity of a large WL vector rounds to `0.999…98 < 1.0`,
   so it could *pass on byte-identical fingerprints* — masking a fully-dropped construct. It now returns

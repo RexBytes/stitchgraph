@@ -52,6 +52,8 @@ _STMT: dict[str, str] = {
     "For-init": "for (int i = {probe}; i < 1; i++) {} return 0;",
     "For-cond": "for (int i = 0; {probe} > i; i++) {} return 0;",
     "For-update": "for (int i = 0; i < 1; i = ({probe})) {} return 0;",
+    "For-update2": "for (int i = 0; i < 1; i++, sink({probe})) {} return 0;",
+    "For-init2": "for (int i = 0, j = ({probe}); i < 1; i++) { sink(j); } return 0;",
     "For-body": "for (int i = 0; i < 1; i++) { sink({probe}); } return 0;",
     "EnhancedFor-iter": "for (int x : ({probe})) { sink(x); } return 0;",
     "EnhancedFor-body": "for (int x : items) { sink({probe}); } return 0;",

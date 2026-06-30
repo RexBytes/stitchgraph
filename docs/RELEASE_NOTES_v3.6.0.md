@@ -66,10 +66,10 @@ file, hence one language).
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **1024** passing; differential oracle suite **388**.
+- ruff + mypy clean; full suite **1029** passing; differential oracle suite **393**.
 - Two new **body-matrix completeness oracles** — Java
-  (`tests/oracles/test_structure_java_completeness.py`, 44 metamorphic cases + invariants) and C#
-  (`tests/oracles/test_structure_csharp_completeness.py`, 44 metamorphic cases + invariants): a
+  (`tests/oracles/test_structure_java_completeness.py`, 46 metamorphic cases + invariants) and C#
+  (`tests/oracles/test_structure_csharp_completeness.py`, 47 metamorphic cases + invariants): a
   `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and expression position must
   change the fingerprint, plus dedicated invariants (compound-assign rebind, cast carries operand not
   type, constructor keyed, nested-lambda opaque, Java nested-class/interface-default keying, C#

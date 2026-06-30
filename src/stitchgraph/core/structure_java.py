@@ -334,9 +334,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         elif t == "for_statement":
             loop = g.add("LOOP")
             g.link(ctrl, loop, _CTRL)
-            for fld in ("init", "condition", "update"):
-                sub = node.child_by_field_name(fld)
-                if sub is not None:
+            # `init` and `update` are REPEATED field children for comma forms (`i++, j--` /
+            # `i = 0, j = n`), so iterate every named child by field name — `child_by_field_name`
+            # would return only the first and drop the rest (R197 opus).
+            for i in range(node.named_child_count):
+                sub = node.named_children[i]
+                fld = node.field_name_for_named_child(i)
+                if fld in ("init", "condition", "update"):
                     if sub.type == "local_variable_declaration":
                         do(sub, loop)
                     else:
