@@ -503,6 +503,16 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     continue
                 g.link(ev(c, None), env[text(pn)], _DATA)
 
+    # A constructor initializer (`: this(args)` / `: base(args)`) runs before the body and its
+    # arguments carry value flow. It is an unnamed sibling of `body`, so walk it explicitly (the C#
+    # analogue of the C++ member-initializer-list handling).
+    for c in fn.named_children:
+        if c.type == "constructor_initializer":
+            for sub in c.named_children:
+                if sub.type == "argument_list":
+                    for a in sub.named_children:
+                        g.link(ev(a, None), g.add("CALL"), _DATA)
+
     body = fn.child_by_field_name("body")
     if body is None:  # expression-bodied member: `int M() => expr;`
         arrow = fn.child_by_field_name("expression_body") or fn.child_by_field_name("value")

@@ -165,3 +165,13 @@ def test_default_parameter_value_is_walked():
     uses = sc.fingerprint_source("class C { int F(int a, int b = helper()){ return a; } }")["C.F"]
     ignores = sc.fingerprint_source("class C { int F(int a, int b = 0){ return a; } }")["C.F"]
     assert similarity(uses, ignores) < 1.0
+
+
+def test_constructor_initializer_args_are_walked():
+    # `: this(...)` / `: base(...)` initializer args run before the body and carry value flow.
+    a = sc.fingerprint_source("class C { C():this(helper()){} }")["C.C"]
+    b = sc.fingerprint_source("class C { C():this(0){} }")["C.C"]
+    assert similarity(a, b) < 1.0
+    d = sc.fingerprint_source("class D : B { D():base(helper()){} }")["D.D"]
+    e = sc.fingerprint_source("class D : B { D():base(0){} }")["D.D"]
+    assert similarity(d, e) < 1.0

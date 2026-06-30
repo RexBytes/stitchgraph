@@ -81,7 +81,7 @@ construction (a node id maps to exactly one file, hence one language).
   invariants (compound-assign rebind, module/namespace keying, constructor keyed, opaque
   block/closure/nested-function, Bash dynamic-callee walked). All use the **hardened exact-equality
   predicate** introduced in v3.6.0 (dodging the cosine float-rounding blind spot).
-- **The adversarial panel earned its keep — 7 dropped value-flow positions found and fixed**, none
+- **The adversarial panel earned its keep — 8 dropped value-flow positions found and fixed**, none
   caught by the generic fallback (only the value-bearing metamorphic probe surfaces these), all now
   oracle-pinned:
   - Bash, building the frontend: a **dynamic-callee drop** — a command whose *name* is a `$(…)`
@@ -96,6 +96,10 @@ construction (a node id maps to exactly one file, hence one language).
     dropped — `heredoc` was bucketed with non-interpolating `nowdoc` as a CONST, even though heredoc
     interpolates exactly like a double-quoted string (which was already walked). Now walked; `nowdoc`
     stays opaque.
+  - C#, panel (certification round): a **constructor initializer** (`: this(helper())` /
+    `: base(helper())`) had its arguments dropped — they run before the body but live in a
+    `constructor_initializer` sibling of the body that the walker never visited (the C# analogue of
+    the C++ member-initializer-list, already handled there). Now walked.
   - This is language diversity as an adversarial probe again: the Bash outlier exercised a
     callee/subscript position the seven prior expression-oriented frontends never could.
 - **Cross-cutting fix — default parameter-value expressions are walked.** A later panel sweep found
