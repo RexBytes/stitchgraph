@@ -41,6 +41,14 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   in the enclosing scope but was dropped while the method body stayed (correctly) opaque — the data-
   property computed key `{ [helper()]: 1 }` was always walked. None were caught by the generic
   fallback — only the value-bearing metamorphic probe surfaces them.
+- **Meta-pattern closure: "an expression syntactically inside a closure/class-bearing node but
+  evaluated in the enclosing scope."** Rather than fix only the specific instances the panel reported,
+  each was generalised across the matrix. This class now covers C++ lambda init-captures, C# element-
+  binding init keys, JS/TS computed method keys in **both** object literals **and** class expressions,
+  and Python nested-`def` default-argument values + nested-`class` base/keyword (`metaclass=`)
+  expressions — all walked into the enclosing function's value-flow while the closure/class **body**
+  stays opaque. Pinned by `tests/oracles/test_param_and_index_invariance.py` and the Python
+  completeness oracle.
 - Documented two Bash structural blind spots that are not fixable in-AST (advisory-only, never
   cardinal): `${var#$(cmd)}`/`${var%…}` strip patterns (lexed as one opaque `regex` token) and
   single-quoted deferred actions like `trap '$(cmd)' EXIT` (`raw_string`, expanded only at `eval`).

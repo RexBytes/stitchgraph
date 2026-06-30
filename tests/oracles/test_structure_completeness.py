@@ -170,6 +170,24 @@ def test_no_uncovered_expression_type():
         f"add to _EXPR_COVERED (+ a battery template), _EXPR_LEAF, or _EXPR_OPAQUE")
 
 
+def test_nested_def_class_enclosing_scope_exprs_are_walked():
+    # A nested def/class body is opaque, but parts evaluated in the ENCLOSING scope carry value flow:
+    # default-arg values, base-class expressions, and class keywords (e.g. metaclass=).
+    def differs(a, b):
+        return structure.similarity(structure.fingerprint_source(a)["f"],
+                                    structure.fingerprint_source(b)["f"]) < 1.0
+    assert differs("def f():\n def g(a=helper()):\n  return a\n return g",
+                   "def f():\n def g(a=0):\n  return a\n return g")
+    assert differs("def f():\n class C(make_base()):\n  pass\n return C",
+                   "def f():\n class C(object):\n  pass\n return C")
+    assert differs("def f():\n class C(metaclass=helper()):\n  pass\n return C",
+                   "def f():\n class C(metaclass=type):\n  pass\n return C")
+    # ...but the nested def's BODY stays opaque (only enclosing-scope parts leak in).
+    body_a = structure.fingerprint_source("def f():\n def g():\n  return helper()\n return g")["f"]
+    body_b = structure.fingerprint_source("def f():\n def g():\n  return other()\n return g")["f"]
+    assert structure.similarity(body_a, body_b) >= 0.99
+
+
 def test_lambda_body_is_opaque():
     # A lambda is an opaque NESTED leaf (the `_EXPR_OPAQUE` classification above, and matching every
     # tree-sitter frontend's closure handling): two functions differing only inside a lambda body must

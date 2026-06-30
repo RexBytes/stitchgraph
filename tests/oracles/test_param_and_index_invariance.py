@@ -115,6 +115,8 @@ _JS_COMPUTED_KEY = {
     "js-method": ("javascript", "function f(){ return { [{probe}]() { return 1; } }; }"),
     "js-getter": ("javascript", "function f(){ return { get [{probe}]() { return 1; } }; }"),
     "ts-method": ("typescript", "function f(){ return { [{probe}]() { return 1; } }; }"),
+    "js-class-method": ("javascript", "function f(){ return class { [{probe}]() { return 1; } }; }"),
+    "ts-class-method": ("typescript", "function f(){ return class { [{probe}]() { return 1; } }; }"),
 }
 
 

@@ -275,7 +275,19 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
                 for x in case.body:
                     do(x, b)
         elif isinstance(s, _OPAQUE):
-            g.add("NESTED")
+            n = g.add("NESTED")
+            # The body is an opaque closure/class leaf, but parts evaluated in THIS (enclosing) scope
+            # carry value flow: a nested def's default-arg values, and a nested class's base-class /
+            # keyword (e.g. metaclass=) expressions. (Decorators are metadata — excluded by design.)
+            if isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                a = s.args
+                for d in (*a.defaults, *[k for k in a.kw_defaults if k is not None]):
+                    g.link(ev(d, None), n, _DATA)
+            elif isinstance(s, ast.ClassDef):
+                for base in s.bases:
+                    g.link(ev(base, None), n, _DATA)
+                for kw in s.keywords:
+                    g.link(ev(kw.value, None), n, _DATA)
         elif not isinstance(s, (ast.Pass, ast.Break, ast.Continue, ast.Global,
                                 ast.Nonlocal, ast.Import, ast.ImportFrom)):
             # Generic fallback: capture value flow from any statement type not explicitly handled

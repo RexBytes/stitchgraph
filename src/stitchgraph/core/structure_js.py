@@ -289,19 +289,20 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     g.link(ev(prop.child_by_field_name("key"), ctrl), n, _DATA)
                     g.link(ev(prop.child_by_field_name("value"), ctrl), n, _DATA)
                 else:
-                    # a method/getter/setter has an opaque NESTED body, but a COMPUTED key
-                    # (`{ [helper()]() {} }`) is evaluated in the enclosing scope — walk it.
-                    key = prop.child_by_field_name("name")
-                    if key is not None and key.type == "computed_property_name":
-                        for c in key.named_children:
-                            g.link(ev(c, ctrl), n, _DATA)
-                    g.link(ev(prop, ctrl), n, _DATA)
+                    g.link(ev(prop, ctrl), n, _DATA)  # method computed-key handled in _FUNC_NODES
             return n
         if t in ("await_expression", "yield_expression", "spread_element"):
             inner = [c for c in node.named_children]
             return ev(inner[-1], ctrl) if inner else g.add(t.split("_")[0].upper())
         if t in _FUNC_NODES:
-            return g.add("NESTED")
+            # The body is an opaque closure leaf, but a `method_definition` may carry a COMPUTED key
+            # (`{ [helper()]() {} }` / `class { [helper()]() {} }`) evaluated in the enclosing scope.
+            n = g.add("NESTED")
+            key = node.child_by_field_name("name")
+            if key is not None and key.type == "computed_property_name":
+                for c in key.named_children:
+                    g.link(ev(c, ctrl), n, _DATA)
+            return n
         # generic fallback: a node fed by its sub-expressions (so a construct not yet handled can
         # never silently vanish from the fingerprint — the completeness oracle makes gaps visible).
         n = g.add(t.upper())
