@@ -245,7 +245,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 g.link(ev(c, ctrl), n, _DATA)
             return n
         if t == "update_expression":
-            arg = node.named_children[0] if node.named_children else None
+            arg = _first(node)
             n = g.add("UNARY")
             g.link(ev(arg, ctrl), n, _DATA)
             bind(arg, n)
@@ -270,8 +270,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 g.link(ev(node.child_by_field_name(fld), ctrl), n, _DATA)
             return n
         if t == "cast_expression":
-            return ev(node.child_by_field_name("value")
-                      or (node.named_children[-1] if node.named_children else None), ctrl)
+            return ev(node.child_by_field_name("value") or _last(node), ctrl)
         if t == "match_expression":
             n = g.add("BRANCH")
             g.link(ev(node.child_by_field_name("condition"), ctrl), n, _DATA)
@@ -290,8 +289,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         return n
 
     def _strip(node):
-        while node is not None and node.type == "parenthesized_expression" and node.named_children:
-            node = node.named_children[-1]
+        while node is not None and node.type == "parenthesized_expression" and _nc(node):
+            node = _last(node)
         return node
 
     def do(node, ctrl: int | None) -> None:
@@ -333,6 +332,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             seen_collection = False
             it = g.add("ITERVAR")
             for c in node.named_children:
+                if c.type == "comment":  # trivia: never the collection or a loop variable
+                    continue
                 if bspan is not None and (c.start_byte, c.end_byte) == bspan:
                     continue
                 if not seen_collection:
@@ -403,6 +404,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     if body is not None:
         _do_body(body, None)
     return g
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type != "comment"]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:

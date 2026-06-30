@@ -393,8 +393,9 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def _strip(node):
         # for-loop clauses wrap their expression; descend to the payload.
-        while node is not None and node.type in _TRANSPARENT and node.named_children:
-            node = node.named_children[0 if node.type in _CAST_OPERAND_FIRST else -1]
+        while node is not None and node.type in _TRANSPARENT and _nc(node):
+            kids = _nc(node)
+            node = kids[0 if node.type in _CAST_OPERAND_FIRST else -1]
         return node
 
     # A parameter's default value carries flow (`function f(a = helper())`, incl. destructured
@@ -454,6 +455,23 @@ def _param_names(node, text) -> list[str]:
         v = node.child_by_field_name("value")
         return _param_names(v, text) if v is not None else []
     return []
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type != "comment"]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:

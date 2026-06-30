@@ -358,6 +358,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     return g
 
 
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type != "comment"]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
+
+
 def _op_text(node, text) -> str:
     op = node.child_by_field_name("operator")
     if op is not None:

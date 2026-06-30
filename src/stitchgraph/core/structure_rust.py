@@ -168,18 +168,17 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 bind(c, val)
         elif t == "field_pattern":
             inner = target.child_by_field_name("pattern")
-            bind(inner if inner is not None else target.named_children[-1] if target.named_children else None, val)
+            bind(inner if inner is not None else _last(target), val)
         elif t in ("field_expression", "index_expression"):
             n = g.add("SETATTR" if t == "field_expression" else "SETITEM")
             g.link(val, n, _DATA)
-            obj = target.child_by_field_name("value") or (
-                target.named_children[0] if target.named_children else None)
+            kids = _nc(target)
+            obj = target.child_by_field_name("value") or (kids[0] if kids else None)
             g.link(ev(obj, None), n, _DATA)
-            if t == "index_expression" and len(target.named_children) > 1:
-                g.link(ev(target.named_children[1], None), n, _DATA)  # index carries flow
+            if t == "index_expression" and len(kids) > 1:
+                g.link(ev(kids[1], None), n, _DATA)  # index carries flow
         elif t in ("unary_expression", "reference_expression"):  # *p = v / deref write
-            inner = target.child_by_field_name("value") or (
-                target.named_children[-1] if target.named_children else None)
+            inner = target.child_by_field_name("value") or _last(target)
             n = g.add("SETITEM")
             g.link(val, n, _DATA)
             g.link(ev(inner, None), n, _DATA)
@@ -264,8 +263,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(ev(_last_expr(node), ctrl), n, _DATA)
             return n
         if t in ("type_cast_expression", "type_ascription_expression"):  # `x as T` — value is x
-            inner = node.child_by_field_name("value") or (
-                node.named_children[0] if node.named_children else None)
+            inner = node.child_by_field_name("value") or _first(node)
             return ev(inner, ctrl)
         if t == "await_expression":
             return ev(_last_expr(node), ctrl)
@@ -444,8 +442,25 @@ def _pattern_names(node, text) -> list[str]:
     if t == "field_pattern":
         inner = node.child_by_field_name("pattern")
         return _pattern_names(inner, text) if inner is not None else (
-            [text(node.named_children[-1])] if node.named_children else [])
+            [text(_last(node))] if _nc(node) else [])
     return []
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type not in ("line_comment", "block_comment")]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:

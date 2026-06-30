@@ -119,3 +119,78 @@ def test_comment_skip_does_not_over_prune(lang):
     assert a != b, (
         f"{lang}: a CALL vs a CONST body produced identical fingerprints — the comment-skip is "
         f"over-pruning real value flow")
+
+
+# --- positional-selection trivia (the sibling defect class) --------------------------------------
+# The statement-leading/trailing comments above route through each frontend's `ev`/`do` dispatch,
+# which already filters `comment`. A second, deeper class hides where a frontend resolves ONE child
+# by *position* over `named_children` (`[0]`/`[-1]`/`[i]` or a "first non-body" heuristic): a
+# tree-sitter comment is itself a named child, so a comment in front of the real operand/collection/
+# index/parenthesised payload silently DISPLACES it. Each probe puts a comment exactly at such a
+# site, in front of a `{probe}` that is `helper()` (CALL) vs `0` (CONST). The fingerprints must
+# DIFFER (the displaced child is still walked) AND the no-op variant must be IDENTICAL (the comment
+# itself contributes nothing). Surfaced by the v3.7.0 panel (C# prefix-unary operand, PHP `foreach`
+# collection); the whole class was then closed via per-frontend comment-skipping `_nc`/`_first`/
+# `_last` helpers. See `docs/BODY_MATRIX_LESSONS.md`.
+_POSITIONAL = {
+    # label: (module, kwargs, template-with-{probe}, plain-noop, commented-noop)
+    "cs-prefix-unary": (structure_csharp, {},
+                        "class C{{ bool M(){{ return !/*c*/{probe}; }} }}",
+                        "class C{ bool M(){ return !ready(); } }",
+                        "class C{ bool M(){ return !/*c*/ready(); } }"),
+    "cs-paren-cond": (structure_csharp, {},
+                      "class C{{ int M(){{ if((/*c*/{probe})>1){{return 1;}} return 0; }} }}",
+                      "class C{ int M(){ if((g())>1){return 1;} return 0; } }",
+                      "class C{ int M(){ if((/*c*/g())>1){return 1;} return 0; } }"),
+    "cs-await": (structure_csharp, {},
+                 "class C{{ async Task M(){{ return await/*c*/{probe}; }} }}",
+                 "class C{ async Task M(){ return await g(); } }",
+                 "class C{ async Task M(){ return await/*c*/g(); } }"),
+    "php-foreach-coll": (structure_php, {},
+                         "<?php function f($d){{ $t=0; foreach(/*c*/{probe} as $r){{ $t+=$r; }} return $t; }}",
+                         "<?php function f($d){ foreach($d->g() as $r){ echo $r; } }",
+                         "<?php function f($d){ foreach(/*c*/$d->g() as $r){ echo $r; } }"),
+    "php-paren-cond": (structure_php, {},
+                       "<?php function f($d){{ if(/*c*/{probe}){{ return 1; }} return 0; }}",
+                       "<?php function f($d){ if($d->g()){ return 1; } return 0; }",
+                       "<?php function f($d){ if(/*c*/$d->g()){ return 1; } return 0; }"),
+    "java-paren-cond": (structure_java, {},
+                        "class C{{ int f(){{ if((/*c*/{probe})>1){{return 1;}} return 0; }} }}",
+                        "class C{ int f(){ if((g())>1){return 1;} return 0; } }",
+                        "class C{ int f(){ if((/*c*/g())>1){return 1;} return 0; } }"),
+    "cpp-paren-cond": (structure_cpp, {},
+                       "int f(){{ if((/*c*/{probe})>1){{return 1;}} return 0; }}",
+                       "int f(){ if((g())>1){return 1;} return 0; }",
+                       "int f(){ if((/*c*/g())>1){return 1;} return 0; }"),
+    "rust-index-write": (structure_rust, {},
+                         "fn f(d:T,v:i32){{ d[/*c*/{probe}]=v; }}",
+                         "fn f(d:T,v:i32){ d[i()]=v; }",
+                         "fn f(d:T,v:i32){ d[/*c*/i()]=v; }"),
+    "rust-cast": (structure_rust, {},
+                  "fn f()->i64{{ (/*c*/{probe}) as i64 }}",
+                  "fn f()->i64{ (g()) as i64 }",
+                  "fn f()->i64{ (/*c*/g()) as i64 }"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_POSITIONAL))
+def test_comment_at_positional_site_does_not_displace_operand(label):
+    mod, kw, tmpl, _plain, _commented = _POSITIONAL[label]
+    a = _one(mod.fingerprint_source(tmpl.format(probe="helper()"), **kw))
+    b = _one(mod.fingerprint_source(tmpl.format(probe="0"), **kw))
+    assert a is not None and b is not None, f"{label}: a function was not captured"
+    assert a != b, (
+        f"{label}: a CALL vs a CONST behind a comment at a positional-selection site produced "
+        f"identical fingerprints — the comment is displacing the real child (positional pick over "
+        f"named_children must skip comment trivia)")
+
+
+@pytest.mark.parametrize("label", sorted(_POSITIONAL))
+def test_comment_at_positional_site_is_a_noop(label):
+    mod, kw, _tmpl, plain, commented = _POSITIONAL[label]
+    a = _one(mod.fingerprint_source(plain, **kw))
+    b = _one(mod.fingerprint_source(commented, **kw))
+    assert a is not None and b is not None, f"{label}: a function was not captured"
+    assert a == b, (
+        f"{label}: adding a comment at a positional-selection site changed the fingerprint — the "
+        f"comment node is leaking into the value-flow graph")

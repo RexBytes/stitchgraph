@@ -286,7 +286,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return n
         if t in ("prefix_unary_expression", "postfix_unary_expression"):
             op = _op_text(node, text)
-            operand = node.named_children[0] if node.named_children else None
+            operand = _first(node)
             n = g.add("UNARY:" + op)
             g.link(ev(operand, ctrl), n, _DATA)
             if op in ("++", "--"):  # rebinds
@@ -317,11 +317,11 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t in ("is_pattern_expression", "is_expression"):
             n = g.add("BINOP:is")
             g.link(ev(node.child_by_field_name("expression"), ctrl)
-                   or (ev(node.named_children[0], ctrl) if node.named_children else None), n, _DATA)
+                   or ev(_first(node), ctrl), n, _DATA)
             return n
         if t == "switch_expression":
             n = g.add("BRANCH")
-            kids = node.named_children
+            kids = _nc(node)
             if kids:
                 g.link(ev(kids[0], ctrl), n, _DATA)  # the governing expression
             for arm in kids[1:]:
@@ -330,8 +330,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                         g.link(ev(c, ctrl), n, _DATA)
             return n
         if t in ("await_expression", "checked_expression", "ref_expression"):
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "range_expression":
             n = g.add("RANGE")
             for c in node.named_children:
@@ -347,8 +346,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         return n
 
     def _strip_cond(node):
-        while node is not None and node.type == "parenthesized_expression" and node.named_children:
-            node = node.named_children[-1]
+        while node is not None and node.type == "parenthesized_expression" and _nc(node):
+            node = _last(node)
         return node
 
     def do(node, ctrl: int | None) -> None:
@@ -478,11 +477,11 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 val = None
                 for c in d.named_children:
                     if c.type == "equals_value_clause":
-                        val = ev(c.named_children[-1], ctrl) if c.named_children else None
+                        val = ev(_last(c), ctrl)
                     elif c.type not in ("identifier", "bracketed_argument_list"):
                         val = ev(c, ctrl)
                 nm = d.child_by_field_name("name")
-                bind(nm if nm is not None else (d.named_children[0] if d.named_children else None), val)
+                bind(nm if nm is not None else _first(d), val)
 
     def _do_body(node, ctrl: int | None) -> None:
         if node is None:
@@ -528,6 +527,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         return g
     _do_body(body, None)
     return g
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type != "comment"]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:

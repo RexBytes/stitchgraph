@@ -389,8 +389,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     def _strip_cond(node):
         # if/while conditions wrap in a parenthesized_expression or condition_clause; descend.
         while node is not None and node.type in ("parenthesized_expression", "condition_clause") \
-                and node.named_children:
-            node = node.named_children[-1]
+                and _nc(node):
+            node = _last(node)
         return node
 
     def _cond_init(node, ctrl):
@@ -552,6 +552,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if body is not None:
             _do_body(body, None)
     return g
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type != "comment"]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:

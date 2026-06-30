@@ -237,7 +237,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(ev(node.child_by_field_name("operand"), ctrl), n, _DATA)
             return n
         if t == "update_expression":  # x++ / --x
-            operand = node.named_children[0] if node.named_children else None
+            operand = _first(node)
             n = g.add("UNARY:" + _op_text(node, text))
             g.link(ev(operand, ctrl), n, _DATA)
             bind(operand, n)
@@ -280,8 +280,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         return n
 
     def _strip_cond(node):
-        while node is not None and node.type == "parenthesized_expression" and node.named_children:
-            node = node.named_children[-1]
+        while node is not None and node.type == "parenthesized_expression" and _nc(node):
+            node = _last(node)
         return node
 
     def _switch(node, ctrl: int | None, as_value: bool) -> int:
@@ -425,6 +425,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     if body is not None:
         _do_body(body, None)
     return g
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type not in ("line_comment", "block_comment")]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:

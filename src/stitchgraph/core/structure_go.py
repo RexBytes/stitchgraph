@@ -296,7 +296,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             else:
                 _assign(left_list, right_list, ctrl)
         elif t in ("inc_statement", "dec_statement"):
-            arg = node.named_children[0] if node.named_children else None
+            arg = _first(node)
             n = g.add("UNARY:" + ("++" if t == "inc_statement" else "--"))
             g.link(ev(arg, ctrl), n, _DATA)
             if arg is not None:
@@ -434,6 +434,23 @@ def _param_names(node, text) -> list[str]:
     if t in ("parameter_declaration", "variadic_parameter_declaration"):
         return [text(c) for c in node.named_children if c.type == "identifier"]
     return []
+
+
+def _nc(node):
+    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
+    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
+    by a leading/trailing comment — filter them out before selecting a child by position."""
+    return [c for c in node.named_children if c.type != "comment"]
+
+
+def _first(node):
+    k = _nc(node)
+    return k[0] if k else None
+
+
+def _last(node):
+    k = _nc(node)
+    return k[-1] if k else None
 
 
 def _op_text(node, text) -> str:
