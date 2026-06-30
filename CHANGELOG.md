@@ -48,14 +48,20 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   comments) and JS/TS were already immune. All eight now skip comment nodes as trivia, pinned by a new
   cross-language oracle (`tests/oracles/test_comment_invariance.py`) that also guards against
   over-pruning real flow. Advisory-only, never cardinal.
-- **Default parameter-value expressions are now walked (cross-cutting fix).** A later panel sweep
-  found a `helper()` CALL vs a `0` CONST in a parameter's default value (`def f(b = helper())`)
-  produced an identical fingerprint — the parameter-seeding loop registered only the parameter name and
-  never walked its default-value child. Latent in **C++ and C#** (shipped) as well as the new
-  Ruby/PHP; Go/Rust/Java have no default-argument syntax. All four now link the default-value
-  expression into the parameter's node, oracle-pinned per language. Advisory-only, but a true
-  CALL-vs-CONST completeness violation (it survived in every body position yet vanished in
-  default-value position).
+- **Default parameter-value expressions are now walked (cross-cutting fix).** A `helper()` CALL vs a
+  `0` CONST in a parameter's default value (`def f(b = helper())`) produced an identical fingerprint —
+  the parameter-seeding loop registered only the parameter name and never walked its default-value
+  child. Found across **every language with default-argument syntax**: latent in **C++, C# (shipped)**
+  and **Python, JS/TS (shipped, the original frontends)**, plus the new Ruby/PHP; Go/Rust/Java have no
+  default-argument syntax. All now link the default-value expression into the parameter's node
+  (incl. destructured defaults like JS `function f({a = helper()})`), pinned by a cross-language
+  oracle. Advisory-only, but a true CALL-vs-CONST completeness violation.
+- **Assignment-target subscript index is now walked (cross-cutting fix).** A `helper()` CALL vs a `0`
+  CONST in the *index of an assignment target* (`d[helper()] = v`) produced an identical fingerprint:
+  the read path `… = d[helper()]` always walked the index, but the write (`bind`) path linked only the
+  written value and the container, never the index expression. Latent in **Python, JS/TS, Go, Rust and
+  C/C++** (Java/C#/PHP/Ruby already walked it). All now walk the index on the write path, pinned by the
+  same cross-language oracle. Advisory-only, never cardinal.
 
 ### Quality gate
 - ruff + mypy clean; full suite passing.

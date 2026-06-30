@@ -102,13 +102,20 @@ construction (a node id maps to exactly one file, hence one language).
     the C++ member-initializer-list, already handled there). Now walked.
   - This is language diversity as an adversarial probe again: the Bash outlier exercised a
     callee/subscript position the seven prior expression-oriented frontends never could.
-- **Cross-cutting fix — default parameter-value expressions are walked.** A later panel sweep found
-  a `helper()` CALL vs a `0` CONST in a parameter's default value (`def f(b = helper())`) produced an
-  identical fingerprint — the parameter-seeding loop registered only the parameter *name* and never
-  walked its default-value child. Latent in **C++ and C#** (shipped) plus the new Ruby/PHP (Go/Rust/
-  Java have no default arguments). A genuine CALL-vs-CONST completeness violation — it survived in
-  every *body* position yet vanished in the default-value slot. All four now walk the default
-  expression, oracle-pinned per language.
+- **Cross-cutting fix — default parameter-value expressions are walked.** A `helper()` CALL vs a `0`
+  CONST in a parameter's default value (`def f(b = helper())`) produced an identical fingerprint — the
+  parameter-seeding loop registered only the parameter *name* and never walked its default-value child.
+  Found across **every language with default-argument syntax**: latent in **C++, C# (shipped)** and
+  **Python, JS/TS (shipped — the original frontends)** plus the new Ruby/PHP (Go/Rust/Java have no
+  default arguments). A genuine CALL-vs-CONST completeness violation — it survived in every *body*
+  position yet vanished in the default-value slot. All now walk the default (incl. destructured
+  defaults like JS `function f({a = helper()})`), pinned by a cross-language oracle.
+- **Cross-cutting fix — assignment-target subscript index is walked.** A `helper()` CALL vs a `0`
+  CONST in the *index of an assignment target* (`d[helper()] = v`) produced an identical fingerprint:
+  the read path always walked the index, but the write (`bind`) path linked only the written value and
+  the container, never the index. Latent in **Python, JS/TS, Go, Rust and C/C++** (Java/C#/PHP/Ruby
+  already walked it). Now walked on the write path too, pinned by the same cross-language oracle
+  (`tests/oracles/test_param_and_index_invariance.py`).
 - **Cross-cutting fix — comments are trivia in every tree-sitter frontend.** A confirmation-panel
   sweep found a `comment` node leaking into the value-flow graph via each walker's generic fallback:
   a pure no-op comment edit changed a body fingerprint, down-ranking commented clones and surfacing

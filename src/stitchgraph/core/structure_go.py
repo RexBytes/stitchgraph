@@ -138,6 +138,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             n = g.add("SETATTR" if t == "selector_expression" else "SETITEM")
             g.link(val, n, _DATA)
             g.link(ev(target.child_by_field_name("operand"), None), n, _DATA)
+            if t == "index_expression":  # the index expression carries flow (`d[helper()] = v`)
+                g.link(ev(target.child_by_field_name("index"), None), n, _DATA)
         elif t == "unary_expression":  # pointer write `*p = v`
             n = g.add("SETITEM")
             g.link(val, n, _DATA)

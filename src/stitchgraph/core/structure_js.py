@@ -186,6 +186,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             obj = target.child_by_field_name("object")
             if obj is not None:
                 g.link(ev(obj, None), n, _DATA)
+            if t == "subscript_expression":  # the index expression carries flow
+                g.link(ev(target.child_by_field_name("index"), None), n, _DATA)
 
     def ev(node, ctrl: int | None) -> int | None:
         if node is None:
@@ -377,6 +379,32 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         while node is not None and node.type in _TRANSPARENT and node.named_children:
             node = node.named_children[0 if node.type in _CAST_OPERAND_FIRST else -1]
         return node
+
+    # A parameter's default value carries flow (`function f(a = helper())`, incl. destructured
+    # `function f({a = helper()})`): an `assignment_pattern` wraps the binding (`left`) and the default
+    # (`right`). Walk the default now that `ev` is defined and link it into the bound param's node.
+    def _walk_param_defaults(node):
+        nt = node.type
+        # JS uses `assignment_pattern` (left/right); TS wraps each param in `required_parameter` /
+        # `optional_parameter` with `pattern`/`value`; object-destructure defaults are
+        # `object_assignment_pattern`. All carry the default in a value-bearing position.
+        if nt in ("assignment_pattern", "object_assignment_pattern", "required_parameter",
+                  "optional_parameter"):
+            left = node.child_by_field_name("left") or node.child_by_field_name("pattern")
+            right = node.child_by_field_name("right") or node.child_by_field_name("value")
+            if right is not None:
+                v = ev(right, None)
+                for nm in (_param_names(left, text) if left is not None else []):
+                    if nm in env:
+                        g.link(v, env[nm], _DATA)
+            if left is not None:
+                _walk_param_defaults(left)  # nested destructure defaults only (not the default expr)
+        else:
+            for c in node.named_children:
+                _walk_param_defaults(c)
+    if params is not None:
+        for p in params.named_children:
+            _walk_param_defaults(p)
 
     body = fn.child_by_field_name("body")
     if body is not None:

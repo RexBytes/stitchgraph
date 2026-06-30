@@ -83,6 +83,7 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             n = g.add("SETITEM")
             g.link(val, n, _DATA)
             g.link(ev(target.value, None), n, _DATA)
+            g.link(ev(target.slice, None), n, _DATA)  # the index expression carries flow
 
     def ev(node: ast.AST | None, ctrl: int | None) -> int | None:
         if node is None:
@@ -278,6 +279,19 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
                 elif isinstance(ch, ast.stmt):
                     do(ch, ctrl)
         # pass / break / continue / global / nonlocal / import: no value-flow contribution
+
+    # A parameter's default value carries flow (`def f(a=helper())`): walk each default and link it
+    # into the corresponding PARAM node. Positional defaults align to the END of posonly+args; the
+    # kw-only defaults align to kwonlyargs (and may be None for a required kw-only param).
+    a = fn.args
+    positional = list(a.posonlyargs) + list(a.args)
+    for arg, default in zip(positional[len(positional) - len(a.defaults):], a.defaults,
+                            strict=False):
+        if arg.arg in env:
+            g.link(ev(default, None), env[arg.arg], _DATA)
+    for kwarg, kwd in zip(a.kwonlyargs, a.kw_defaults, strict=False):
+        if kwd is not None and kwarg.arg in env:
+            g.link(ev(kwd, None), env[kwarg.arg], _DATA)
 
     for s in fn.body:
         do(s, None)

@@ -175,6 +175,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             obj = target.child_by_field_name("value") or (
                 target.named_children[0] if target.named_children else None)
             g.link(ev(obj, None), n, _DATA)
+            if t == "index_expression" and len(target.named_children) > 1:
+                g.link(ev(target.named_children[1], None), n, _DATA)  # index carries flow
         elif t in ("unary_expression", "reference_expression"):  # *p = v / deref write
             inner = target.child_by_field_name("value") or (
                 target.named_children[-1] if target.named_children else None)

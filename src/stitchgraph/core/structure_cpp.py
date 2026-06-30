@@ -223,6 +223,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             n = g.add("SETATTR" if t == "field_expression" else "SETITEM")
             g.link(val, n, _DATA)
             g.link(ev(target.child_by_field_name("argument"), None), n, _DATA)
+            if t == "subscript_expression":  # the index expression carries flow (`d[helper()] = v`)
+                idx = target.child_by_field_name("index") or target.child_by_field_name("indices")
+                if idx is not None:
+                    kids = idx.named_children if idx.type == "subscript_argument_list" else [idx]
+                    for c in kids:
+                        g.link(ev(c, None), n, _DATA)
         elif t == "pointer_expression":  # `*p = v` deref write
             n = g.add("SETITEM")
             g.link(val, n, _DATA)
