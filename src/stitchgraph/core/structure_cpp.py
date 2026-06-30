@@ -494,11 +494,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         else:
             do(node, ctrl)
 
+    # A constructor/destructor function-try-block (`S() try : init {...} catch(...) {}`) has NO `body`
+    # field — the grammar gives an unnamed `try_statement` child, inside which live the member-init
+    # list, the compound_statement body, and the catch clauses. Without this, both the body and the
+    # member-inits of such a special member are silently dropped (R190 opus).
+    func_try = None
+    if fn.child_by_field_name("body") is None:
+        for ch in fn.named_children:
+            if ch.type == "try_statement":
+                func_try = ch
+                break
+
     # C++ constructor member-initializer-list (`S(int x): n(compute(x)), m(0) {}`) is a SIBLING of the
     # body — a `field_initializer_list`, not inside the compound_statement — so it is never reached by
     # walking `body`. Evaluate each member's init expression as a member write so its value flow is
-    # captured; else `n(compute(x))` and `n(0)` fingerprint identically (R186 opus).
-    for ch in fn.named_children:
+    # captured; else `n(compute(x))` and `n(0)` fingerprint identically (R186 opus). For a function-
+    # try-block the list lives inside the try_statement instead.
+    for ch in (func_try if func_try is not None else fn).named_children:
         if ch.type != "field_initializer_list":
             continue
         for fi in ch.named_children:
@@ -514,9 +526,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 else:
                     g.link(ev(c, None), n, _DATA)
 
-    body = fn.child_by_field_name("body")
-    if body is not None:
-        _do_body(body, None)
+    if func_try is not None:
+        do(func_try, None)  # the try_statement handler walks the body + every catch clause
+    else:
+        body = fn.child_by_field_name("body")
+        if body is not None:
+            _do_body(body, None)
     return g
 
 

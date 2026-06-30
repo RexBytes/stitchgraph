@@ -179,6 +179,23 @@ def test_constructor_member_initializer_list_is_walked():
     assert similarity(a, b) < 1.0
 
 
+def test_constructor_function_try_block_is_walked():
+    # R190 (opus): a ctor/dtor written with a function-try-block (`S(int x) try : n(..) {..} catch`)
+    # has NO `body` field — the grammar nests the member-init list, body, and catch clauses inside an
+    # unnamed try_statement, so walking only `body` dropped the whole thing. Both the body and the
+    # member-initializer-list must carry value flow.
+    body_uses = sc.fingerprint_source(
+        "struct S{ int n; S(int x) try { compute(x); } catch(...) {} };")["S.S"]
+    body_ignores = sc.fingerprint_source(
+        "struct S{ int n; S(int x) try { ; } catch(...) {} };")["S.S"]
+    assert similarity(body_uses, body_ignores) < 1.0, "function-try-block body dropped"
+    init_uses = sc.fingerprint_source(
+        "struct S{ int n; S(int x) try : n(compute(x)) {} catch(...) {} };")["S.S"]
+    init_ignores = sc.fingerprint_source(
+        "struct S{ int n; S(int x) try : n(0) {} catch(...) {} };")["S.S"]
+    assert similarity(init_uses, init_ignores) < 1.0, "function-try-block member-init dropped"
+
+
 def test_nested_lambda_is_opaque():
     # A C++ lambda nested in a function body is one NESTED leaf, not its body (matching the other
     # frontends). Two functions differing only inside a lambda body fingerprint the same.

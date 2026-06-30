@@ -55,7 +55,7 @@ frontends. Same-language by construction.
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **920** passing; differential oracle suite **286**.
+- ruff + mypy clean; full suite **921** passing; differential oracle suite **287**.
 - New **C/C++ body-matrix completeness oracle** (`tests/oracles/test_structure_cpp_completeness.py`):
   45 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
   expression position must change the fingerprint — plus dedicated invariants (compound-assign
@@ -63,9 +63,10 @@ frontends. Same-language by construction.
   `sizeof` is a compile-time constant, nested lambda opaque, reference-return function captured,
   constructor member-initializer-list walked, array-new size captured, C++17 `if`/`switch`
   init-statement and C++20 range-`for` init-statement walked, placement-`new` address captured,
-  stack VLA size captured, lambda init-capture initializer captured). The oracle caught a real drop
-  during development: the cpp grammar keeps a subscript index under `indices`/`subscript_argument_list`,
-  not C's `index` field, so `a[helper()]` initially collapsed.
+  stack VLA size captured, lambda init-capture initializer captured, constructor/destructor
+  function-try-block body and member-init walked). The oracle caught a real drop during development:
+  the cpp grammar keeps a subscript index under `indices`/`subscript_argument_list`, not C's `index`
+  field, so `a[helper()]` initially collapsed.
 - Mutation meta-oracle unchanged: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32.
 - **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.
 
