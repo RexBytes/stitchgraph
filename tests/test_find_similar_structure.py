@@ -340,3 +340,59 @@ def test_csharp_graph_diff_body_layer_and_fingerprints(tmp_path):
     assert any(c["name"] == "Calc.Add" for c in d["body_changed"]), d["body_changed"]
     same = graphdiff.graph_diff(a, a, body=True)
     assert same["body_changed"] == []
+
+
+# --- Ruby + PHP + Bash body layer (v3.7.0): drive _ruby/_php/_bash_fn_fingerprints + graph_diff ----
+
+def test_ruby_graph_diff_body_layer_and_fingerprints(tmp_path):
+    """The Ruby fingerprint corpus (`similar._ruby_fn_fingerprints`) keys by the stored node id, and
+    `graph_diff`'s body layer flags a Ruby method whose body shape changed (helper() -> const)."""
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core import graphdiff, similar
+    a = _index(tmp_path / "a", {
+        "calc.rb": "def add(x, y)\n s = compute(x) + y\n s\nend\n"})
+    b = _index(tmp_path / "b", {
+        "calc.rb": "def add(x, y)\n s = 0 + y\n s\nend\n"})
+    fps = dict(similar._ruby_fn_fingerprints(a))
+    assert "calc.rb::add" in fps, fps  # keyed by the full node id, Ruby-only
+    d = graphdiff.graph_diff(a, b, body=True)
+    assert any(c["name"] == "add" for c in d["body_changed"]), d["body_changed"]
+    same = graphdiff.graph_diff(a, a, body=True)
+    assert same["body_changed"] == []
+
+
+def test_php_graph_diff_body_layer_and_fingerprints(tmp_path):
+    """The PHP fingerprint corpus (`similar._php_fn_fingerprints`) keys by the stored node id, and
+    `graph_diff`'s body layer flags a changed PHP function body."""
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core import graphdiff, similar
+    a = _index(tmp_path / "a", {
+        "calc.php": "<?php\nfunction add($x, $y){ $s = compute($x) + $y; return $s; }\n"})
+    b = _index(tmp_path / "b", {
+        "calc.php": "<?php\nfunction add($x, $y){ $s = 0 + $y; return $s; }\n"})
+    fps = dict(similar._php_fn_fingerprints(a))
+    assert "calc.php::add" in fps, fps
+    d = graphdiff.graph_diff(a, b, body=True)
+    assert any(c["name"] == "add" for c in d["body_changed"]), d["body_changed"]
+    same = graphdiff.graph_diff(a, a, body=True)
+    assert same["body_changed"] == []
+
+
+def test_bash_graph_diff_body_layer_and_fingerprints(tmp_path):
+    """The Bash fingerprint corpus (`similar._bash_fn_fingerprints`) keys by the bare function name in
+    the stored node id, and `graph_diff`'s body layer flags a changed shell function body."""
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core import graphdiff, similar
+    a = _index(tmp_path / "a", {
+        "calc.sh": "add() {\n s=$(compute $1)\n echo $((s + $2))\n}\n"})
+    b = _index(tmp_path / "b", {
+        "calc.sh": "add() {\n s=0\n echo $((s + $2))\n}\n"})
+    fps = dict(similar._bash_fn_fingerprints(a))
+    assert "calc.sh::add" in fps, fps
+    d = graphdiff.graph_diff(a, b, body=True)
+    assert any(c["name"] == "add" for c in d["body_changed"]), d["body_changed"]
+    same = graphdiff.graph_diff(a, a, body=True)
+    assert same["body_changed"] == []

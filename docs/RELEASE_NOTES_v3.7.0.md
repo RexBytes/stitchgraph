@@ -1,0 +1,104 @@
+# stitchgraph v3.7.0 — the body matrix completes the language sweep (Ruby, PHP, Bash)
+
+v3.0.0 added the intra-procedural **body matrix** for Python; v3.2.0 ported it to the JavaScript
+family, v3.3.0 to Go, v3.4.0 to Rust, v3.5.0 to C and C++, v3.6.0 to Java and C#. v3.7.0 adds the
+final three — **Ruby, PHP, and Bash** — so the body matrix now spans **all 12 languages** the
+extractor indexes (`docs/IDEAS.md` §5b). Bash is the outlier that closes the sweep: a
+*command-oriented*, not expression-oriented, grammar.
+
+A new language for an existing representation earns the MINOR bump, but it is **backward-compatible**:
+schema, on-disk indexes, and every existing operation are unchanged, and the new behavior is opt-in
+and advisory.
+
+## Added
+
+### `core/structure_ruby.py` — one walker for Ruby
+Emits the **same `_VFG` vocabulary** as the other frontends and reuses the WL kernel, so a Ruby clone
+with renamed locals or reordered statements fingerprints as the *same shape*. Specifics:
+
+- **Qualname = the dotted module/class chain** (modules ARE part of the key): `M.Calc.compute`,
+  singleton `def self.top` keyed `M.top`, bare top-level `free_fn` — matching the extractor.
+- Expression-oriented (a trailing expression is an implicit return, like Rust). Compound assignment
+  (`x += e`), `if`/`elsif`/`unless` and their statement-modifier forms, `case`/`when`, `while`/`until`/
+  `for` (+ modifiers), `?:`, ranges, array/hash literals, string `#{…}` interpolation holes,
+  index- and attribute-assignment, `return`/`yield`.
+- **Blocks (`{ … }` / `do … end`) are opaque `NESTED` leaves** (closures).
+
+### `core/structure_php.py` — one walker for PHP
+Same `_VFG`, same kernel. Specifics:
+
+- **Qualname = the class chain** (the `namespace` is NOT part of the key): `Calc.compute`,
+  constructor `C.__construct`, bare top-level `free_fn` — matching the extractor.
+- Statement-oriented. Call/method/scoped-call arguments are unwrapped from their `argument` wrappers;
+  member access, subscript, compound assignment, `?:`, casts, `new`, array literals, `match`,
+  `encapsed` (interpolated) strings, `for`/`foreach`/`while`/`do`, `switch`, `try`/`catch`/`finally`
+  carry flow.
+- **Closures and arrow functions are opaque `NESTED` leaves.**
+
+### `core/structure_bash.py` — one walker for Bash (the command-oriented outlier)
+Same `_VFG`, same kernel, but a different evaluation model — Bash has no expressions, only commands:
+
+- A **`command` (`name arg…`) is a CALL** — the command name is the callee, its arguments flow as
+  data; `$(…)`/`` `…` `` **command substitution** carries the value of the command it runs (including
+  in *callee* position — `$(get_cmd) arg`); a `variable_assignment` binds (copy propagation); `$x`/
+  `${x}` are variable reads; a string carries flow through its `$(…)`/`$x` holes; `$(( … ))`
+  arithmetic, `[[ … ]]`/`[ … ]` tests, pipelines, and `if`/`for`/`while`/`case`/`c_style_for` are
+  walked for control + data flow.
+- **Functions are keyed by their bare name** (shell functions are flat) — matching the extractor.
+- **Nested function definitions are opaque `NESTED` leaves.**
+
+### `find_similar(mode="structure")` and `graph_diff` — now detect Ruby, PHP and Bash
+Auto-detects the snippet's language (Python → JS/TS family → Go → Rust → Java → C# → Ruby → PHP →
+Bash → C/C++) and ranks it **only against stored functions of the same language**; `graph_diff`'s
+body layer reports a diverged Ruby/PHP/Bash body present in both indexes. Same-language by
+construction (a node id maps to exactly one file, hence one language).
+
+## Scope & caveats
+
+- **Advisory and read-only** — never feeds `find_stale`, so the cardinal rule (*live code is never
+  confidently flagged dead*) is structurally unaffected.
+- The Ruby/PHP/Bash layer needs the optional **tree-sitter extra**; without it those paths return
+  nothing (advisory degrade). The Python body matrix remains stdlib-only.
+- **Cross-language body comparison stays oracle-only** — topology tracks the extractor; the features
+  rank/diff within one language.
+- Some grammars are permissive supersets of others, so the advisory snippet auto-detect can mis-sniff
+  one *bare* snippet for a related language: the JS/TS grammar parses a bare PHP `function`/`class`
+  snippet, and the C/C++ grammar parses a bare Bash/PHP `name() { … }` snippet — so Bash and PHP are
+  tried before C/C++. This affects only the advisory snippet auto-detect — never the extension-keyed
+  `graph_diff` body layer, which maps each file to exactly one language.
+- Same structural-approximation limits as the other frontends: no alias analysis, constants are
+  collapsed, Bash word-splitting/alias/exit-code semantics are not modeled. The method is in
+  `docs/BODY_MATRIX_LESSONS.md`.
+
+## Quality gate
+
+- ruff + mypy clean; full suite passing; differential oracle suite passing.
+- Three new **body-matrix completeness oracles** — Ruby
+  (`tests/oracles/test_structure_ruby_completeness.py`, 41 cases), PHP
+  (`tests/oracles/test_structure_php_completeness.py`, 45 cases) and Bash
+  (`tests/oracles/test_structure_bash_completeness.py`, 33 cases): a `helper()`/`$(helper)` (a CALL)
+  vs `0` (a CONST) in every value-bearing position must change the fingerprint, plus dedicated
+  invariants (compound-assign rebind, module/namespace keying, constructor keyed, opaque
+  block/closure/nested-function, Bash dynamic-callee walked). All use the **hardened exact-equality
+  predicate** introduced in v3.6.0 (dodging the cosine float-rounding blind spot).
+- Building the Bash frontend surfaced — and the hardened oracle caught — a **dynamic-callee drop**: a
+  command whose *name* is a `$(…)` substitution (`$(resolve) arg`) was collapsed to an opaque free
+  word, dropping the inner CALL. Now the callee is walked. (Language diversity as an adversarial probe
+  of the shared kernel, again: the Bash outlier exercised a callee-position the seven prior
+  expression-oriented frontends never could.)
+- Mutation meta-oracle: the new Ruby/PHP/Bash fingerprint corpora are mutation-pinned by `graph_diff`
+  body tests.
+- **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.
+
+## Upgrading
+
+Nothing to do — no schema/API/behavior change to existing operations; indexes don't need
+rebuilding. To try the Ruby / PHP / Bash body matrix (with the tree-sitter extra installed):
+
+```python
+import stitchgraph as sg
+with sg.Store("stitchgraph.db") as store:
+    sg.reindex(store, "src")          # a Ruby / PHP / Bash project
+    print(sg.find_similar(store, open("some.rb").read(), mode="structure"))
+    print(sg.graph_diff(store, "other_index.db"))   # body-aware across all 12 languages
+```

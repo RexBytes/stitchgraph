@@ -19,11 +19,14 @@ from pathlib import Path
 
 from . import (
     structure,
+    structure_bash,
     structure_cpp,
     structure_csharp,
     structure_go,
     structure_java,
     structure_js,
+    structure_php,
+    structure_ruby,
     structure_rust,
 )
 from .model import NodeKind, Relation
@@ -113,10 +116,10 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     dense embedder if one is registered (or model2vec auto-loads), else token cosine.
     mode="structure": body-shape similarity (`structure.py` for Python, `structure_js.py` for
     JS/TS/TSX, `structure_go.py` for Go, `structure_rust.py` for Rust, `structure_cpp.py` for C/C++,
-    `structure_java.py` for Java, `structure_csharp.py` for C#)
-    — ranks stored functions by how structurally like the snippet's function they are. Advisory; the
-    snippet's language is auto-detected and ranked same-language only (the tree-sitter languages need
-    the extra).
+    `structure_java.py` for Java, `structure_csharp.py` for C#, `structure_ruby.py` for Ruby,
+    `structure_php.py` for PHP, `structure_bash.py` for Bash) — ranks stored functions by how
+    structurally like the snippet's function they are. Advisory; the snippet's language is
+    auto-detected and ranked same-language only (the tree-sitter languages need the extra).
     """
     if mode == "structure":
         return find_similar_structure(store, snippet, limit)
@@ -347,15 +350,95 @@ def _csharp_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
                 yield node_id, fp
 
 
+def _ruby_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored Ruby method, the Ruby analogue of
+    `_python_fn_fingerprints`. Keyed by the extractor's scheme (dotted module/class chain
+    `M.C.method`, singleton `M.top`, bare top-level `free_fn`). Requires the tree-sitter extra;
+    without it `structure_ruby.fingerprint_source` returns {} and nothing yields."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or structure_ruby._lang_for_ext(Path(path).suffix) is None:
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_ruby.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
+def _php_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored PHP function/method, the PHP analogue
+    of `_python_fn_fingerprints`. Keyed by the extractor's scheme (class chain `Calc.compute`,
+    constructor `C.__construct`, bare top-level `free_fn`; the namespace is not part of the key).
+    Requires the tree-sitter extra; without it `structure_php.fingerprint_source` returns {}."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or structure_php._lang_for_ext(Path(path).suffix) is None:
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_php.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
+def _bash_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored Bash/shell function, the Bash
+    analogue of `_python_fn_fingerprints`. Keyed by the bare function name (shell functions are flat).
+    Requires the tree-sitter extra; without it `structure_bash.fingerprint_source` returns {}."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or structure_bash._lang_for_ext(Path(path).suffix) is None:
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_bash.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
 def find_similar_structure(store: Store, snippet: str,
                            limit: int = 10) -> list[tuple[str, float]]:
     """Rank stored functions/methods by *structural* (body-shape) similarity to the snippet, which
     must be function source. Advisory. The snippet's language is auto-detected — Python first, else
-    the JS/TS family, else Go, else Rust, else Java, else C#, else C/C++ — and it is ranked only against
-    stored functions of the SAME language (a body fingerprint's topology tracks its extractor, so
-    cross-language scores are not comparable). The JS/TS grammar is permissive enough to also parse a
-    bare Java/C#/C++ `class { ... }` snippet, so a class-method snippet may be sniffed as JS/TS; this
-    only affects the advisory snippet auto-detect, never the extension-keyed `graph_diff` body layer.
+    the JS/TS family, else Go, else Rust, else Java, else C#, else Ruby, else PHP, else Bash, else
+    C/C++ — and it is ranked only against stored functions of the SAME language (a body fingerprint's
+    topology tracks its extractor, so cross-language scores are not comparable). Some grammars are
+    permissive supersets of others, so the auto-detect can mis-sniff one bare snippet for a related
+    language: the JS/TS grammar parses a bare Java/C#/C++/PHP `function`/`class` snippet, and the
+    C/C++ grammar parses a bare Bash/PHP `name() { ... }` snippet — so Bash and PHP are tried before
+    C/C++. This only affects the advisory snippet auto-detect, never the extension-keyed `graph_diff`
+    body layer.
     Empty if the snippet has no parseable function or (for the tree-sitter
     languages) the extra is absent. The largest function in the snippet is used as the query."""
     limit = max(0, limit)
@@ -383,6 +466,18 @@ def find_similar_structure(store: Store, snippet: str,
         q_fps = structure_csharp.fingerprint_source(snippet)
         if q_fps:
             corpus = _csharp_fn_fingerprints
+    if not q_fps:
+        q_fps = structure_ruby.fingerprint_source(snippet)
+        if q_fps:
+            corpus = _ruby_fn_fingerprints
+    if not q_fps:
+        q_fps = structure_php.fingerprint_source(snippet)
+        if q_fps:
+            corpus = _php_fn_fingerprints
+    if not q_fps:
+        q_fps = structure_bash.fingerprint_source(snippet)  # before C/C++ (cpp parses `t(){…}` as C)
+        if q_fps:
+            corpus = _bash_fn_fingerprints
     if not q_fps:
         q_fps = structure_cpp.fingerprint_source(snippet)  # C/C++ last (the cpp grammar is permissive)
         if q_fps:
