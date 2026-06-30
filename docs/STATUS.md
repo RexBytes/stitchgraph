@@ -60,7 +60,7 @@ spec and section references.
 
 ## Test coverage
 
-72 tests (`tests/`): envelope, store + incremental + migration, polyglot
+1269 tests (`tests/`): envelope, store + incremental + migration, polyglot
 extraction (Python + 11 tree-sitter languages), operations, config, `get_matrix`,
 cross-language resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/
 SQL/ORM) + full-stack traces, the GraphBLAS algebra (accelerated sweeps agree with

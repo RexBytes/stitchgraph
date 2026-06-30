@@ -270,8 +270,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             for c in node.named_children:
                 if c.type == "interpolation":
                     for ic in c.named_children:
-                        if ic.type not in ("interpolation_brace", "interpolation_format_clause",
-                                           "interpolation_alignment_clause"):
+                        if ic.type == "interpolation_alignment_clause":
+                            # `$"{v,align}"` — the alignment after the `,` is a runtime expression
+                            # (can hold a CALL); walk it. (The `:format` clause is literal text and
+                            # the brace is punctuation — both stay excluded.)
+                            for ac in ic.named_children:
+                                g.link(ev(ac, ctrl), n, _DATA)
+                        elif ic.type not in ("interpolation_brace", "interpolation_format_clause"):
                             g.link(ev(ic, ctrl), n, _DATA)
             return n
         if t == "binary_expression":

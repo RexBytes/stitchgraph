@@ -96,6 +96,9 @@ _EXPR: dict[str, str] = {
     "ArrayInit": "var z = new int[] { {probe}, 1 }; return z[0];",
     "Await": "return await Task({probe});",
     "Interpolation": "return $\"v={ {probe} }\".Length;",
+    # the `,<align>` alignment clause of `$"{v,align}"` is a runtime expression (value flow),
+    # distinct from the literal `:format` clause (v3.7.0 panel).
+    "InterpolationAlign": "return $\"v={a,{probe}}\".Length;",
 }
 
 
