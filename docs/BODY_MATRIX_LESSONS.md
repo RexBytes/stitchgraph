@@ -105,3 +105,30 @@ Python's seven rounds.
   the missing test rather than rationalising it. (Adding the JS/Go/Rust/C++/Java/C# fingerprint
   functions to `similar.py` each needs a `graph_diff`/`find_similar` test that actually drives that
   language's `_*_fn_fingerprints`, or its mutants survive.)
+
+### A new language is a free adversarial probe of the shared kernel + meta-oracle (v3.6.0)
+
+Each new frontend is not just new per-language code — it is an *independent adversary* against the
+language-neutral core (`structure.py`'s `_VFG`/WL kernel) and against the oracle methodology itself.
+Two cross-cutting wins came out of adding C#, neither about C#:
+
+- **C# exposed a float-rounding blind spot latent in ALL seven completeness oracles since v3.0.0.**
+  The metamorphic predicate was `similarity(a, b) < 1.0`, but cosine self-similarity of a *large* WL
+  vector rounds to `0.999…98 < 1.0` — so the assertion could PASS on byte-identical fingerprints and
+  silently mask a fully-dropped construct. Python/JS/Go/Rust/C++ never tripped it only because their
+  oracle bodies were small enough to round to exactly `1.0`. C#'s larger `using`-body case finally
+  triggered it. **Fix: the predicate now compares fingerprints for EXACT equality** (`a == b → drop`),
+  float-free; re-running the older six under the stricter check confirmed they were genuinely (not
+  luckily) clean. The body matrix is *more* trustworthy after each language, not just *wider*.
+- **A defect found in one frontend is a one-shot audit of the family.** The "repeated field-children"
+  drop (Java/C# model `for (…; i++, sink(x))` as repeated `update` field children; `child_by_field_name`
+  returns only the first) immediately prompted checking C/C++ and JS — both confirmed safe (they model
+  the comma form as a single `comma_expression`/`sequence_expression` node). Always ask "do the
+  siblings have this shape?" when a structural surprise turns up.
+
+Corollary for the panel design: keep **language diversity** in the review the way you keep model
+diversity — a frontend with a different grammar breaks blind spots in the shared core that same-grammar
+probing can't. And the two real code-defect classes of v3.6.0 were both **tree-sitter structural
+surprises** (positional *unnamed-field* children; field-named but *repeated* children) — the generic
+fallback can't catch these, only a value-bearing metamorphic probe can, so the completeness oracle
+(not the fallback) is what earns the release.

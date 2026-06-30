@@ -1864,6 +1864,37 @@ mid-run. The recovery was clean (the suite pins the body-divergence direction, s
 never have passed a full gate), and the standing rule is now explicit — the mutation meta-oracle is
 run by the orchestrator alone, serially, never by a reviewer and never alongside git staging.
 
+## v3.6.0 — the body matrix learns Java and C# (languages 5 & 6 of the §5b sweep)
+
+`core/structure_java.py` + `core/structure_csharp.py` — two tree-sitter walkers emitting the **same**
+`_VFG` the other frontends do. Both key by the dotted chain of enclosing TYPE names (package /
+namespace excluded): Java `Outer.Inner.m` / `C.C`; C# `Calc.Compute` / `Calc.Calc` / local function
+`Calc.Local.Inner`. The first release to land a *pair* in one MINOR. Two completeness oracles (Java +
+C#) drove the walkers; both passed first-run, but the panels then turned the pair into a free
+adversarial probe of the shared machinery — see the two cross-cutting wins below.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R193 | 3 | ✗ | opus(Java) CLEAN; sonnet CLEAN; opus(C#) **2 MEDIUM** + exposed a **meta-oracle weakness in all 7 languages**: the metamorphic check `similarity(a,b) < 1.0` could PASS on byte-identical fingerprints (cosine self-sim of a large WL vector rounds to 0.999…98 < 1.0). Hardened the predicate to exact fingerprint-equality everywhere; that surfaced a 3rd masked C# drop. Three C# fixes: `using (var r=e)` paren resource, `$"{…}"` interpolation holes, `new int[]{…}` element init. Other six re-verified clean under the stricter predicate. |
+| R194 | 3 | ✗ | opus(C#) + opus(Java/cross-frontend) + sonnet CLEAN; haiku 2 stale scope strings (doc LOW, fixed). |
+| R195 | 3 | ✗ | opus + sonnet CLEAN; haiku — the per-frontend module docstrings enumerated only predecessors (doc LOW). Resolved decisively by rephrasing all six to a non-enumerating future-proof form. |
+| R196 | 3 | ✓ | final clean-cycle round 1 (HEAD 9417762). opus 70+ exact-inequality positions; sonnet gate 1024/388 + 7 oracle guards; haiku 20 enumerating surfaces all seven. |
+| R197 | 3 | ✗ | **final-round-2 caught two NEW dropped positions** (this is why the 2nd confirmation panel exists). opus: comma-form `for` 2nd+ init/update (`for(…; i++, sink(x))`) dropped in BOTH frontends (grammars use REPEATED `update`/`init` field children; walker used `child_by_field_name` = first only); C# `catch (E e) when (filter)` predicate never walked. Both fixed + oracle cases; C/C++ & JS verified unaffected (single comma/sequence node). |
+| R198 | 3 | ✓ | final clean-cycle round 1 on corrected HEAD ea410c3. opus re-verified R197 fixes + swept every repeated/positional field-child position; sonnet 1029/393; haiku all surfaces seven. |
+| R199 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus ~110 fresh exact-inequality probes all differ, all fixes re-confirmed, realism + robustness clean; sonnet 1029/393 all checks; haiku 1029/393/46/47/3.6.0 canonical. |
+
+Process notes: (1) **Language diversity is a defect-finding signal for the shared kernel, not just
+new per-language code** — exactly the model-diversity lesson, one level down. C# (a *new* language)
+exposed the float-rounding oracle blind spot that had been latent in all seven oracles since v3.0.0,
+and hardening it retroactively strengthened the five already-shipped languages. The
+repeated-field-children defect found in Java/C# immediately triggered a cross-frontend audit (C/C++ &
+JS confirmed safe). Net: the body matrix is *more* trustworthy after C# than after C/C++, in ways
+unrelated to C#. (2) The completeness-oracle predicate is now **exact fingerprint inequality**, not a
+`sim < 1.0` threshold — a permanent meta-oracle hardening. (3) The two real code-defect classes this
+release were both **tree-sitter structural surprises** (positional unnamed-field children;
+field-named-but-*repeated* children) — the kind the generic fallback can't catch and only a
+value-bearing metamorphic probe surfaces.
+
 ## Standing themes
 
 - Convergence is non-monotonic and never reaches zero — measure residual risk.

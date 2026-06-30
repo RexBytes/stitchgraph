@@ -2301,6 +2301,84 @@
             ],
             "findings": {},
             "theme": "v3.5.0 final clean-cycle round 2 (frozen HEAD 33d274d) -- CLEAN; streak 2 on the final HEAD, gate met, RELEASABLE. Independent second confirmation. opus: fresh 30-position sweep (29/30 discriminate; the lone sim 1.0 is the documented subscript-LHS-index Python-parity approximation) + all 9 prior fixes (R185-R190) re-confirmed + 20/20 robustness inputs never raised + whole-function realism (renamed clone 1.0, real data-flow change 0.69, WL commutative invariance). sonnet: gate 921, graphdiff `<`, cardinal/isolation/degradation, HEAD stable. haiku: 921/287/45-case battery + version + all five-language scope surfaces canonical."
+        },
+        {
+            "id": "R193",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 3
+            },
+            "theme": "v3.6.0 (Java + C# body matrix) clean-cycle attempt (HEAD 1bb728f). opus(Java) CLEAN (~45 positions). sonnet CLEAN (gate 1023, graphdiff `<`, cardinal/isolation/degradation, free-function guard). haiku: stale doc counts (folded). opus(C#) found 2 MEDIUM dropped positions AND exposed a META-ORACLE WEAKNESS affecting ALL SEVEN languages: the metamorphic predicate `similarity(a,b) < 1.0` could PASS on byte-identical fingerprints because cosine self-similarity of a large WL vector rounds to 0.999...98 < 1.0. Hardening it to exact fingerprint-equality surfaced a 3rd masked C# drop. Three C# fixes: `using (var r = e)` paren-form resource (positional unnamed-field child), `$\"{...}\"` interpolated-string holes (was one CONST; now walked like a JS template literal), `new int[]{...}` element initializer (positional initializer_expression). Predicate hardened across all 7 oracles; the other six re-verified clean under the stricter check. Advisory-only; cardinal safe. Streak resets."
+        },
+        {
+            "id": "R194",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 2
+            },
+            "theme": "v3.6.0 (post-R193-fix, HEAD e0e9917). opus(C#) CLEAN (R193 fixes verified across multi-resource/nested-interp/jagged-array variants, ~65 positions, exact-inequality). opus(Java + cross-frontend) CLEAN (large-body exact-inequality; spot-checked Go/Rust/C++/C# confirm the 'other six clean' claim). sonnet CLEAN (gate 1024). haiku: 2 stale scope strings (README core-capabilities bullet + structure_java docstring still ended at C/C++) -- doc-only LOW, fixed. Streak resets (LOW doc-NITs, fold-in)."
+        },
+        {
+            "id": "R195",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1
+            },
+            "theme": "v3.6.0 (HEAD ae93030). opus CLEAN (28 Java + 35 C# positions exact-inequality; validated the hardened predicate has no rounding blind spot on a ~98-feature body). sonnet CLEAN (gate 1024, all 7 oracle guards). haiku: the per-frontend module docstrings' 'compare exactly the way X<->X, ...' sentences were inconsistently enumerated (each listed only predecessors) -- LOW doc; resolved decisively by rephrasing all six to a non-enumerating future-proof form. Streak resets (LOW doc, fold-in)."
+        },
+        {
+            "id": "R196",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.6.0 final clean-cycle round 1 (HEAD 9417762, post docstring rephrase) -- CLEAN across all three. opus: 37+ C# + 35+ Java exact-inequality positions all DIFF; doc-only diff confirmed; three C# fixes intact; realism + robustness clean. sonnet: gate 1024/388, graphdiff `<`, all 7 frontends + oracle guards, cardinal/isolation/degradation. haiku: 20 enumerating surfaces all list seven; counts 1024/388/44/44/3.6.0; non-enumerating frontend docstrings recognized as intentional."
+        },
+        {
+            "id": "R197",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 2
+            },
+            "theme": "v3.6.0 final clean-cycle round 2 attempt (HEAD 9417762). haiku CLEAN; sonnet's checks all CLEAN (a late 'HEAD-stability' note was an artifact of this fix-commit landing during its 22-min run, not a real finding). opus (final certification) found 2 NEW dropped positions the oracle didn't cover: (1) comma-separated `for` 2nd-and-later init/update expressions (`for(...; i++, sink(x))`) dropped in BOTH Java and C# -- the grammars model them as REPEATED `update`/`init`/`initializer` field children and the walker used `child_by_field_name` (first only); (2) C# `catch (E e) when (filter)` exception-filter predicate never walked. Both fixed (iterate repeated field children; walk catch_filter_clause) + oracle cases (Java 44->46, C# 44->47 metamorphic). C/C++ and JS verified NOT affected (single comma/sequence node). Advisory-only; cardinal safe. Streak resets. (A genuinely valuable late catch -- exactly why the 2nd confirmation panel exists.)"
+        },
+        {
+            "id": "R198",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.6.0 final clean-cycle round 1 on the corrected HEAD ea410c3 -- CLEAN across all three. opus: R197 fixes verified across variants (3+ comma items, nested loops, multi-catch filters) + a fresh sweep of every REPEATED/positional field-child position (multi-declarators, multi-dim arrays, multi-label switch, multi-resource, multi-catch, tuples) all captured. sonnet: gate 1029/393, all 7 oracle guards, graphdiff `<`, cardinal/isolation/degradation, commit scope in-bounds. haiku: all enumerating surfaces list seven; counts 1029/393/46/47/3.6.0."
+        },
+        {
+            "id": "R199",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.6.0 final clean-cycle round 2 (HEAD ea410c3) -- CLEAN; streak 2 on the final HEAD, gate met, RELEASABLE. opus final certification: ~110 fresh exact-inequality probes all DIFF; all R193/R197 fixes re-confirmed; realism (renamed clone identical, real data-flow change differs) + robustness (never raises) clean; no remaining dropped/mis-modeled value-flow position. sonnet: gate 1029/393, all checks clean, HEAD frozen. haiku: counts 1029/393/46/47/3.6.0, all scope surfaces canonical. Standing theme recorded: a new language is a free adversarial probe of the shared kernel + meta-oracle (C# exposed the float-rounding oracle blind spot latent in all 7; the repeated-field-children class triggered a cross-frontend audit)."
         }
     ]
 }
