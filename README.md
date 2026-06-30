@@ -165,7 +165,8 @@ millions of edges are ever all resident at once.
   `report`, a `watch` command, and a `doctor` grammar self-check.
 - **Intra-procedural body matrix (Python v3.0.0; JS/TS/TSX v3.2.0; Go v3.3.0; Rust v3.4.0; C/C++ v3.5.0)** — a
   per-function value-flow fingerprint (`core/structure.py`, `core/structure_js.py`,
-  `core/structure_go.py`, `core/structure_rust.py`) that sees *inside* a function, not just its call
+  `core/structure_go.py`, `core/structure_rust.py`, `core/structure_cpp.py`) that sees *inside* a
+  function, not just its call
   edges. Powers `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered /
   temp-var clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and
   read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS, Go, Rust, and
