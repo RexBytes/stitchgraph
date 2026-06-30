@@ -277,6 +277,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             if args is not None:
                 for a in args.named_children:
                     g.link(ev(a, ctrl), n, _DATA)
+            # placement-new `new (addr) T(...)` keeps the placement address under a `placement` field
+            # (an argument_list), separate from constructor `arguments` — walk it so a computed
+            # placement address isn't dropped (R187-redo opus).
+            placement = node.child_by_field_name("placement")
+            if placement is not None:
+                for a in placement.named_children:
+                    g.link(ev(a, ctrl), n, _DATA)
             # array-new `new T[size]` keeps the size under the `new_declarator`'s `length` field
             # (possibly nested for `new T[i][j]`), NOT under `arguments` — walk every length so the
             # size expression's value flow isn't dropped (R187 opus).
@@ -365,6 +372,16 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             node = node.named_children[-1]
         return node
 
+    def _cond_init(node, ctrl):
+        # C++17 `if (init; cond)` / `switch (init; cond)`: the condition_clause carries an
+        # `initializer` field (an init_statement wrapping a declaration) whose value flow must be
+        # evaluated, else `if (int x = helper(); x)` and `if (int x = 0; x)` collapse (R187-redo opus).
+        if node is not None and node.type == "condition_clause":
+            init = node.child_by_field_name("initializer")
+            if init is not None:
+                for c in init.named_children:
+                    do(c, ctrl)
+
     def do(node, ctrl: int | None) -> None:
         t = node.type
         if t == "declaration":
@@ -382,8 +399,10 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             for c in node.named_children:
                 g.link(ev(c, ctrl), n, _DATA)
         elif t == "if_statement":
+            cond = node.child_by_field_name("condition")
+            _cond_init(cond, ctrl)
             b = g.add("BRANCH")
-            g.link(ev(_strip_cond(node.child_by_field_name("condition")), ctrl), b, _DATA)
+            g.link(ev(_strip_cond(cond), ctrl), b, _DATA)
             g.link(ctrl, b, _CTRL)
             _do_body(node.child_by_field_name("consequence"), b)
             _do_body(node.child_by_field_name("alternative"), b)
@@ -401,13 +420,19 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         elif t == "for_range_loop":  # C++11 `for (auto x : container)`
             loop = g.add("LOOP")
             g.link(ctrl, loop, _CTRL)
+            init = node.child_by_field_name("initializer")  # C++20 `for (init; auto x : c)`
+            if init is not None:
+                for c in init.named_children:
+                    do(c, loop)
             it = g.add("ITERVAR")
             g.link(ev(node.child_by_field_name("right"), loop), it, _DATA)
             bind(node.child_by_field_name("declarator"), it)
             _do_body(node.child_by_field_name("body"), loop)
         elif t == "switch_statement":
+            cond = node.child_by_field_name("condition")
+            _cond_init(cond, ctrl)
             b = g.add("BRANCH")
-            g.link(ev(_strip_cond(node.child_by_field_name("condition")), ctrl), b, _DATA)
+            g.link(ev(_strip_cond(cond), ctrl), b, _DATA)
             body = node.child_by_field_name("body")
             if body is not None:
                 for case in body.named_children:

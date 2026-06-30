@@ -57,6 +57,9 @@ _STMT: dict[str, str] = {
     "DoWhile-body": "void t(int a){ do { sink({probe}); } while (a > 0); }",
     "Switch-disc": "int t(int a){ switch ({probe}) { default: return 0; } }",
     "Switch-case": "int t(int a){ switch (a) { case 1: return {probe}; default: return 0; } }",
+    "IfInit": "int t(int a){ if (int x = {probe}; x) { return 1; } return 0; }",
+    "SwitchInit": "int t(int a){ switch (int x = {probe}; x) { default: return 0; } }",
+    "RangeForInit": "void t(V v){ for (int n = {probe}; auto x : v) { sink(x); } }",
 }
 
 
