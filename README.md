@@ -173,8 +173,8 @@ millions of edges are ever all resident at once.
   function, not just its call
   edges. Powers `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered /
   temp-var clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and
-  read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS, Go, Rust, and
-  C/C++ layers need the tree-sitter extra; Python is stdlib-only.
+  read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS, Go, Rust,
+  C/C++, Java, and C# layers need the tree-sitter extra; Python is stdlib-only.
 - **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
   Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
   the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →

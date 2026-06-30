@@ -4,7 +4,7 @@ The Java frontend to the intra-procedural matrix: it builds the SAME `_VFG` valu
 `structure.py` (operations + control points, data + control edges, copy propagation) from a
 tree-sitter **concrete** syntax tree, then reuses the language-neutral Weisfeiler-Lehman kernel
 (`structure._wl_features` / `structure.similarity`). So Java↔Java bodies compare exactly the way
-Python↔Python, JS↔JS, Go↔Go, Rust↔Rust, and C/C++↔C/C++ ones do.
+Python↔Python, JS↔JS, Go↔Go, Rust↔Rust, C/C++↔C/C++, Java↔Java, and C#↔C# ones do.
 
 Advisory and read-only — it never feeds `find_stale`, so the cardinal rule does not apply. Requires
 the optional tree-sitter extra; absent it every entry point returns `{}`. Cross-language comparison is
