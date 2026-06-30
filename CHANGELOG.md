@@ -44,18 +44,22 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   sweep found that a `comment` node leaked into the value-flow graph via each walker's generic
   fallback, so a no-op comment edit changed a body fingerprint (down-ranking commented clones and
   showing comment-only diffs as `graph_diff` body changes). This was **latent in Go, Rust, C/C++,
-  Java and C# (shipped v3.3.0–v3.6.0)** as well as the new Ruby/PHP/Bash; Python (its `ast` drops
-  comments) and JS/TS were already immune. All eight now skip comment nodes as trivia, pinned by a new
-  cross-language oracle (`tests/oracles/test_comment_invariance.py`) that also guards against
-  over-pruning real flow. Advisory-only, never cardinal.
+  Java, C# (shipped v3.3.0–v3.6.0) and JS/TS** as well as the new Ruby/PHP/Bash; only Python (its
+  `ast` drops comments) was truly immune. (JS/TS first looked immune because statement-position
+  comments use field access — but comments in *expression* positions, e.g. a call argument or array
+  literal, still leaked; the oracle now exercises both.) All nine affected frontends skip comment
+  nodes as trivia, pinned by a cross-language oracle (`tests/oracles/test_comment_invariance.py`) that
+  also guards against over-pruning real flow. Advisory-only, never cardinal.
 - **Default parameter-value expressions are now walked (cross-cutting fix).** A `helper()` CALL vs a
   `0` CONST in a parameter's default value (`def f(b = helper())`) produced an identical fingerprint —
   the parameter-seeding loop registered only the parameter name and never walked its default-value
   child. Found across **every language with default-argument syntax**: latent in **C++, C# (shipped)**
   and **Python, JS/TS (shipped, the original frontends)**, plus the new Ruby/PHP; Go/Rust/Java have no
   default-argument syntax. All now link the default-value expression into the parameter's node
-  (incl. destructured defaults like JS `function f({a = helper()})`), pinned by a cross-language
-  oracle. Advisory-only, but a true CALL-vs-CONST completeness violation.
+  (incl. destructured defaults like JS `function f({a = helper()})`, AND JS/TS destructuring defaults
+  in a *declaration/assignment* target — `const {x = helper()} = a` — which route through `bind()`, a
+  separate path), pinned by a cross-language oracle. Advisory-only, but a true CALL-vs-CONST
+  completeness violation.
 - **Python lambdas are now opaque (invariant fix).** A `lambda` in expression position leaked its
   body's value flow into the enclosing function's fingerprint — `_build_vfg.ev` had no `ast.Lambda`
   branch, so it hit the generic fallback and recursed into the lambda body. This broke the documented

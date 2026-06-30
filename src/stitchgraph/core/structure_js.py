@@ -176,10 +176,18 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             v = target.child_by_field_name("value")
             if v is not None:
                 bind(v, val)
-        elif t == "assignment_pattern":
+        elif t in ("assignment_pattern", "object_assignment_pattern"):
             left = target.child_by_field_name("left")
             if left is not None:
                 bind(left, val)
+            # the default value carries flow (`const {x = helper()} = a` / `[x = helper()] = a`):
+            # link it into each bound name's node, mirroring the parameter-default handling.
+            right = target.child_by_field_name("right")
+            if right is not None and left is not None:
+                dv = ev(right, None)
+                for nm in _param_names(left, text):
+                    if env.get(nm) is not None:
+                        g.link(dv, env[nm], _DATA)
         elif t in ("member_expression", "subscript_expression"):
             n = g.add("SETATTR" if t == "member_expression" else "SETITEM")
             g.link(val, n, _DATA)
@@ -193,6 +201,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
+            return None
         if t in _TRANSPARENT:
             inner = [c for c in node.named_children]
             if not inner:

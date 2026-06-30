@@ -87,3 +87,22 @@ def test_default_parameter_value_is_walked(lang):
     assert _differs(mod, tmpl.replace("{probe}", "helper()"), tmpl.replace("{probe}", "0"), **kw), (
         f"{lang}: a CALL vs a CONST in a parameter default value produced identical fingerprints "
         f"— the default expression is being dropped")
+
+
+# JS/TS destructuring defaults in a *declaration / assignment target* (not a parameter) — these route
+# through `bind()`, a different path than parameter defaults. `{x = helper()} = a` / `[x = helper()] = a`.
+_JS_DESTRUCTURE = {
+    "js-object": ("javascript", "function f(a){ const {x = {probe}} = a; return x; }"),
+    "js-array": ("javascript", "function f(a){ const [x = {probe}] = a; return x; }"),
+    "js-pair": ("javascript", "function f(a){ const {k: x = {probe}} = a; return x; }"),
+    "ts-object": ("typescript", "function f(a){ const {x = {probe}} = a; return x; }"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_JS_DESTRUCTURE))
+def test_js_destructuring_default_is_walked(label):
+    lang, tmpl = _JS_DESTRUCTURE[label]
+    assert _differs(structure_js, tmpl.replace("{probe}", "helper()"),
+                    tmpl.replace("{probe}", "0"), lang=lang), (
+        f"{label}: a CALL vs a CONST in a destructuring default (declaration target) produced "
+        f"identical fingerprints — the default expression is being dropped by bind()")

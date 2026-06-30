@@ -109,7 +109,9 @@ construction (a node id maps to exactly one file, hence one language).
   **Python, JS/TS (shipped — the original frontends)** plus the new Ruby/PHP (Go/Rust/Java have no
   default arguments). A genuine CALL-vs-CONST completeness violation — it survived in every *body*
   position yet vanished in the default-value slot. All now walk the default (incl. destructured
-  defaults like JS `function f({a = helper()})`), pinned by a cross-language oracle.
+  defaults like JS `function f({a = helper()})`, AND JS/TS destructuring defaults in a
+  *declaration/assignment* target — `const {x = helper()} = a` — which route through `bind()`, a
+  separate path), pinned by a cross-language oracle.
 - **Invariant fix — Python lambdas are opaque.** A `lambda` in expression position leaked its body's
   value flow into the enclosing fingerprint (`ev` had no `ast.Lambda` branch → generic fallback
   recursed into the body), breaking the documented "closures are opaque `NESTED`" invariant. Python
@@ -126,11 +128,14 @@ construction (a node id maps to exactly one file, hence one language).
 - **Cross-cutting fix — comments are trivia in every tree-sitter frontend.** A confirmation-panel
   sweep found a `comment` node leaking into the value-flow graph via each walker's generic fallback:
   a pure no-op comment edit changed a body fingerprint, down-ranking commented clones and surfacing
-  comment-only edits as `graph_diff` body changes. It was **latent in Go, Rust, C/C++, Java and C#
-  (shipped v3.3.0–v3.6.0)** as well as the new Ruby/PHP/Bash; Python (its `ast` discards comments) and
-  JS/TS were already immune. All eight affected frontends now skip comment nodes as trivia, pinned by a
-  new cross-language oracle (`tests/oracles/test_comment_invariance.py`) which also guards against
-  over-pruning live flow. Textbook "a defect in one frontend is a one-shot audit of the family."
+  comment-only edits as `graph_diff` body changes. It was **latent in Go, Rust, C/C++, Java, C#
+  (shipped v3.3.0–v3.6.0) and JS/TS** as well as the new Ruby/PHP/Bash; only Python (its `ast`
+  discards comments) was truly immune. (JS/TS first looked immune — statement-position comments use
+  field access — but comments in *expression* positions, e.g. a call argument or array literal, still
+  leaked; the oracle now exercises both.) All nine affected frontends now skip comment nodes as
+  trivia, pinned by a cross-language oracle (`tests/oracles/test_comment_invariance.py`) which also
+  guards against over-pruning live flow. Textbook "a defect in one frontend is a one-shot audit of
+  the family."
 - Two Bash positions are **documented structural blind spots, not fixable in-AST**: a
   `${var#$(cmd)}`/`${var%…}` strip pattern is lexed by tree-sitter as one opaque `regex` token (the
   inner command substitution isn't a walkable child), and a single-quoted deferred action
