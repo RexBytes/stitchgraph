@@ -158,3 +158,10 @@ def test_nested_lambda_is_opaque():
     b = sc.fingerprint_source(
         "class T { void t(int a){ System.Action g = () => bar(); use(g); } }")["T.t"]
     assert similarity(a, b) >= 0.99
+
+
+def test_default_parameter_value_is_walked():
+    # A CALL vs a CONST in a parameter's default value must change the fingerprint (it carries flow).
+    uses = sc.fingerprint_source("class C { int F(int a, int b = helper()){ return a; } }")["C.F"]
+    ignores = sc.fingerprint_source("class C { int F(int a, int b = 0){ return a; } }")["C.F"]
+    assert similarity(uses, ignores) < 1.0

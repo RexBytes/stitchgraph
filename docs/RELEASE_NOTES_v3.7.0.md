@@ -74,8 +74,8 @@ construction (a node id maps to exactly one file, hence one language).
 
 - ruff + mypy clean; full suite passing; differential oracle suite passing.
 - Three new **body-matrix completeness oracles** — Ruby
-  (`tests/oracles/test_structure_ruby_completeness.py`, 44 cases), PHP
-  (`tests/oracles/test_structure_php_completeness.py`, 48 cases) and Bash
+  (`tests/oracles/test_structure_ruby_completeness.py`, 45 cases), PHP
+  (`tests/oracles/test_structure_php_completeness.py`, 49 cases) and Bash
   (`tests/oracles/test_structure_bash_completeness.py`, 36 cases): a `helper()`/`$(helper)` (a CALL)
   vs `0` (a CONST) in every value-bearing position must change the fingerprint, plus dedicated
   invariants (compound-assign rebind, module/namespace keying, constructor keyed, opaque
@@ -98,6 +98,13 @@ construction (a node id maps to exactly one file, hence one language).
     stays opaque.
   - This is language diversity as an adversarial probe again: the Bash outlier exercised a
     callee/subscript position the seven prior expression-oriented frontends never could.
+- **Cross-cutting fix — default parameter-value expressions are walked.** A later panel sweep found
+  a `helper()` CALL vs a `0` CONST in a parameter's default value (`def f(b = helper())`) produced an
+  identical fingerprint — the parameter-seeding loop registered only the parameter *name* and never
+  walked its default-value child. Latent in **C++ and C#** (shipped) plus the new Ruby/PHP (Go/Rust/
+  Java have no default arguments). A genuine CALL-vs-CONST completeness violation — it survived in
+  every *body* position yet vanished in the default-value slot. All four now walk the default
+  expression, oracle-pinned per language.
 - **Cross-cutting fix — comments are trivia in every tree-sitter frontend.** A confirmation-panel
   sweep found a `comment` node leaking into the value-flow graph via each walker's generic fallback:
   a pure no-op comment edit changed a body fingerprint, down-ranking commented clones and surfacing

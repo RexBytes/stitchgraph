@@ -340,6 +340,15 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return last
         return _do(node, ctrl)
 
+    # A parameter's default-value expression carries flow (`def f(b = helper())`): walk it now that
+    # `ev` is defined and link it into the parameter's PARAM node.
+    if params is not None:
+        for p in params.named_children:
+            val = p.child_by_field_name("value")
+            nm = p.child_by_field_name("name")
+            if val is not None and nm is not None and nm.type == "identifier" and text(nm) in env:
+                g.link(ev(val, None), env[text(nm)], _DATA)
+
     body = fn.child_by_field_name("body")
     if body is not None:
         ret = _do_body(body, None)

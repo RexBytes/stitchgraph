@@ -488,6 +488,21 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         else:
             do(node, ctrl)
 
+    # A parameter's default-value expression carries flow (`int F(int b = helper())`): walk it now
+    # that `ev` is defined and link it into the parameter's PARAM node.
+    if params is not None:
+        for p in params.named_children:
+            if p.type != "parameter":
+                continue
+            pn = p.child_by_field_name("name")
+            if pn is None or text(pn) not in env:
+                continue
+            for i, c in enumerate(p.named_children):
+                fld = p.field_name_for_named_child(i)
+                if fld in ("type", "name") or c.type == "attribute_list":
+                    continue
+                g.link(ev(c, None), env[text(pn)], _DATA)
+
     body = fn.child_by_field_name("body")
     if body is None:  # expression-bodied member: `int M() => expr;`
         arrow = fn.child_by_field_name("expression_body") or fn.child_by_field_name("value")

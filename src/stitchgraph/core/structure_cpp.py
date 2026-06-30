@@ -198,7 +198,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     params = fdecl.child_by_field_name("parameters") if fdecl is not None else None
     if params is not None:
         for p in params.named_children:
-            if p.type == "parameter_declaration":
+            if p.type in ("parameter_declaration", "optional_parameter_declaration"):
                 nm = _name_of_declarator(p.child_by_field_name("declarator"), text)
                 if nm:
                     env[nm] = g.add("PARAM")
@@ -528,6 +528,16 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                         g.link(ev(a, None), n, _DATA)
                 else:
                     g.link(ev(c, None), n, _DATA)
+
+    # A parameter's default-value expression carries flow (`int f(int b = helper())`): walk it now
+    # that `ev` is defined and link it into the parameter's PARAM node.
+    if params is not None:
+        for p in params.named_children:
+            if p.type == "optional_parameter_declaration":
+                nm = _name_of_declarator(p.child_by_field_name("declarator"), text)
+                val = p.child_by_field_name("default_value")
+                if nm and val is not None and nm in env:
+                    g.link(ev(val, None), env[nm], _DATA)
 
     if func_try is not None:
         do(func_try, None)  # the try_statement handler walks the body + every catch clause

@@ -45,10 +45,18 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   comments) and JS/TS were already immune. All eight now skip comment nodes as trivia, pinned by a new
   cross-language oracle (`tests/oracles/test_comment_invariance.py`) that also guards against
   over-pruning real flow. Advisory-only, never cardinal.
+- **Default parameter-value expressions are now walked (cross-cutting fix).** A later panel sweep
+  found a `helper()` CALL vs a `0` CONST in a parameter's default value (`def f(b = helper())`)
+  produced an identical fingerprint — the parameter-seeding loop registered only the parameter name and
+  never walked its default-value child. Latent in **C++ and C#** (shipped) as well as the new
+  Ruby/PHP; Go/Rust/Java have no default-argument syntax. All four now link the default-value
+  expression into the parameter's node, oracle-pinned per language. Advisory-only, but a true
+  CALL-vs-CONST completeness violation (it survived in every body position yet vanished in
+  default-value position).
 
 ### Quality gate
 - ruff + mypy clean; full suite passing.
-- Three new body-matrix completeness oracles — Ruby (44), PHP (48), Bash (36) — plus three
+- Three new body-matrix completeness oracles — Ruby (45), PHP (49), Bash (36) — plus three
   `graph_diff` body tests pinning the new fingerprint corpora. Two-round full-diversity adversarial
   panel clean on the post-fix HEAD.
 

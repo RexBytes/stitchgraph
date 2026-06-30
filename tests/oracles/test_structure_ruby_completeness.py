@@ -102,6 +102,13 @@ def test_value_bearing_expression_is_walked(label):
         f"(sim={sim}) — the expression type is dropping a child sub-expression")
 
 
+def test_default_parameter_value_is_walked():
+    # A CALL vs a CONST in a parameter's default value must change the fingerprint (it carries flow).
+    uses = sr.fingerprint_source("def f(a, b = helper())\n a\nend")["f"]
+    ignores = sr.fingerprint_source("def f(a, b = 0)\n a\nend")["f"]
+    assert similarity(uses, ignores) < 1.0
+
+
 def test_compound_assignment_rebinds_like_explicit():
     aug = sr.fingerprint_source("def f(x, e)\n z = x\n z += e\n z += e\n z\nend")["f"]
     explicit = sr.fingerprint_source("def f(x, e)\n z = x\n z = z + e\n z = z + e\n z\nend")["f"]

@@ -205,3 +205,10 @@ def test_nested_lambda_is_opaque():
     a = sc.fingerprint_source("void t(int a){ auto g = [](){ return foo(); }; use(g); }")["t"]
     b = sc.fingerprint_source("void t(int a){ auto g = [](){ return bar(); }; use(g); }")["t"]
     assert similarity(a, b) >= 0.99
+
+
+def test_default_parameter_value_is_walked():
+    # A CALL vs a CONST in a parameter's default value must change the fingerprint (it carries flow).
+    uses = sc.fingerprint_source("int f(int a, int b = helper()){ return a; }")["f"]
+    ignores = sc.fingerprint_source("int f(int a, int b = 0){ return a; }")["f"]
+    assert similarity(uses, ignores) < 1.0

@@ -101,6 +101,13 @@ def test_value_bearing_expression_is_walked(label):
         f"(sim={sim}) — the expression type is dropping a child sub-expression")
 
 
+def test_default_parameter_value_is_walked():
+    # A CALL vs a CONST in a parameter's default value must change the fingerprint (it carries flow).
+    uses = sp.fingerprint_source("<?php function f($a, $b = helper()){ return $a; }")["f"]
+    ignores = sp.fingerprint_source("<?php function f($a, $b = 0){ return $a; }")["f"]
+    assert similarity(uses, ignores) < 1.0
+
+
 def test_augmented_assignment_rebinds_like_explicit():
     aug = sp.fingerprint_source(
         "<?php\nfunction f($x, $e) { $z = $x; $z += $e; $z += $e; return $z; }")["f"]
