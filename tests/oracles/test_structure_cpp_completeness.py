@@ -88,6 +88,7 @@ _EXPR: dict[str, str] = {
     "Comma": "int t(int a){ return ({probe}, 1); }",
     "InitList": "S t(int a){ return (S){ {probe}, 1 }; }",
     "New-arg": "S* t(int a){ return new S({probe}); }",
+    "NewArray-size": "int* t(int a){ return new int[{probe}]; }",
 }
 
 

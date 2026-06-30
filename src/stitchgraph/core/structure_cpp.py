@@ -277,6 +277,20 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             if args is not None:
                 for a in args.named_children:
                     g.link(ev(a, ctrl), n, _DATA)
+            # array-new `new T[size]` keeps the size under the `new_declarator`'s `length` field
+            # (possibly nested for `new T[i][j]`), NOT under `arguments` — walk every length so the
+            # size expression's value flow isn't dropped (R187 opus).
+            nd = node.child_by_field_name("declarator")
+            while nd is not None and nd.type == "new_declarator":
+                ln = nd.child_by_field_name("length")
+                if ln is not None:
+                    g.link(ev(ln, ctrl), n, _DATA)
+                nxt = None
+                for c in nd.named_children:
+                    if c.type == "new_declarator":
+                        nxt = c
+                        break
+                nd = nxt
             g.link(ctrl, n, _CTRL)
             return n
         if t == "delete_expression":
