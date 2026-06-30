@@ -3,8 +3,7 @@
 The C/C++ frontend to the intra-procedural matrix: it builds the SAME `_VFG` value-flow graph as
 `structure.py` (operations + control points, data + control edges, copy propagation) from a
 tree-sitter **concrete** syntax tree, then reuses the language-neutral Weisfeiler-Lehman kernel
-(`structure._wl_features` / `structure.similarity`). So C↔C and C++↔C++ bodies compare exactly the way
-Python↔Python, JS↔JS, Go↔Go, and Rust↔Rust ones do.
+(`structure._wl_features` / `structure.similarity`). So C↔C and C++↔C++ bodies compare exactly the way every other per-language frontend's do (one shared WL kernel).
 
 One walker covers both C and C++: the `cpp` tree-sitter grammar is a superset that parses C cleanly,
 and the extractor already unifies the two. Advisory and read-only — it never feeds `find_stale`, so
