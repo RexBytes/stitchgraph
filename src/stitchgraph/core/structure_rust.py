@@ -197,6 +197,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             is_last = i == len(kids) - 1
             if c.type in _STMT_NODES:
                 do(c, ctrl)
+            elif c.type in ("const_item", "static_item"):
+                # A function-local `const`/`static X = <expr>;` carries an initializer evaluated in
+                # the enclosing body (e.g. a `const fn` call) — walk it and bind the name, unlike the
+                # other opaque items below. (The type position still carries no flow.)
+                val = ev(c.child_by_field_name("value"), ctrl)
+                bind(c.child_by_field_name("name"), val)
             elif c.type in _ITEM_NODES:
                 continue  # nested item: opaque to the enclosing body's value flow
             elif is_last:

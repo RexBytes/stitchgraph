@@ -40,6 +40,10 @@ _STMT: dict[str, str] = {
     "TrailingExpr": "fn t(a: i32) -> i32 { {probe} }",
     "Return": "fn t(a: i32) -> i32 { return {probe}; }",
     "Let": "fn t(a: i32) -> i32 { let x = {probe}; x }",
+    # function-local `const`/`static` item initializer is evaluated in the body (e.g. a `const fn`
+    # call) — its value flow must be walked, not skipped as an opaque item (v3.7.0 panel).
+    "ConstItem": "fn t(a: i32) -> i32 { const X: i32 = {probe}; X }",
+    "StaticItem": "fn t(a: i32) -> i32 { static X: i32 = {probe}; X }",
     "LetTuple": "fn t(a: i32) -> i32 { let (x, y) = ({probe}, 1); x + y }",
     "Assign": "fn t(a: i32) -> i32 { let mut x = 0; x = {probe}; x }",
     "CompoundAssign": "fn t(a: i32) -> i32 { let mut x = 0; x += {probe}; x }",
