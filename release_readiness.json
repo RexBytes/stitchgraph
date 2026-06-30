@@ -2189,6 +2189,118 @@
             ],
             "findings": {},
             "theme": "v3.4.0 final clean-cycle round 2 (frozen HEAD 1c52422) -- CLEAN; streak 2, gate met, RELEASABLE. Independent re-run. opus: parse-robustness + whole-function hunt (syntax error -> partial, empty -> {}, todo!()/unimplemented!(), 300-deep ok / 5000-deep RecursionError -> {} graceful degrade, unicode idents, multi-method trait impl, realistic fn with ?-propagation + .iter().map().filter().collect() + match) -- fingerprint_source NEVER raised; renamed clone ranks first (1.0); data-flow changes caught (op-change 0.22, call-vs-const 0.14, filter-removed 0.94); the lone sim==1.0 (commutative arg swap) is the documented WL position-invariance, identical in the Python frontend. sonnet: gate 863/233, mutation 15/15 + 9/9, cardinal isolated, HEAD unchanged. haiku: 863/233/38 + version + all forward-facing scope surfaces canonical re-verified."
+        },
+        {
+            "id": "R184",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.5.0 (C/C++ body matrix, structure_cpp.py) clean-cycle attempt. opus deep-hunt CLEAN on the value-flow positions probed; sonnet gate + cardinal + isolation CLEAN; haiku found one README file-list NIT (structure_cpp.py missing from the inventory), folded into the finalize. The C/C++ frontend reuses the WL kernel; advisory/read-only; cardinal unaffected."
+        },
+        {
+            "id": "R185",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.5.0. opus (MEDIUM): reference-return functions/methods (`T& f()`, `V& grow()`, `int& operator+=()`) silently dropped from the fingerprint map -- the cpp grammar's reference_declarator does NOT field-name its inner function_declarator, so the name-unwrap returned None and the function never became a key. Fixed via a `_decl_child` fallback that scans named children + a reference-return-captured oracle invariant. Advisory-only; streak resets."
+        },
+        {
+            "id": "R186",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.5.0. sonnet + haiku CLEAN. opus (MEDIUM): constructor member-initializer-lists (`S(int x): n(compute(x))`) never walked -- the field_initializer_list is a SIBLING of the body (not inside the compound_statement), and _build_vfg walked only `body`. `n(compute(x))` and `n(0)` collapsed (sim 1.0). Fixed by evaluating each field_initializer's value as a member write + oracle case. Advisory-only; streak resets."
+        },
+        {
+            "id": "R187",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.5.0. sonnet + haiku CLEAN. opus (MEDIUM): array-new size (`new T[helper()]`) dropped -- the size lives under new_declarator.length, not the `arguments` field, and the handler returned before the generic fallback. Fixed (walks the new_declarator chain incl. multidim) + NewArray-size oracle case. INCIDENT: during this round a panel reviewer was (mistakenly) asked to run scripts/mutate.py, which is not interrupt-safe; a concurrent run left graphdiff.py mutated on disk and a stop-hook-prompted `git add -A` committed the mutant (body-divergence comparison flipped `< ` -> `>=`). Detected, traced across commits, and graphdiff.py restored byte-identical to the canonical f188f97 (correct `if sim < body_threshold`, C/C++ wiring intact). The mutant was never validated by a passing full suite (the suite pins the direction). Process lesson recorded: mutate.py runs strictly serially, never by a reviewer, never alongside git staging."
+        },
+        {
+            "id": "R187b",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 2
+            },
+            "theme": "v3.5.0 (post-graphdiff-restore, analysis-only reviewers -- no mutate.py). sonnet + haiku CLEAN (gate 918, graphdiff `<` verified, cardinal/isolation/degradation intact). opus (2 MEDIUM): (1) C++17 `if`/`switch` init-statement + C++20 range-`for` init-statement dropped -- _strip_cond descended the condition_clause to its `value`, discarding the `initializer` field; (2) placement-`new (addr) T(...)` placement address dropped -- lives under a `placement` field, never read. Both fixed + IfInit/SwitchInit/RangeForInit oracle cases. Advisory-only; streak resets."
+        },
+        {
+            "id": "R188",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 2
+            },
+            "theme": "v3.5.0. sonnet + haiku CLEAN. opus (2 MEDIUM): (1) stack VLA / array-declarator size (`int arr[helper()]`) dropped -- bind recursed to the inner declarator without evaluating the array_declarator `size` (stark inconsistency with the R187 heap new[] fix); (2) C++14 lambda init-capture initializer (`[z = helper()]`) dropped -- enclosing-scope value flow, but _FUNC_NODES returned a bare opaque NESTED leaf. Both fixed (lambda BODY stays opaque) + VlaSize/LambdaInitCapture oracle cases. Advisory-only; streak resets."
+        },
+        {
+            "id": "R189",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.5.0 clean-cycle round (frozen HEAD 79ed271) -- CLEAN across all three. opus deep-hunt: 60+ value-bearing positions, every one discriminates helper() vs 0 or is a documented approximation (subscript-LHS-index / default-argument Python-parity, sizeof/alignof/decltype/noexcept unevaluated, lambda body opaque, callee-identity excluded, WL commutative invariance). sonnet: gate 920, graphdiff `<`, cardinal/isolation/degradation. haiku: 920/286/45-case battery, all five-language scope surfaces canonical. (HEAD subsequently advanced for the R190 LOW fix, so this clean panel predates the final HEAD.)"
+        },
+        {
+            "id": "R190",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "LOW": 1
+            },
+            "theme": "v3.5.0 second clean-cycle round attempt. sonnet + haiku CLEAN. opus (LOW): ctor/dtor function-try-block (`S() try : init {..} catch{}`) body + member-init dropped -- a function-try-block has NO `body` field; the grammar nests the member-init list, body, and catch clauses inside an unnamed try_statement. A LOW (weight 1 < tau, narrow special-member construct, advisory-only) -- but a genuine drop of the same class, so fixed for consistency (fall back to the try_statement child) + function-try-block oracle invariant rather than documented as a limitation."
+        },
+        {
+            "id": "R191",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.5.0 final clean-cycle round 1 (frozen HEAD 33d274d, post function-try-block fix) -- CLEAN across all three. opus deep-hunt ~90 positions all discriminate; function-try-block fix verified real & complete (destructor FTB, free-function FTB, multi-catch). One cosmetic LOW NOTED but not a defect: noexcept(expr) over-counts its operand via the generic fallback (conservative over-counting -- the OPPOSITE of a dropped position, harmless for advisory similarity). sonnet: gate 921, graphdiff `<`, cardinal/isolation/degradation. haiku: 921/287/45-case battery, all scope surfaces canonical."
+        },
+        {
+            "id": "R192",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.5.0 final clean-cycle round 2 (frozen HEAD 33d274d) -- CLEAN; streak 2 on the final HEAD, gate met, RELEASABLE. Independent second confirmation. opus: fresh 30-position sweep (29/30 discriminate; the lone sim 1.0 is the documented subscript-LHS-index Python-parity approximation) + all 9 prior fixes (R185-R190) re-confirmed + 20/20 robustness inputs never raised + whole-function realism (renamed clone 1.0, real data-flow change 0.69, WL commutative invariance). sonnet: gate 921, graphdiff `<`, cardinal/isolation/degradation, HEAD stable. haiku: 921/287/45-case battery + version + all five-language scope surfaces canonical."
         }
     ]
 }

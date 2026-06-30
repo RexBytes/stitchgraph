@@ -1827,6 +1827,43 @@ release — applying the Go lesson (grep *every* surface incl. the `graph_diff` 
 just the module docstring) up front meant haiku found zero stale scope mentions in R181. The recurring
 cost is payable once you know to look for it.
 
+## v3.5.0 — the body matrix learns C and C++ (language 4 of the §5b sweep)
+
+`core/structure_cpp.py` — one tree-sitter `cpp` walker for both C and C++ (the grammar is a superset),
+emitting the **same** `_VFG` the Python/JS/Go/Rust frontends do. Statement-oriented (explicit
+`return`); the function name lives *inside* the declarator (unwrap pointer/reference wrappers, take a
+qualified_identifier's last component for out-of-line `Foo::m`); compound-assign / casts / `?:` /
+`*p` / `&x` / `a[i]` carry operand flow; lambdas are opaque `NESTED` leaves; `sizeof`/`alignof`/
+`decltype`/`noexcept` are unevaluated → CONST; the preprocessor is not expanded. The completeness
+oracle (45 metamorphic cases + invariants) drove the walker. **The hardest language of the sweep so
+far** — 9 real dropped-value-flow defects found and fixed across the panels, every one a C/C++-specific
+node-shape the metamorphic battery had not yet probed; each fix added the missing oracle case.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R184 | 3 | ✓* | first clean-cycle attempt; opus value-flow CLEAN, sonnet gate/cardinal CLEAN, haiku one README file-list NIT (folded into finalize). |
+| R185 | 3 | ✗ | opus **MEDIUM**: reference-return functions (`T& f()`, `V& grow()`) dropped — `reference_declarator` doesn't field-name its inner `function_declarator`, name-unwrap returned None, function never keyed. Fix: `_decl_child` fallback + oracle invariant. |
+| R186 | 3 | ✗ | opus **MEDIUM**: constructor member-initializer-lists (`S(int x): n(compute(x))`) never walked — `field_initializer_list` is a SIBLING of the body, `_build_vfg` walked only `body`. Fix: evaluate each init as a member write + oracle case. |
+| R187 | 3 | ✗ | opus **MEDIUM**: array-new size (`new T[helper()]`) dropped (lives under `new_declarator.length`, not `arguments`). **INCIDENT**: a reviewer was mistakenly asked to run `mutate.py` (not interrupt-safe); a concurrent run left `graphdiff.py` mutated and a stop-hook-prompted `git add -A` committed the mutant (body-divergence flipped `<`→`>=`). Traced across commits, restored byte-identical to canonical f188f97; the mutant was never validated by a passing full suite. Lesson: `mutate.py` runs strictly serially, never by a reviewer, never alongside git staging. |
+| R187b | 3 | ✗ | analysis-only reviewers (no `mutate.py`). opus **2 MEDIUM**: C++17 `if`/`switch` init-statement + C++20 range-`for` init-statement dropped (`_strip_cond` discarded the `initializer` field); placement-`new (addr) T(…)` placement address dropped (separate `placement` field). Both fixed + oracle cases. |
+| R188 | 3 | ✗ | opus **2 MEDIUM**: stack VLA size (`int arr[helper()]`) dropped (bind skipped the `array_declarator` `size` — inconsistent with the R187 heap-new fix); C++14 lambda init-capture (`[z = helper()]`) dropped (`_FUNC_NODES` returned a bare opaque leaf). Both fixed (lambda body stays opaque) + oracle cases. |
+| R189 | 3 | ✓ | clean-cycle round (frozen HEAD 79ed271) — CLEAN. opus deep-hunt 60+ positions all discriminate; sonnet gate **920**, graphdiff `<`, cardinal/isolation/degradation; haiku 920/286/45-case battery, all scope surfaces canonical. (HEAD later advanced for the R190 fix, so this clean panel predates the final HEAD.) |
+| R190 | 3 | ✗ | opus **LOW**: ctor/dtor function-try-block (`S() try : init {…} catch{}`) body + member-init dropped — a function-try-block has NO `body` field; the grammar nests them in an unnamed `try_statement`. A LOW (weight 1 < τ, narrow construct) but a genuine drop of the same class, so fixed for consistency (fall back to the `try_statement` child) + oracle invariant rather than documented. |
+| R191 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 33d274d, post function-try-block fix). opus ~90 positions all discriminate; FTB fix verified (destructor/free-function/multi-catch). Cosmetic LOW *noted, not a defect*: `noexcept(expr)` over-counts its operand via the generic fallback — conservative over-counting, the OPPOSITE of a dropped position. sonnet gate **921**, graphdiff `<`; haiku 921/287/45-case battery. |
+| R192 | 3 | ✓ | **final clean-cycle round 2 — streak 2 on the final HEAD, gate met, RELEASABLE.** opus: fresh 30-position sweep (29/30 discriminate; lone sim 1.0 is the documented subscript-LHS-index Python-parity approx) + all 9 prior fixes re-confirmed + 20/20 robustness inputs never raised + whole-function realism (rename-clone 1.0, real change 0.69). sonnet 921, graphdiff `<`, HEAD stable; haiku counts/version/scope all canonical. |
+
+Process notes: (1) the curve ticked **sharply up** vs Go (0) / Rust (1) — exactly as the lessons doc
+predicted C/C++ would: pointers, the declarator-name-inside-the-declarator inversion, out-of-line
+methods, function-try-blocks, VLAs, and C++14/17/20 init forms are a dense field of novel value-flow
+shapes, and the opus deep-hunt is the reviewer that finds each one. The generic fallback kept every
+unhandled node *visible* (nothing silently vanished structurally), but the metamorphic battery is what
+proved each value-bearing position is actually *walked*. (2) The release also produced the sweep's
+first **process** failure rather than a code defect: a `mutate.py` mutant reached two commits because a
+panel reviewer ran the not-interrupt-safe mutator concurrently and a stop-hook prompted a commit
+mid-run. The recovery was clean (the suite pins the body-divergence direction, so the mutant could
+never have passed a full gate), and the standing rule is now explicit — the mutation meta-oracle is
+run by the orchestrator alone, serially, never by a reviewer and never alongside git staging.
+
 ## Standing themes
 
 - Convergence is non-monotonic and never reaches zero — measure residual risk.
