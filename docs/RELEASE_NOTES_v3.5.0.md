@@ -55,15 +55,15 @@ frontends. Same-language by construction.
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **914** passing; differential oracle suite **280**.
+- ruff + mypy clean; full suite **915** passing; differential oracle suite **281**.
 - New **C/C++ body-matrix completeness oracle** (`tests/oracles/test_structure_cpp_completeness.py`):
-  39 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
+  40 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
   expression position must change the fingerprint — plus dedicated invariants (compound-assign
   rebind, cast carries operand not type, out-of-line keyed bare vs inline keyed `Class.method`,
   `sizeof` is a compile-time constant, nested lambda opaque, reference-return function captured,
-  constructor member-initializer-list walked). The oracle caught a real drop during
-  development: the cpp grammar keeps a subscript index under `indices`/`subscript_argument_list`, not
-  C's `index` field, so `a[helper()]` initially collapsed.
+  constructor member-initializer-list walked, array-new size captured). The oracle caught a real
+  drop during development: the cpp grammar keeps a subscript index under
+  `indices`/`subscript_argument_list`, not C's `index` field, so `a[helper()]` initially collapsed.
 - Mutation meta-oracle unchanged: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32.
 - **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.
 
