@@ -2113,6 +2113,50 @@
             ],
             "findings": {},
             "theme": "v3.2.0 final clean-cycle round 2 (frozen HEAD 81e4916) -- CLEAN; streak 2, gate met, RELEASABLE. Independent re-run, not a rerun of R175. opus: fresh-angle dropped-sub-expression hunt on realistic multi-statement async/generator/try-catch-finally functions + private-method this-dispatch -- all discriminate; the three sim==1.0 cases (subscript-WRITE index, destructuring defaults, name/position invariance) verified to mirror Python identically; cardinal find_stale byte-identical before/after find_similar+graph_diff on a mixed Python+JS+TS index, scratch db kept outside the source tree. sonnet: gate 762/140, mutation 15/15 + 9/9, cross-language comparison structurally impossible (node id -> one file -> one language), HEAD unchanged. haiku: 762/140/51 + mutation + version + zero stale scope all re-verified."
+        },
+        {
+            "id": "R177",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.3.0 (Go body matrix, structure_go.py) clean-cycle attempt 1 (frozen HEAD 4c3d5a2). opus + sonnet CLEAN: gate 816/190, ruff+mypy clean, mutation 15/15 + 9/9, cardinal byte-identical, cross-language impossible; opus's ~37-probe deep hunt found only documented Python-parity approximations (the one sim==1.0 case, `m[k]=e` index-WRITE key, matches Python's SETITEM exactly). haiku (MEDIUM): LIMITATIONS.md still scoped the body matrix to 'Python + JS/TS/TSX ... not the other 8 languages' -- a now-false claim post-Go (it asserted Go was NOT covered). Fixed: LIMITATIONS.md body-matrix entry -> 'Python + JS/TS/TSX + Go (v3.0.0/v3.2.0/v3.3.0)'. Streak resets (real doc-accuracy finding, same class as v3.2.0 R169-R171)."
+        },
+        {
+            "id": "R178",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.3.0 clean-cycle attempt 2 (frozen HEAD 8c52061 after the LIMITATIONS fix). opus + sonnet CLEAN (gate 816/190, mutation 15/15 + 9/9, cardinal empirically byte-identical -- the genuinely-orphan Go func is never flagged by the body matrix; fresh ~45-probe hunt clean). haiku (MEDIUM, exhaustive scope grep -- its first run was interrupted by a worker restart, the rerun was more thorough): two forward-facing surfaces left inconsistent by the v3.3.0 doc sweep -- the `graph_diff()` FUNCTION docstring still said 'Python or JS/TS functions' (missing Go AND TSX; the module docstring had been updated but not the function's), and README.md:34's graph_diff bullet said 'Python + JS/TS + Go' (missing TSX). Both fixed to the canonical 'Python, JS/TS/TSX, or Go' / 'Python + JS/TS/TSX + Go'. Streak resets."
+        },
+        {
+            "id": "R179",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.3.0 final clean-cycle round 1 (frozen HEAD 30c35a4 after the doc-scope fixes) -- CLEAN. opus (deepest pass): whole-function fidelity on idiomatic Go incl. GENERICS -- a generic function body fingerprints non-empty, `helper()` vs `0` inside a generic body differs, type params/constraints (`comparable`, `~int`) carry NO spurious flow, generic == concrete equivalent; renamed clone ranks first, data-flow change caught; the three sim==1.0 cases are documented Python+JS+Go three-way-parity approximations. sonnet: gate 816/190, ruff+mypy clean, mutation 15/15 + 9/9, clean degradation, cross-language misroute empirically impossible. haiku: exhaustive scope grep -- both R178 fixes re-verified, no forward-facing surface missing Go or TSX; counts 816/190/45 + version 3.3.0 all verified."
+        },
+        {
+            "id": "R180",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.3.0 final clean-cycle round 2 (frozen HEAD 30c35a4) -- CLEAN; streak 2, gate met, RELEASABLE. Independent re-run. opus: parse-robustness hunt over 30 edge inputs (syntax error, empty/package-only/import-only, empty bodies, init/main, unicode idents, 2000-3000-deep expression chains, lone surrogates) -- fingerprint_source NEVER raised, always returned a dict ({} or partial), deep nesting caught as RecursionError -> {} (documented advisory degrade); cardinal find_stale byte-identical, no Go node ever in the stale set, renamed clone ranks first, data-flow change self-sim 0.30 caught. sonnet: gate 816/190, mutation 15/15 + 9/9, cardinal isolated, HEAD unchanged. haiku: 816/190/45 + version + all forward-facing scope surfaces canonical re-verified."
         }
     ]
 }

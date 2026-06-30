@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 140 (3.2.0 added the 51-case JS/TS completeness battery) ✅ · no-open-defects ✅ |
-| Tests | 762 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 190 (3.2.0 added the 51-case JS/TS battery; 3.3.0 the 45-case Go battery) ✅ · no-open-defects ✅ |
+| Tests | 816 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path + clearer README → R166 (test-determinism gap fixed) → R167✓ R168✓ on a frozen HEAD. **3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case completeness oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). **3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects — oracle caught them all up front) → R179✓ R180✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1777,6 +1777,30 @@ that finds this class**; keep it in every body-matrix panel. (3) Same `mutate.py
 as v3.1.0, plus a new one: an *interrupted* `mutate.py` left an `ast.unparse`'d mutant of
 `structure_js.py` on disk (its `finally` restore was bypassed by a worker SIGKILL) — reviewers are now
 told **not to run `mutate.py` on `structure_js.py`** until that tool is made interrupt-safe.
+
+## v3.3.0 — the body matrix learns Go (language 2 of the §5b sweep)
+
+`core/structure_go.py` — a tree-sitter Go walker emitting the **same** `_VFG` the Python and JS
+frontends do, reusing the WL kernel. Bare-name qualnames (a method keys as `Method`, not `T.Method`)
+and nested `func` literals opaque — matching the Go extractor's granularity. Seeds the method
+receiver + named results as parameters. Same advisory/read-only/same-language-ranking contract; the
+45-case completeness oracle (`tests/oracles/test_structure_go_completeness.py`) drove the walker.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R177 | 3 | ✗ | clean-cycle attempt 1 (frozen HEAD 4c3d5a2). opus + sonnet CLEAN (gate **816/190**, mutation 15/15 + 9/9, cardinal byte-identical; opus's ~37-probe deep hunt found only documented Python-parity approximations — the one sim==1.0, `m[k]=e` index-**write** key, matches Python's SETITEM exactly). haiku **MEDIUM**: `LIMITATIONS.md` still scoped the body matrix to "Python + JS/TS/TSX … not the other 8 languages" — a now-false claim post-Go. Fixed → "Python + JS/TS/TSX + Go". Streak resets (doc-accuracy, same class as v3.2.0 R169–R171). |
+| R178 | 3 | ✗ | clean-cycle attempt 2 (frozen HEAD 8c52061). opus + sonnet CLEAN (gate 816/190, mutation 15/15 + 9/9, cardinal: the genuinely-orphan Go func is never flagged by the body matrix). haiku **MEDIUM** (exhaustive scope grep; its first run was cut off by a worker restart, the rerun caught more): the `graph_diff()` **function** docstring still said "Python or JS/TS" (missing Go **and** TSX — the module docstring had been updated but not the function's) and README:34 said "JS/TS + Go" (missing TSX). Both fixed to canonical. Streak resets. |
+| R179 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 30c35a4). opus: whole-function fidelity on idiomatic Go incl. **generics** — a generic body fingerprints non-empty, `helper()` vs `0` inside it differs, type params/constraints (`comparable`/`~int`) carry no spurious flow, generic ≡ concrete; renamed clone ranks first, data-flow change caught. sonnet: gate 816/190, mutation 15/15 + 9/9, clean degradation, cross-language misroute empirically impossible. haiku: exhaustive scope grep, both R178 fixes re-verified, counts 816/190/45. |
+| R180 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus: parse-robustness hunt over 30 edge inputs (syntax error, empty/package-only, unicode idents, 2000–3000-deep expression chains, lone surrogates) — `fingerprint_source` **never raised**, always returned a dict ({} or partial); deep nesting caught → `{}` (documented advisory degrade); cardinal byte-identical, no Go node ever in the stale set. sonnet: 816/190, mutation 15/15 + 9/9, HEAD unchanged. haiku: counts/version/scope all canonical. |
+
+Process notes: (1) the completeness-oracle-first recipe made Go **cheaper than JS** — the walker passed
+its 45-case battery on the first build and the panels found **no code defect at all** (only two
+doc-scope misses). The bug taxonomy in `docs/BODY_MATRIX_LESSONS.md` is paying compounding dividends.
+(2) Both findings this release were **documentation scope-consistency** (the `graph_diff` *function*
+docstring and a README bullet lagging the module docstring) — a recurring tail when one representation
+gains a language; the fix each time is a grep across *every* surface, not just the obvious ones.
+(3) Generics were the one genuinely-new Go construct vs Python/JS; opus confirmed type parameters seed
+no spurious value flow (the walker only reads `receiver`/`parameters`/`result`).
 
 ## Standing themes
 
