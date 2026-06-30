@@ -339,6 +339,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             # when no exception fired — its body carries value flow just like the main statements).
             for c in node.named_children:
                 if c.type in ("rescue", "else", "ensure"):
+                    if c.type == "rescue":
+                        # `rescue <expr>, <expr> => e` — the exception-class selectors are evaluated
+                        # expressions (value flow), reached via the `exceptions` field, not the body.
+                        exc = c.child_by_field_name("exceptions")
+                        for ec in (exc.named_children if exc is not None else []):
+                            ev(ec, ctrl)
                     _do_body(c.child_by_field_name("body") or c, ctrl)
             return last
         return _do(node, ctrl)

@@ -63,6 +63,10 @@ _STMT: dict[str, str] = {
     "For-body": "for x in items\n sink({probe})\nend\n0",
     "Return": "return {probe}",
     "BeginRescueElse": "begin\n risky\nrescue\n 1\nelse\n {probe}\nend",
+    # `rescue <expr>` — the exception-class selector is an evaluated expression (value flow), reached
+    # via the rescue `exceptions` field, not the body (v3.7.0 panel).
+    "RescueClass": "begin\n risky\nrescue {probe}\n recover\nend",
+    "RescueClassMulti": "begin\n risky\nrescue A, {probe}\n recover\nend",
     "BeginEnsure": "begin\n sink({probe})\nensure\n cleanup\nend\n0",
     "ParenSeq": "(sink({probe}); 0)",
 }

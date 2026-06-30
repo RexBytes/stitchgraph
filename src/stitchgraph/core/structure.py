@@ -254,6 +254,10 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             for x in s.body + s.orelse + s.finalbody:
                 do(x, ctrl)
             for h in s.handlers:
+                if h.type is not None:  # `except <expr>:` — the selector is evaluated (value flow)
+                    eh = g.add("EXCEPT")
+                    g.link(ev(h.type, ctrl), eh, _DATA)
+                    g.link(ctrl, eh, _CTRL)
                 for x in h.body:
                     do(x, ctrl)
         elif isinstance(s, ast.Raise):
