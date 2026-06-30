@@ -31,7 +31,7 @@ Point it at a repo and ask plain questions about it. Every answer is ranked and 
 - **Where's the code that does X?** — `find_similar`: by name/docs (semantic) or, new in v3.0.0, by
   **body shape** (finds renamed / reordered clones a text search misses).
 - **How do two builds differ?** — `graph_diff`: call-level deltas **plus** body-shape changes
-  (Python + JS/TS/TSX + Go + Rust), so a data-flow bug that leaves the call graph identical still shows up.
+  (Python + JS/TS/TSX + Go + Rust + C/C++), so a data-flow bug that leaves the call graph identical still shows up.
 - **I'm new here — orient me.** — `orient` / `summarize_subsystem` / `risk`: central modules, entry
   points, and the files most dangerous to touch.
 - **What's referenced but missing?** — `find_holes`: dangling references that don't resolve.
@@ -58,7 +58,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   plus cross-language resolvers, all resolving into a single typed graph — so a
   trace can cross an HTML form → route → handler → ORM → SQL table → column.
 - **Sees inside functions, not just between them.** The **body matrix**
-  (Python + JS/TS/TSX + Go + Rust) fingerprints each function's value flow order- and
+  (Python + JS/TS/TSX + Go + Rust + C/C++) fingerprints each function's value flow order- and
   name-invariantly, so `find_similar(mode="structure")` catches renamed / reordered
   clones and `graph_diff` flags a data-flow change that leaves the call graph
   identical — advisory and read-only, never feeding dead-code detection.
@@ -66,21 +66,22 @@ for LLM agents. The full operation list and the question each answers is in the 
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.4.0 — intra-procedural body matrix for Python + JS/TS/TSX + Go + Rust)
+## Status (v3.5.0 — intra-procedural body matrix for Python + JS/TS/TSX + Go + Rust + C/C++)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
 and the body matrix (v3.0.0) now spans Python, the JS family (v3.2.0), Go (v3.3.0),
-and Rust (v3.4.0). See [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
+Rust (v3.4.0), and C/C++ (v3.5.0). See [`docs/STATUS.md`](docs/STATUS.md) for the full
+table + roadmap.
 
-### Headline: the intra-procedural body matrix (Python + JS/TS/TSX + Go + Rust)
+### Headline: the intra-procedural body matrix (Python + JS/TS/TSX + Go + Rust + C/C++)
 
 Every prior release modeled code *between* definitions — a graph of functions /
 classes linked by CALLS / REFERENCES / INHERITS / IMPORTS. **v3.0.0 added the level
 below that**, **v3.2.0 extended it to JavaScript/TypeScript**, **v3.3.0 added Go**,
-and **v3.4.0 adds Rust**: a per-function **value-flow fingerprint** (`core/structure.py`
+**v3.4.0 added Rust**, and **v3.5.0 adds C/C++**: a per-function **value-flow fingerprint** (`core/structure.py`
 for Python, `core/structure_js.py` for the JS family, `core/structure_go.py` for Go,
-`core/structure_rust.py` for Rust) — operations + control points, data + control
+`core/structure_rust.py` for Rust, `core/structure_cpp.py` for C/C++) — operations + control points, data + control
 edges, copy propagation — fingerprinted
 **order- and name-invariantly** via a Weisfeiler-Lehman kernel. Renamed locals,
 reordered independent statements, and temp-variable factoring all read as the *same
@@ -96,18 +97,18 @@ capabilities:
   classic translation / plan-vs-actual bug) is still caught.
 
 Both are **advisory and read-only** — they never feed `find_stale`, so the cardinal
-rule is structurally unaffected. **Python is stdlib-only; the JS/TS, Go, and Rust
-layers need the tree-sitter extra.** Cross-language *body* comparison stays
+rule is structurally unaffected. **Python is stdlib-only; the JS/TS, Go, Rust,
+and C/C++ layers need the tree-sitter extra.** Cross-language *body* comparison stays
 oracle-only (topology tracks the extractor); the features rank/diff within one
 language. It is a structural *approximation*, not sound data flow — full scope and
-limits in [`docs/RELEASE_NOTES_v3.4.0.md`](docs/RELEASE_NOTES_v3.4.0.md).
+limits in [`docs/RELEASE_NOTES_v3.5.0.md`](docs/RELEASE_NOTES_v3.5.0.md).
 
 ```python
 import stitchgraph as sg
 
 with sg.Store("stitchgraph.db") as store:
     sg.reindex(store, "src")
-    # rank stored functions by body shape (renamed/reordered clones; Python, JS/TS, Go, or Rust)
+    # rank stored functions by body shape (renamed/reordered clones; Python, JS/TS, Go, Rust, or C/C++)
     print(sg.find_similar(store, open("some_func.py").read(), mode="structure"))
     # body-aware structural diff against another built index
     print(sg.graph_diff(store, "other_index.db"))   # body-aware by default
@@ -162,13 +163,13 @@ millions of edges are ever all resident at once.
   `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
   `graph_diff`, plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
   `report`, a `watch` command, and a `doctor` grammar self-check.
-- **Intra-procedural body matrix (Python v3.0.0; JS/TS/TSX v3.2.0; Go v3.3.0; Rust v3.4.0)** — a
+- **Intra-procedural body matrix (Python v3.0.0; JS/TS/TSX v3.2.0; Go v3.3.0; Rust v3.4.0; C/C++ v3.5.0)** — a
   per-function value-flow fingerprint (`core/structure.py`, `core/structure_js.py`,
   `core/structure_go.py`, `core/structure_rust.py`) that sees *inside* a function, not just its call
   edges. Powers `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered /
   temp-var clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and
-  read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS, Go, and Rust
-  layers need the tree-sitter extra; Python is stdlib-only.
+  read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS, Go, Rust, and
+  C/C++ layers need the tree-sitter extra; Python is stdlib-only.
 - **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
   Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
   the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →
@@ -192,8 +193,8 @@ millions of edges are ever all resident at once.
 | `risk` | Which files are most dangerous to touch (churn × centrality × coupling)? |
 | `scan` | Give me a ranked sweep of issues across the whole repo. |
 | `summarize_subsystem` | What is this package/folder, in one shot? |
-| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python + JS/TS/TSX + Go + Rust). |
-| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + body-shape changes (Python + JS/TS/TSX + Go + Rust). |
+| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python + JS/TS/TSX + Go + Rust + C/C++). |
+| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + body-shape changes (Python + JS/TS/TSX + Go + Rust + C/C++). |
 | `ingest_trace` | Fuse runtime coverage so "live" reflects what actually ran. |
 
 > Trust model: every answer carries a confidence and provenance. `find_stale` is

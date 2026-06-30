@@ -390,6 +390,40 @@ def test_rust_self_diff_is_equivalent(tmp_path):
     assert d["body_changed"] == []
 
 
+def test_cpp_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
+    # v3.5.0: the body-aware layer now covers C/C++ too. Same calls (heavy x2, combine x1) ->
+    # identical call graph, but score() feeds `a` to both heavy() calls instead of `a` and `b`.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    plan = {"score.cpp": (
+        "int heavy(int v) { return v * v; }\n"
+        "int combine(int x, int y) { return x + y; }\n"
+        "int score(int a, int b) { int x = heavy(a); int y = heavy(b); return combine(x, y); }\n")}
+    buggy = {"score.cpp": (
+        "int heavy(int v) { return v * v; }\n"
+        "int combine(int x, int y) { return x + y; }\n"
+        "int score(int a, int b) { int x = heavy(a); int y = heavy(a); return combine(x, y); }\n")}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", buggy)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert not d["nodes_only_a"] and not d["nodes_only_b"]    # call graph identical ...
+    assert not d["edges_only_a"] and not d["edges_only_b"]
+    assert "score" in {c["name"] for c in d["body_changed"]}  # ... body layer flags score()
+    assert not d["equivalent"]
+
+
+def test_cpp_self_diff_is_equivalent(tmp_path):
+    # determinism / no-phantom-delta guard for the C/C++ body layer.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    repo = {"m.cpp": "int f(int* xs, int n) { int t = 0; for (int i = 0; i < n; i++) { t += g(xs[i]); } return t; }\n"}
+    a = _index(tmp_path / "a", repo)
+    b = _index(tmp_path / "b", repo)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["equivalent"], d
+    assert d["body_changed"] == []
+
+
 def test_operation_does_not_migrate_older_schema_other_db(tmp_path):
     # R160 (opus HIGH): a VALID but older-schema stitchgraph index passes the read-only probe, but
     # opening it with Store() would run _migrate (ALTER TABLE ADD COLUMN) + commit, mutating the

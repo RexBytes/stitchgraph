@@ -4,6 +4,43 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.5.0] — 2026-06-30
+
+**The body matrix learns C and C++.** v3.4.0 added Rust; v3.5.0 adds C/C++ — language 4 of the
+multi-language sweep (`docs/IDEAS.md` §5b), and the predicted "harder" one (pointers, the
+preprocessor, out-of-line methods, templates). New language for an existing representation → MINOR;
+backward-compatible (schema/indexes/existing ops unchanged, opt-in, advisory).
+
+### Added
+
+- **`core/structure_cpp.py`** — one tree-sitter walker covering **both C and C++** (the `cpp` grammar
+  is a superset that parses C cleanly), emitting the **same** `_VFG` vocabulary as the other frontends
+  and reusing the WL kernel. The function name is dug out of the declarator chain (unwrapping
+  `pointer_declarator`/`reference_declarator` for `int* f()`; an out-of-line `int Foo::m()` keys to
+  the bare last component `m`, matching the extractor). Statement-oriented (explicit `return`).
+  Handles compound assignment, `?:`, casts (operand flows, type doesn't), `*p`/`&x`, `a[i]`
+  (the cpp grammar's `indices`/`subscript_argument_list` shape), range-for, switch (case value walked
+  once), `new`/`delete`, initializer lists, lambdas (opaque `NESTED`). `sizeof(expr)` collapses to a
+  CONST — correct, since it never evaluates its operand. Function-like `#define` macros are
+  preprocessor constructs (not `function_definition`s) and out of scope; a *call* to a macro is a
+  normal `call_expression`.
+- **`find_similar(mode="structure")`** auto-detects C/C++ (after Python, JS/TS, Go, Rust) and ranks
+  same-language only.
+- **`graph_diff`** body layer now covers C/C++ functions/methods too.
+
+Qualname scheme matches the extractor: free/namespace/template functions bare, inline methods
+`Class.method`, out-of-line `Foo::m` definitions bare `m`. Requires the optional **tree-sitter
+extra** (advisory degrade without it); the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **912** passing; differential oracle suite **278** — incl. a new
+  **C/C++ body-matrix completeness oracle** (39 metamorphic cases + invariants: compound-assign /
+  cast / out-of-line-vs-inline qualnames / `sizeof`-is-constant / nested-lambda-opaque). The oracle
+  caught a real drop during development (the cpp grammar keeps a subscript index under `indices`, not
+  C's `index` field). Mutation meta-oracle unchanged (`structure.py` 15/15, `graphdiff` 9/9,
+  `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
+
 ## [3.4.0] — 2026-06-30
 
 **The body matrix learns Rust.** v3.3.0 added Go; v3.4.0 adds Rust — language 3 of the

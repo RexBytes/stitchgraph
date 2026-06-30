@@ -249,3 +249,55 @@ def test_rust_structure_mode_ranks_same_language_only(tmp_path):
     assert ids and all("::" in i for i in ids), ids
     assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
     assert any(i.endswith("::sum_even_squares") for i in ids)
+
+
+_CPP_REPO = {
+    "acc.cpp": (
+        "int sum_even_squares(int* items, int n) {\n"
+        "    int total = 0;\n"
+        "    for (int i = 0; i < n; i++) { if (items[i] % 2 == 0) { total += items[i] * items[i]; } }\n"
+        "    return total;\n"
+        "}\n"
+        "int parse_count(const char* s) {\n"
+        "    int c = 0;\n"
+        "    while (*s) { if (*s == ',') { c++; } s++; }\n"
+        "    return c;\n"
+        "}\n"
+    ),
+}
+# same body shape as sum_even_squares, renamed — the C/C++ clone.
+_CPP_QUERY = (
+    "int accumulate(int* data, int m) {\n"
+    "    int acc = 0;\n"
+    "    for (int j = 0; j < m; j++) { if (data[j] % 3 == 0) { acc += data[j] * data[j]; } }\n"
+    "    return acc;\n"
+    "}\n"
+)
+
+
+def test_cpp_structure_mode_ranks_the_clone_first(tmp_path):
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    store = _index(tmp_path, _CPP_REPO)
+    res = sg.find_similar(store, _CPP_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids[0].endswith("::sum_even_squares")    # the accumulator clone, not parse_count
+    top = res.result[0]["score"]
+    cnt = next((r["score"] for r in res.result if r["id"].endswith("::parse_count")), 0.0)
+    assert top > cnt
+
+
+def test_cpp_structure_mode_ranks_same_language_only(tmp_path):
+    # A C/C++ snippet must rank C/C++ functions, NOT a same-shaped Python one. Index both; query C++.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    files = dict(_CPP_REPO)
+    files.update(REPO)   # adds acc.py with sum_even_squares (the Python accumulator)
+    store = _index(tmp_path, files)
+    res = sg.find_similar(store, _CPP_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids and all("::" in i for i in ids), ids
+    assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
+    assert any(i.endswith("::sum_even_squares") for i in ids)
