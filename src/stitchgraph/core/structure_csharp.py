@@ -182,6 +182,11 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             if sub is not None:
                 for a in sub.named_children:
                     g.link(ev(a, None), n, _DATA)
+        elif t == "element_binding_expression":  # `new D { [key] = v }` indexed-initializer key
+            n = g.add("SETITEM")
+            g.link(val, n, _DATA)
+            for a in target.named_children:  # the key expression(s) carry flow
+                g.link(ev(a, None), n, _DATA)
         elif t == "tuple_expression":  # `(a, b) = ...` deconstruction
             for c in target.named_children:
                 bind(c, val)

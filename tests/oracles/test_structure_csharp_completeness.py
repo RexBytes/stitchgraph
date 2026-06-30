@@ -175,3 +175,13 @@ def test_constructor_initializer_args_are_walked():
     d = sc.fingerprint_source("class D : B { D():base(helper()){} }")["D.D"]
     e = sc.fingerprint_source("class D : B { D():base(0){} }")["D.D"]
     assert similarity(d, e) < 1.0
+
+
+def test_indexed_initializer_key_is_walked():
+    # A CALL vs a CONST in a dictionary/indexed-initializer KEY (`new D { [Key()] = v }`) must change
+    # the fingerprint — the key expression carries flow (routes through bind() as element_binding).
+    uses = sc.fingerprint_source(
+        "class C { void F(){ var d = new System.Collections.Generic.Dictionary<int,int>{ [Key()] = 1 }; } }")["C.F"]
+    ignores = sc.fingerprint_source(
+        "class C { void F(){ var d = new System.Collections.Generic.Dictionary<int,int>{ [0] = 1 }; } }")["C.F"]
+    assert similarity(uses, ignores) < 1.0
