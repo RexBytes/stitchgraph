@@ -140,6 +140,21 @@ def test_inline_method_keyed_qualified():
     assert similarity(uses, ignores) < 1.0
 
 
+def test_reference_return_function_is_captured():
+    # R185 (opus): a reference-return function/method (`T& f()`, `V& grow()`, `int& operator+=()`) was
+    # silently dropped — the cpp grammar's `reference_declarator` doesn't field-name its inner
+    # function_declarator, so the name-unwrap returned None and the function never became a key.
+    # It must be captured (a key) and its body must carry value flow.
+    free = sc.fingerprint_source("int& f(int x){ return r; }")
+    assert "f" in free, "reference-return free function dropped"
+    method = sc.fingerprint_source("struct V{ int n; V& grow(int x){ n += x; return *this; } };")
+    assert "V.grow" in method, "reference-return method dropped"
+    # body carries flow: using the arg differs from ignoring it.
+    uses = sc.fingerprint_source("int& f(int x){ return use(x); }")["f"]
+    ignores = sc.fingerprint_source("int& f(int x){ return r; }")["f"]
+    assert similarity(uses, ignores) < 1.0
+
+
 def test_nested_lambda_is_opaque():
     # A C++ lambda nested in a function body is one NESTED leaf, not its body (matching the other
     # frontends). Two functions differing only inside a lambda body fingerprint the same.

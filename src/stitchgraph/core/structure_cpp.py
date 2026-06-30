@@ -66,6 +66,22 @@ def _lang_for_ext(ext: str) -> str | None:
     return _EXTS.get(ext.lower())
 
 
+def _decl_child(node):
+    """The inner declarator of a wrapper. Most wrappers (`pointer_declarator`, `init_declarator`, …)
+    name it under the `declarator` field, but `reference_declarator` does NOT field-name its child —
+    so fall back to the last named child that is itself a declarator/name (else `T& f()` reference-
+    return functions are silently dropped from the fingerprint map, R185 opus)."""
+    inner = node.child_by_field_name("declarator")
+    if inner is not None:
+        return inner
+    for c in reversed(node.named_children):
+        if c.type.endswith("declarator") or c.type in (
+                "identifier", "field_identifier", "qualified_identifier", "destructor_name",
+                "operator_name", "operator_cast"):
+            return c
+    return None
+
+
 def _name_of_declarator(decl, text):
     """The bare name a function/variable declarator binds — unwrapping pointer/reference/array
     wrappers, reading a function_declarator's inner declarator, and taking the last component of a
@@ -83,8 +99,7 @@ def _name_of_declarator(decl, text):
         if t in ("destructor_name", "operator_name", "operator_cast"):
             return text(node)
         if t in _DECL_WRAP or t == "function_declarator":
-            inner = node.child_by_field_name("declarator")
-            node = inner if inner is not None else None
+            node = _decl_child(node)
             continue
         # template_function / template_type wrapping a name
         nm = node.child_by_field_name("name") or node.child_by_field_name("declarator")
@@ -101,7 +116,7 @@ def _func_declarator(decl):
         if node.type == "function_declarator":
             return node
         if node.type in _DECL_WRAP:
-            node = node.child_by_field_name("declarator")
+            node = _decl_child(node)
             continue
         return None
     return None
