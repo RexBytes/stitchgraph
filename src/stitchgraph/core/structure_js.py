@@ -37,6 +37,11 @@ _FUNC_NODES = frozenset({
 _TRANSPARENT = frozenset({"parenthesized_expression", "expression_statement", "statement_block",
                           "non_null_expression", "as_expression", "satisfies_expression",
                           "type_assertion"})
+# Most transparent wrappers carry the operand as their LAST named child (`(x)`, `x!`, `<T>x`), so
+# descending to inner[-1] lands on the value. But `x as T` / `x satisfies T` are `operand <kw> type`
+# — the value is the FIRST child and the LAST is the (no-value-flow) type. Descend to inner[0] for
+# these, else inner[-1] would keep the type and DROP the operand's value flow (R174 opus).
+_CAST_OPERAND_FIRST = frozenset({"as_expression", "satisfies_expression"})
 
 
 def _parser(lang: str):
@@ -189,7 +194,9 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         t = node.type
         if t in _TRANSPARENT:
             inner = [c for c in node.named_children]
-            return ev(inner[-1], ctrl) if inner else None
+            if not inner:
+                return None
+            return ev(inner[0] if t in _CAST_OPERAND_FIRST else inner[-1], ctrl)
         if t == "identifier" or t == "shorthand_property_identifier":
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -369,7 +376,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     def _strip(node):
         # for-loop clauses wrap their expression; descend to the payload.
         while node is not None and node.type in _TRANSPARENT and node.named_children:
-            node = node.named_children[-1]
+            node = node.named_children[0 if node.type in _CAST_OPERAND_FIRST else -1]
         return node
 
     body = fn.child_by_field_name("body")

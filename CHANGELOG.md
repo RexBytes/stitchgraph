@@ -30,12 +30,12 @@ Requires the optional **tree-sitter extra** for the JS layer; without it those p
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **758** passing; differential oracle suite **136** — incl. a
-  **JS/TS body-matrix completeness oracle** (48 metamorphic cases: `helper()` vs `0` in each
+- ruff + mypy clean; full suite **762** passing; differential oracle suite **140** — incl. a
+  **JS/TS body-matrix completeness oracle** (51 metamorphic cases: `helper()` vs `0` in each
   value-bearing position must change the fingerprint), which caught a real template-literal
-  substitution drop during development. Mutation meta-oracle unchanged (`structure.py` 15/15,
-  `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/
-  haiku), clean.
+  substitution drop during development and a TS `as`/`satisfies` cast that dropped its operand.
+  Mutation meta-oracle unchanged (`structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32).
+  Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
 
 ## [3.1.0] — 2026-06-29
 

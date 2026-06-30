@@ -101,6 +101,38 @@ _EXPR: dict[str, str] = {
 }
 
 
+# TS-only cast forms (parse under the TypeScript grammar, not JS). {probe} sits in the cast OPERAND
+# — the value-bearing position — so helper() vs 0 must change the fingerprint. Pins R174 (opus): the
+# `as`/`satisfies` operand is the FIRST child (`operand <kw> type`), so descending to the last child
+# would keep the no-flow type and DROP the operand. `<T>x` is operand-LAST (regression guard).
+_TS_CAST: dict[str, str] = {
+    "AsCast-operand": "function t(a){ return ({probe}) as number; }",
+    "SatisfiesCast-operand": "function t(a){ return ({probe}) satisfies T; }",
+    "TypeAssertion-operand": "function t(a){ return <number>({probe}); }",
+}
+
+
+@pytest.mark.parametrize("label", sorted(_TS_CAST))
+def test_ts_cast_operand_is_walked(label):
+    src = _TS_CAST[label]
+    a = sj.fingerprint_source(src.replace("{probe}", "helper()"), lang="typescript")
+    b = sj.fingerprint_source(src.replace("{probe}", "0"), lang="typescript")
+    assert "t" in a and "t" in b, f"{label}: TS source did not parse a function 't'"
+    sim = similarity(a["t"], b["t"])
+    assert sim < 1.0, (
+        f"{label}: a CALL vs a CONST in this cast operand produced identical fingerprints "
+        f"(sim={sim}) — the cast is dropping its operand and keeping the type node")
+
+
+def test_ts_cast_carries_no_value_flow():
+    # `x as T` / `x satisfies T` must fingerprint exactly like the bare `x` (TS ≡ JS): the cast adds
+    # no value flow, but it must NOT remove the operand's flow either.
+    js = sj.fingerprint_source("function t(a){ return use(a); }")["t"]
+    for cast in ("use(a) as number", "use(a) satisfies T", "<number>use(a)"):
+        ts = sj.fingerprint_source(f"function t(a){{ return {cast}; }}", lang="typescript")["t"]
+        assert similarity(ts, js) >= 0.99, f"{cast!r} did not fingerprint like its untyped twin"
+
+
 @pytest.mark.parametrize("label", sorted(_EXPR))
 def test_value_bearing_expression_is_walked(label):
     sim = _sim(_EXPR[label].replace("{probe}", "helper()"),
