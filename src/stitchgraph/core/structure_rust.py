@@ -1,0 +1,443 @@
+"""Structural (body-level) fingerprints for Rust functions and methods.
+
+The Rust frontend to the intra-procedural matrix: it builds the SAME `_VFG` value-flow graph as
+`structure.py` (operations + control points, data + control edges, copy propagation) from a
+tree-sitter **concrete** syntax tree, then reuses the language-neutral Weisfeiler-Lehman kernel
+(`structure._wl_features` / `structure.similarity`). So Rust↔Rust bodies compare exactly the way
+Python↔Python, JS↔JS, and Go↔Go ones do.
+
+Advisory and read-only, like the other frontends — it never feeds `find_stale`, so the cardinal rule
+does not apply. Requires the optional tree-sitter extra; with it absent every entry point returns
+`{}`. Cross-language comparison is oracle-only (topology tracks the extractor); callers rank within
+one language (see `similar.find_similar_structure`).
+
+Rust specifics handled: blocks are expression-oriented — a block's **trailing expression** (no
+semicolon) is its value, so `{ x }` fingerprints like `{ return x; }`. `if`/`match`/`loop`/`while`/
+`for` are expressions. The `?` operator, references (`&x`), `as` casts, ranges, tuples, and struct
+literals carry their operand's value flow; the asserted/cast type carries none. Macro invocations
+(`vec![…]`, `println!(…)`) expose their arguments as a raw **token tree**, not parsed expressions —
+we walk the tree's identifier/literal tokens best-effort so a variable passed to a macro still
+threads value flow. Closures (`|x| …`) are opaque `NESTED` leaves (matching nested-function handling
+in the other frontends and the Rust extractor's node granularity).
+
+Qualname scheme: free functions are bare (`free_fn`); methods in an `impl T { … }` (or `impl Trait
+for T`) block are `T.method` — the same scheme the Rust extractor produces. Nested closures are not
+keys. It is a structural approximation, NOT sound data flow (no SSA/borrow/lifetime analysis,
+constants collapsed). The bug taxonomy and oracle method are in `docs/BODY_MATRIX_LESSONS.md`.
+"""
+from __future__ import annotations
+
+import collections
+
+from .structure import _CTRL, _DATA, _VFG, _wl_features
+
+_EXTS = {".rs": "rust"}
+
+# Function-like nodes whose bodies are fingerprinted. A closure, when nested, is an opaque leaf.
+_FUNC_NODES = frozenset({"function_item", "closure_expression"})
+
+# Leaf literals — one CONST node regardless of value.
+_CONST = frozenset({
+    "integer_literal", "float_literal", "string_literal", "raw_string_literal", "char_literal",
+    "boolean_literal", "unit_expression",
+})
+
+# Statement node kinds inside a block (everything else trailing is the block's value expression).
+_STMT_NODES = frozenset({"let_declaration", "expression_statement", "empty_statement"})
+# Item declarations that may appear in a block — opaque to the enclosing body's value flow.
+_ITEM_NODES = frozenset({
+    "function_item", "struct_item", "enum_item", "impl_item", "trait_item", "mod_item",
+    "const_item", "static_item", "type_item", "use_declaration", "macro_definition",
+})
+
+
+def _parser(lang: str = "rust"):
+    """A tree-sitter Rust parser, or None if the extra isn't installed (advisory degrade)."""
+    try:
+        from tree_sitter import Parser
+
+        from .extract.treesitter import _load_grammar
+        return Parser(_load_grammar("rust"))
+    except Exception:  # noqa: BLE001 — no extra / no grammar -> the body layer adds nothing
+        return None
+
+
+def _lang_for_ext(ext: str) -> str | None:
+    return _EXTS.get(ext.lower())
+
+
+def fingerprint_source(source: str, lang: str = "rust") -> dict[str, collections.Counter[str]]:
+    """Fingerprint every function/method in a Rust source string, keyed by qualified name (`free_fn`,
+    `Type.method`) — the same scheme the tree-sitter Rust extractor produces. Returns {} on a parse
+    failure, a missing tree-sitter extra, or a too-deep tree (advisory, never raises)."""
+    parser = _parser()
+    if parser is None:
+        return {}
+    try:
+        data = source.encode("utf-8", "replace")
+        tree = parser.parse(data)
+    except (ValueError, RecursionError):
+        return {}
+    out: dict[str, collections.Counter[str]] = {}
+
+    def text(node) -> str:
+        return node.text.decode("utf-8", "replace")
+
+    def emit(name: str, fn_node) -> None:
+        if not name:
+            return
+        try:
+            out[name] = _wl_features(_build_vfg(fn_node, data))
+        except RecursionError:
+            pass
+
+    def visit(node, prefix: str) -> None:
+        for child in node.named_children:
+            t = child.type
+            if t == "function_item":
+                nm = child.child_by_field_name("name")
+                emit(prefix + (text(nm) if nm is not None else ""), child)
+                # do NOT descend into the body for more keys — nested items/closures are opaque,
+                # matching the Rust extractor's granularity (top-level fns + impl methods).
+            elif t == "impl_item":
+                typ = child.child_by_field_name("type")
+                tname = text(typ) if typ is not None else ""
+                body = child.child_by_field_name("body")
+                if body is not None:
+                    visit(body, prefix + tname + "." if tname else prefix)
+            elif t in ("mod_item", "trait_item"):
+                body = child.child_by_field_name("body")
+                visit(body if body is not None else child, prefix)
+            else:
+                visit(child, prefix)
+
+    try:
+        visit(tree.root_node, "")
+    except (RecursionError, ValueError):
+        return out
+    return out
+
+
+def _build_vfg(fn, data: bytes) -> _VFG:
+    """Symbolically evaluate one Rust function/closure node into a value-flow graph, mirroring
+    `structure._build_vfg` for Python: PARAM seeds (incl. `self`), copy propagation through `let`
+    bindings, operations and control points as nodes, data/control edges. Rust blocks return their
+    trailing expression."""
+    g = _VFG()
+    env: dict[str, int] = {}
+    free: dict[str, int] = {}
+
+    def text(node) -> str:
+        return node.text.decode("utf-8", "replace")
+
+    def freevar(name: str) -> int:
+        if name not in free:
+            free[name] = g.add("FREE")
+        return free[name]
+
+    # seed parameters (and `self`).
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.named_children:
+            if p.type == "self_parameter":
+                env["self"] = g.add("PARAM")
+            elif p.type == "parameter":
+                pat = p.child_by_field_name("pattern")
+                for name in _pattern_names(pat, text):
+                    env[name] = g.add("PARAM")
+            else:
+                for name in _pattern_names(p, text):
+                    env[name] = g.add("PARAM")
+
+    def bind(target, val: int | None) -> None:
+        if target is None:
+            return
+        t = target.type
+        if t == "identifier":
+            name = text(target)
+            if name == "_":
+                return
+            if val is not None:
+                env[name] = val
+            else:
+                env.pop(name, None)
+        elif t in ("mut_pattern", "ref_pattern", "reference_pattern"):
+            for c in target.named_children:
+                bind(c, val)
+        elif t in ("tuple_pattern", "tuple_struct_pattern", "slice_pattern", "struct_pattern"):
+            for c in target.named_children:
+                bind(c, val)
+        elif t == "field_pattern":
+            inner = target.child_by_field_name("pattern")
+            bind(inner if inner is not None else target.named_children[-1] if target.named_children else None, val)
+        elif t in ("field_expression", "index_expression"):
+            n = g.add("SETATTR" if t == "field_expression" else "SETITEM")
+            g.link(val, n, _DATA)
+            obj = target.child_by_field_name("value") or (
+                target.named_children[0] if target.named_children else None)
+            g.link(ev(obj, None), n, _DATA)
+        elif t in ("unary_expression", "reference_expression"):  # *p = v / deref write
+            inner = target.child_by_field_name("value") or (
+                target.named_children[-1] if target.named_children else None)
+            n = g.add("SETITEM")
+            g.link(val, n, _DATA)
+            g.link(ev(inner, None), n, _DATA)
+        # identifier patterns inside e.g. a `let Some(x) = ...` bind x to the scrutinee value
+        elif target.named_children:
+            for c in target.named_children:
+                if c.type == "identifier":
+                    bind(c, val)
+
+    def _walk_block(block, ctrl: int | None, as_value: bool):
+        """Execute a block's statements; return the trailing expression's value if as_value."""
+        kids = block.named_children
+        result = None
+        for i, c in enumerate(kids):
+            is_last = i == len(kids) - 1
+            if c.type in _STMT_NODES:
+                do(c, ctrl)
+            elif c.type in _ITEM_NODES:
+                continue  # nested item: opaque to the enclosing body's value flow
+            elif is_last:
+                result = ev(c, ctrl)  # the block's trailing value expression
+            else:
+                ev(c, ctrl)  # a bare expression mid-block (rare without ';')
+        return result if as_value else None
+
+    def ev(node, ctrl: int | None) -> int | None:
+        if node is None:
+            return None
+        t = node.type
+        if t in ("identifier", "field_identifier", "type_identifier", "shorthand_field_identifier"):
+            name = text(node)
+            return env[name] if name in env else freevar(name)
+        if t in ("self", "super", "crate"):
+            return freevar(t)
+        if t in _CONST:
+            return g.add("CONST")
+        if t == "scoped_identifier":  # `Foo::bar`, `mod::CONST` — a name reference
+            return freevar(text(node))
+        if t == "block":
+            return _walk_block(node, ctrl, as_value=True)
+        if t == "parenthesized_expression":
+            inner = node.named_children
+            return ev(inner[-1], ctrl) if inner else None
+        if t == "field_expression":
+            n = g.add("ATTR")
+            g.link(ev(node.child_by_field_name("value"), ctrl), n, _DATA)
+            g.link(ctrl, n, _CTRL)
+            return n
+        if t == "index_expression":
+            kids = node.named_children
+            n = g.add("SUBSCRIPT")
+            if kids:
+                g.link(ev(kids[0], ctrl), n, _DATA)
+            if len(kids) > 1:
+                g.link(ev(kids[1], ctrl), n, _DATA)
+            return n
+        if t == "call_expression":
+            n = g.add("CALL")
+            g.link(ev(node.child_by_field_name("function"), ctrl), n, _DATA)
+            args = node.child_by_field_name("arguments")
+            if args is not None:
+                for a in args.named_children:
+                    g.link(ev(a, ctrl), n, _DATA)
+            g.link(ctrl, n, _CTRL)
+            return n
+        if t == "binary_expression":
+            n = g.add("BINOP:" + _op_text(node, text))
+            g.link(ev(node.child_by_field_name("left"), ctrl), n, _DATA)
+            g.link(ev(node.child_by_field_name("right"), ctrl), n, _DATA)
+            g.link(ctrl, n, _CTRL)
+            return n
+        if t in ("unary_expression", "reference_expression"):
+            n = g.add("UNARY:" + _op_text(node, text))
+            inner = node.child_by_field_name("value") or _last_expr(node)
+            g.link(ev(inner, ctrl), n, _DATA)
+            return n
+        if t == "try_expression":  # `expr?`
+            n = g.add("UNARY:?")
+            g.link(ev(_last_expr(node), ctrl), n, _DATA)
+            return n
+        if t in ("type_cast_expression", "type_ascription_expression"):  # `x as T` — value is x
+            inner = node.child_by_field_name("value") or (
+                node.named_children[0] if node.named_children else None)
+            return ev(inner, ctrl)
+        if t == "await_expression":
+            return ev(_last_expr(node), ctrl)
+        if t == "range_expression":
+            n = g.add("RANGE")
+            for c in node.named_children:
+                g.link(ev(c, ctrl), n, _DATA)
+            return n
+        if t == "assignment_expression":
+            val = ev(node.child_by_field_name("right"), ctrl)
+            bind(node.child_by_field_name("left"), val)
+            return val
+        if t == "compound_assignment_expr":
+            op = _op_text(node, text)
+            base = op[:-1] if op.endswith("=") else op  # `+=` -> `+`
+            left = node.child_by_field_name("left")
+            n = g.add("BINOP:" + base)
+            g.link(ev(left, ctrl), n, _DATA)
+            g.link(ev(node.child_by_field_name("right"), ctrl), n, _DATA)
+            g.link(ctrl, n, _CTRL)
+            bind(left, n)
+            return n
+        if t == "if_expression":
+            b = g.add("BRANCH")
+            g.link(ev(node.child_by_field_name("condition"), ctrl), b, _DATA)
+            g.link(ctrl, b, _CTRL)
+            cons = node.child_by_field_name("consequence")
+            if cons is not None:
+                g.link(_block_or_expr_value(cons, b), b, _DATA)
+            alt = node.child_by_field_name("alternative")
+            if alt is not None:
+                g.link(_block_or_expr_value(alt, b), b, _DATA)
+            return b
+        if t == "match_expression":
+            b = g.add("BRANCH")
+            g.link(ev(node.child_by_field_name("value"), ctrl), b, _DATA)
+            g.link(ctrl, b, _CTRL)
+            body = node.child_by_field_name("body")
+            if body is not None:
+                for arm in body.named_children:
+                    if arm.type == "match_arm":
+                        val = arm.child_by_field_name("value")
+                        if val is not None:
+                            g.link(_block_or_expr_value(val, b), b, _DATA)
+            return b
+        if t in ("for_expression", "while_expression", "loop_expression"):
+            loop = g.add("LOOP")
+            g.link(ctrl, loop, _CTRL)
+            cond = node.child_by_field_name("condition")
+            if cond is not None:
+                g.link(ev(cond, loop), loop, _DATA)
+            it = node.child_by_field_name("value")  # for-loop iterator
+            pat = node.child_by_field_name("pattern")
+            if it is not None and pat is not None:
+                iv = g.add("ITERVAR")
+                g.link(ev(it, loop), iv, _DATA)
+                bind(pat, iv)
+            body = node.child_by_field_name("body")
+            if body is not None and body.type == "block":
+                _walk_block(body, loop, as_value=False)
+            return loop
+        if t in ("struct_expression", "field_initializer_list"):
+            n = g.add("COMPOSITE")
+            body = node.child_by_field_name("body") if t == "struct_expression" else node
+            if body is not None:
+                for fi in body.named_children:
+                    if fi.type == "field_initializer":
+                        g.link(ev(fi.child_by_field_name("value"), ctrl), n, _DATA)
+                    elif fi.type == "shorthand_field_initializer":
+                        g.link(ev(fi, ctrl), n, _DATA)
+                    elif fi.type == "base_field_initializer":
+                        g.link(ev(_last_expr(fi), ctrl), n, _DATA)
+            return n
+        if t in ("array_expression", "tuple_expression"):
+            n = g.add("SEQ")
+            for c in node.named_children:
+                g.link(ev(c, ctrl), n, _DATA)
+            return n
+        if t == "macro_invocation":
+            n = g.add("MACRO")
+            for c in node.named_children:
+                if c.type == "token_tree":
+                    _walk_token_tree(c, n, ctrl)
+            return n
+        if t == "return_expression":
+            n = g.add("RETURN")
+            inner = _last_expr(node)
+            if inner is not None:
+                g.link(ev(inner, ctrl), n, _DATA)
+            return n
+        if t in ("break_expression", "continue_expression", "yield_expression"):
+            inner = _last_expr(node)
+            return ev(inner, ctrl) if inner is not None else g.add(t.split("_")[0].upper())
+        if t in _FUNC_NODES:
+            return g.add("NESTED")
+        # generic fallback: a node fed by its sub-expressions (the completeness oracle makes gaps
+        # visible, so an unhandled construct can never silently vanish from the fingerprint).
+        n = g.add(t.upper())
+        for ch in node.named_children:
+            g.link(ev(ch, ctrl), n, _DATA)
+        return n
+
+    def _walk_token_tree(tt, parent: int, ctrl: int | None) -> None:
+        """Macro args are raw tokens, not parsed expressions. Best-effort: thread value flow from any
+        identifier/literal token (a variable passed to a macro) and recurse into nested trees."""
+        for c in tt.named_children:
+            if c.type == "identifier":
+                g.link(ev(c, ctrl), parent, _DATA)
+            elif c.type in _CONST:
+                g.link(g.add("CONST"), parent, _DATA)
+            elif c.type == "token_tree":
+                _walk_token_tree(c, parent, ctrl)
+
+    def _block_or_expr_value(node, ctrl: int | None) -> int | None:
+        if node is None:
+            return None
+        if node.type == "block":
+            return _walk_block(node, ctrl, as_value=True)
+        if node.type == "else_clause":
+            inner = _last_expr(node)
+            return _block_or_expr_value(inner, ctrl)
+        return ev(node, ctrl)
+
+    def _last_expr(node):
+        kids = [c for c in node.named_children]
+        return kids[-1] if kids else None
+
+    def do(node, ctrl: int | None) -> None:
+        t = node.type
+        if t == "let_declaration":
+            val = ev(node.child_by_field_name("value"), ctrl)
+            bind(node.child_by_field_name("pattern"), val)
+            alt = node.child_by_field_name("alternative")  # let-else
+            if alt is not None and alt.type == "block":
+                _walk_block(alt, ctrl, as_value=False)
+        elif t == "expression_statement":
+            for c in node.named_children:
+                ev(c, ctrl)
+        else:
+            ev(node, ctrl)
+
+    body = fn.child_by_field_name("body")
+    if body is not None and body.type == "block":
+        val = _walk_block(body, None, as_value=True)
+        if val is not None:
+            n = g.add("RETURN")
+            g.link(val, n, _DATA)
+    elif body is not None:  # closure with an expression body: `|x| x + 1`
+        n = g.add("RETURN")
+        g.link(ev(body, None), n, _DATA)
+    return g
+
+
+def _pattern_names(node, text) -> list[str]:
+    """Identifier names bound by a parameter/let pattern (best-effort over the common pattern kinds)."""
+    if node is None:
+        return []
+    t = node.type
+    if t == "identifier":
+        name = text(node)
+        return [] if name == "_" else [name]
+    if t in ("mut_pattern", "ref_pattern", "reference_pattern", "tuple_pattern", "slice_pattern",
+             "tuple_struct_pattern", "struct_pattern", "or_pattern", "captured_pattern"):
+        return [n for c in node.named_children for n in _pattern_names(c, text)]
+    if t == "field_pattern":
+        inner = node.child_by_field_name("pattern")
+        return _pattern_names(inner, text) if inner is not None else (
+            [text(node.named_children[-1])] if node.named_children else [])
+    return []
+
+
+def _op_text(node, text) -> str:
+    op = node.child_by_field_name("operator")
+    if op is not None:
+        return op.text.decode("utf-8", "replace")
+    for c in node.children:
+        if not c.is_named and c.text:
+            return c.text.decode("utf-8", "replace")
+    return "?"

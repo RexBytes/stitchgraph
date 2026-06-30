@@ -197,3 +197,55 @@ def test_go_structure_mode_ranks_same_language_only(tmp_path):
     assert ids and all("::" in i for i in ids), ids
     assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
     assert any(i.endswith("::SumEvenSquares") for i in ids)
+
+
+_RUST_REPO = {
+    "acc.rs": (
+        "fn sum_even_squares(items: &[i32]) -> i32 {\n"
+        "    let mut total = 0;\n"
+        "    for x in items { if x % 2 == 0 { total += x * x } }\n"
+        "    total\n"
+        "}\n"
+        "fn parse_csv(line: &str) -> Vec<String> {\n"
+        "    let mut out = Vec::new();\n"
+        "    for f in line.split(',') { out.push(f.trim().to_string()) }\n"
+        "    out\n"
+        "}\n"
+    ),
+}
+# same body shape as sum_even_squares, renamed + trailing-expr return — the Rust clone.
+_RUST_QUERY = (
+    "fn accumulate(data: &[i32]) -> i32 {\n"
+    "    let mut acc = 0;\n"
+    "    for v in data { if v % 3 == 0 { acc += v * v } }\n"
+    "    acc\n"
+    "}\n"
+)
+
+
+def test_rust_structure_mode_ranks_the_clone_first(tmp_path):
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    store = _index(tmp_path, _RUST_REPO)
+    res = sg.find_similar(store, _RUST_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids[0].endswith("::sum_even_squares")    # the accumulator clone, not parse_csv
+    top = res.result[0]["score"]
+    csv = next((r["score"] for r in res.result if r["id"].endswith("::parse_csv")), 0.0)
+    assert top > csv
+
+
+def test_rust_structure_mode_ranks_same_language_only(tmp_path):
+    # A Rust snippet must rank Rust functions, NOT a same-shaped Python one. Index both; query Rust.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    files = dict(_RUST_REPO)
+    files.update(REPO)   # adds acc.py with sum_even_squares (the Python accumulator)
+    store = _index(tmp_path, files)
+    res = sg.find_similar(store, _RUST_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids and all("::" in i for i in ids), ids
+    assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
+    assert any(i.endswith("::sum_even_squares") for i in ids)

@@ -4,6 +4,40 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.4.0] — 2026-06-30
+
+**The body matrix learns Rust.** v3.3.0 added Go; v3.4.0 adds Rust — language 3 of the
+multi-language sweep (`docs/IDEAS.md` §5b). New language for an existing representation → MINOR;
+backward-compatible (schema/indexes/existing ops unchanged, opt-in, advisory).
+
+### Added
+
+- **`core/structure_rust.py`** — a tree-sitter value-flow walker for Rust that emits the **same**
+  `_VFG` vocabulary as the Python, JS, and Go frontends and reuses the language-neutral
+  Weisfeiler-Lehman kernel, so Rust↔Rust bodies compare the way Python↔Python ones do. Handles Rust's
+  expression-oriented shape — a block's **trailing expression** is its value, so `{ x }` fingerprints
+  like `{ return x; }`; `if`/`match`/`loop`/`while`/`for` are expressions; the `?` operator,
+  references (`&x`), `as` casts, ranges, tuples, arrays, and struct literals carry their operand's
+  value flow (the cast/asserted *type* carries none); macro invocations (`vec![…]`, `println!(…)`)
+  expose args as a raw token tree, walked best-effort so a variable passed to a macro still threads
+  flow; closures (`|x| …`) are opaque `NESTED` leaves; `self` and named results seed like parameters.
+- **`find_similar(mode="structure")`** now auto-detects Rust (after Python, the JS/TS family, Go) and
+  ranks it against stored functions of the **same** language only.
+- **`graph_diff`** body layer now covers Rust functions/methods too.
+
+Qualname scheme matches the Rust extractor: free functions are bare (`free_fn`), impl methods are
+`Type.method`. Requires the optional **tree-sitter extra** for the Rust layer (advisory degrade
+without it); the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **862** passing; differential oracle suite **232** — incl. a new
+  **Rust body-matrix completeness oracle** (37 metamorphic cases: `helper()` vs `0` in each
+  value-bearing statement/expression position must change the fingerprint, + trailing-expr-equals-
+  return / compound-assign / cast / receiver / nested-closure invariants). Mutation meta-oracle
+  unchanged (`structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity
+  adversarial panel (opus/sonnet/haiku), clean.
+
 ## [3.3.0] — 2026-06-30
 
 **The body matrix learns Go.** v3.2.0 ported the intra-procedural value-flow matrix to the JS family;

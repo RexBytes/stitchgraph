@@ -354,6 +354,42 @@ def test_go_self_diff_is_equivalent(tmp_path):
     assert d["body_changed"] == []
 
 
+def test_rust_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
+    # v3.4.0: the body-aware layer now covers Rust too. Same calls (heavy x2, combine x1) -> identical
+    # call graph, but score() feeds `a` to both heavy() calls instead of `a` and `b` — a data-flow
+    # bug the call-level diff can't see. Needs the tree-sitter extra.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    plan = {"score.rs": (
+        "fn heavy(v: i32) -> i32 { v * v }\n"
+        "fn combine(x: i32, y: i32) -> i32 { x + y }\n"
+        "fn score(a: i32, b: i32) -> i32 { let x = heavy(a); let y = heavy(b); combine(x, y) }\n")}
+    buggy = {"score.rs": (
+        "fn heavy(v: i32) -> i32 { v * v }\n"
+        "fn combine(x: i32, y: i32) -> i32 { x + y }\n"
+        "fn score(a: i32, b: i32) -> i32 { let x = heavy(a); let y = heavy(a); combine(x, y) }\n")}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", buggy)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert not d["nodes_only_a"] and not d["nodes_only_b"]    # call graph identical ...
+    assert not d["edges_only_a"] and not d["edges_only_b"]
+    assert "score" in {c["name"] for c in d["body_changed"]}  # ... body layer flags score()
+    assert not d["equivalent"]
+
+
+def test_rust_self_diff_is_equivalent(tmp_path):
+    # determinism / no-phantom-delta guard for the Rust body layer: an index diffed against itself is
+    # equivalent (no spurious body_changed from re-fingerprinting Rust source).
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    repo = {"m.rs": "fn f(xs: &[i32]) -> i32 { let mut t = 0; for x in xs { t += g(x) } t }\n"}
+    a = _index(tmp_path / "a", repo)
+    b = _index(tmp_path / "b", repo)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["equivalent"], d
+    assert d["body_changed"] == []
+
+
 def test_operation_does_not_migrate_older_schema_other_db(tmp_path):
     # R160 (opus HIGH): a VALID but older-schema stitchgraph index passes the read-only probe, but
     # opening it with Store() would run _migrate (ALTER TABLE ADD COLUMN) + commit, mutating the
