@@ -120,6 +120,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
+            return None
         if t == "variable_name":
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -234,6 +236,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def _do(node, ctrl: int | None) -> int | None:
         t = node.type
+        if t == "comment":  # trivia
+            return None
         if t == "variable_assignment":
             val = ev(node.child_by_field_name("value"), ctrl)
             target = node.child_by_field_name("name")

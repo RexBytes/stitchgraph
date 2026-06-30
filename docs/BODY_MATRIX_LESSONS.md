@@ -147,3 +147,16 @@ in the sweep found a class of drop the similar grammars couldn't, *and* the valu
 probe (in a position the recipe didn't originally enumerate — the callee, not just arguments) is what
 surfaced it. When porting, ask not only "is every value-bearing child walked?" but "is every value
 *producer* walked, including the one in the verb/callee slot?".
+
+And the family-audit lesson fired hardest here: the v3.7.0 confirmation panel found a `comment` node
+leaking into the value-flow graph (via the generic fallback) in the **new** Ruby/PHP/Bash frontends —
+and a one-shot cross-frontend audit then showed the SAME leak had been latent in **Go, Rust, C/C++,
+Java and C# since v3.3.0–v3.6.0**. A no-op comment edit was changing body fingerprints (down-ranking
+commented clones; comment-only diffs showing as `graph_diff` body changes). Python is immune (its
+`ast` discards comments) and JS/TS happened to be (their generic fallback only recurses into
+`*statement` children). Two takeaways: (1) **trivia is a value-flow concern** — anything that can
+appear as a `named_child` but carries no semantics (comments, and watch for doc-attributes) must be
+skipped, or the generic "nothing vanishes" fallback will faithfully encode it and break the no-op /
+renamed-clone invariant; (2) when a new frontend exposes a shared-design bug, **immediately re-probe
+every sibling** — the cheap cross-language oracle (`test_comment_invariance.py`) that pins the
+invariant for all 11 frontends at once is the durable fix, not a per-language patch.

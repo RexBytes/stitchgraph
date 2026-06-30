@@ -154,6 +154,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
+            return None
         if t in ("identifier", "constant", "global_variable", "class_variable"):
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -267,6 +269,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def _do(node, ctrl: int | None) -> int | None:
         t = node.type
+        if t == "comment":  # trivia
+            return None
         if t in ("if", "unless", "elsif", "if_modifier", "unless_modifier"):
             b = g.add("BRANCH")
             g.link(ev(node.child_by_field_name("condition"), ctrl), b, _DATA)
@@ -324,7 +328,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node.type in ("body_statement", "then", "else", "do", "block_body", "ensure",
                          "begin", "parenthesized_statements"):
             kids = [c for c in node.named_children
-                    if c.type not in ("rescue", "ensure", "else")]
+                    if c.type not in ("rescue", "ensure", "else", "comment")]
             last = None
             for st in kids:
                 last = _do(st, ctrl)

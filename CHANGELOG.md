@@ -37,6 +37,14 @@ outlier that closes it. New languages for an existing representation → MINOR; 
 - Documented two Bash structural blind spots that are not fixable in-AST (advisory-only, never
   cardinal): `${var#$(cmd)}`/`${var%…}` strip patterns (lexed as one opaque `regex` token) and
   single-quoted deferred actions like `trap '$(cmd)' EXIT` (`raw_string`, expanded only at `eval`).
+- **Comments are now trivia in every tree-sitter frontend (cross-cutting fix).** A confirmation-panel
+  sweep found that a `comment` node leaked into the value-flow graph via each walker's generic
+  fallback, so a no-op comment edit changed a body fingerprint (down-ranking commented clones and
+  showing comment-only diffs as `graph_diff` body changes). This was **latent in Go, Rust, C/C++,
+  Java and C# (shipped v3.3.0–v3.6.0)** as well as the new Ruby/PHP/Bash; Python (its `ast` drops
+  comments) and JS/TS were already immune. All eight now skip comment nodes as trivia, pinned by a new
+  cross-language oracle (`tests/oracles/test_comment_invariance.py`) that also guards against
+  over-pruning real flow. Advisory-only, never cardinal.
 
 ### Quality gate
 - ruff + mypy clean; full suite passing.

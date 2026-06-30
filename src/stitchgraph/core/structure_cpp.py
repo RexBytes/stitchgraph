@@ -236,6 +236,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
+            return None
         if t in ("identifier", "field_identifier", "type_identifier", "namespace_identifier"):
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -397,6 +399,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def do(node, ctrl: int | None) -> None:
         t = node.type
+        if t == "comment":  # trivia
+            return
         if t == "declaration":
             for decl in node.named_children:
                 if decl.type == "init_declarator":

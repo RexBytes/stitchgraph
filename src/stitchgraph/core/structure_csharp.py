@@ -194,6 +194,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
+            return None
         if t == "argument":  # C# wraps each call/index argument in an `argument` node
             inner = node.named_children
             return ev(inner[-1], ctrl) if inner else None
@@ -346,6 +348,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def do(node, ctrl: int | None) -> None:
         t = node.type
+        if t == "comment":  # trivia
+            return
         if t == "local_declaration_statement":
             for decl in node.named_children:
                 if decl.type == "variable_declaration":

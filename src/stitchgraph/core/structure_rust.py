@@ -189,7 +189,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def _walk_block(block, ctrl: int | None, as_value: bool):
         """Execute a block's statements; return the trailing expression's value if as_value."""
-        kids = block.named_children
+        kids = [c for c in block.named_children
+                if c.type not in ("line_comment", "block_comment")]  # comments are trivia
         result = None
         for i, c in enumerate(kids):
             is_last = i == len(kids) - 1
@@ -207,6 +208,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t in ("line_comment", "block_comment"):  # trivia: never alters the fingerprint
+            return None
         if t in ("identifier", "field_identifier", "type_identifier", "shorthand_field_identifier"):
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -393,11 +396,14 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         return ev(node, ctrl)
 
     def _last_expr(node):
-        kids = [c for c in node.named_children]
+        kids = [c for c in node.named_children
+                if c.type not in ("line_comment", "block_comment")]  # comments are trivia
         return kids[-1] if kids else None
 
     def do(node, ctrl: int | None) -> None:
         t = node.type
+        if t in ("line_comment", "block_comment"):  # trivia
+            return
         if t == "let_declaration":
             val = ev(node.child_by_field_name("value"), ctrl)
             bind(node.child_by_field_name("pattern"), val)

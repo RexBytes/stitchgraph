@@ -170,6 +170,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if node is None:
             return None
         t = node.type
+        if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
+            return None
         if t in _TRANSPARENT:
             inner = [c for c in node.named_children]
             return ev(inner[-1], ctrl) if inner else None
@@ -258,6 +260,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
     def do(node, ctrl: int | None) -> None:
         t = node.type
+        if t == "comment":  # trivia
+            return
         if t == "short_var_declaration":
             _assign(node.child_by_field_name("left"), node.child_by_field_name("right"), ctrl)
         elif t in ("var_declaration", "const_declaration"):
