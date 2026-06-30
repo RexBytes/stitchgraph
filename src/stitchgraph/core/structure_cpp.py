@@ -215,6 +215,10 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             else:
                 env.pop(name, None)
         elif t in _DECL_WRAP:
+            if t == "array_declarator":  # `int arr[helper()]` — a VLA size is runtime value flow
+                sz = target.child_by_field_name("size")
+                if sz is not None:
+                    ev(sz, None)
             bind(target.child_by_field_name("declarator"), val)
         elif t in ("field_expression", "subscript_expression"):
             n = g.add("SETATTR" if t == "field_expression" else "SETITEM")
@@ -357,7 +361,17 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t in ("sizeof_expression", "alignof_expression"):
             return g.add("CONST")
         if t in _FUNC_NODES:
-            return g.add("NESTED")
+            n = g.add("NESTED")
+            # A C++14 lambda init-capture `[z = helper()]` is evaluated in the ENCLOSING scope when
+            # the closure is built — that's enclosing-scope value flow, not lambda-body flow (the body
+            # stays an opaque NESTED leaf). Walk each capture initializer's value (R188 opus).
+            if t == "lambda_expression":
+                caps = node.child_by_field_name("captures")
+                if caps is not None:
+                    for c in caps.named_children:
+                        if c.type == "lambda_capture_initializer":
+                            g.link(ev(c.child_by_field_name("right"), ctrl), n, _DATA)
+            return n
         # generic fallback: a node fed by its sub-expressions (the completeness oracle makes gaps
         # visible, so an unhandled construct can never silently vanish from the fingerprint).
         n = g.add(t.upper())

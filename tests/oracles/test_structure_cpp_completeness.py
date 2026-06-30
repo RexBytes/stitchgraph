@@ -60,6 +60,8 @@ _STMT: dict[str, str] = {
     "IfInit": "int t(int a){ if (int x = {probe}; x) { return 1; } return 0; }",
     "SwitchInit": "int t(int a){ switch (int x = {probe}; x) { default: return 0; } }",
     "RangeForInit": "void t(V v){ for (int n = {probe}; auto x : v) { sink(x); } }",
+    "VlaSize": "void t(int a){ int arr[{probe}]; sink(arr); }",
+    "LambdaInitCapture": "void t(int a){ auto g = [z = {probe}](){ return z; }; sink(g); }",
 }
 
 

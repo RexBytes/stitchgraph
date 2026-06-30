@@ -34,9 +34,9 @@ extra** (advisory degrade without it); the Python body matrix stays stdlib-only.
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **918** passing; differential oracle suite **284** — incl. a new
-  **C/C++ body-matrix completeness oracle** (43 metamorphic cases + invariants: compound-assign /
-  cast / out-of-line-vs-inline qualnames / `sizeof`-is-constant / nested-lambda-opaque / reference-return captured / constructor-member-init-list walked / array-new-size captured / C++17-C++20 init-statement walked / placement-new address captured). The oracle
+- ruff + mypy clean; full suite **920** passing; differential oracle suite **286** — incl. a new
+  **C/C++ body-matrix completeness oracle** (45 metamorphic cases + invariants: compound-assign /
+  cast / out-of-line-vs-inline qualnames / `sizeof`-is-constant / nested-lambda-opaque / reference-return captured / constructor-member-init-list walked / array-new-size captured / C++17-C++20 init-statement walked / placement-new address captured / stack-VLA-size captured / lambda-init-capture captured). The oracle
   caught a real drop during development (the cpp grammar keeps a subscript index under `indices`, not
   C's `index` field). Mutation meta-oracle unchanged (`structure.py` 15/15, `graphdiff` 9/9,
   `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
