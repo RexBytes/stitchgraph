@@ -110,6 +110,13 @@ construction (a node id maps to exactly one file, hence one language).
   default arguments). A genuine CALL-vs-CONST completeness violation — it survived in every *body*
   position yet vanished in the default-value slot. All now walk the default (incl. destructured
   defaults like JS `function f({a = helper()})`), pinned by a cross-language oracle.
+- **Invariant fix — Python lambdas are opaque.** A `lambda` in expression position leaked its body's
+  value flow into the enclosing fingerprint (`ev` had no `ast.Lambda` branch → generic fallback
+  recursed into the body), breaking the documented "closures are opaque `NESTED`" invariant. Python
+  was the lone diverging frontend — all 11 tree-sitter frontends already return a single `NESTED` leaf
+  for an expression-position closure. Now Python matches (the lambda's default-arg values still carry
+  flow). Behaviorally pinned in the Python completeness oracle (which previously only *classified*
+  Lambda as opaque without testing it).
 - **Cross-cutting fix — assignment-target subscript index is walked.** A `helper()` CALL vs a `0`
   CONST in the *index of an assignment target* (`d[helper()] = v`) produced an identical fingerprint:
   the read path always walked the index, but the write (`bind`) path linked only the written value and

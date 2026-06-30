@@ -173,6 +173,14 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             return ev(node.value, ctrl)
         if isinstance(node, ast.Starred):
             return ev(node.value, ctrl)
+        if isinstance(node, ast.Lambda):
+            # A lambda is an opaque closure — one NESTED leaf, matching nested `def` statements (via
+            # `_OPAQUE` in `do`) and every tree-sitter frontend. Its body must NOT leak into the
+            # enclosing fingerprint; its default-arg values still carry flow, so walk those.
+            n = g.add("NESTED")
+            for d in (*node.args.defaults, *(d for d in node.args.kw_defaults if d is not None)):
+                g.link(ev(d, ctrl), n, _DATA)
+            return n
         # fallback: a generic node fed by any sub-expressions
         n = g.add(type(node).__name__.upper())
         for ch in ast.iter_child_nodes(node):

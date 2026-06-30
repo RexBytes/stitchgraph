@@ -168,3 +168,16 @@ def test_no_uncovered_expression_type():
     assert not uncovered, (
         f"new ast.expr type(s) not classified by the completeness oracle: {sorted(uncovered)} — "
         f"add to _EXPR_COVERED (+ a battery template), _EXPR_LEAF, or _EXPR_OPAQUE")
+
+
+def test_lambda_body_is_opaque():
+    # A lambda is an opaque NESTED leaf (the `_EXPR_OPAQUE` classification above, and matching every
+    # tree-sitter frontend's closure handling): two functions differing only inside a lambda body must
+    # fingerprint identically — the body must NOT leak into the enclosing function.
+    a = structure.fingerprint_source("def f(xs):\n    return sorted(xs, key=lambda x: helper(x))")["f"]
+    b = structure.fingerprint_source("def f(xs):\n    return sorted(xs, key=lambda x: other(x))")["f"]
+    assert structure.similarity(a, b) >= 0.99
+    # ...but a lambda's DEFAULT argument value is evaluated in the enclosing scope, so it carries flow.
+    uses = structure.fingerprint_source("def g(e):\n    return (lambda a=helper(): a)")["g"]
+    ignores = structure.fingerprint_source("def g(e):\n    return (lambda a=0: a)")["g"]
+    assert structure.similarity(uses, ignores) < 1.0

@@ -56,6 +56,13 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   default-argument syntax. All now link the default-value expression into the parameter's node
   (incl. destructured defaults like JS `function f({a = helper()})`), pinned by a cross-language
   oracle. Advisory-only, but a true CALL-vs-CONST completeness violation.
+- **Python lambdas are now opaque (invariant fix).** A `lambda` in expression position leaked its
+  body's value flow into the enclosing function's fingerprint — `_build_vfg.ev` had no `ast.Lambda`
+  branch, so it hit the generic fallback and recursed into the lambda body. This broke the documented
+  "closures are opaque `NESTED`" invariant (which the Python completeness oracle already *classified*
+  but never behaviorally tested) and is the one frontend that diverged — all 11 tree-sitter frontends
+  already treat an expression-position closure as a single `NESTED` leaf. Now Python does too (the
+  lambda's default-argument values still carry flow, since they evaluate in the enclosing scope).
 - **Assignment-target subscript index is now walked (cross-cutting fix).** A `helper()` CALL vs a `0`
   CONST in the *index of an assignment target* (`d[helper()] = v`) produced an identical fingerprint:
   the read path `… = d[helper()]` always walked the index, but the write (`bind`) path linked only the
