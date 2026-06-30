@@ -204,7 +204,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
             return None
         if t in _TRANSPARENT:
-            inner = [c for c in node.named_children]
+            inner = _nc(node)
             if not inner:
                 return None
             return ev(inner[0] if t in _CAST_OPERAND_FIRST else inner[-1], ctrl)
@@ -292,7 +292,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     g.link(ev(prop, ctrl), n, _DATA)  # method computed-key handled in _FUNC_NODES
             return n
         if t in ("await_expression", "yield_expression", "spread_element"):
-            inner = [c for c in node.named_children]
+            inner = _nc(node)
             return ev(inner[-1], ctrl) if inner else g.add(t.split("_")[0].upper())
         if t in _FUNC_NODES:
             # The body is an opaque closure leaf, but a `method_definition` may carry a COMPUTED key

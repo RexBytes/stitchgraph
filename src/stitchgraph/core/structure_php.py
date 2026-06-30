@@ -155,8 +155,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
             return None
         if t == "argument":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t in ("variable_name", "name"):
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -182,8 +181,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                             g.link(ev(cc, ctrl), n, _DATA)
             return n
         if t == "parenthesized_expression":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "member_access_expression" or t == "nullsafe_member_access_expression":
             n = g.add("ATTR")
             g.link(ev(node.child_by_field_name("object"), ctrl), n, _DATA)

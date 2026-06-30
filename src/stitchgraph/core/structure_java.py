@@ -164,9 +164,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(ev(target.child_by_field_name("array"), None), n, _DATA)
             g.link(ev(target.child_by_field_name("index"), None), n, _DATA)
         elif t == "parenthesized_expression":
-            inner = target.named_children
-            if inner:
-                bind(inner[-1], val)
+            bind(_last(target), val)
 
     def ev(node, ctrl: int | None) -> int | None:
         if node is None:
@@ -182,8 +180,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t in _CONST:
             return g.add("CONST")
         if t == "parenthesized_expression":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "field_access":
             n = g.add("ATTR")
             g.link(ev(node.child_by_field_name("object"), ctrl), n, _DATA)

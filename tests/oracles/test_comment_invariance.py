@@ -194,3 +194,54 @@ def test_comment_at_positional_site_is_a_noop(label):
     assert a == b, (
         f"{label}: adding a comment at a positional-selection site changed the fingerprint — the "
         f"comment node is leaking into the value-flow graph")
+
+
+# --- TRAILING comment inside a transparent wrapper (the deepest sub-class instance) ---------------
+# A parenthesised / await / yield / spread / argument wrapper resolves its payload by descending to
+# the LAST named child (`inner[-1]`). A comment placed AFTER the payload but still INSIDE the wrapper
+# (`(helper() /*c*/)`) becomes that last named child, so the descent lands on the comment and drops
+# the operand. The `ev`/`do` dispatch already filters `comment`, and statement-leading comments are
+# pinned above — but this trailing-inside-wrapper position is only read by the `[-1]` descent, so it
+# escaped both. Found by the v3.7.0 panel (GO/RUST/CPP/JAVA/C#/PHP/JS, plus JS await/spread); closed
+# by routing every transparent-unwrap descent through the comment-skipping `_nc`/`_last` helpers.
+# Python is immune (ast discards comments); Bash has no parenthesised-value unwrap.
+_TRAILING = {
+    "go-paren": (structure_go, {}, "func t(a int) int {{ return (/*c*/{probe} /*c*/) }}"),
+    "rust-paren": (structure_rust, {}, "fn t(a:i32)->i32 {{ return (/*c*/{probe} /*c*/); }}"),
+    "cpp-paren": (structure_cpp, {}, "int t(int a){{ return (/*c*/{probe} /*c*/); }}"),
+    "java-paren": (structure_java, {}, "class C{{ int t(int a){{ return (/*c*/{probe} /*c*/); }} }}"),
+    "cs-paren": (structure_csharp, {}, "class C{{ int t(int a){{ return (/*c*/{probe} /*c*/); }} }}"),
+    "php-paren": (structure_php, {}, "<?php function t($a){{ return (/*c*/{probe} /*c*/); }}"),
+    "js-paren": (structure_js, {"lang": "javascript"}, "function t(a){{ return (/*c*/{probe} /*c*/); }}"),
+    "ts-paren": (structure_js, {"lang": "typescript"}, "function t(a){{ return (/*c*/{probe} /*c*/); }}"),
+    "js-await": (structure_js, {"lang": "javascript"},
+                 "async function t(a){{ return await (/*c*/{probe} /*c*/); }}"),
+    "js-spread": (structure_js, {"lang": "javascript"}, "function t(a){{ return [...(/*c*/{probe} /*c*/)]; }}"),
+    "cs-argument": (structure_csharp, {}, "class C{{ int t(int a){{ return f(/*c*/{probe} /*c*/); }} }}"),
+    "rust-index": (structure_rust, {}, "fn t(d:T){{ let _ = d[/*c*/{probe} /*c*/]; }}"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_TRAILING))
+def test_trailing_comment_in_wrapper_does_not_drop_operand(label):
+    mod, kw, tmpl = _TRAILING[label]
+    a = _one(mod.fingerprint_source(tmpl.format(probe="helper()"), **kw))
+    b = _one(mod.fingerprint_source(tmpl.format(probe="0"), **kw))
+    assert a is not None and b is not None, f"{label}: a function was not captured"
+    assert a != b, (
+        f"{label}: a CALL vs a CONST inside a transparent wrapper carrying leading AND trailing "
+        f"comments produced identical fingerprints — the `[-1]`/`[0]` descent is landing on a "
+        f"comment and dropping the operand (must skip comment trivia)")
+
+
+@pytest.mark.parametrize("label", sorted(_TRAILING))
+def test_trailing_comment_in_wrapper_is_a_noop(label):
+    mod, kw, tmpl = _TRAILING[label]
+    plain = tmpl.replace("/*c*/", "").format(probe="g()")
+    commented = tmpl.format(probe="g()")
+    a = _one(mod.fingerprint_source(plain, **kw))
+    b = _one(mod.fingerprint_source(commented, **kw))
+    assert a is not None and b is not None, f"{label}: a function was not captured"
+    assert a == b, (
+        f"{label}: comments inside a transparent wrapper changed the fingerprint — a comment node "
+        f"is leaking into the value-flow graph via the unwrap descent")

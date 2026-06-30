@@ -234,9 +234,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(val, n, _DATA)
             g.link(ev(target.child_by_field_name("argument"), None), n, _DATA)
         elif t == "parenthesized_expression":
-            inner = target.named_children
-            if inner:
-                bind(inner[-1], val)
+            bind(_last(target), val)
 
     def ev(node, ctrl: int | None) -> int | None:
         if node is None:
@@ -254,8 +252,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t == "qualified_identifier":
             return freevar(text(node))
         if t == "parenthesized_expression":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "field_expression":
             n = g.add("ATTR")
             g.link(ev(node.child_by_field_name("argument"), ctrl), n, _DATA)
@@ -312,8 +309,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(ctrl, n, _CTRL)
             return n
         if t == "delete_expression":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else g.add("DELETE")
+            return ev(_last(node), ctrl) if _nc(node) else g.add("DELETE")
         if t == "binary_expression":
             n = g.add("BINOP:" + _op_text(node, text))
             g.link(ev(node.child_by_field_name("left"), ctrl), n, _DATA)

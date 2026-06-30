@@ -191,9 +191,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             for c in target.named_children:
                 bind(c, val)
         elif t == "parenthesized_expression":
-            inner = target.named_children
-            if inner:
-                bind(inner[-1], val)
+            bind(_last(target), val)
 
     def ev(node, ctrl: int | None) -> int | None:
         if node is None:
@@ -202,8 +200,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
             return None
         if t == "argument":  # C# wraps each call/index argument in an `argument` node
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "identifier":
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -212,8 +209,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t in _CONST:
             return g.add("CONST")
         if t == "parenthesized_expression":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "member_access_expression":
             n = g.add("ATTR")
             g.link(ev(node.child_by_field_name("expression"), ctrl), n, _DATA)
@@ -522,8 +518,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         arrow = fn.child_by_field_name("expression_body") or fn.child_by_field_name("value")
         if arrow is not None:
             n = g.add("RETURN")
-            inner = arrow.named_children
-            g.link(ev(inner[-1] if inner else arrow, None), n, _DATA)
+            g.link(ev(_last(arrow) or arrow, None), n, _DATA)
         return g
     _do_body(body, None)
     return g

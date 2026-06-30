@@ -145,9 +145,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(val, n, _DATA)
             g.link(ev(target.child_by_field_name("operand"), None), n, _DATA)
         elif t == "parenthesized_expression":
-            inner = [c for c in target.named_children]
-            if inner:
-                bind(inner[-1], val)
+            bind(_last(target), val)
 
     def _exprs(node):
         """The element expressions of an expression_list (or the node itself if it isn't one)."""
@@ -175,8 +173,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
             return None
         if t in _TRANSPARENT:
-            inner = [c for c in node.named_children]
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t in ("identifier", "field_identifier", "package_identifier", "type_identifier"):
             name = text(node)
             return env[name] if name in env else freevar(name)

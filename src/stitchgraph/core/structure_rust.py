@@ -223,15 +223,14 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         if t == "block":
             return _walk_block(node, ctrl, as_value=True)
         if t == "parenthesized_expression":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            return ev(_last(node), ctrl)
         if t == "field_expression":
             n = g.add("ATTR")
             g.link(ev(node.child_by_field_name("value"), ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
             return n
         if t == "index_expression":
-            kids = node.named_children
+            kids = _nc(node)
             n = g.add("SUBSCRIPT")
             if kids:
                 g.link(ev(kids[0], ctrl), n, _DATA)
