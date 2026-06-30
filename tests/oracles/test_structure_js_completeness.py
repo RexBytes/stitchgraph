@@ -55,6 +55,7 @@ _STMT: dict[str, str] = {
     "DoWhile-body": "function t(a){ do { return {probe}; } while (a); }",
     "Switch-disc": "function t(a){ switch ({probe}){ default: return 0; } }",
     "Switch-case": "function t(a){ switch (a){ case 1: return {probe}; } }",
+    "Switch-case-value": "function t(a){ switch (a){ case {probe}: return 1; default: return 0; } }",
     "Try-body": "function t(a){ try { return {probe}; } catch (e) {} }",
     "Catch-body": "function t(a){ try {} catch (e) { return {probe}; } }",
     "Finally-body": "function t(a){ try {} finally { return {probe}; } }",
@@ -116,6 +117,17 @@ def test_augmented_assignment_rebinds_like_explicit():
     aug = sj.fingerprint_source("function f(x, e){ let z = x; z += e; z += e; return z; }")["f"]
     explicit = sj.fingerprint_source("function f(x, e){ let z = x; z = z + e; z = z + e; return z; }")["f"]
     assert similarity(aug, explicit) >= 0.99
+
+
+def test_switch_compound_case_value_not_double_walked():
+    # R173 (sonnet): a compound case value (`case g():`) must be walked ONCE. The old `st is val`
+    # skip was a no-op (tree-sitter returns a fresh wrapper per call), so the value was re-walked as
+    # a body statement, adding spurious nodes. Pin by byte-span skip: no stray ARGUMENTS / property
+    # node appears.
+    call = sj.fingerprint_source("function f(x){ switch (x){ case g(): return 1; } }")["f"]
+    assert "0:ARGUMENTS" not in call
+    member = sj.fingerprint_source("function f(x){ switch (x){ case a.b: return 1; } }")["f"]
+    assert "0:PROPERTY_IDENTIFIER" not in member
 
 
 def test_typescript_annotations_carry_no_value_flow():

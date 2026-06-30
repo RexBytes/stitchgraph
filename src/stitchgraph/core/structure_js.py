@@ -334,11 +334,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     c = g.add("CASE")
                     val = case.child_by_field_name("value")
                     g.link(ev(val, b), c, _DATA)
-                    # the case value is also a named child; skip it by IDENTITY so it isn't
-                    # re-walked as a body statement (the old type-name filter never matched a real
-                    # tree-sitter node type, double-counting `case helper():` — R172 sonnet).
+                    # the case value is also a named child; skip it so it isn't re-walked as a body
+                    # statement. Compare by BYTE SPAN, not Python `is`: tree-sitter returns a fresh
+                    # wrapper object per call, so `st is val` is never true and the value would be
+                    # double-walked (spurious nodes for `case g():` — R172/R173 sonnet).
+                    vspan = (val.start_byte, val.end_byte) if val is not None else None
                     for st in case.named_children:
-                        if st is not val:
+                        if (st.start_byte, st.end_byte) != vspan:
                             do(st, c)
         elif t == "try_statement":
             for fld in ("body", "handler", "finalizer"):
