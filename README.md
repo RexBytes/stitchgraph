@@ -31,7 +31,7 @@ Point it at a repo and ask plain questions about it. Every answer is ranked and 
 - **Where's the code that does X?** — `find_similar`: by name/docs (semantic) or, new in v3.0.0, by
   **body shape** (finds renamed / reordered clones a text search misses).
 - **How do two builds differ?** — `graph_diff`: call-level deltas **plus** body-shape changes
-  (Python + JS/TS + Go), so a data-flow bug that leaves the call graph identical still shows up.
+  (Python + JS/TS/TSX + Go), so a data-flow bug that leaves the call graph identical still shows up.
 - **I'm new here — orient me.** — `orient` / `summarize_subsystem` / `risk`: central modules, entry
   points, and the files most dangerous to touch.
 - **What's referenced but missing?** — `find_holes`: dangling references that don't resolve.
