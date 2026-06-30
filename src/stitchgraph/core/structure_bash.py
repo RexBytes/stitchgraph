@@ -16,8 +16,12 @@ Bash is the outlier of the sweep — **command-oriented, not expression-oriented
 
 Functions are keyed by their bare name (`compute`) — shell functions are flat, matching the extractor.
 It is a structural approximation, NOT sound data flow (no word-splitting/alias analysis, exit codes
-and side-effecting globals are not tracked, constants collapsed). The method is in
-`docs/BODY_MATRIX_LESSONS.md`.
+and side-effecting globals are not tracked, constants collapsed). Two known structural blind spots are
+inherent and accepted: (1) a `${var#$(cmd)}`/`${var%…}` **strip pattern** is lexed by tree-sitter as a
+single opaque `regex` token, so a command substitution *inside* the strip pattern is not a walkable
+child; (2) a **single-quoted deferred action** like `trap '$(cmd)' EXIT` is a `raw_string` whose
+expansion only happens at `eval`/trap time — the no-`eval` rule means it reads as a constant. Both are
+advisory-only mis-rankings, never cardinal. The method is in `docs/BODY_MATRIX_LESSONS.md`.
 """
 from __future__ import annotations
 
@@ -128,7 +132,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             name = _varname(node)
             g.link(env[name] if name in env else freevar(name), n, _DATA)
             for c in node.named_children:
-                if c.type not in ("variable_name", "subscript"):
+                if c.type == "subscript":
+                    # ${arr[i]} — the base name is already read above; the index expression carries
+                    # flow (e.g. ${arr[$(helper)]}).
+                    idx = c.child_by_field_name("index")
+                    if idx is not None:
+                        g.link(ev(idx, ctrl), n, _DATA)
+                elif c.type != "variable_name":
                     g.link(ev(c, ctrl), n, _DATA)
             return n
         if t in _CONST:
@@ -226,7 +236,14 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         t = node.type
         if t == "variable_assignment":
             val = ev(node.child_by_field_name("value"), ctrl)
-            bind(node.child_by_field_name("name"), val)
+            target = node.child_by_field_name("name")
+            if target is not None and target.type == "subscript":
+                # `arr[$(helper)]=x` — the index expression on the LHS carries flow (and there's no
+                # simple name to copy-propagate into, so we only walk it, not bind).
+                idx = target.child_by_field_name("index")
+                if idx is not None:
+                    ev(idx, ctrl)
+            bind(target, val)
             return val
         if t == "declaration_command":  # local/declare/export/readonly/typeset …
             last = None

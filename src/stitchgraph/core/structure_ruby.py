@@ -180,8 +180,10 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 g.link(ev(c, ctrl), n, _DATA)
             return n
         if t == "parenthesized_statements" or t == "begin":
-            inner = node.named_children
-            return ev(inner[-1], ctrl) if inner else None
+            # A multi-statement group in value position: walk every statement for its flow (not just
+            # the trailing one) and walk any rescue/else/ensure clauses — `_do_body` does both and
+            # returns the trailing main value, which is this group's value.
+            return _do_body(node, ctrl)
         if t == "element_reference":
             n = g.add("SUBSCRIPT")
             objf = node.child_by_field_name("object")
@@ -326,9 +328,10 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             last = None
             for st in kids:
                 last = _do(st, ctrl)
-            # also walk rescue/ensure clauses for their flow
+            # also walk rescue/else/ensure clauses for their flow (the `else` of a begin/rescue runs
+            # when no exception fired — its body carries value flow just like the main statements).
             for c in node.named_children:
-                if c.type in ("rescue", "ensure"):
+                if c.type in ("rescue", "else", "ensure"):
                     _do_body(c.child_by_field_name("body") or c, ctrl)
             return last
         return _do(node, ctrl)

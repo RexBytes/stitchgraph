@@ -58,6 +58,9 @@ _STMT: dict[str, str] = {
     "For-iter": "for x in ({probe})\n sink(x)\nend\n0",
     "For-body": "for x in items\n sink({probe})\nend\n0",
     "Return": "return {probe}",
+    "BeginRescueElse": "begin\n risky\nrescue\n 1\nelse\n {probe}\nend",
+    "BeginEnsure": "begin\n sink({probe})\nensure\n cleanup\nend\n0",
+    "ParenSeq": "(sink({probe}); 0)",
 }
 
 

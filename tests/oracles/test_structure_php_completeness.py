@@ -81,6 +81,8 @@ _EXPR: dict[str, str] = {
     "Ternary-else": "return $a > 0 ? 1 : {probe};",
     "Cast": "return (int)({probe});",
     "New-arg": "return new S({probe});",
+    "AnonClassArg": "$o = new class({probe}) {}; return $o;",
+    "AnonClassArgExtends": "$o = new class({probe}) extends B {}; return $o;",
     "ArrayElem": "$z = [{probe}, 1]; return $z[0];",
     "ArrayPair": "$z = ['k' => {probe}]; return $z['k'];",
     "Interp": "return \"v={$a}{$b}\" . {probe};",

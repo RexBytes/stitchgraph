@@ -26,16 +26,21 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   grammar parses a bare `name() {…}`).
 
 ### Fixed / hardened
-- Building the Bash frontend surfaced a **dynamic-callee drop** — a command whose name is a `$(…)`
-  substitution (`$(resolve) arg`) was collapsed to an opaque free word, dropping the inner CALL; the
-  hardened exact-equality oracle predicate caught it and the callee is now walked. (Language diversity
-  as an adversarial probe of the shared kernel, again.)
+- The adversarial panel found **6 dropped value-flow positions**, all now fixed and oracle-pinned:
+  Bash dynamic-callee (`$(resolve) arg`), Bash command-substitution array-subscript index
+  (`${arr[$(helper)]}` read + `arr[$(helper)]=x` LHS), Ruby `begin/rescue/else` clause body, Ruby
+  parenthesized multi-statement group (non-trailing statement), and PHP anonymous-class constructor
+  arguments (`new class(helper()) {}`). None were caught by the generic fallback — only the
+  value-bearing metamorphic probe surfaces them.
+- Documented two Bash structural blind spots that are not fixable in-AST (advisory-only, never
+  cardinal): `${var#$(cmd)}`/`${var%…}` strip patterns (lexed as one opaque `regex` token) and
+  single-quoted deferred actions like `trap '$(cmd)' EXIT` (`raw_string`, expanded only at `eval`).
 
 ### Quality gate
-- ruff + mypy clean; full suite **1151** passing.
-- Three new body-matrix completeness oracles — Ruby (41), PHP (45), Bash (33) — plus three
+- ruff + mypy clean; full suite passing.
+- Three new body-matrix completeness oracles — Ruby (44), PHP (47), Bash (36) — plus three
   `graph_diff` body tests pinning the new fingerprint corpora. Two-round full-diversity adversarial
-  panel clean.
+  panel clean on the post-fix HEAD.
 
 ## [3.6.0] — 2026-06-30
 

@@ -61,6 +61,7 @@ _STMT: dict[str, str] = {
     "Pipeline": "echo {probe} | cat",
     "Subshell": "( echo {probe} )",
     "Redirect": "echo {probe} > /dev/null",
+    "SubscriptLHS": "arr[{probe}]=x\necho done",
 }
 
 
@@ -81,6 +82,8 @@ _EXPR: dict[str, str] = {
     "ExpansionDefault": "x=${y:-{probe}}\necho $x",
     "ConcatArg": "echo pre{probe}post",
     "CalleeSubst": "$(helper_name {probe})",
+    "SubscriptIdx": "v=${arr[{probe}]}\necho $v",
+    "SubscriptIdxArg": "echo ${arr[{probe}]}",
 }
 
 

@@ -201,6 +201,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 if c.type == "arguments":
                     for a in c.named_children:
                         g.link(ev(a, ctrl), n, _DATA)
+                elif c.type == "anonymous_class":
+                    # `new class($arg) {…}` — the constructor args live *inside* the anonymous_class
+                    # node (its class body is a definition, opaque to this function's flow).
+                    for cc in c.named_children:
+                        if cc.type == "arguments":
+                            for a in cc.named_children:
+                                g.link(ev(a, ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
             return n
         if t in ("array_creation_expression", "list_literal"):

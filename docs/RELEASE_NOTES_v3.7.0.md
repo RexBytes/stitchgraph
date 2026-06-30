@@ -74,21 +74,34 @@ construction (a node id maps to exactly one file, hence one language).
 
 - ruff + mypy clean; full suite passing; differential oracle suite passing.
 - Three new **body-matrix completeness oracles** — Ruby
-  (`tests/oracles/test_structure_ruby_completeness.py`, 41 cases), PHP
-  (`tests/oracles/test_structure_php_completeness.py`, 45 cases) and Bash
-  (`tests/oracles/test_structure_bash_completeness.py`, 33 cases): a `helper()`/`$(helper)` (a CALL)
+  (`tests/oracles/test_structure_ruby_completeness.py`, 44 cases), PHP
+  (`tests/oracles/test_structure_php_completeness.py`, 47 cases) and Bash
+  (`tests/oracles/test_structure_bash_completeness.py`, 36 cases): a `helper()`/`$(helper)` (a CALL)
   vs `0` (a CONST) in every value-bearing position must change the fingerprint, plus dedicated
   invariants (compound-assign rebind, module/namespace keying, constructor keyed, opaque
   block/closure/nested-function, Bash dynamic-callee walked). All use the **hardened exact-equality
   predicate** introduced in v3.6.0 (dodging the cosine float-rounding blind spot).
-- Building the Bash frontend surfaced — and the hardened oracle caught — a **dynamic-callee drop**: a
-  command whose *name* is a `$(…)` substitution (`$(resolve) arg`) was collapsed to an opaque free
-  word, dropping the inner CALL. Now the callee is walked. (Language diversity as an adversarial probe
-  of the shared kernel, again: the Bash outlier exercised a callee-position the seven prior
-  expression-oriented frontends never could.)
+- **The adversarial panel earned its keep — 6 dropped value-flow positions found and fixed**, none
+  caught by the generic fallback (only the value-bearing metamorphic probe surfaces these), all now
+  oracle-pinned:
+  - Bash, building the frontend: a **dynamic-callee drop** — a command whose *name* is a `$(…)`
+    substitution (`$(resolve) arg`) was collapsed to an opaque free word, dropping the inner CALL.
+  - Bash, panel: a **command substitution in an array-subscript index** (`${arr[$(helper)]}` read,
+    `arr[$(helper)]=x` LHS) was dropped on both the expansion-read and assignment-LHS paths.
+  - Ruby, panel: a `begin/rescue/**else**` clause body was never walked, and a
+    **parenthesized multi-statement group** (`(sink(helper()); 0)`) kept only its trailing statement.
+  - PHP, panel: **anonymous-class constructor arguments** (`new class(helper()) {}`) were dropped —
+    the args live *inside* the `anonymous_class` node, not as a direct `arguments` child.
+  - This is language diversity as an adversarial probe again: the Bash outlier exercised a
+    callee/subscript position the seven prior expression-oriented frontends never could.
+- Two Bash positions are **documented structural blind spots, not fixable in-AST**: a
+  `${var#$(cmd)}`/`${var%…}` strip pattern is lexed by tree-sitter as one opaque `regex` token (the
+  inner command substitution isn't a walkable child), and a single-quoted deferred action
+  (`trap '$(cmd)' EXIT`) is a `raw_string` whose expansion only happens at `eval` time. Both are
+  advisory-only mis-rankings, never cardinal.
 - Mutation meta-oracle: the new Ruby/PHP/Bash fingerprint corpora are mutation-pinned by `graph_diff`
   body tests.
-- **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.
+- **Two-round full-diversity adversarial panel** (opus / sonnet / haiku) clean on the post-fix HEAD.
 
 ## Upgrading
 
