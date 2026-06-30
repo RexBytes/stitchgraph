@@ -184,6 +184,15 @@ def test_nested_def_class_enclosing_scope_exprs_are_walked():
                    "def f():\n class C(object):\n  pass\n return C")
     assert differs("def f():\n class C(metaclass=helper()):\n  pass\n return C",
                    "def f():\n class C(metaclass=type):\n  pass\n return C")
+    # decorator-CALL arguments are evaluated eagerly in the enclosing scope at definition time
+    # (the decorator binding is metadata, but `@deco(expr)` args are a live computation) — def,
+    # async def, and class forms, positional and keyword.
+    assert differs("def f():\n @deco(helper())\n def g():\n  return 1\n return g",
+                   "def f():\n @deco(0)\n def g():\n  return 1\n return g")
+    assert differs("def f():\n @deco(x=helper())\n async def g():\n  return 1\n return g",
+                   "def f():\n @deco(x=0)\n async def g():\n  return 1\n return g")
+    assert differs("def f():\n @deco(helper())\n class C: pass\n return C",
+                   "def f():\n @deco(0)\n class C: pass\n return C")
     # ...but the nested def's BODY stays opaque (only enclosing-scope parts leak in).
     body_a = structure.fingerprint_source("def f():\n def g():\n  return helper()\n return g")["f"]
     body_b = structure.fingerprint_source("def f():\n def g():\n  return other()\n return g")["f"]
