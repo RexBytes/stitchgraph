@@ -26,19 +26,21 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   grammar parses a bare `name() {…}`).
 
 ### Fixed / hardened
-- The adversarial panel found **6 dropped value-flow positions**, all now fixed and oracle-pinned:
+- The adversarial panel found **7 dropped value-flow positions**, all now fixed and oracle-pinned:
   Bash dynamic-callee (`$(resolve) arg`), Bash command-substitution array-subscript index
   (`${arr[$(helper)]}` read + `arr[$(helper)]=x` LHS), Ruby `begin/rescue/else` clause body, Ruby
-  parenthesized multi-statement group (non-trailing statement), and PHP anonymous-class constructor
-  arguments (`new class(helper()) {}`). None were caught by the generic fallback — only the
-  value-bearing metamorphic probe surfaces them.
+  parenthesized multi-statement group (non-trailing statement), PHP anonymous-class constructor
+  arguments (`new class(helper()) {}`), and PHP **heredoc** interpolation holes (`<<<E…{$o->m()}…E`)
+  — heredoc was wrongly bucketed with non-interpolating `nowdoc` as a constant, while double-quoted
+  interpolation was already walked. None were caught by the generic fallback — only the value-bearing
+  metamorphic probe surfaces them.
 - Documented two Bash structural blind spots that are not fixable in-AST (advisory-only, never
   cardinal): `${var#$(cmd)}`/`${var%…}` strip patterns (lexed as one opaque `regex` token) and
   single-quoted deferred actions like `trap '$(cmd)' EXIT` (`raw_string`, expanded only at `eval`).
 
 ### Quality gate
 - ruff + mypy clean; full suite passing.
-- Three new body-matrix completeness oracles — Ruby (44), PHP (47), Bash (36) — plus three
+- Three new body-matrix completeness oracles — Ruby (44), PHP (48), Bash (36) — plus three
   `graph_diff` body tests pinning the new fingerprint corpora. Two-round full-diversity adversarial
   panel clean on the post-fix HEAD.
 

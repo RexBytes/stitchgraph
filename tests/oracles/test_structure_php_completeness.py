@@ -87,6 +87,7 @@ _EXPR: dict[str, str] = {
     "ArrayPair": "$z = ['k' => {probe}]; return $z['k'];",
     "Interp": "return \"v={$a}{$b}\" . {probe};",
     "InterpHole": "$b = {probe}; return \"v={$b}\";",
+    "HeredocHole": "$b = {probe}; return <<<EOT\nv={$b}\nEOT;",
     "MatchArm": "return match($a) { 1 => {probe}, default => 0 };",
 }
 

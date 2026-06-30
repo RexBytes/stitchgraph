@@ -31,7 +31,7 @@ _TYPE_NODES = frozenset({"class_declaration", "interface_declaration", "trait_de
                          "enum_declaration"})
 
 _CONST = frozenset({
-    "integer", "float", "string", "boolean", "null", "heredoc", "nowdoc", "shell_command_expression",
+    "integer", "float", "string", "boolean", "null", "nowdoc", "shell_command_expression",
 })
 
 
@@ -168,6 +168,16 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             for c in node.named_children:
                 if c.type not in ("string_content", "escape_sequence"):
                     g.link(ev(c, ctrl), n, _DATA)
+            return n
+        if t == "heredoc":
+            # A heredoc INTERPOLATES (unlike nowdoc, which stays a CONST): walk its body's holes
+            # (`$var`, `{$o->m()}`, …) for flow; literal `string_content` collapses.
+            n = g.add("CONST")
+            for c in node.named_children:
+                if c.type == "heredoc_body":
+                    for cc in c.named_children:
+                        if cc.type not in ("string_content", "escape_sequence"):
+                            g.link(ev(cc, ctrl), n, _DATA)
             return n
         if t == "parenthesized_expression":
             inner = node.named_children

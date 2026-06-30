@@ -75,13 +75,13 @@ construction (a node id maps to exactly one file, hence one language).
 - ruff + mypy clean; full suite passing; differential oracle suite passing.
 - Three new **body-matrix completeness oracles** — Ruby
   (`tests/oracles/test_structure_ruby_completeness.py`, 44 cases), PHP
-  (`tests/oracles/test_structure_php_completeness.py`, 47 cases) and Bash
+  (`tests/oracles/test_structure_php_completeness.py`, 48 cases) and Bash
   (`tests/oracles/test_structure_bash_completeness.py`, 36 cases): a `helper()`/`$(helper)` (a CALL)
   vs `0` (a CONST) in every value-bearing position must change the fingerprint, plus dedicated
   invariants (compound-assign rebind, module/namespace keying, constructor keyed, opaque
   block/closure/nested-function, Bash dynamic-callee walked). All use the **hardened exact-equality
   predicate** introduced in v3.6.0 (dodging the cosine float-rounding blind spot).
-- **The adversarial panel earned its keep — 6 dropped value-flow positions found and fixed**, none
+- **The adversarial panel earned its keep — 7 dropped value-flow positions found and fixed**, none
   caught by the generic fallback (only the value-bearing metamorphic probe surfaces these), all now
   oracle-pinned:
   - Bash, building the frontend: a **dynamic-callee drop** — a command whose *name* is a `$(…)`
@@ -92,6 +92,10 @@ construction (a node id maps to exactly one file, hence one language).
     **parenthesized multi-statement group** (`(sink(helper()); 0)`) kept only its trailing statement.
   - PHP, panel: **anonymous-class constructor arguments** (`new class(helper()) {}`) were dropped —
     the args live *inside* the `anonymous_class` node, not as a direct `arguments` child.
+  - PHP, panel (round-1 confirm): **heredoc interpolation holes** (`<<<E…{$o->m(helper())}…E`) were
+    dropped — `heredoc` was bucketed with non-interpolating `nowdoc` as a CONST, even though heredoc
+    interpolates exactly like a double-quoted string (which was already walked). Now walked; `nowdoc`
+    stays opaque.
   - This is language diversity as an adversarial probe again: the Bash outlier exercised a
     callee/subscript position the seven prior expression-oriented frontends never could.
 - Two Bash positions are **documented structural blind spots, not fixable in-AST**: a
