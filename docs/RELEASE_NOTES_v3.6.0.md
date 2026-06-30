@@ -66,7 +66,7 @@ file, hence one language).
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **1021** passing; differential oracle suite **387**.
+- ruff + mypy clean; full suite **1023** passing; differential oracle suite **387**.
 - Two new **body-matrix completeness oracles** — Java
   (`tests/oracles/test_structure_java_completeness.py`, 45 metamorphic cases + invariants) and C#
   (`tests/oracles/test_structure_csharp_completeness.py`, 43 metamorphic cases + invariants): a

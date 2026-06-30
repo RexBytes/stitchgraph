@@ -31,7 +31,7 @@ every existing operation unchanged; the new behavior is opt-in and advisory).
   same-language only (a node id maps to exactly one file → one language).
 
 ### Quality gate
-- ruff + mypy clean; full suite **1021** passing; differential oracle suite **387** — incl. two new
+- ruff + mypy clean; full suite **1023** passing; differential oracle suite **387** — incl. two new
   body-matrix completeness oracles: **Java** (45 metamorphic cases + invariants) and **C#** (43
   metamorphic cases + invariants), each requiring a `helper()` CALL vs a `0` CONST in every
   value-bearing position to change the fingerprint. Mutation meta-oracle: `structure.py` 15/15,
