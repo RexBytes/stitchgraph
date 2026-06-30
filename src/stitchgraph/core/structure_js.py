@@ -231,15 +231,23 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return n
         if t in ("binary_expression", "augmented_assignment_expression"):
             op = _op_text(node, text)
+            if t == "augmented_assignment_expression" and op.endswith("="):
+                op = op[:-1]  # `+=` -> `+` so `x += e` matches `x = x + e` (Python normalizes too)
             n = g.add("BINOP:" + op)
-            g.link(ev(node.child_by_field_name("left"), ctrl), n, _DATA)
+            left = node.child_by_field_name("left")
+            g.link(ev(left, ctrl), n, _DATA)
             g.link(ev(node.child_by_field_name("right"), ctrl), n, _DATA)
             g.link(ctrl, n, _CTRL)
+            if t == "augmented_assignment_expression":
+                bind(left, n)  # `x += e` == `x = x + e`: rebind x to the result (Python parity)
             return n
         if t in ("unary_expression", "update_expression"):
             op = _op_text(node, text)
+            arg = node.child_by_field_name("argument")
             n = g.add("UNARY:" + op)
-            g.link(ev(node.child_by_field_name("argument"), ctrl), n, _DATA)
+            g.link(ev(arg, ctrl), n, _DATA)
+            if t == "update_expression":
+                bind(arg, n)  # `x++` / `--x` rebinds x to the updated value, like x = x + 1
             return n
         if t == "ternary_expression":
             n = g.add("IFEXP")
@@ -324,9 +332,13 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             if body is not None:
                 for case in body.named_children:
                     c = g.add("CASE")
-                    g.link(ev(case.child_by_field_name("value"), b), c, _DATA)
+                    val = case.child_by_field_name("value")
+                    g.link(ev(val, b), c, _DATA)
+                    # the case value is also a named child; skip it by IDENTITY so it isn't
+                    # re-walked as a body statement (the old type-name filter never matched a real
+                    # tree-sitter node type, double-counting `case helper():` — R172 sonnet).
                     for st in case.named_children:
-                        if st.type not in ("expression", "value"):
+                        if st is not val:
                             do(st, c)
         elif t == "try_statement":
             for fld in ("body", "handler", "finalizer"):

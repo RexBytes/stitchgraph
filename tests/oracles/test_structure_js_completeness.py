@@ -109,6 +109,15 @@ def test_value_bearing_expression_is_walked(label):
         f"(sim={sim}) — the expression type is dropping a child sub-expression")
 
 
+def test_augmented_assignment_rebinds_like_explicit():
+    # R172 (opus): `x += e` must rebind x to the result and use the base operator, so it threads
+    # across statements exactly like `x = x + e` — the same invariance the Python layer guarantees.
+    # The metamorphic battery only checks the RHS is walked, not the cross-statement write-back.
+    aug = sj.fingerprint_source("function f(x, e){ let z = x; z += e; z += e; return z; }")["f"]
+    explicit = sj.fingerprint_source("function f(x, e){ let z = x; z = z + e; z = z + e; return z; }")["f"]
+    assert similarity(aug, explicit) >= 0.99
+
+
 def test_typescript_annotations_carry_no_value_flow():
     # TS type annotations are not value flow: a typed function must fingerprint like its untyped JS
     # twin. Pins that the TS-specific wrapper nodes are seen through, not treated as operations.

@@ -47,9 +47,9 @@ to one file).
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **755** passing; differential oracle suite **133**.
+- ruff + mypy clean; full suite **756** passing; differential oracle suite **134**.
 - New **JS/TS body-matrix completeness oracle** (`tests/oracles/test_structure_js_completeness.py`):
-  48 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
+  47 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
   expression position must change the fingerprint. It caught a real drop during development
   (template-literal substitutions, the JS analogue of the Python f-string bug), now fixed.
 - Mutation meta-oracle unchanged: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32.
