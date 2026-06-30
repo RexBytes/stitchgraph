@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 190 (3.2.0 added the 51-case JS/TS battery; 3.3.0 the 45-case Go battery) ✅ · no-open-defects ✅ |
-| Tests | 816 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 233 (3.2.0 +51-case JS/TS; 3.3.0 +45-case Go; 3.4.0 +38-case Rust battery) ✅ · no-open-defects ✅ |
+| Tests | 863 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). **3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects — oracle caught them all up front) → R179✓ R180✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). 3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects) → R179✓ R180✓ (streak 2, RELEASABLE). **3.4.0: body matrix → Rust (`structure_rust.py` + 38-case oracle) → R181 (1 real defect: match-arm guards dropped, fixed + oracle-pinned) → R182✓ R183✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1801,6 +1801,31 @@ docstring and a README bullet lagging the module docstring) — a recurring tail
 gains a language; the fix each time is a grep across *every* surface, not just the obvious ones.
 (3) Generics were the one genuinely-new Go construct vs Python/JS; opus confirmed type parameters seed
 no spurious value flow (the walker only reads `receiver`/`parameters`/`result`).
+
+## v3.4.0 — the body matrix learns Rust (language 3 of the §5b sweep)
+
+`core/structure_rust.py` — a tree-sitter Rust walker emitting the **same** `_VFG` the Python/JS/Go
+frontends do. Rust is expression-oriented, so a block's **trailing expression** is its value (`{ x }`
+≡ `{ return x; }`); `if`/`match`/`loop`/`while`/`for` are expressions; `?`/`&x`/`as`/ranges/tuples/
+struct-literals carry operand flow (type carries none); macros are walked best-effort as token trees;
+closures are opaque `NESTED` leaves; `self`/named-results seed like params. Qualname scheme matches
+the Rust extractor: free functions bare, impl methods `Type.method`. The 38-case completeness oracle
+drove the walker.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R181 | 3 | ✗ | clean-cycle attempt 1 (frozen HEAD 5e0152b). sonnet + haiku CLEAN (gate **862/232**, mutation 15/15 + 9/9, cardinal inviolable, exhaustive doc-scope grep clean incl. the `graph_diff` *function* docstring — the Go-release lesson applied up front). opus **MEDIUM** (deep hunt): match-arm **guards** (`pat if <cond> => …`) dropped their condition — the guard lives under the arm's `match_pattern.condition`, not the arm `value`, and the handler walked only `value`. `match v { n if expensive(n) => 1, _ => 0 }` collapsed to `n if true` (sim 1.0). Python captures the analogous `case x if …`; Rust alone dropped it; the oracle's `Match-arm` probed only the arm value. Fixed → walk the guard into the BRANCH + a `Match-guard` oracle case (battery 37→38). Advisory-only; cardinal never at risk. Streak resets. |
+| R182 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 1c52422). opus (fresh angle): `if let`/`while let`/`let else`, struct-update `..base`, deref/index assignment, tuple/struct binding sub-patterns, `?` chains, unsafe/async-move/trait-default/impl-Trait bodies — all discriminate; R181 match-guard fix verified live; the two sim==1.0 (closure-opaque, `a[i]=e` index-write) mirror Python exactly. sonnet: gate **863/233**, mutation 15/15 + 9/9, clean degradation, cross-language impossible. haiku: exhaustive scope grep, counts 863/233/38. |
+| R183 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus: parse-robustness + whole-function hunt (syntax error→partial, empty→{}, `todo!()`, 5000-deep→RecursionError→{} graceful degrade, unicode idents, iterator chains `.iter().map().filter().collect()` + `?`-propagation + match) — `fingerprint_source` never raised; renamed clone ranks first; data-flow changes caught (0.14–0.94); the lone sim==1.0 (commutative arg swap) is the documented WL position-invariance, identical in Python. sonnet: 863/233, mutation 15/15 + 9/9, HEAD unchanged. haiku: counts/version/scope all canonical. |
+
+Process notes: (1) the curve ticked back **up** vs Go (1 real code defect vs 0) — exactly as predicted:
+Rust's expression-oriented blocks + `match` guards are genuinely novel value-flow shapes, and the
+match-**guard** is a position the metamorphic battery under-covered (it probed the arm *value*, not the
+guard predicate). The deep-hunt reviewer (opus) is the one that finds this class; the fix always adds
+the missing oracle case so it can't reopen. (2) The doc-scope-consistency tail **did not recur** this
+release — applying the Go lesson (grep *every* surface incl. the `graph_diff` function docstring, not
+just the module docstring) up front meant haiku found zero stale scope mentions in R181. The recurring
+cost is payable once you know to look for it.
 
 ## Standing themes
 

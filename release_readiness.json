@@ -2157,6 +2157,38 @@
             ],
             "findings": {},
             "theme": "v3.3.0 final clean-cycle round 2 (frozen HEAD 30c35a4) -- CLEAN; streak 2, gate met, RELEASABLE. Independent re-run. opus: parse-robustness hunt over 30 edge inputs (syntax error, empty/package-only/import-only, empty bodies, init/main, unicode idents, 2000-3000-deep expression chains, lone surrogates) -- fingerprint_source NEVER raised, always returned a dict ({} or partial), deep nesting caught as RecursionError -> {} (documented advisory degrade); cardinal find_stale byte-identical, no Go node ever in the stale set, renamed clone ranks first, data-flow change self-sim 0.30 caught. sonnet: gate 816/190, mutation 15/15 + 9/9, cardinal isolated, HEAD unchanged. haiku: 816/190/45 + version + all forward-facing scope surfaces canonical re-verified."
+        },
+        {
+            "id": "R181",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {
+                "MEDIUM": 1
+            },
+            "theme": "v3.4.0 (Rust body matrix, structure_rust.py) clean-cycle attempt 1 (frozen HEAD 5e0152b). sonnet + haiku CLEAN (gate 862/232, mutation 15/15 + 9/9, cardinal inviolable, per-language isolation strict, exhaustive doc-scope grep clean incl. the graph_diff function docstring -- the Go-release lesson applied). opus (MEDIUM, deep hunt): match-arm GUARDS (`pat if <cond> => ...`) dropped their condition's value flow -- the guard lives under the arm's match_pattern `condition` field, not the arm `value`, and the handler only walked `value`. `match v { n if expensive(n) => 1, _ => 0 }` collapsed to `n if true` (sim 1.0), making graph_diff miss a real change and find_similar conflate distinct functions. Python captures the analogous `case x if ...` guard; Rust alone dropped it; the oracle's Match-arm case only probed the arm value, not the guard. Fixed by walking the guard into the BRANCH (mirrors if_expression + Python case.guard) + a Match-guard oracle case (battery 37 -> 38). Advisory-only; cardinal never at risk. Streak resets."
+        },
+        {
+            "id": "R182",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.4.0 final clean-cycle round 1 (frozen HEAD 1c52422 after the match-guard fix) -- CLEAN. opus (deepest pass, fresh angle): probed if let/while let scrutinee+body, let-else, struct-update `..base`, deref/index assignment, tuple/struct binding sub-patterns, `?` chains, unsafe/async-move/trait-default/impl-Trait bodies -- all value-bearing positions discriminate; the R181 match-guard fix verified live; the two sim==1.0 cases (closure-opaque, `a[i]=e` index-write) are documented approximations mirroring Python exactly. sonnet: gate 863/233, mutation 15/15 + 9/9, clean degradation, cross-language impossible. haiku: exhaustive scope grep -- all forward-facing surfaces list Python + JS/TS/TSX + Go + Rust; counts 863/233/38 + version 3.4.0 verified."
+        },
+        {
+            "id": "R183",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.4.0 final clean-cycle round 2 (frozen HEAD 1c52422) -- CLEAN; streak 2, gate met, RELEASABLE. Independent re-run. opus: parse-robustness + whole-function hunt (syntax error -> partial, empty -> {}, todo!()/unimplemented!(), 300-deep ok / 5000-deep RecursionError -> {} graceful degrade, unicode idents, multi-method trait impl, realistic fn with ?-propagation + .iter().map().filter().collect() + match) -- fingerprint_source NEVER raised; renamed clone ranks first (1.0); data-flow changes caught (op-change 0.22, call-vs-const 0.14, filter-removed 0.94); the lone sim==1.0 (commutative arg swap) is the documented WL position-invariance, identical in the Python frontend. sonnet: gate 863/233, mutation 15/15 + 9/9, cardinal isolated, HEAD unchanged. haiku: 863/233/38 + version + all forward-facing scope surfaces canonical re-verified."
         }
     ]
 }
