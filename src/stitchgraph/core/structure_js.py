@@ -289,6 +289,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                     g.link(ev(prop.child_by_field_name("key"), ctrl), n, _DATA)
                     g.link(ev(prop.child_by_field_name("value"), ctrl), n, _DATA)
                 else:
+                    # a method/getter/setter has an opaque NESTED body, but a COMPUTED key
+                    # (`{ [helper()]() {} }`) is evaluated in the enclosing scope — walk it.
+                    key = prop.child_by_field_name("name")
+                    if key is not None and key.type == "computed_property_name":
+                        for c in key.named_children:
+                            g.link(ev(c, ctrl), n, _DATA)
                     g.link(ev(prop, ctrl), n, _DATA)
             return n
         if t in ("await_expression", "yield_expression", "spread_element"):

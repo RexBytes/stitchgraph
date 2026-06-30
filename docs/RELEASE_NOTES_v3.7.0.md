@@ -81,7 +81,7 @@ construction (a node id maps to exactly one file, hence one language).
   invariants (compound-assign rebind, module/namespace keying, constructor keyed, opaque
   block/closure/nested-function, Bash dynamic-callee walked). All use the **hardened exact-equality
   predicate** introduced in v3.6.0 (dodging the cosine float-rounding blind spot).
-- **The adversarial panel earned its keep — 9 dropped value-flow positions found and fixed**, none
+- **The adversarial panel earned its keep — 10 dropped value-flow positions found and fixed**, none
   caught by the generic fallback (only the value-bearing metamorphic probe surfaces these), all now
   oracle-pinned:
   - Bash, building the frontend: a **dynamic-callee drop** — a command whose *name* is a `$(…)`
@@ -103,6 +103,10 @@ construction (a node id maps to exactly one file, hence one language).
   - C#, panel (certification round): an **indexed/dictionary-initializer key** (`new D { [Key()] = v }`)
     dropped the key — it routes through `bind()` as an `element_binding_expression` that had no branch.
     Now walked.
+  - JS/TS, panel (certification round): a **computed *method* key** in an object literal
+    (`{ [helper()]() {} }`) dropped the key — it is evaluated in the enclosing scope but the
+    method-definition fell straight to its opaque `NESTED` leaf without walking the computed key first
+    (the data-property form `{ [helper()]: 1 }` was always walked). Now walked; the body stays opaque.
   - This is language diversity as an adversarial probe again: the Bash outlier exercised a
     callee/subscript position the seven prior expression-oriented frontends never could.
 - **Cross-cutting fix — default parameter-value expressions are walked.** A `helper()` CALL vs a `0`

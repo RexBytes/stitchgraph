@@ -106,3 +106,22 @@ def test_js_destructuring_default_is_walked(label):
                     tmpl.replace("{probe}", "0"), lang=lang), (
         f"{label}: a CALL vs a CONST in a destructuring default (declaration target) produced "
         f"identical fingerprints — the default expression is being dropped by bind()")
+
+
+# A COMPUTED method/getter/setter key in an object literal is evaluated in the enclosing scope (the
+# method body stays opaque NESTED), so a CALL there must change the fingerprint. (Data-property
+# computed keys were always walked; the method form was the gap.)
+_JS_COMPUTED_KEY = {
+    "js-method": ("javascript", "function f(){ return { [{probe}]() { return 1; } }; }"),
+    "js-getter": ("javascript", "function f(){ return { get [{probe}]() { return 1; } }; }"),
+    "ts-method": ("typescript", "function f(){ return { [{probe}]() { return 1; } }; }"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_JS_COMPUTED_KEY))
+def test_js_computed_method_key_is_walked(label):
+    lang, tmpl = _JS_COMPUTED_KEY[label]
+    assert _differs(structure_js, tmpl.replace("{probe}", "helper()"),
+                    tmpl.replace("{probe}", "0"), lang=lang), (
+        f"{label}: a CALL vs a CONST in a computed method key produced identical fingerprints — the "
+        f"computed key (evaluated in the enclosing scope) is being dropped")

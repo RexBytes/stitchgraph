@@ -26,7 +26,7 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   grammar parses a bare `name() {…}`).
 
 ### Fixed / hardened
-- The adversarial panel found **9 dropped value-flow positions**, all now fixed and oracle-pinned:
+- The adversarial panel found **10 dropped value-flow positions**, all now fixed and oracle-pinned:
   Bash dynamic-callee (`$(resolve) arg`), Bash command-substitution array-subscript index
   (`${arr[$(helper)]}` read + `arr[$(helper)]=x` LHS), Ruby `begin/rescue/else` clause body, Ruby
   parenthesized multi-statement group (non-trailing statement), PHP anonymous-class constructor
@@ -36,8 +36,11 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   `: base(helper())`), whose arguments run before the body but live in a `constructor_initializer`
   sibling of the body that was never walked (the C# analogue of the C++ member-initializer-list, which
   was already handled), and the **C# indexed/dictionary-initializer key** (`new D { [Key()] = v }`),
-  whose key routes through `bind()` as an `element_binding_expression` that had no branch. None were
-  caught by the generic fallback — only the value-bearing metamorphic probe surfaces them.
+  whose key routes through `bind()` as an `element_binding_expression` that had no branch, and the
+  **JS/TS computed *method* key** in an object literal (`{ [helper()]() {} }`), whose key is evaluated
+  in the enclosing scope but was dropped while the method body stayed (correctly) opaque — the data-
+  property computed key `{ [helper()]: 1 }` was always walked. None were caught by the generic
+  fallback — only the value-bearing metamorphic probe surfaces them.
 - Documented two Bash structural blind spots that are not fixable in-AST (advisory-only, never
   cardinal): `${var#$(cmd)}`/`${var%…}` strip patterns (lexed as one opaque `regex` token) and
   single-quoted deferred actions like `trap '$(cmd)' EXIT` (`raw_string`, expanded only at `eval`).
