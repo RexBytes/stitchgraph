@@ -85,3 +85,23 @@ grammar's node-type enumeration and (b) a small battery of source snippets per n
 This is the same shape as the cardinal-hardening loop in `CONTRIBUTING.md`, specialised for the body
 matrix. Recording it is exactly what makes languages 2–12 incremental rather than each re-deriving
 Python's seven rounds.
+
+### Operational rules for `scripts/mutate.py` (learned the hard way)
+
+- **Always point it at a TARGETED test subset, never the whole suite.** `mutate.py <file> -- pytest
+  -x -q <the few test files that exercise <file>>`. It re-runs the command *once per mutant*; against
+  the full 1000+-test suite a single file's mutation pass takes ~2 hours and blocks the loop. Targeted,
+  it finishes in a couple of minutes. (The script's own header examples already do this — follow them.)
+  For `similar.py` the right subset is `tests/test_similar.py tests/test_find_similar_structure.py
+  tests/test_graph_diff.py`; for `structure.py`/`graphdiff.py` use the structure/graphdiff oracle +
+  unit files.
+- **Run it serially, by the orchestrator only — never inside an adversarial-panel reviewer, never
+  concurrently with another `pytest`/`git add`.** It rewrites the target file in place (AST
+  round-trip + one mutation at a time) and restores at the end; a concurrent `git add -A` or an
+  interrupted run can commit a transient mutant (this happened once in the C/C++ round and flipped a
+  `graphdiff` comparison). If a run is killed, immediately `git checkout HEAD -- <file>` to restore
+  the canonical bytes before doing anything else.
+- **A surviving mutant in newly-added code is usually a real coverage gap, not a false alarm** — add
+  the missing test rather than rationalising it. (Adding the JS/Go/Rust/C++/Java/C# fingerprint
+  functions to `similar.py` each needs a `graph_diff`/`find_similar` test that actually drives that
+  language's `_*_fn_fingerprints`, or its mutants survive.)

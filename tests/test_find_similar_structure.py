@@ -301,3 +301,42 @@ def test_cpp_structure_mode_ranks_same_language_only(tmp_path):
     assert ids and all("::" in i for i in ids), ids
     assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
     assert any(i.endswith("::sum_even_squares") for i in ids)
+
+
+# --- Java + C# body layer (v3.6.0): drive _java/_csharp_fn_fingerprints + graph_diff body --------
+
+def test_java_graph_diff_body_layer_and_fingerprints(tmp_path):
+    """The Java fingerprint corpus (`similar._java_fn_fingerprints`) keys by the stored node id, and
+    `graph_diff`'s body layer flags a Java method whose body shape changed (helper() -> const)."""
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core import graphdiff, similar
+    a = _index(tmp_path / "a", {
+        "Calc.java": "class Calc { int add(int x, int y){ int s = compute(x) + y; return s; } }"})
+    b = _index(tmp_path / "b", {
+        "Calc.java": "class Calc { int add(int x, int y){ int s = 0 + y; return s; } }"})
+    fps = dict(similar._java_fn_fingerprints(a))
+    assert "Calc.java::Calc.add" in fps, fps  # keyed by the full node id, Java-only
+    d = graphdiff.graph_diff(a, b, body=True)
+    assert any(c["name"] == "Calc.add" for c in d["body_changed"]), d["body_changed"]
+    # unchanged body must NOT be flagged (direction guard)
+    same = graphdiff.graph_diff(a, a, body=True)
+    assert same["body_changed"] == []
+
+
+def test_csharp_graph_diff_body_layer_and_fingerprints(tmp_path):
+    """The C# fingerprint corpus (`similar._csharp_fn_fingerprints`) keys by the stored node id
+    (namespace excluded), and `graph_diff`'s body layer flags a changed C# method body."""
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core import graphdiff, similar
+    a = _index(tmp_path / "a", {
+        "Calc.cs": "namespace App { class Calc { int Add(int x){ return compute(x); } } }"})
+    b = _index(tmp_path / "b", {
+        "Calc.cs": "namespace App { class Calc { int Add(int x){ return 0; } } }"})
+    fps = dict(similar._csharp_fn_fingerprints(a))
+    assert "Calc.cs::Calc.Add" in fps, fps  # namespace App is not part of the key
+    d = graphdiff.graph_diff(a, b, body=True)
+    assert any(c["name"] == "Calc.Add" for c in d["body_changed"]), d["body_changed"]
+    same = graphdiff.graph_diff(a, a, body=True)
+    assert same["body_changed"] == []

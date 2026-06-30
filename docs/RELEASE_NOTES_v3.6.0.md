@@ -74,7 +74,10 @@ file, hence one language).
   change the fingerprint, plus dedicated invariants (compound-assign rebind, cast carries operand not
   type, constructor keyed, nested-lambda opaque, Java nested-class/interface-default keying, C#
   namespace-not-in-key / local-function keyed / expression-bodied member walked).
-- Mutation meta-oracle unchanged: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32.
+- Mutation meta-oracle: `structure.py` 15/15, `graphdiff` 9/9, `similar.py` **53/61** — the new
+  Java/C# fingerprint corpora are mutation-pinned by `graph_diff` body tests; the 8 survivors are
+  justified-equivalent (`not sep or … is None` short-circuit guards, unreachable because every node id
+  contains `::`, plus the `_cosine`/`_dot_cos` defensive guards).
 - **Two-round full-diversity adversarial panel** (opus / sonnet / haiku), clean.
 
 ## Upgrading

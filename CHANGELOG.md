@@ -34,9 +34,11 @@ every existing operation unchanged; the new behavior is opt-in and advisory).
 - ruff + mypy clean; full suite **1021** passing; differential oracle suite **387** — incl. two new
   body-matrix completeness oracles: **Java** (45 metamorphic cases + invariants) and **C#** (43
   metamorphic cases + invariants), each requiring a `helper()` CALL vs a `0` CONST in every
-  value-bearing position to change the fingerprint. Mutation meta-oracle unchanged (`structure.py`
-  15/15, `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity adversarial panel
-  (opus/sonnet/haiku), clean.
+  value-bearing position to change the fingerprint. Mutation meta-oracle: `structure.py` 15/15,
+  `graphdiff` 9/9, `similar.py` **53/61** (the new Java/C# fingerprint corpora are now mutation-pinned
+  by `graph_diff` body tests; the 8 survivors are justified-equivalent — the `not sep or … is None`
+  short-circuit guards, unreachable because every node id contains `::`, plus the `_cosine`/`_dot_cos`
+  defensive guards). Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
 
 ## [3.5.0] — 2026-06-30
 
