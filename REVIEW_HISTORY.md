@@ -12,7 +12,7 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 233 (3.2.0 +51-case JS/TS; 3.3.0 +45-case Go; 3.4.0 +38-case Rust battery) ✅ · no-open-defects ✅ |
 | Tests | 863 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). 3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects) → R179✓ R180✓ (streak 2, RELEASABLE). **3.4.0: body matrix → Rust (`structure_rust.py` + 38-case oracle) → R181 (1 real defect: match-arm guards dropped, fixed + oracle-pinned) → R182✓ R183✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). 3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects) → R179✓ R180✓ (streak 2, RELEASABLE). 3.4.0: body matrix → Rust (`structure_rust.py` + 38-case oracle) → R181 (1 real defect: match-arm guards dropped, fixed + oracle-pinned) → R182✓ R183✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE). 3.5.0: → C/C++ (R184–R192). 3.6.0: → Java + C# (`structure_java.py`/`structure_csharp.py`); C# exposed the float-rounding oracle blind spot latent in all 7 + a repeated-for-field-children class → hardened predicate to exact fingerprint-equality → R193–R197 fixes → R198✓ R199✓ (RELEASABLE). **3.7.0: → Ruby + PHP + Bash — completes all 12 languages; a long unbounded grind closed ≈a dozen esoteric advisory drops mostly latent in already-shipped frontends, each closed matrix-wide + oracle-pinned (comment-trivia positional picks, repeated-field reads, no-flow-arm initializers, exception selectors, decorator args, C# interpolation alignment) → R200✓ R201✓ on frozen HEAD 8d9b95f (streak 2, gate met, RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1894,6 +1894,44 @@ unrelated to C#. (2) The completeness-oracle predicate is now **exact fingerprin
 release were both **tree-sitter structural surprises** (positional unnamed-field children;
 field-named-but-*repeated* children) — the kind the generic fallback can't catch and only a
 value-bearing metamorphic probe surfaces.
+
+## v3.7.0 — the body matrix learns Ruby, PHP and Bash (the final 3 of the §5b sweep — all 12 languages)
+
+`core/structure_ruby.py` + `core/structure_php.py` + `core/structure_bash.py` — three more
+tree-sitter walkers emitting the **same** `_VFG`, completing the intra-procedural body matrix across
+all 12 indexed languages (Python via stdlib `ast` + 11 via tree-sitter). Ruby keys by dotted
+module/class chain, PHP by class chain (namespace excluded), Bash is command-oriented. Three new
+completeness oracles drove the walkers; as before, adding three languages turned the panels into a
+free adversarial probe of the shared kernel — and this cycle was the most productive yet: roughly a
+dozen esoteric, advisory-only value-flow drops surfaced, **most of them latent in the
+already-shipped frontends**, each fixed and closed *matrix-wide* (not just in the language the panel
+named) plus oracle-pinned.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| (build) | — | — | Ruby/PHP/Bash frontends + 3 oracles + wiring (find_similar/graph_diff) + dogfood; full gate green. |
+| comment-trivia | 3 | ✗ | **comment nodes are named tree-sitter children**, so any *positional* `named_children[i]` / `[-1]` / "first non-body" pick can be displaced by a comment. Closed across all 8 tree-sitter frontends in two layers — per-operator positional picks, then the inline transparent-unwrap descents (`(x /*c*/)`, `await (x /*c*/)`, `f(x /*c*/)`, `d[i /*c*/]`) — via comment-skipping `_nc`/`_first`/`_last` helpers. Pinned by a 64-case comment-invariance battery. |
+| repeated-field | 3 | ✗ | Ruby multi-value `when 1, helper()` dropped values past the first (`child_by_field_name` = first-only over a REPEATED `pattern` field). Audited the multi-value/multi-label arm + multi-declarator class across all 12; only Ruby leaked. |
+| no-flow-arm init | 3 | ✗ | a declaration routed to a `pass`/skip arm but carrying an **initializer**: PHP `static $x = helper()`, then (panel-found twin) Rust local `const`/`static`. Audited a declaration-with-initializer in all 12 (incl. TS `enum` members, bash `local`/`declare`/`readonly` with `$(…)`); all walk it now. |
+| exception selector | 3 | ✗ | runtime-evaluated exception selectors dropped: Ruby `rescue <expr>` (the `exceptions` field) and Python `except <expr>:` / `except*` (`handler.type`). The only two langs with evaluated selectors (others use static type names). |
+| decorator args | 3 | ✗ | Python nested def/class `@deco(helper())` argument dropped — sibling of the enclosing-scope class (defaults/bases/keywords were walked; decorator-call args were not). JS/TS already walked them; Java/C#/PHP attribute args must be compile-time constants. |
+| C# interpolation align | 3 | ✗ | C# `$"{v,helper()}"` alignment clause dropped (excluded wholesale with the literal `:format` clause). Walk the alignment expression, keep `:format`/brace excluded. Folded two stale doc counts. |
+| R200 | 3 | ✓ | **clean-cycle round 1** (HEAD 8d9b95f). opus ~150 fresh exact-inequality constructs all discriminate (every surfaced drop a rigor violation or closed class); sonnet gate 1269 suite / 630 oracles + cardinal + live-matrix; haiku 8 oracle counts + 12-lang enumerations canonical. |
+| R201 | 3 | ✓ | **clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus independent second certification could not falsify round 1 (every frontend's exotic positions probed; non-findings documented under the rigor rules); sonnet cardinal AST-verified + 630 oracles + ruff/mypy + matrix live (Py/Go/Ruby); HEAD frozen. |
+
+Process notes: (1) **The maintainer's process correction mid-cycle — "I thought you checked the same
+class across all languages" — is now the rule:** when a panel finds a defect, close its *entire
+class matrix-wide within the same round* (probe the analogous construct in all 12 and fix every
+instance) before re-panelling, rather than fixing only the named language and letting the next panel
+surface the twins. The PHP-`static` → Rust-`const`/`static` miss is the cautionary example; every
+later class (exception selectors, decorator args, interpolation alignment) was audited across all 12
+the same round. (2) Ruby/PHP/Bash were a far richer kernel probe than the Java/C# pair: the
+comment-trivia-positional-pick and no-flow-arm-initializer classes were **latent in frontends
+shipped as far back as v3.2.0–v3.5.0** and only surfaced now — the body matrix is materially more
+trustworthy across *all* languages after the final three than before. (3) The grind converged
+asymptotically (≈1 esoteric advisory gap per round for many rounds) exactly as the maintainer
+anticipated when choosing the unbounded grind; the two-consecutive-clean gate held the line until
+the space was genuinely exhausted.
 
 ## Standing themes
 

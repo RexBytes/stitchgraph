@@ -85,12 +85,30 @@ outlier that closes it. New languages for an existing representation → MINOR; 
   written value and the container, never the index expression. Latent in **Python, JS/TS, Go, Rust and
   C/C++** (Java/C#/PHP/Ruby already walked it). All now walk the index on the write path, pinned by the
   same cross-language oracle. Advisory-only, never cardinal.
+- **Comment trivia displacing a *positional* child pick (cross-cutting fix).** Beyond the generic-
+  fallback comment leak above, a `comment` is itself a *named* tree-sitter child, so any walker site
+  that selected one child by position (`named_children[0]`/`[-1]`/`[i]`, "first non-body" heuristics,
+  or the inline transparent-unwrap descents `(x /*c*/)`, `await (x /*c*/)`, `f(x /*c*/)`, `d[i /*c*/]`)
+  was displaced by a leading/trailing comment, dropping the real operand. Closed across all 8 tree-
+  sitter frontends with comment-skipping helpers and a 64-case positional/trailing-wrapper battery.
+- **Several value-bearing positions wrongly classified no-flow, closed matrix-wide.** A short
+  find→fix→panel grind on the completed 12-language matrix surfaced (and a same-round audit closed
+  across every applicable language) a cluster of advisory completeness drops, each oracle-pinned:
+  first-only read of a **repeated** field (Ruby multi-value `rescue`/`when 1, helper()`); a
+  **declaration carrying an initializer** routed to a no-flow/skip arm (PHP `static $x = helper()`,
+  Rust local `const`/`static`); the **runtime-evaluated exception selector** (Ruby `rescue <expr>`,
+  Python `except <expr>:` / `except*`); Python nested-def/class **decorator-call arguments**
+  (`@deco(helper())`, evaluated in the enclosing scope — JS/TS already walked them); and the **C#
+  interpolated-string alignment clause** (`$"{v,helper()}"`, distinct from the literal `:format`).
+  All advisory-only, never cardinal.
 
 ### Quality gate
-- ruff + mypy clean; full suite passing.
-- Three new body-matrix completeness oracles — Ruby (45), PHP (49), Bash (36) — plus three
-  `graph_diff` body tests pinning the new fingerprint corpora. Two-round full-diversity adversarial
-  panel clean on the post-fix HEAD.
+- ruff + mypy clean; full suite passing (1269 tests).
+- Three new body-matrix completeness oracles — Ruby (49), PHP (51), Bash (36) — plus two new cross-
+  language batteries, `test_comment_invariance.py` (64) and `test_param_and_index_invariance.py` (26),
+  and `graph_diff` body tests pinning the new corpora; the Python (59), Rust (45) and C# (58) oracles
+  grew with the cross-cutting fixes. **Two consecutive clean full-diversity panels** (opus + sonnet +
+  haiku) on the frozen post-fix HEAD — RELEASABLE.
 
 ## [3.6.0] — 2026-06-30
 

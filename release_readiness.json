@@ -2379,6 +2379,26 @@
             ],
             "findings": {},
             "theme": "v3.6.0 final clean-cycle round 2 (HEAD ea410c3) -- CLEAN; streak 2 on the final HEAD, gate met, RELEASABLE. opus final certification: ~110 fresh exact-inequality probes all DIFF; all R193/R197 fixes re-confirmed; realism (renamed clone identical, real data-flow change differs) + robustness (never raises) clean; no remaining dropped/mis-modeled value-flow position. sonnet: gate 1029/393, all checks clean, HEAD frozen. haiku: counts 1029/393/46/47/3.6.0, all scope surfaces canonical. Standing theme recorded: a new language is a free adversarial probe of the shared kernel + meta-oracle (C# exposed the float-rounding oracle blind spot latent in all 7; the repeated-field-children class triggered a cross-frontend audit)."
+        },
+        {
+            "id": "R200",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.7.0 body matrix on ALL 12 languages (Ruby/PHP/Bash added). Clean-cycle round 1 on HEAD 8d9b95f, after a long unbounded find->fix->panel grind that closed several esoteric, advisory-only completeness classes matrix-wide: comment-trivia displacing positional named_children picks incl. transparent-unwrap descents (all 8 tree-sitter frontends; 64 comment-invariance tests); first-only repeated-field reads (Ruby multi-value `when`); declaration-with-initializer in a no-flow/skip arm (PHP `static`, Rust local const/static -- audited walking the initializer across all 12); runtime-evaluated exception selectors (Ruby `rescue <expr>`, Python `except`/`except*`); enclosing-scope decorator-CALL args (Python nested def/class; JS/TS already walked); and the C# interpolated-string alignment clause. opus CLEAN (~150 fresh constructs, exact-inequality; every surfaced drop was a rigor violation -- CALL-vs-CALL name-anonymisation, opaque closure, pattern/type/annotation slot -- or an already-closed class). sonnet CLEAN (gate: 1269 full suite / 630 oracles; cardinal + isolation intact; body matrix live across languages). haiku CLEAN (8 oracle counts py59/ruby49/php51/rust45/csharp58/bash36/comment64/param26; version 3.7.0; 12-language enumerations canonical; folded two stale doc counts)."
+        },
+        {
+            "id": "R201",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.7.0 clean-cycle round 2 (confirming) on the SAME unchanged HEAD 8d9b95f -- CLEAN; streak 2, tau met, RELEASABLE. opus (independent second certification, fresh angles) could not falsify round 1: probed every frontend's exotic positions (f-string format-spec + conversion, match guards, comprehension/LINQ clauses, select/defer, let-else/if-let scrutinees, struct functional-update, interpolation alignment, heredoc-embedded calls, dynamic command-name substitution) -- all value-bearing slots DIFF; documented the non-findings (Bash command-word CALL-vs-CALL, opaque closures, pattern/annotation slots) under the rigor rules. sonnet: cardinal intact (reach.py imports nothing from structure/similar/graphdiff, AST-verified), 630 oracles, ruff+mypy clean, body matrix live (Python/Go/Ruby CALL!=CONST). haiku (round 1, same HEAD): docs/counts canonical. Standing theme reaffirmed: each new language is a free adversarial probe of the shared kernel -- Ruby/PHP/Bash surfaced cross-language classes (positional comment picks, repeated-field reads, no-flow-arm initializers, exception selectors, decorator/alignment exprs) that were latent in already-shipped frontends and are now closed matrix-wide and oracle-pinned."
         }
     ]
 }
