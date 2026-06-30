@@ -139,3 +139,61 @@ def test_structure_mode_ranks_same_language_only(tmp_path):
     # every result's file is JS-family, never the Python accumulator
     assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
     assert any(i.endswith("::sumEvenSquares") for i in ids)
+
+
+_GO_REPO = {
+    "acc.go": (
+        "package m\n"
+        "func SumEvenSquares(items []int) int {\n"
+        "    total := 0\n"
+        "    for _, x := range items {\n"
+        "        if x%2 == 0 { total = total + x*x }\n"
+        "    }\n"
+        "    return total\n"
+        "}\n"
+        "func ParseCSV(line string) []string {\n"
+        "    out := []string{}\n"
+        "    for _, f := range split(line) { out = append(out, trim(f)) }\n"
+        "    return out\n"
+        "}\n"
+    ),
+}
+# same body shape as SumEvenSquares, renamed + different literals — the Go clone.
+_GO_QUERY = (
+    "package m\n"
+    "func accumulate(data []int) int {\n"
+    "    acc := 0\n"
+    "    for _, v := range data {\n"
+    "        if v%3 == 0 { acc = acc + v*v }\n"
+    "    }\n"
+    "    return acc\n"
+    "}\n"
+)
+
+
+def test_go_structure_mode_ranks_the_clone_first(tmp_path):
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    store = _index(tmp_path, _GO_REPO)
+    res = sg.find_similar(store, _GO_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids[0].endswith("::SumEvenSquares")    # the accumulator clone, not ParseCSV
+    top = res.result[0]["score"]
+    csv = next((r["score"] for r in res.result if r["id"].endswith("::ParseCSV")), 0.0)
+    assert top > csv
+
+
+def test_go_structure_mode_ranks_same_language_only(tmp_path):
+    # A Go snippet must rank Go functions, NOT a same-shaped Python one. Index both; query with Go.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    files = dict(_GO_REPO)
+    files.update(REPO)   # adds acc.py with sum_even_squares (the Python accumulator)
+    store = _index(tmp_path, files)
+    res = sg.find_similar(store, _GO_QUERY, mode="structure")
+    assert res.ok, res.review_reasons
+    ids = [row["id"] for row in res.result]
+    assert ids and all("::" in i for i in ids), ids
+    assert all(not i.split("::", 1)[0].endswith(".py") for i in ids), ids
+    assert any(i.endswith("::SumEvenSquares") for i in ids)

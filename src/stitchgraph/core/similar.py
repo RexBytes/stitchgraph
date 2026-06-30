@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
-from . import structure, structure_js
+from . import structure, structure_go, structure_js
 from .model import NodeKind, Relation
 from .store import Store
 
@@ -104,9 +104,9 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     mode="semantic" (default): token/dense similarity over name + docstring + callees — uses the
     dense embedder if one is registered (or model2vec auto-loads), else token cosine.
     mode="structure": body-shape similarity (`structure.py` for Python, `structure_js.py` for
-    JS/TS/TSX) — ranks stored functions by how structurally like the snippet's function they are.
-    Advisory; the snippet's language is auto-detected and ranked same-language only (JS/TS needs the
-    tree-sitter extra).
+    JS/TS/TSX, `structure_go.py` for Go) — ranks stored functions by how structurally like the
+    snippet's function they are. Advisory; the snippet's language is auto-detected and ranked
+    same-language only (JS/TS and Go need the tree-sitter extra).
     """
     if mode == "structure":
         return find_similar_structure(store, snippet, limit)
@@ -208,14 +208,39 @@ def _js_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
                 yield node_id, fp
 
 
+def _go_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored Go function/method, the Go analogue
+    of `_python_fn_fingerprints`. Keyed by bare name (the Go extractor's scheme). Requires the
+    tree-sitter extra; without it `structure_go.fingerprint_source` returns {} and nothing yields."""
+    root = store.get_meta("root") or "."
+    by_path: dict[str, list[tuple[str, str]]] = {}
+    for n in store.all_nodes_full():
+        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
+            continue
+        path, sep, qual = n.id.partition("::")
+        if not sep or structure_go._lang_for_ext(Path(path).suffix) is None:
+            continue
+        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
+    for path, items in by_path.items():
+        try:
+            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fps = structure_go.fingerprint_source(src)
+        for node_id, qual in items:
+            fp = fps.get(qual)
+            if fp is not None:
+                yield node_id, fp
+
+
 def find_similar_structure(store: Store, snippet: str,
                            limit: int = 10) -> list[tuple[str, float]]:
     """Rank stored functions/methods by *structural* (body-shape) similarity to the snippet, which
     must be function source. Advisory. The snippet's language is auto-detected — Python first, else
-    the JS/TS family — and it is ranked only against stored functions of the SAME language (a body
-    fingerprint's topology tracks its extractor, so cross-language scores are not comparable). Empty
-    if the snippet has no parseable function or (for JS) the tree-sitter extra is absent. The largest
-    function in the snippet is used as the query."""
+    the JS/TS family, else Go — and it is ranked only against stored functions of the SAME language
+    (a body fingerprint's topology tracks its extractor, so cross-language scores are not comparable).
+    Empty if the snippet has no parseable function or (for JS/Go) the tree-sitter extra is absent. The
+    largest function in the snippet is used as the query."""
     limit = max(0, limit)
     q_fps = structure.fingerprint_source(snippet)
     corpus = _python_fn_fingerprints
@@ -225,6 +250,10 @@ def find_similar_structure(store: Store, snippet: str,
             if q_fps:
                 corpus = _js_fn_fingerprints
                 break
+    if not q_fps:
+        q_fps = structure_go.fingerprint_source(snippet)
+        if q_fps:
+            corpus = _go_fn_fingerprints
     if not q_fps:
         return []
     query = max(q_fps.values(), key=lambda c: sum(c.values()))

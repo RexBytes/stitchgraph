@@ -8,11 +8,11 @@ Given two built indexes, locate where their graphs differ. Two layers:
     of two *different* codebases (e.g. a translation) can be compared — advisory only, since the
     prior research (research/README §2) shows raw topology tracks the extractor across languages.
 
-  * body-level (Python + JS/TS/TSX, ``body=True``) — for functions present in BOTH sides, compare
-    their structural fingerprint (`structure.py` for Python, `structure_js.py` for the JS family).
-    Catches a function whose *implementation* changed even when its name and call edges did not —
-    the plan-vs-actual / translation-fidelity signal. (JS bodies need the tree-sitter extra; without
-    it that layer simply contributes nothing.)
+  * body-level (Python + JS/TS/TSX + Go, ``body=True``) — for functions present in BOTH sides,
+    compare their structural fingerprint (`structure.py` for Python, `structure_js.py` for the JS
+    family, `structure_go.py` for Go). Catches a function whose *implementation* changed even when
+    its name and call edges did not — the plan-vs-actual / translation-fidelity signal. (JS/Go
+    bodies need the tree-sitter extra; without it that layer simply contributes nothing.)
 
 Advisory and read-only: it reports located deltas for a human/LLM to act on; it never edits source
 and never feeds `find_stale`.
@@ -64,15 +64,16 @@ def _counter_delta(ca: collections.Counter, cb: collections.Counter) -> tuple[li
 
 
 def _id_fingerprints(store: Store) -> dict[str, collections.Counter[str]]:
-    """{node-id -> structural fingerprint} for stored Python AND JS/TS/TSX functions/methods. Keyed
-    by the FULL node id (`path::qualname#disamb`, path relative to the indexed root) — NOT the bare
-    qualname — so two files defining the same name (`helper`, `__init__`, …) don't collide and
+    """{node-id -> structural fingerprint} for stored Python AND JS/TS/TSX AND Go functions/methods.
+    Keyed by the FULL node id (`path::qualname#disamb`, path relative to the indexed root) — NOT the
+    bare qualname — so two files defining the same name (`helper`, `__init__`, …) don't collide and
     silently drop a real body change. Two separately-indexed trees with the same internal layout
     (plan vs actual) still line up, because node paths are root-relative and therefore identical.
     A node id maps to exactly one file (one language), so the body comparison in `graph_diff` only
     ever compares same-language fingerprints — never the not-comparable cross-language case."""
     out = dict(similar._python_fn_fingerprints(store))
     out.update(similar._js_fn_fingerprints(store))
+    out.update(similar._go_fn_fingerprints(store))
     return out
 
 

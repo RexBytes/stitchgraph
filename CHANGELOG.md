@@ -4,6 +4,41 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.3.0] — 2026-06-30
+
+**The body matrix learns Go.** v3.2.0 ported the intra-procedural value-flow matrix to the JS family;
+v3.3.0 adds Go — language 2 of the multi-language sweep (`docs/IDEAS.md` §5b). New language for an
+existing representation → MINOR; backward-compatible (schema/indexes/existing ops unchanged, opt-in,
+advisory).
+
+### Added
+
+- **`core/structure_go.py`** — a tree-sitter value-flow walker for Go that emits the **same** `_VFG`
+  vocabulary as the Python and JS frontends (operations + control points, data + control edges, copy
+  propagation) and reuses the language-neutral Weisfeiler-Lehman kernel, so Go↔Go bodies compare the
+  way Python↔Python ones do. Covers Go's statement/expression set — short-var/`var`/`const` and
+  multi-value assignment, compound assignment + `++`/`--` rebinds, `if`/`for`/`for…range`/`switch`/
+  `type switch`/`select`, channel send/receive, `go`/`defer`, slices, composite literals, type
+  assertions/conversions — seeds the method **receiver** and named results like parameters, and
+  treats nested `func` literals as opaque leaves (matching the Go extractor, which keys a method by
+  its bare field name and does not mint closures as nodes).
+- **`find_similar(mode="structure")`** now auto-detects Go (after Python and the JS/TS family) and
+  ranks it against stored functions of the **same** language only.
+- **`graph_diff`** body layer now covers Go functions/methods too: a data-flow change that leaves the
+  call graph identical is caught in Go just as in Python and JS (same-language by construction).
+
+Requires the optional **tree-sitter extra** for the Go layer; without it those paths return nothing
+(advisory degrade) — the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **816** passing; differential oracle suite **190** — incl. a new
+  **Go body-matrix completeness oracle** (45 metamorphic cases: `helper()` vs `0` in each
+  value-bearing statement/expression position must change the fingerprint, + receiver/aug-assign/
+  type-assertion/nested-closure invariants). Mutation meta-oracle unchanged (`structure.py` 15/15,
+  `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/
+  haiku), clean.
+
 ## [3.2.0] — 2026-06-29
 
 **The body matrix learns JavaScript / TypeScript / TSX.** v3.0.0 shipped the intra-procedural
