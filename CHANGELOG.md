@@ -4,6 +4,39 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.7.0] — 2026-06-30
+
+**The body matrix completes the language sweep — Ruby, PHP, and Bash.** v3.6.0 added Java and C#;
+v3.7.0 adds the final three — **Ruby, PHP, and Bash** — so the body matrix now spans **all 12
+languages** the extractor indexes (`docs/IDEAS.md` §5b, sweep complete). Bash is the command-oriented
+outlier that closes it. New languages for an existing representation → MINOR; backward-compatible
+(schema, indexes, and every existing operation unchanged; the new behavior is opt-in and advisory).
+
+### Added
+- **`core/structure_ruby.py`** — Ruby body fingerprint. Dotted module/class keying (`M.Calc.compute`,
+  singleton `M.top`, bare top-level `free_fn`), expression-oriented (trailing implicit return),
+  blocks opaque. Same `_VFG` + WL kernel as the other frontends.
+- **`core/structure_php.py`** — PHP body fingerprint. Class-chain keying (namespace excluded,
+  `Calc.compute`, `C.__construct`), statement-oriented, argument-wrapper unwrapping, closures opaque.
+- **`core/structure_bash.py`** — Bash body fingerprint, the command-oriented outlier: a command is a
+  CALL, command substitution carries values (incl. callee position), flat function keys, nested
+  functions opaque.
+- **`find_similar(mode="structure")` and `graph_diff`** now cover Ruby, PHP, and Bash, ranked/diffed
+  same-language only. Sniff order …C# → Ruby → PHP → Bash → C/C++ (Bash/PHP before C/C++, whose
+  grammar parses a bare `name() {…}`).
+
+### Fixed / hardened
+- Building the Bash frontend surfaced a **dynamic-callee drop** — a command whose name is a `$(…)`
+  substitution (`$(resolve) arg`) was collapsed to an opaque free word, dropping the inner CALL; the
+  hardened exact-equality oracle predicate caught it and the callee is now walked. (Language diversity
+  as an adversarial probe of the shared kernel, again.)
+
+### Quality gate
+- ruff + mypy clean; full suite **1151** passing.
+- Three new body-matrix completeness oracles — Ruby (41), PHP (45), Bash (33) — plus three
+  `graph_diff` body tests pinning the new fingerprint corpora. Two-round full-diversity adversarial
+  panel clean.
+
 ## [3.6.0] — 2026-06-30
 
 **The body matrix learns Java and C#.** v3.5.0 added C/C++; v3.6.0 adds **Java and C#** — languages 5

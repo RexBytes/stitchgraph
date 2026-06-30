@@ -132,3 +132,18 @@ probing can't. And the two real code-defect classes of v3.6.0 were both **tree-s
 surprises** (positional *unnamed-field* children; field-named but *repeated* children) — the generic
 fallback can't catch these, only a value-bearing metamorphic probe can, so the completeness oracle
 (not the fallback) is what earns the release.
+
+### The command-oriented outlier closes the sweep (Bash, v3.7.0 — sweep complete)
+
+v3.7.0 added Ruby, PHP, and **Bash**, completing all 12 languages. The first two were oracle-green
+first run — the expression-oriented recipe transferred cleanly. **Bash was the genuine outlier**:
+it has no expressions, only commands, so the model inverts — a `command` *is* a CALL (the command
+name is the callee, args flow as data), `$(…)` command substitution carries a value, and assignment
+is copy propagation. That inversion exercised a position the seven prior expression-oriented frontends
+never could: **callee position**. A command whose *name* is itself a `$(…)` substitution
+(`$(resolve) arg`) was collapsed to an opaque free word, dropping the inner CALL — caught by the
+hardened exact-equality oracle, not the generic fallback. Lesson reaffirmed: the most distinct grammar
+in the sweep found a class of drop the similar grammars couldn't, *and* the value-bearing metamorphic
+probe (in a position the recipe didn't originally enumerate — the callee, not just arguments) is what
+surfaced it. When porting, ask not only "is every value-bearing child walked?" but "is every value
+*producer* walked, including the one in the verb/callee slot?".
