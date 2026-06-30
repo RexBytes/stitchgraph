@@ -52,9 +52,9 @@ well. Same-language by construction.
 
 ## Quality gate
 
-- ruff + mypy clean; full suite **862** passing; differential oracle suite **232**.
+- ruff + mypy clean; full suite **863** passing; differential oracle suite **233**.
 - New **Rust body-matrix completeness oracle** (`tests/oracles/test_structure_rust_completeness.py`):
-  37 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
+  38 metamorphic cases — `helper()` (a CALL) vs `0` (a CONST) in every value-bearing statement and
   expression position must change the fingerprint — plus dedicated invariants (trailing expression
   equals explicit return, `x += e` rebinds like `x = x + e`, `x as T` carries the operand's flow not
   the type, `&self` seeded like a parameter, a nested closure opaque).

@@ -46,6 +46,7 @@ _STMT: dict[str, str] = {
     "If-else": "fn t(a: i32) -> i32 { if a > 0 { 1 } else { {probe} } }",
     "Match-disc": "fn t(a: i32) -> i32 { match {probe} { _ => 0 } }",
     "Match-arm": "fn t(a: i32) -> i32 { match a { 1 => {probe}, _ => 0 } }",
+    "Match-guard": "fn t(a: i32) -> i32 { match a { n if {probe} > 0 => 1, _ => 0 } }",
     "For-iter": "fn t(a: i32) { for x in {probe} { sink(x); } }",
     "For-body": "fn t(a: Vec<i32>) { for x in a { sink({probe}); } }",
     "While-cond": "fn t(a: i32) { while {probe} > 0 { break; } }",

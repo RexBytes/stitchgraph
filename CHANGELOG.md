@@ -31,8 +31,8 @@ without it); the Python body matrix stays stdlib-only.
 
 ### Quality gate
 
-- ruff + mypy clean; full suite **862** passing; differential oracle suite **232** — incl. a new
-  **Rust body-matrix completeness oracle** (37 metamorphic cases: `helper()` vs `0` in each
+- ruff + mypy clean; full suite **863** passing; differential oracle suite **233** — incl. a new
+  **Rust body-matrix completeness oracle** (38 metamorphic cases: `helper()` vs `0` in each
   value-bearing statement/expression position must change the fingerprint, + trailing-expr-equals-
   return / compound-assign / cast / receiver / nested-closure invariants). Mutation meta-oracle
   unchanged (`structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity

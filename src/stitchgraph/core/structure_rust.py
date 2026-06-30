@@ -303,6 +303,14 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             if body is not None:
                 for arm in body.named_children:
                     if arm.type == "match_arm":
+                        # an arm guard `pat if <cond> => …` keeps <cond> under the match_pattern's
+                        # `condition` field, NOT the arm's `value` — walk it so its flow isn't
+                        # dropped (R181 opus; mirrors if_expression + Python's case.guard).
+                        pat = arm.child_by_field_name("pattern")
+                        if pat is not None:
+                            guard = pat.child_by_field_name("condition")
+                            if guard is not None:
+                                g.link(ev(guard, b), b, _DATA)
                         val = arm.child_by_field_name("value")
                         if val is not None:
                             g.link(_block_or_expr_value(val, b), b, _DATA)
