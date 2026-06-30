@@ -51,6 +51,10 @@ _STMT: dict[str, str] = {
     "IfMod": "sink({probe}) if a > 0\n0",
     "Case-disc": "case {probe}\nwhen 1 then 1\nelse 0\nend",
     "Case-when": "case a\nwhen 1 then {probe}\nelse 0\nend",
+    # `when` takes COMMA-SEPARATED values, each a `===`-evaluated expression and a REPEATED `pattern`
+    # field. child_by_field_name (first-only) dropped every value past the first (v3.7.0 panel).
+    "Case-when-2nd": "case a\nwhen 1, {probe} then 1\nelse 0\nend",
+    "Case-when-3rd": "case a\nwhen 1, 2, {probe} then 1\nelse 0\nend",
     "While-cond": "while {probe} > 0 do break end\n0",
     "While-body": "while a > 0 do sink({probe}); break end\n0",
     "Until": "until {probe} > 0 do break end\n0",

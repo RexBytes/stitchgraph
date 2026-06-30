@@ -288,9 +288,12 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             g.link(ctrl, b, _CTRL)
             for c in node.named_children:
                 if c.type in ("when", "in_clause"):
-                    pat = c.child_by_field_name("pattern")
-                    if pat is not None:
-                        ev(pat, b)
+                    # `pattern` is a REPEATED field: `when 1, helper()` exposes one `pattern` child
+                    # per comma-separated value, so child_by_field_name (first-only) would drop all
+                    # but the first. Walk every `pattern`-named child.
+                    for i in range(c.named_child_count):
+                        if c.field_name_for_named_child(i) == "pattern":
+                            ev(c.named_children[i], b)
                     _do_body(c.child_by_field_name("body"), b)
                 elif c.type == "else":
                     _do_body(c, b)
