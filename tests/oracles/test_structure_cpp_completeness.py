@@ -155,6 +155,24 @@ def test_reference_return_function_is_captured():
     assert similarity(uses, ignores) < 1.0
 
 
+def test_constructor_member_initializer_list_is_walked():
+    # R186 (opus): a constructor's member-initializer-list (`S(int x): n(compute(x)) {}`) is a SIBLING
+    # of the body (a `field_initializer_list`, not inside the compound_statement), so walking only the
+    # body silently dropped it — `n(compute(x))` and `n(0)` fingerprinted identically. The init
+    # expression must carry value flow.
+    uses = sc.fingerprint_source("struct S{ int n; S(int x): n(compute(x)) {} };")["S.S"]
+    ignores = sc.fingerprint_source("struct S{ int n; S(int x): n(0) {} };")["S.S"]
+    assert similarity(uses, ignores) < 1.0, (
+        "constructor member-initializer-list dropped: a CALL vs a CONST init produced identical "
+        "fingerprints — the field_initializer_list sibling is not being walked")
+    # Multiple members, braced init, and a member read in the body all thread through too.
+    a = sc.fingerprint_source(
+        "struct S{ int n,m; S(int x): n{helper(x)}, m{1} { use(n); } };")["S.S"]
+    b = sc.fingerprint_source(
+        "struct S{ int n,m; S(int x): n{0}, m{1} { use(n); } };")["S.S"]
+    assert similarity(a, b) < 1.0
+
+
 def test_nested_lambda_is_opaque():
     # A C++ lambda nested in a function body is one NESTED leaf, not its body (matching the other
     # frontends). Two functions differing only inside a lambda body fingerprint the same.

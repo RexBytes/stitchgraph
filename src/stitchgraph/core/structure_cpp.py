@@ -441,6 +441,26 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         else:
             do(node, ctrl)
 
+    # C++ constructor member-initializer-list (`S(int x): n(compute(x)), m(0) {}`) is a SIBLING of the
+    # body — a `field_initializer_list`, not inside the compound_statement — so it is never reached by
+    # walking `body`. Evaluate each member's init expression as a member write so its value flow is
+    # captured; else `n(compute(x))` and `n(0)` fingerprint identically (R186 opus).
+    for ch in fn.named_children:
+        if ch.type != "field_initializer_list":
+            continue
+        for fi in ch.named_children:
+            if fi.type != "field_initializer":
+                continue
+            n = g.add("SETATTR")  # the member being initialised is the write target
+            for c in fi.named_children:
+                if c.type in ("field_identifier", "qualified_identifier", "type_identifier"):
+                    continue
+                if c.type == "argument_list":
+                    for a in c.named_children:
+                        g.link(ev(a, None), n, _DATA)
+                else:
+                    g.link(ev(c, None), n, _DATA)
+
     body = fn.child_by_field_name("body")
     if body is not None:
         _do_body(body, None)
