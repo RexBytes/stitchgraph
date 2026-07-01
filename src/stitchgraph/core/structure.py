@@ -535,7 +535,8 @@ def _build_pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], l
 def pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], list[tuple[int, int, str]]]:
     """A function body's program-dependence graph — the STATEMENT layer of the code-property graph
     (design §5c): statement nodes + control ('C') / data ('D') dependence edges. Advisory, computed
-    on demand; Python-only so far (deep stdlib ast)."""
+    on demand; this is the Python frontend (deep stdlib ast) — the JS family has
+    `structure_js.pdg_source`."""
     return _build_pdg(fn)
 
 

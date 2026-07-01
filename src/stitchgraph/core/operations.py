@@ -1029,7 +1029,7 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     `layer` selects the granularity (design §5c), coarse→fine: "call" (default) is
     the inter-procedural relation graph; "statement" drills into a SINGLE function's
     program-dependence graph (labels = statements, cells tagged C=control / D=data
-    dependence — Python-only so far); "expression" drills into its intra-procedural
+    dependence — Python + the JS family so far); "expression" drills into its intra-procedural
     value-flow graph (labels = operations, cells tagged data/control). The deeper
     layers are advisory and computed on demand — they never feed liveness.
     """
