@@ -12,7 +12,7 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 233 (3.2.0 +51-case JS/TS; 3.3.0 +45-case Go; 3.4.0 +38-case Rust battery) ✅ · no-open-defects ✅ |
 | Tests | 863 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). 3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects) → R179✓ R180✓ (streak 2, RELEASABLE). 3.4.0: body matrix → Rust (`structure_rust.py` + 38-case oracle) → R181 (1 real defect: match-arm guards dropped, fixed + oracle-pinned) → R182✓ R183✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE). 3.5.0: → C/C++ (R184–R192). 3.6.0: → Java + C# (`structure_java.py`/`structure_csharp.py`); C# exposed the float-rounding oracle blind spot latent in all 7 + a repeated-for-field-children class → hardened predicate to exact fingerprint-equality → R193–R197 fixes → R198✓ R199✓ (RELEASABLE). **3.7.0: → Ruby + PHP + Bash — completes all 12 languages; a long unbounded grind closed ≈a dozen esoteric advisory drops mostly latent in already-shipped frontends, each closed matrix-wide + oracle-pinned (comment-trivia positional picks, repeated-field reads, no-flow-arm initializers, exception selectors, decorator args, C# interpolation alignment) → R200✓ R201✓ on frozen HEAD 8d9b95f (streak 2, gate met, RELEASABLE)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). 3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects) → R179✓ R180✓ (streak 2, RELEASABLE). 3.4.0: body matrix → Rust (`structure_rust.py` + 38-case oracle) → R181 (1 real defect: match-arm guards dropped, fixed + oracle-pinned) → R182✓ R183✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE). 3.5.0: → C/C++ (R184–R192). 3.6.0: → Java + C# (`structure_java.py`/`structure_csharp.py`); C# exposed the float-rounding oracle blind spot latent in all 7 + a repeated-for-field-children class → hardened predicate to exact fingerprint-equality → R193–R197 fixes → R198✓ R199✓ (RELEASABLE). **3.7.0: → Ruby + PHP + Bash — completes all 12 languages; a long unbounded grind closed ≈a dozen esoteric advisory drops mostly latent in already-shipped frontends, each closed matrix-wide + oracle-pinned (comment-trivia positional picks, repeated-field reads, no-flow-arm initializers, exception selectors, decorator args, C# interpolation alignment) → R200✓ R201✓ on frozen HEAD 8d9b95f (streak 2, gate met, RELEASABLE)**. **3.8.0: §5c phase 1 — the layered code-property graph (`model.Layer` + `structure.vfg_source` across all 12 langs + `get_matrix(layer="expression")` drill-down; graph_diff = two-layer diff; on-demand, advisory, no schema change) → R202✓ R203✓ on frozen HEAD 0dae62c (streak 2, gate met, RELEASABLE)** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1932,6 +1932,36 @@ trustworthy across *all* languages after the final three than before. (3) The gr
 asymptotically (≈1 esoteric advisory gap per round for many rounds) exactly as the maintainer
 anticipated when choosing the unbounded grind; the two-consecutive-clean gate held the line until
 the space was genuinely exhausted.
+
+## v3.8.0 — the layered code-property graph (§5c phase 1): call ↔ expression drill-down
+
+The 12-language body matrix (v3.0.0–v3.7.0) was an internal fingerprint input; v3.8.0 promotes it to
+a first-class, drill-down-able **layer**. `model.Layer` (CALL / EXPRESSION; STATEMENT reserved);
+`structure.vfg` / `vfg_source` (+ `vfg_source` on all 9 tree-sitter frontends) expose the per-function
+value-flow graph — each frontend's `fingerprint_source` was refactored into a shared
+`_walk(source, …, build)` so the fingerprint and the raw graph key **identically** by construction;
+`get_matrix(layer="expression")` drills a single function's VFG on demand; `graph_diff` is documented
+as the two-layer diff. On-demand only (no store schema change), advisory-only (never feeds
+`find_stale`). The 8 tree-sitter frontends' `vfg_source` were added by 8 parallel same-recipe agents,
+each self-verified, then oracle-pinned across all 12.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R202 | 3 | ✓ | clean-cycle round 1 (HEAD 0dae62c). opus exhaustive: layer-arg handling (case/None/non-str), call-layer byte-identity, every refusal + n=300/301 boundary, all 9 non-Python frontends + qualname parity, differential fuzz 12 langs × 25 inputs × 2 encodings (0 key mismatches / 0 raises), cardinal, registry/CLI/MCP. sonnet: reach.py + operations top-level import-clean (lazy structure import only inside `_expression_vfg`), full suite 1309, ruff+mypy, `find_stale` byte-identical before/after a drill. haiku: version 3.8.0 everywhere; new tests 7 + 33; oracles 663. |
+| R203 | 3 | ✓ | **clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus (independent) verified `fingerprint_source` is bit-for-bit unchanged by the `_walk` refactor (independent WL recompute from `vfg_source`) across 12 langs, and a WHOLE-REPO invariant sweep — drilled all 637 of stitchgraph's own functions: 568 built / 69 clean refusals / **0 raises / 0 invariant violations**. sonnet: AST-verified operations has zero top-level structure imports; 663 oracles; a 30-function real-repo drill sample (0 crashes) + `find_stale` byte-identical before/after a 41-drill batch. |
+
+Process notes: (1) **The refactor-then-fan-out shape.** Rather than hand-edit the same `vfg_source`
+addition into 9 frontends, one reference implementation (structure_js.py) fixed the exact recipe, then
+8 parallel agents applied it to the rest — each self-verifying key-parity + a well-formed graph + ruff.
+A shared `_walk(build)` per frontend makes fingerprint/vfg key-drift impossible by construction (they
+differ only in the terminal `build` lambda). (2) **The layer arrived cheap because the graph already
+existed** — `graph_diff(body=True)` and `find_similar(mode="structure")` were already computing the
+expression layer on demand; §5c mostly *named* it (`Layer`) and *exposed* it (`vfg_source` +
+`get_matrix` drill-down), which is why v3.8.0 is a clean MINOR with no schema change and a 2-round
+clean cycle on the first HEAD. (3) **On-demand was the right persistence call** — the whole-repo sweep
+(637 functions drilled with zero indexer involvement) shows the expression layer scales as a
+compute-on-read view; persisting deep edges would have fought the streaming indexer for no consumer
+benefit.
 
 ## Standing themes
 

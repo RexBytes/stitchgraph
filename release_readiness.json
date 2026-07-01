@@ -2399,6 +2399,26 @@
             ],
             "findings": {},
             "theme": "v3.7.0 clean-cycle round 2 (confirming) on the SAME unchanged HEAD 8d9b95f -- CLEAN; streak 2, tau met, RELEASABLE. opus (independent second certification, fresh angles) could not falsify round 1: probed every frontend's exotic positions (f-string format-spec + conversion, match guards, comprehension/LINQ clauses, select/defer, let-else/if-let scrutinees, struct functional-update, interpolation alignment, heredoc-embedded calls, dynamic command-name substitution) -- all value-bearing slots DIFF; documented the non-findings (Bash command-word CALL-vs-CALL, opaque closures, pattern/annotation slots) under the rigor rules. sonnet: cardinal intact (reach.py imports nothing from structure/similar/graphdiff, AST-verified), 630 oracles, ruff+mypy clean, body matrix live (Python/Go/Ruby CALL!=CONST). haiku (round 1, same HEAD): docs/counts canonical. Standing theme reaffirmed: each new language is a free adversarial probe of the shared kernel -- Ruby/PHP/Bash surfaced cross-language classes (positional comment picks, repeated-field reads, no-flow-arm initializers, exception selectors, decorator/alignment exprs) that were latent in already-shipped frontends and are now closed matrix-wide and oracle-pinned."
+        },
+        {
+            "id": "R202",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.8.0 -- the LAYERED code-property graph (docs/IDEAS.md 5c phase 1): the 12-language body matrix becomes a first-class, drill-down-able EXPRESSION layer. New `model.Layer` (CALL/EXPRESSION; STATEMENT reserved); `structure.vfg`/`vfg_source` + `vfg_source` on all 9 tree-sitter frontends (each frontend's fingerprint_source refactored into a shared `_walk(source,...,build)` so fingerprint_source and vfg_source key identically); `get_matrix(layer='call'|'expression')` drills a single function's value-flow graph on demand (labels=ops, cells tagged data/control, dense grid when small, clean refusals for multi-fn/missing-source/>300-node/reserved-statement/unknown-layer); graph_diff reframed as the two-layer diff. On-demand only (no store schema change), advisory-only (never feeds find_stale). Clean-cycle round 1 on HEAD 0dae62c. opus CLEAN (exhaustive: layer-arg handling incl. case/None/non-str, call-layer byte-identity, every refusal + n=300/301 boundary, all 9 non-Python frontends + qualname parity, differential fuzz 12 langs x 25 inputs x 2 encodings = zero key mismatches / zero raises, cardinal isolation, registry/CLI/MCP surfacing). sonnet CLEAN (reach.py + operations top-level import-clean [lazy structure import only inside _expression_vfg], full suite 1309, ruff+mypy, 5 behavior spot-checks incl. find_stale byte-identical before/after a drill). haiku CLEAN (version 3.8.0 across pyproject/README/CHANGELOG/IDEAS/STATUS; new tests 7 + 33; oracles 663; no stale enumerations)."
+        },
+        {
+            "id": "R203",
+            "models": [
+                "opus",
+                "sonnet",
+                "haiku"
+            ],
+            "findings": {},
+            "theme": "v3.8.0 clean-cycle round 2 (confirming) on the SAME unchanged HEAD 0dae62c -- CLEAN; streak 2, tau met, RELEASABLE. opus (independent second certification, fresh angles) could not falsify round 1: verified fingerprint_source is bit-for-bit unchanged by the `_walk` refactor (independent WL recompute from vfg_source's serialized graph) across all 12 langs; ran a WHOLE-REPO serialization-invariant sweep -- reindexed stitchgraph's own src (637 functions), drilled EVERY function: 568 built / 69 clean refusals / 0 raises / 0 invariant violations (n==len(labels), every edge endpoint in range, k in {d,c}); confirmed _serialize_vfg's dense 0..n-1 assumption holds (nothing prunes _VFG.nodes); _under_scope prefix-boundary correct (Foo does not match FooBar); statelessness (no cross-drill bleed); cardinal from fresh angles. sonnet: cardinal (grep + AST-verified operations has zero top-level structure imports; lazy import only inside _expression_vfg), 663 oracles, ruff+mypy, a 30-function real-repo drill sample (0 crashes, 0 invariant violations) + find_stale byte-identical before/after a 41-drill batch. haiku (round 1, same HEAD): docs/counts canonical. Standing theme: the body matrix built over v3.0.0-v3.7.0 is now consumable end-to-end via the shared get_matrix/graph_diff primitives -- one graph, call<->expression depth, advisory and on-demand; STATEMENT/PDG is the remaining 5c phase."
         }
     ]
 }
