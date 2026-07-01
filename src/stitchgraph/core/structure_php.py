@@ -447,3 +447,342 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c sweep, PHP -----------------------------------------------
+
+_PDG_STMT_LABEL = {
+    "expression_statement": "Expr", "return_statement": "Return", "echo_statement": "Echo",
+    "print_intrinsic": "Expr", "unset_statement": "Expr", "throw_statement": "Throw",
+    "if_statement": "If", "for_statement": "For", "foreach_statement": "ForEach",
+    "while_statement": "While", "do_statement": "Do", "switch_statement": "Switch",
+    "try_statement": "Try", "compound_statement": "Block", "break_statement": "Break",
+    "continue_statement": "Continue", "global_declaration": "Global",
+    "function_static_declaration": "Static", "const_declaration": "Const",
+    "namespace_use_declaration": "Use",
+}
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def pdg_source(source: str, lang: str = "php") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every function/method — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested functions/closures/arrow functions are opaque NESTED leaves.
+    Advisory, on demand.
+
+    Accepted layer-level under-approximations (cross-language consistent, mirror the Python
+    reference and the sibling PDGs), all *symmetric* — shared by BOTH the PDG and the VFG so they
+    create no VFG/PDG divergence: closure/arrow-function bodies are opaque (a param used only inside
+    one is read by neither builder); a `foreach ($x as $k => $v)` key/value `pair` is not modelled
+    as a binding by either builder; `Foo::$x` / `Foo::CONST` are opaque freevars in both."""
+    return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a PHP function/method/closure — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++/Java/C#/Ruby PDG builders:
+    statement nodes + a synthetic ENTRY carrying the parameters, control ('C') / data ('D',
+    sequential reaching-def) edges. PHP is statement-oriented (like Go, C/C++, Java, C#). Nested
+    functions/closures/arrow functions are opaque NESTED leaves; reorder-invariant. A structural
+    approximation (no SSA/alias analysis), advisory only — never feeds liveness. Its read/write
+    projection (`collect`/`bind_place`) reads ONLY genuine value operands and records ONLY genuine
+    bindings, matching the VFG's `ev`/`bind` node-for-node: a member/property NAME, a call's method
+    NAME, a `Foo::$x` scoped access, and a `foreach` `pair` are never read/bound as values here."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.named_children:
+            nm = p.child_by_field_name("name")
+            if nm is not None:
+                last_def[text(nm)] = entry
+
+    def bind_place(target, loads: set, stores: set) -> None:
+        """An assignment target, mirroring the VFG's `bind`: a plain `$x` defines a name (a STORE);
+        a member/subscript place defines no name — its object/index operands are READS; `[$a,$b]`
+        destructures. A `pair` (foreach key => value) binds NOTHING — the VFG's `bind` has no `pair`
+        case, so mirroring keeps the two builders in lock-step."""
+        if target is None:
+            return
+        t = target.type
+        if t in ("variable_name", "name"):
+            stores.add(text(target))
+        elif t == "member_access_expression":
+            collect(target.child_by_field_name("object"), loads, stores)
+        elif t == "subscript_expression":
+            for c in target.named_children:
+                collect(c, loads, stores)
+        elif t == "list_literal":
+            for c in target.named_children:
+                bind_place(c, loads, stores)
+
+    def rmw_target(target, loads: set, stores: set) -> None:
+        """A read-modify-write target (`$x += e`, `$x++`): a plain `$x` both READS and WRITES the
+        name; a member/subscript place reads its operands (no name defined). Mirrors the VFG, which
+        both `ev`-reads and `bind`-writes the left operand of an augmented assignment / update."""
+        if target is None:
+            return
+        t = target.type
+        if t in ("variable_name", "name"):
+            loads.add(text(target))
+            stores.add(text(target))
+        elif t == "member_access_expression":
+            collect(target.child_by_field_name("object"), loads, stores)
+        elif t == "subscript_expression":
+            for c in target.named_children:
+                collect(c, loads, stores)
+        elif t == "list_literal":
+            for c in target.named_children:
+                rmw_target(c, loads, stores)
+        else:
+            collect(target, loads, stores)
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header, mirroring the VFG's `ev` node-for-node — stops
+        at nested closures (opaque NESTED, like the VFG's NESTED leaf) and compound statements (their
+        own nodes). Never reads a `_CONST` literal, a member/property NAME, a call's method NAME, a
+        `Foo::$x` / `Foo::CONST` scoped access (an opaque freevar in the VFG), or a cast type."""
+        if n is None:
+            return
+        t = n.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES or t == "compound_statement":
+            return  # a closure body is opaque; a nested block is its own node
+        if t == "argument":
+            collect(_last(n), loads, stores)
+            return
+        if t in ("variable_name", "name"):
+            loads.add(text(n))
+            return
+        if t in _CONST:  # `nowdoc` / `string` (single-quoted) / numbers / bool / null carry no read
+            return
+        if t == "encapsed_string":  # interpolations carry flow; literal text collapses
+            for c in n.named_children:
+                if c.type not in ("string_content", "escape_sequence"):
+                    collect(c, loads, stores)
+            return
+        if t == "heredoc":  # a heredoc INTERPOLATES (unlike the nowdoc CONST) — walk its holes
+            for c in n.named_children:
+                if c.type == "heredoc_body":
+                    for cc in c.named_children:
+                        if cc.type not in ("string_content", "escape_sequence"):
+                            collect(cc, loads, stores)
+            return
+        if t == "parenthesized_expression":
+            collect(_last(n), loads, stores)
+            return
+        if t in ("member_access_expression", "nullsafe_member_access_expression"):
+            collect(n.child_by_field_name("object"), loads, stores)  # the member NAME is not a value
+            return
+        if t in ("scoped_property_access_expression", "class_constant_access_expression"):
+            return  # a freevar in the VFG — never a parameter read
+        if t == "subscript_expression":
+            for c in n.named_children:
+                collect(c, loads, stores)
+            return
+        if t in ("function_call_expression", "method_call_expression",
+                 "nullsafe_method_call_expression", "scoped_call_expression"):
+            collect(n.child_by_field_name("object"), loads, stores)
+            collect(n.child_by_field_name("function"), loads, stores)
+            args = n.child_by_field_name("arguments")
+            if args is not None:
+                for a in args.named_children:
+                    collect(a, loads, stores)
+            return
+        if t == "object_creation_expression":  # `new T(args)` — the type is not read; args are
+            for c in n.named_children:
+                if c.type == "arguments":
+                    for a in c.named_children:
+                        collect(a, loads, stores)
+                elif c.type == "anonymous_class":  # `new class($arg){…}` — args live inside; body opaque
+                    for cc in c.named_children:
+                        if cc.type == "arguments":
+                            for a in cc.named_children:
+                                collect(a, loads, stores)
+            return
+        if t in ("array_creation_expression", "list_literal"):
+            for c in n.named_children:
+                collect(c, loads, stores)
+            return
+        if t == "array_element_initializer":
+            for c in n.named_children:
+                collect(c, loads, stores)
+            return
+        if t == "binary_expression":
+            collect(n.child_by_field_name("left"), loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t in ("unary_op_expression", "error_suppression_expression", "clone_expression",
+                 "print_intrinsic", "throw_expression", "yield_expression", "match_condition_list"):
+            for c in n.named_children:
+                collect(c, loads, stores)
+            return
+        if t == "update_expression":  # `$x++` reads and writes its operand
+            rmw_target(_first(n), loads, stores)
+            return
+        if t == "assignment_expression":
+            bind_place(n.child_by_field_name("left"), loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "augmented_assignment_expression":  # `$x .= e` reads AND writes the left operand
+            rmw_target(n.child_by_field_name("left"), loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "conditional_expression":
+            for fld in ("condition", "body", "alternative"):
+                collect(n.child_by_field_name(fld), loads, stores)
+            return
+        if t == "cast_expression":  # `(int) $x` — the cast type carries no read; the value does
+            collect(n.child_by_field_name("value") or _last(n), loads, stores)
+            return
+        if t == "match_expression":  # value-position branch: scrutinee + every arm read fold in
+            collect(n.child_by_field_name("condition"), loads, stores)
+            body = n.child_by_field_name("body")
+            for arm in (body.named_children if body is not None else []):
+                for c in arm.named_children:
+                    collect(c, loads, stores)
+            return
+        for c in n.named_children:  # generic fallback — parity with the VFG's `ev` fallback
+            collect(c, loads, stores)
+
+    def _strip(node):
+        while node is not None and node.type == "parenthesized_expression" and _nc(node):
+            node = _last(node)
+        return node
+
+    def data_from(loads: set, stores: set, sid: int) -> None:
+        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
+        # list (and get_matrix cells) non-reproducible across processes (R205).
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        data_from(loads, stores, sid)
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type == "comment":
+            return
+        if blk.type == "compound_statement":
+            for st in blk.named_children:
+                block(st, parent)
+        else:
+            process(blk, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        if t == "if_statement":
+            data_edges(_strip(node.child_by_field_name("condition")), sid)
+            block(node.child_by_field_name("body"), sid)
+            for c in node.named_children:
+                if c.type == "else_if_clause":
+                    data_edges(_strip(c.child_by_field_name("condition")), sid)
+                    block(c.child_by_field_name("body"), sid)
+                elif c.type == "else_clause":
+                    block(c.child_by_field_name("body"), sid)
+        elif t == "for_statement":
+            for fld in ("initialize", "condition", "update"):
+                data_edges(node.child_by_field_name(fld), sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t == "foreach_statement":
+            body = node.child_by_field_name("body")
+            bspan = (body.start_byte, body.end_byte) if body is not None else None
+            loads: set = set()
+            stores: set = set()
+            seen_collection = False
+            for c in node.named_children:
+                if c.type == "comment":
+                    continue
+                if bspan is not None and (c.start_byte, c.end_byte) == bspan:
+                    continue
+                if not seen_collection:
+                    collect(c, loads, stores)  # the collection being iterated
+                    seen_collection = True
+                else:
+                    bind_place(c, loads, stores)  # the loop variable(s) (a `pair` binds nothing)
+            data_from(loads, stores, sid)
+            block(body, sid)
+        elif t in ("while_statement", "do_statement"):
+            data_edges(_strip(node.child_by_field_name("condition")), sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t == "switch_statement":
+            data_edges(_strip(node.child_by_field_name("condition")), sid)  # scrutinee
+            body = node.child_by_field_name("body")
+            for sec in (body.named_children if body is not None else []):
+                if sec.type in ("case_statement", "default_statement"):
+                    val = sec.child_by_field_name("value")
+                    data_edges(val, sid)  # a case selector reads on the header
+                    vspan = (val.start_byte, val.end_byte) if val is not None else None
+                    for st in sec.named_children:
+                        if (st.start_byte, st.end_byte) != vspan:
+                            block(st, sid)
+        elif t == "try_statement":
+            block(node.child_by_field_name("body"), sid)
+            for c in node.named_children:
+                if c.type == "catch_clause":
+                    block(c.child_by_field_name("body"), sid)
+                elif c.type == "finally_clause":
+                    block(c.child_by_field_name("body") or c, sid)
+        elif t == "compound_statement":
+            for c in node.named_children:
+                block(c, sid)
+        elif t in ("break_statement", "continue_statement", "global_declaration"):
+            pass  # a break/continue level is a control target; `global` binds no value flow
+        elif t == "function_static_declaration":
+            # `static $x = <expr>;` — the initializer is evaluated once; walk it (bind the name to
+            # its value), parallel to a plain assignment (mirrors the VFG).
+            loads2: set = set()
+            stores2: set = set()
+            for c in node.named_children:
+                if c.type == "static_variable_declaration":
+                    collect(c.child_by_field_name("value"), loads2, stores2)
+                    nm = c.child_by_field_name("name")
+                    if nm is not None:
+                        stores2.add(text(nm))
+            data_from(loads2, stores2, sid)
+        else:
+            # a simple statement (expression / return / echo / throw / unset / …): the whole node is
+            # its header. collect stops at nested closures/compound statements, so nothing leaks. Any
+            # nested block child is still descended (parity with the sibling PDGs).
+            data_edges(node, sid)
+            for c in node.named_children:
+                if c.type == "compound_statement":
+                    block(c, sid)
+
+    body = fn.child_by_field_name("body")
+    block(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges

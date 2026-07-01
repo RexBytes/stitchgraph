@@ -4,6 +4,26 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.17.0] — 2026-07-01
+
+**The STATEMENT layer learns PHP (§5c sweep, language 9).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), Java (v3.14.0), C# (v3.15.0), and Ruby
+(v3.16.0), v3.17.0 adds PHP to the program-dependence-graph layer: `structure_php.pdg_source` builds
+a per-function PDG (statement nodes + a synthetic `ENTRY` carrying params; control `C` / data `D`
+sequential-reaching-def edges) and `get_matrix(layer="statement")` drills it. PHP is
+**statement-oriented** (like Go/C/C++/Java/C#): its read/write projection (`collect`/`bind_place`)
+mirrors the value-flow builder (`ev`/`bind`) node-for-node. A member/property NAME and a call's method
+NAME carry no value read (the object + args do); a *dynamic* method call `$o->$v()` reads `$v` in both
+builders (genuine dynamic dispatch); `Foo::$x` / `Foo::CONST` scoped accesses are opaque free
+variables; `foreach` loop vars and `list()` destructuring bind, while a `$k => $v` `pair` binds
+nothing (mirroring the VFG gap); string/heredoc interpolation holes are read; closures / arrow
+functions are opaque NESTED leaves; `static $x = init` locals bind. A new white-box VFG-vs-PDG
+differential oracle (`tests/oracles/test_pdg_php_vfg_differential.py`) cross-checks the statement- and
+expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the JS family + Go
++ Rust + C/C++ + Java + C# + Ruby + PHP; the last tree-sitter language (Bash) is the rest of the sweep
+and refuses with a supported-set message. On-demand, advisory, never feeds liveness (cardinal rule
+re-verified). Backward-compatible (no schema change, default behavior unchanged) → MINOR.
+
 ## [3.16.0] — 2026-07-01
 
 **The STATEMENT layer learns Ruby (§5c sweep, language 8).** After Python (v3.9.0), the JS family
