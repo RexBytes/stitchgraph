@@ -193,13 +193,16 @@ def pdg_source(source: str, lang: str = "cpp") -> dict[str, tuple[list[str], lis
     reaching-def approximation; nested functions/lambdas are opaque NESTED leaves. Advisory, on
     demand.
 
-    Accepted layer-level under-approximation (cross-language consistent, mirrors the Python
-    reference): default-parameter-value expressions are NOT walked here — parameters are only
-    seeded at ENTRY by name. The VFG *does* walk them (v3.7.0), so for `int f(int v, int w=v)`
-    the VFG reads v while this PDG does not; this asymmetry is intentional and shared by every
-    sibling PDG builder. Variadic template/function parameter packs (`template<class...T> void
-    f(T...v)`) are seeded by NEITHER layer — both filter to (optional_)parameter_declaration — so a
-    pack name flows as a free variable in both, symmetric and mutually consistent (no VFG⟹PDG gap)."""
+    Accepted layer-level under-approximations (cross-language consistent, mirror the Python
+    reference). ONE is an intentional VFG/PDG *asymmetry*: default-parameter-value expressions are
+    NOT walked here — parameters are only seeded at ENTRY by name — while the VFG *does* walk them
+    (v3.7.0), so for `int f(int v, int w=v)` the VFG reads v and this PDG does not. (This is a
+    deliberate accepted exception to the usual VFG-reads ⟹ PDG-reads direction, shared by every
+    sibling PDG builder.) The others are *symmetric* gaps shared by BOTH builders, so they create no
+    VFG/PDG divergence: lambda/nested-function bodies are opaque NESTED leaves (only init-capture
+    initializers are read, in the enclosing scope), and variadic template/function parameter packs
+    (`template<class...T> void f(T...v)`) are seeded by NEITHER layer — both filter to
+    (optional_)parameter_declaration — so a pack name flows as a free variable in both."""
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
@@ -241,12 +244,22 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 env[name] = val
             else:
                 env.pop(name, None)
+        elif t == "structured_binding_declarator":
+            # `auto [a, b] = rhs` — each name binds to (a component of) the RHS value. Bind them all
+            # to the RHS so a later use of a/b threads back to it, matching the PDG which reads the
+            # RHS at the declaration. Without this the RHS value was evaluated then discarded, so a
+            # destructured param went unread by the VFG (a value-flow under-read). R246.
+            for c in target.named_children:
+                if c.type == "identifier":
+                    bind(c, val)
         elif t in _DECL_WRAP:
             if t == "array_declarator":  # `int arr[helper()]` — a VLA size is runtime value flow
                 sz = target.child_by_field_name("size")
                 if sz is not None:
                     ev(sz, None)
-            bind(target.child_by_field_name("declarator"), val)
+            # `_decl_child` (not the bare `declarator` field) so a `reference_declarator` — which does
+            # NOT field-name its child — still reaches its inner name, incl. `auto& [a,b]` (R246).
+            bind(_decl_child(target), val)
         elif t in ("field_expression", "subscript_expression"):
             n = g.add("SETATTR" if t == "field_expression" else "SETITEM")
             g.link(val, n, _DATA)

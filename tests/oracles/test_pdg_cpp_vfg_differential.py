@@ -175,3 +175,16 @@ def test_non_value_token_read_by_neither_builder(name):
     body = _NONVALUE_V[name]
     assert not _pdg_reads_v(body), f"{name}: PDG read a non-value token as the param value"
     assert not _vfg_reads_v(body), f"{name}: VFG read a non-value token as the param value"
+
+
+@pytest.mark.parametrize("body", [
+    "auto [a, b] = v; return a;",
+    "auto [a, b] = v; return b;",
+    "auto& [a, b] = v; return a;",
+])
+def test_structured_binding_threads_in_both_builders(body):
+    # R246: a destructured param `auto [a,b] = v` whose binding is later USED must be read by BOTH
+    # builders (the VFG `bind` had no structured_binding_declarator case, so it evaluated the RHS
+    # then discarded it — v went unread, a value-flow under-read). Both must now read v.
+    assert _pdg_reads_v(body), f"PDG dropped the destructured param read: {body}"
+    assert _vfg_reads_v(body), f"VFG dropped the destructured param read: {body}"
