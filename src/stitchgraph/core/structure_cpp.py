@@ -713,6 +713,15 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             return
         t = n.type
         if t in _FUNC_NODES or t == "comment":
+            # A lambda/nested fn body is opaque, BUT a C++ init-capture `[z = expr]` initializer is
+            # evaluated in the ENCLOSING scope when the closure is built — its reads belong to the
+            # enclosing header (the VFG walks it; not the opaque body). Fold each capture initializer.
+            if t == "lambda_expression":
+                caps = n.child_by_field_name("captures")
+                if caps is not None:
+                    for c in caps.named_children:
+                        if c.type == "lambda_capture_initializer":
+                            collect(c.child_by_field_name("right"), loads, stores)
             return
         if t == "compound_statement":
             # A GNU statement-expression `({ stmt; …; value })` reached here is a VALUE operand (it

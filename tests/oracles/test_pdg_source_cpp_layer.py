@@ -225,6 +225,27 @@ def test_pdg_gnu_statement_expression_folds_reads_and_writes():
     assert (2, 3, "D") in e2, "stmt-expr write was dropped (return threads from the wrong def)"
 
 
+def test_pdg_lambda_init_capture_reads_enclosing():
+    # R241: a C++ lambda init-capture `[z = expr]` initializer is evaluated in the ENCLOSING scope
+    # when the closure is built — its reads belong to the enclosing header, not the opaque lambda
+    # body (the VFG walks it deliberately, per RELEASE_NOTES_v3.5.0). `collect` blanket-skipped
+    # _FUNC_NODES, dropping the enclosing-scope read of the initializer.
+    for src in (
+        "int f(int v) { auto g = [z = v](){ return z; }; return 0; }",
+        "int f(int v, int w) { auto g = [a = v, b = w](){ return a + b; }; return 0; }",
+        "int f(int v) { auto g = [&z = v](){ return z; }; return 0; }",
+    ):
+        _l, e = structure_cpp.pdg_source(src)["f"]
+        assert any(s == 0 and k == "D" for s, _d, k in e), \
+            f"lambda init-capture initializer read of a param was dropped: {src} -> {e}"
+    # but a *plain* capture `[v]` (no initializer) is only the opaque body reading v — the enclosing
+    # header records nothing (documented lambda-body opacity), so no ENTRY read is minted here.
+    _l, e = structure_cpp.pdg_source(
+        "int f(int v) { auto g = [v](){ return v; }; return 0; }")["f"]
+    assert not any(s == 0 and k == "D" for s, _d, k in e), \
+        "plain by-copy capture must stay opaque (no enclosing read)"
+
+
 def test_pdg_parenthesized_rmw_target_records_the_store():
     # R239: `(x) += v` / `(x)++` — a read-modify-write of a parenthesized simple lvalue must record
     # the STORE (not just a read), so a later use threads from the RMW statement, not from ENTRY.
