@@ -270,7 +270,17 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         t = node.type
         if t == "comment":  # trivia: a comment must never alter the value-flow fingerprint
             return None
-        if t in ("identifier", "field_identifier", "type_identifier", "namespace_identifier"):
+        if t in _TYPE_NODES and t != "qualified_identifier":
+            # A type / namespace name — a bare `type_identifier` (incl. a template TYPE argument),
+            # `decltype(x)`, `type_descriptor`, `template_type`, `auto`, … — is an unevaluated
+            # compile-time operand carrying NO runtime value flow. Mirror the PDG's `_TYPE_NODES`
+            # skip in `collect` (line 742) and, crucially, do NOT descend into the type's inner
+            # expressions, so neither builder reads a parameter name that merely lands in a type
+            # position (`g<v>()`, `decltype(v)`) — keeps the certified VFG-reads ⟹ PDG-reads. R245.
+            # (`qualified_identifier` is excluded: it can be a value `ns::x` and stays a name-keyed
+            # freevar below, which is already param-agnostic and consistent with the PDG's drop.)
+            return g.add("TYPE")
+        if t in ("identifier", "field_identifier"):
             name = text(node)
             return env[name] if name in env else freevar(name)
         if t in ("this", "true", "false", "nullptr", "null"):

@@ -159,6 +159,14 @@ _NONVALUE_V = {
     # v as a field/member name
     "field_name": "s.v; return 0;",
     "arrow_name": "obj->v; return 0;",
+    # v inside a TYPE position — an unevaluated compile-time operand, read by NEITHER builder (R245).
+    # These are where the VFG's generic fallback / type_identifier handling used to over-read a param
+    # name the correct PDG rightly drops (`decltype(v)`, a template TYPE argument).
+    "template_type_arg": "g<v>(); return 0;",
+    "decltype_template_arg": "g<decltype(v)>(); return 0;",
+    "decltype_cast": "auto x = static_cast<decltype(v)>(0); return 0;",
+    "using_alias_decltype": "using U = decltype(v); (void)sizeof(U); return 0;",
+    "typedef_decltype": "typedef decltype(v) U; (void)sizeof(U); return 0;",
 }
 
 
