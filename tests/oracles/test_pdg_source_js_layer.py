@@ -113,6 +113,17 @@ def test_pdg_handles_try_switch_forof_without_leaking_finally():
         assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
 
 
+def test_pdg_descends_into_block_bearing_statements():
+    # Any block-bearing statement not special-cased (e.g. the deprecated `with`) must still have its
+    # body descended — the block's statements become their own nodes, not silently dropped (R214,
+    # closing the class generically like Python's walk_block).
+    src = "function f(a) { with (a) { let z = compute(a); return z; } }"
+    labels, edges = structure_js.pdg_source(src, "javascript")["f"]
+    assert "Assign" in labels and "Return" in labels, f"with-body dropped: {labels}"
+    for s, d, k in edges:
+        assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
+
+
 def test_pdg_source_never_raises_on_bad_or_typed_input():
     cases = [
         "",

@@ -707,8 +707,15 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             block(node.child_by_field_name("body"), sid)
         else:
             # a simple statement (expression/return/throw/declaration/break/…): the whole node is
-            # its header — collect stops at any nested block/function, so nothing leaks.
+            # its header — collect stops at any nested block/function, so nothing leaks. Any nested
+            # statement_block child (a block-bearing statement not special-cased above, e.g. the
+            # deprecated `with`) is still descended, so its body is never dropped — parity with
+            # Python's generic walk_block and the JS EXPRESSION layer. This closes the class rather
+            # than special-casing one construct.
             data_edges(node, sid)
+            for c in node.named_children:
+                if c.type in ("statement_block", "else_clause"):
+                    block(c, sid)
 
     body = fn.child_by_field_name("body")
     if body is not None:
