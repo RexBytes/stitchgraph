@@ -3059,6 +3059,16 @@
         "LOW": 1
       },
       "theme": "FIRST Bash panel (v3.18.0, \u00a75c STATEMENT/PDG language 10 \u2014 the FINAL language; command-oriented outlier, shell functions have NO parameter list so ENTRY carries no params, mirroring the VFG which seeds no PARAM nodes). Front-loaded: read-projection mirrors the VFG ev/bind/_do node-for-node; differential oracle SEEDED via a first `v=$SEED` assignment (node 0 = SEED's FREE node in the VFG created first; node 1 = the seed assignment in the PDG). Grammar-probed the command_name literal-vs-dynamic split (a LITERAL command name is a free callee, never a var read; a dynamic $cmd/$(\u2026) name reads its expansions). opus INDEPENDENT falsification: ~39,900 unique valid cases across 3 generators (curated hazards + depth-4 grammar nesting + sequencing/rebind mix), ~29,600 genuine VFG-reads \u2014 0 invariant violations, 0 raises, 0 malformed graphs, 0 key mismatches, determinism stable; even proved the node-1 attribution axis sound (a rebind that moves last_def[v] also kills the VFG seed, lifting the obligation). sonnet gates: full suite 2276 passed / 24 skipped (re-run by main), ruff clean, mypy clean, cardinal rule clean (structure_bash lazy-imported in operations.py function bodies), byte-identical find_stale isolation, Bash oracle subset 61 passed. haiku found ONE LOW: the README `## Status (v\u2026)` header was stale at v3.16.0 (not bumped during the PHP release either) \u2014 fixed to v3.18.0 + noted the statement layer now spans every body-matrix language. Dirty (1 LOW)."
+    },
+    {
+      "id": "R261",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on frozen post-fix HEAD 92e9d4c (code byte-identical since 3b93dfd; the R260 LOW was a README-only fix) \u2192 streak 1. opus INDEPENDENT re-cert with fresh generators/seeds: ~24,000 distinct valid bodies (systematic reads\u00d7wrappers + recursive-grammar random + deep random/exotics), ~15,400 genuine VFG-reads \u2014 0 invariant violations, 0 raises, 0 ill-formed graphs, key parity + cross-process determinism (PYTHONHASHSEED 0/12345/999) all hold. Identified three SYMMETRIC imprecisions that under-read in BOTH builders identically (so no VFG/PDG divergence): ${#v} string-length (the `#` sigil isn't stripped by the shared _varname helper), `v+=x` append (tree-sitter drops +=, losing the implicit old-v read), and @($v) extglob / single-quoted trap (documented opaque-token blind spots) \u2014 shared soundness limits, not faithfulness defects. Reverse-direction PDG\u2265VFG over-reads (subshell/group dead bindings, prefix assignments, assoc-array index) all allowed. sonnet gates re-verified by main: ruff/mypy/cardinal clean, byte-identical isolation, Bash oracle 61; full suite 2276 passed / 24 skipped stands. haiku docs: all 8 surfaces consistent, the README status-header fix verified, no stale version markers remain."
     }
   ]
 }
