@@ -159,9 +159,10 @@ the granularity. Phase 1 (v3.8.0): `get_matrix(layer="expression")` drills into 
 value-flow graph (`structure.vfg_source`, all 12 languages) and `graph_diff` is the two-layer diff.
 Phase 2 (v3.9.0): `get_matrix(layer="statement")` drills into a function's program-dependence graph
 (`structure.pdg_source` — statement nodes, control/data edges). Phase 3 begins sweeping the STATEMENT
-layer to the tree-sitter languages: **v3.10.0 adds the JS family** (js/ts/tsx, `structure_js.pdg_source`),
-so the statement layer now covers **Python + the JS family (js/ts/tsx)**; the remaining tree-sitter languages (Go, Rust,
-C/C++, Java, C#, Ruby, PHP, Bash) are the rest of the sweep. All on-demand (no persisted deep edges —
+layer to the tree-sitter languages: **v3.10.0 adds the JS family** (js/ts/tsx, `structure_js.pdg_source`)
+and **v3.11.0 adds Go** (`structure_go.pdg_source`), so the statement layer now covers **Python + the
+JS family (js/ts/tsx) + Go**; the remaining tree-sitter languages (Rust, C/C++, Java, C#, Ruby, PHP,
+Bash) are the rest of the sweep. All on-demand (no persisted deep edges —
 the scale-driven choice below), advisory-only (never feeds liveness). Original design note follows.
 
 When the deeper granularity (§5b) is promoted, do NOT build a second, separate graph. Carry a

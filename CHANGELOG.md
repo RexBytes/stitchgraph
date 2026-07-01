@@ -4,6 +4,43 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.11.0] — 2026-07-01
+
+**The STATEMENT layer learns Go (§5c sweep, language 3).** After Python (v3.9.0) and the JS family
+(v3.10.0), v3.11.0 adds Go to the program-dependence-graph layer. Backward-compatible (no schema
+change, default behavior unchanged) → MINOR.
+
+### Added
+- **`structure_go.pdg_source`** — a Go function's program-dependence graph, built from the
+  tree-sitter tree and mirroring `structure.pdg_source` (Python) / `structure_js.pdg_source`:
+  statement nodes (+ a synthetic `ENTRY` carrying the parameters and receiver), `C` (control) and
+  `D` (data: sequential reaching-def) edges. Go constructs covered: `if`/`for` (for-clause, `range`
+  binding, bare condition), expression/type `switch` (case bodies + values), `select` (comm cases),
+  `defer`/`go`/labeled statements, `:=`/`var`/`const`/assignment (incl. compound `op=` and
+  multi-value `a, b := …`), `++`/`--`, channel send; selector/index assignment targets read their
+  object (no false store). `func_literal` is an opaque `NESTED` leaf. Keyed identically to
+  `fingerprint_source`/`vfg_source`.
+- **`get_matrix(layer="statement")` now covers Go** — dispatches `.py` → `structure`, js/ts/tsx →
+  `structure_js`, and `.go` → `structure_go`. Other languages refuse with a supported-set message.
+
+### Notes
+- A structural **approximation** (sequential reaching-def, no SSA/alias analysis), **advisory** —
+  computed on demand, never persisted, never feeds `find_stale`. Remaining tree-sitter languages
+  (Rust, C/C++, Java, C#, Ruby, PHP, Bash) are the rest of the sweep.
+
+### Guarantees
+- Advisory — the STATEMENT layer never feeds `find_stale`/liveness (a test pins that a Go drill-down
+  cannot change `find_stale`).
+- **Deterministic output** — `pdg_source`'s edges and `get_matrix`'s `cells` are byte-reproducible
+  across processes (edges emitted in sorted order, not `set`/`PYTHONHASHSEED` order).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_go_layer.py`
+  (key-parity, well-formed C/D graph, reorder-invariance, dependence sensitivity, Go-specific
+  statements [range/type-switch/select/defer/goroutine], never-raises, cross-`PYTHONHASHSEED`
+  determinism) + a Go statement-drill case in `tests/test_layer_matrix.py`. Two-round full-diversity
+  adversarial panel clean.
+
 ## [3.10.0] — 2026-07-01
 
 **The STATEMENT layer learns the JS family — js/ts/tsx (§5c sweep, language 2).** v3.9.0 shipped the
