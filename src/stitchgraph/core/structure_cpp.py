@@ -691,6 +691,20 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             # place: no name defined — read the object/index operands (collect skips the field name).
             collect(target, loads, stores)
 
+    def rmw_target(target, loads: set, stores: set) -> None:
+        """A read-modify-write target (`x += e`, `x++`): a plain lvalue both READS and WRITES the
+        name; a place/deref/index/field target reads its operands (no name defined). Unwraps
+        parentheses so `(x) += v` / `(x)++` still record the store (mirrors the VFG's `bind` unwrap)."""
+        while target is not None and target.type == "parenthesized_expression":
+            target = _last(target)
+        if target is None:
+            return
+        if target.type in ("identifier", "field_identifier"):
+            stores.add(text(target))
+            loads.add(text(target))
+        else:
+            collect(target, loads, stores)
+
     def collect(n, loads: set, stores: set) -> None:
         """Reads/writes within one statement's header — stops at nested blocks (their own nodes) and
         nested functions/lambdas (opaque), mirroring Python's header_names and the sibling PDGs.
@@ -718,22 +732,13 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             op = _op_text(n, text)
             left = n.child_by_field_name("left")
             if op and op != "=" and op.endswith("="):  # `x += e` reads AND writes the left operand
-                if left is not None and left.type in ("identifier", "field_identifier"):
-                    stores.add(text(left))
-                    loads.add(text(left))
-                else:
-                    collect(left, loads, stores)
+                rmw_target(left, loads, stores)
             else:
                 bind_place(left, loads, stores)
             collect(n.child_by_field_name("right"), loads, stores)
             return
         if t == "update_expression":  # `x++` / `--x` reads and writes its operand
-            arg = n.child_by_field_name("argument")
-            if arg is not None and arg.type in ("identifier", "field_identifier"):
-                stores.add(text(arg))
-                loads.add(text(arg))
-            elif arg is not None:
-                collect(arg, loads, stores)
+            rmw_target(n.child_by_field_name("argument"), loads, stores)
             return
         if t == "field_expression":  # read the object; the field name is not a value
             collect(n.child_by_field_name("argument"), loads, stores)

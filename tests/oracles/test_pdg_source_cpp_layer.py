@@ -209,6 +209,19 @@ _MULTIREAD = (
 )
 
 
+def test_pdg_parenthesized_rmw_target_records_the_store():
+    # R239: `(x) += v` / `(x)++` — a read-modify-write of a parenthesized simple lvalue must record
+    # the STORE (not just a read), so a later use threads from the RMW statement, not from ENTRY.
+    for src in (
+        "void f(int x, int v) { (x) += v; use(x); }",
+        "void f(int x) { (x)++; use(x); }",
+        "void f(int x) { ((x)) += 1; use(x); }",
+    ):
+        _l, e = structure_cpp.pdg_source(src)["f"]
+        # node 1 = the RMW statement, node 2 = `use(x)` — the RMW's store must reach the use.
+        assert (1, 2, "D") in e, f"parenthesized RMW store dropped: {src} -> {e}"
+
+
 def _edges_under_seed(seed: str) -> str:
     prog = (
         "from stitchgraph.core import structure_cpp\n"
