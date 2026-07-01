@@ -2585,6 +2585,38 @@
       ],
       "findings": {},
       "theme": "v3.10.0 FINAL sign-off on b488617 — all three CLEAN. opus 4000 fuzz × 3 langs + all statement kinds + exact >300 boundary + cardinal; sonnet 771 passed + ruff/mypy + import-hygiene + byte-identical JS isolation; haiku 7/7 docs. Second consecutive fully-clean full-diversity panel → streak 2 → RELEASABLE. Tag left to maintainer."
+    },
+    {
+      "id": "R219",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "v3.11.0 (§5c sweep language 3) round 1 on 25aed64 — the STATEMENT/PDG layer extended to Go (structure_go.pdg_source; get_matrix(layer=\"statement\") dispatches .py + js/ts/tsx + .go). opus caught a LOW completeness defect: a type-switch `case <T>:` type operand leaked in as a spurious TypeIdentifier node (the type is under field `type`, not `value`, so the skip-span was None) — fixed 37cd045 by keying _case_body on statement-ness (only statement_list + statement/decl nodes are bodies), closing the class + oracle test. sonnet+haiku CLEAN."
+    },
+    {
+      "id": "R220",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v3.11.0 post-type-switch-fix (37cd045) — all three CLEAN. opus verified the fix general (625 fuzz, exotic type-switch cases `[]map[string]func()`/`chan struct{}`, nested type-switch-in-expr-switch, all Go statement kinds, cardinal); sonnet 780 passed + byte-identical isolation; haiku docs. First clean panel of the pair."
+    },
+    {
+      "id": "R221",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v3.11.0 FINAL sign-off on 37cd045 — all three CLEAN. opus 3000 fuzz + all Go statement kinds + exact >300 boundary + cardinal (find_stale byte-identical); sonnet 780 passed + ruff/mypy + import-hygiene + byte-identical Go isolation; haiku 11/11 docs. Second consecutive fully-clean full-diversity panel → streak 2 → RELEASABLE. Tag left to maintainer."
     }
   ]
 }
