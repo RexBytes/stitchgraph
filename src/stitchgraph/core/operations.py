@@ -986,7 +986,10 @@ def _body_matrix(store: Store, scope: str, layer: str) -> Result:
     seen: dict[tuple[int, int, str], None] = {}
     for s, d, k in edges:  # collapse duplicate (src, dst, kind) triples
         seen.setdefault((int(s), int(d), k), None)
-    cells = [{"src": s, "dst": d, "k": k} for (s, d, k) in seen]
+    # Emit cells in a deterministic order so the payload is byte-reproducible across
+    # processes regardless of how a frontend ordered its edges (R205 — a deep-layer
+    # builder that iterates a set would otherwise leak PYTHONHASHSEED order here).
+    cells = [{"src": s, "dst": d, "k": k} for (s, d, k) in sorted(seen)]
     payload: dict = {
         "layer": layer,
         "function": node.id.split("::", 1)[-1],

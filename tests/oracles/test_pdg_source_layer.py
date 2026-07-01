@@ -19,6 +19,8 @@ from __future__ import annotations
 import ast
 import collections
 import hashlib
+import subprocess
+import sys
 
 from stitchgraph.core import structure
 
@@ -94,3 +96,38 @@ def test_pdg_distinguishes_a_real_dependence_change():
 def test_pdg_source_never_raises_on_bad_input():
     for bad in ("", "def (:\n", "not python at all !!!", "def f(:\n  pass"):
         assert structure.pdg_source(bad) == {} or isinstance(structure.pdg_source(bad), dict)
+
+
+# A function whose single statement reads several distinct names each defined in a different prior
+# statement — so the data edges into the last statement are emitted from a set of load names. If that
+# set is iterated in hash order, the edge LIST order (and get_matrix's `cells`) becomes
+# PYTHONHASHSEED-dependent — non-reproducible across processes (R205).
+_MULTIREAD = (
+    "def f(p):\n"
+    "    a = p\n"
+    "    b = p\n"
+    "    c = p\n"
+    "    d = p\n"
+    "    e = p\n"
+    "    z = a + b + c + d + e\n"
+    "    return z\n"
+)
+
+
+def _pdg_edges_under_seed(seed: str) -> str:
+    """Serialize `pdg`'s edge list (order-sensitive) from a fresh interpreter pinned to `seed`."""
+    prog = (
+        "import ast;from stitchgraph.core import structure\n"
+        f"fn=ast.parse({_MULTIREAD!r}).body[0]\n"
+        "print([list(e) for e in structure.pdg(fn)[1]])\n"
+    )
+    out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def test_pdg_edge_order_is_deterministic_across_hash_seeds():
+    # The edge list must be byte-identical regardless of PYTHONHASHSEED — set iteration order must
+    # not leak into the output (R205). Distinct seeds shuffle string-set iteration order.
+    seeds = ("0", "1", "7", "12345")
+    outs = {_pdg_edges_under_seed(s) for s in seeds}
+    assert len(outs) == 1, f"pdg edge order varies with PYTHONHASHSEED: {outs}"

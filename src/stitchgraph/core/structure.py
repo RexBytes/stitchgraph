@@ -515,10 +515,13 @@ def _build_pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], l
         if parent is not None:
             edges.append((parent, sid, "C"))
         loads, stores = header_names(node)
-        for name in loads:
+        # Iterate the name sets in sorted order: a set of strings iterates in a
+        # PYTHONHASHSEED-dependent order, which would make the emitted edge list
+        # (and thus get_matrix's `cells`) non-reproducible across processes (R205).
+        for name in sorted(loads):
             if name in last_def and last_def[name] != sid:
                 edges.append((last_def[name], sid, "D"))
-        for name in stores:
+        for name in sorted(stores):
             last_def[name] = sid
     labels = [nodes[i] for i in range(len(nodes))]
     return labels, edges
