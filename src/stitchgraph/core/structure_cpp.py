@@ -197,7 +197,9 @@ def pdg_source(source: str, lang: str = "cpp") -> dict[str, tuple[list[str], lis
     reference): default-parameter-value expressions are NOT walked here — parameters are only
     seeded at ENTRY by name. The VFG *does* walk them (v3.7.0), so for `int f(int v, int w=v)`
     the VFG reads v while this PDG does not; this asymmetry is intentional and shared by every
-    sibling PDG builder."""
+    sibling PDG builder. Variadic template/function parameter packs (`template<class...T> void
+    f(T...v)`) are seeded by NEITHER layer — both filter to (optional_)parameter_declaration — so a
+    pack name flows as a free variable in both, symmetric and mutually consistent (no VFG⟹PDG gap)."""
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
