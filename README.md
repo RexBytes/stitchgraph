@@ -64,7 +64,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   identical — advisory and read-only, never feeding dead-code detection.
 - **Layered — one graph, pick the depth (§5c).** `get_matrix(layer="call")` is the
   inter-procedural relation graph; `layer="statement"` (v3.9.0) drills into a
-  function's program-dependence graph (control/data deps, Python + JS/TS for now);
+  function's program-dependence graph (control/data deps, Python + the JS family for now);
   `layer="expression"` (v3.8.0) drills into its value-flow graph (all 12 languages).
   Same primitives, call → statement → expression depth; the deeper layers are advisory
   and computed on demand.
