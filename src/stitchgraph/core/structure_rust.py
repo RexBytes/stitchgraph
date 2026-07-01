@@ -654,6 +654,17 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             collect(n.child_by_field_name("value"), loads, stores)
             collect(n.child_by_field_name("alternative"), loads, stores)  # let-else `else {…}` block
             return
+        if t in ("const_item", "static_item"):
+            # A function-local `const K = <expr>;` / `static S = <expr>;` binds a name (a STORE) and
+            # reads its initializer — mirror the VFG's `_walk_block` special-case. The generic
+            # fallback would instead treat the declared name as a value LOAD, dropping the def-use
+            # binding and spuriously reading the name; const/static are the only in-block items with
+            # an evaluated initializer (§5c const/static parity — the JS/Go PDGs already thread it).
+            name = n.child_by_field_name("name")
+            if name is not None and name.type == "identifier" and text(name) != "_":
+                stores.add(text(name))
+            collect(n.child_by_field_name("value"), loads, stores)  # type position carries no read
+            return
         if t == "assignment_expression":
             add_target(n.child_by_field_name("left"), loads, stores)
             collect(n.child_by_field_name("right"), loads, stores)

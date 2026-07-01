@@ -136,6 +136,35 @@ _BINDINGS = {
 }
 
 
+# --- function-local const/static: an evaluated initializer binds a name (like `let`) — the binding
+# must reach a later use, and the declared name must NOT be projected as a value read of itself. The
+# VFG's `_walk_block` already special-cases these; the JS/Go PDGs thread them too (R231 opus).
+@pytest.mark.parametrize("kw", ["const", "static"])
+def test_local_const_binding_reaches_use(kw):
+    src = f"fn f() -> i32 {{ {kw} K: i32 = 7; let _z = K; _z }}"
+    _labels, edges = structure_rust.pdg_source(src)["f"]
+    # node 1 = the const/static decl, node 2 = the use `let _z = K` — the binding must reach it.
+    assert (1, 2, "D") in edges, f"local {kw} binding did not reach its use"
+
+
+@pytest.mark.parametrize("kw", ["const", "static"])
+def test_local_const_name_not_read_as_value(kw):
+    # a param shadowing the declared name must NOT be chained through the decl: the decl DEFINES the
+    # name, it does not READ it, so ENTRY's param must not reach the decl node via that name.
+    src = f"fn f(K: i32) -> i32 {{ {kw} K: i32 = 7; let _z = K; _z }}"
+    _labels, edges = structure_rust.pdg_source(src)["f"]
+    assert (0, 1, "D") not in edges, (
+        f"local {kw} declared name spuriously read as a value at its own declaration"
+    )
+
+
+def test_local_const_initializer_read_not_dropped():
+    # the initializer is a real value position — a param used there IS read (soundness preserved).
+    src = "fn f(v: i32) -> i32 { const K: i32 = v + 1; let _z = K; _z }"
+    _labels, edges = structure_rust.pdg_source(src)["f"]
+    assert any(s == 0 and k == "D" for s, _d, k in edges), "const initializer read dropped"
+
+
 @pytest.mark.parametrize("name", sorted(_BINDINGS))
 def test_pattern_binding_reaches_use(name):
     pat, use = _BINDINGS[name]
