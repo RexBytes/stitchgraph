@@ -2995,6 +2995,38 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD ee66402 → streak 2 → RELEASABLE. opus independent re-certification with a fresh corpus + depth-3 composition fuzz — 317,057 tested cases across every C# value/non-value position incl. LINQ, stackalloc, `with`, collection expressions `[..]`, patterns — 0 VFG⟹PDG divergences, 0 spurious reads; keys/determinism/well-formedness all pass; docstring accurate. sonnet 1432 passed + cardinal + byte-identical isolation. haiku docs clean (prior-version changelog entries correctly treated as immutable). C# shipped with ZERO code defects across both panels (2nd language after Java to do so). Tag left to the maintainer."
+    },
+    {
+      "id": "R255",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1
+      },
+      "theme": "FIRST Ruby panel (v3.16.0, §5c STATEMENT/PDG language 8 — EXPRESSION-oriented like Rust, the hard tier). Built with the recurring class front-loaded (differential oracle + method-name/self guards from panel 1; read-projection mirrors the VFG ev/bind/_do node-for-node with value-position control folding). opus found ONE real VFG⟹PDG divergence (HIGH): a `case/in` guard `in P if <cond>` — the in_clause's `guard` field is read by the VFG (generic fallback descends case_match) but the PDG hand-enumerated only pattern+body, dropping it. Fixed by reading the guard in both collect (value position) and process (statement position) + extended the differential oracle with case/in guard cases (if/unless, statement + value). sonnet gate (killed stale on old tip; re-verified 1532 passed locally). haiku raised a `_build_pdg` docstring 'omits Ruby' note — REJECTED: the docstring lists PREDECESSORS only (established pattern across all frontends), Ruby is consistent. Dirty."
+    },
+    {
+      "id": "R256",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on frozen HEAD b3bf7a9 → streak 1. opus independent falsification with a fresh ~90-case corpus + ~14,000 fuzz (336-combo + 8000 depth-3 nested + 6000 seeded random) — 0 VFG⟹PDG divergences; the R255 case/in guard fix holds, no other in_clause field dropped; precision (method name not read) holds. sonnet 1532 passed + cardinal + byte-identical isolation. haiku docs (predecessors pattern confirmed)."
+    },
+    {
+      "id": "R257",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD b3bf7a9 → streak 2 → RELEASABLE. opus independent re-certification with a fresh 61-case corpus + 8000 depth-3 composition + 20,000 random recursive fuzz — 0 violations, 0 spurious method-name reads; keys/determinism/well-formedness pass; docstring's expression-oriented folding + symmetric gaps + the one parameter-default asymmetry all confirmed accurate. sonnet 1532 passed + cardinal + byte-identical isolation. haiku docs. Ruby (the expression-oriented hard tier) closed in 3 panels / 1 real defect — the front-loaded oracle caught the case/in guard immediately. Tag left to the maintainer."
     }
   ]
 }
