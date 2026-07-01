@@ -3037,6 +3037,16 @@
       ],
       "findings": {},
       "theme": "FIRST PHP panel (v3.17.0, \u00a75c STATEMENT/PDG language 9 \u2014 statement-oriented like Go/C/C++/Java/C#, the easier tier). Built with the recurring class front-loaded: the read-projection (collect/bind_place/rmw_target) mirrors the VFG's ev/bind node-for-node, and the differential oracle + name-position precision cases shipped with panel 1. Grammar reconciled to the ACTUAL node names (member_call_expression / nullsafe_member_call_expression go through the shared generic fallback; scoped_call/function_call hit the explicit CALL handler) so both builders stay in lock-step; the foreach `$k=>$v` pair gap and Foo::$x scoped-access opacity are mirrored (symmetric, no divergence). opus INDEPENDENT falsification: ~61,000 cases (85 hand-crafted \u00a75c-targeted + 20,000 depth-0..3 random + 29,960 param-biased of which 26,735 were genuine VFG-reads) \u2014 ALL 26,735 also PDG-reads, 0 invariant violations, 0 raises, 0 malformed graphs, 0 key mismatches; determinism across PYTHONHASHSEED confirmed. sonnet gates (re-verified by main): full suite 2214 passed / 24 skipped, ruff clean, mypy clean, cardinal rule clean (reach.py imports nothing from structure*/similar/graphdiff), byte-identical find_stale isolation confirmed, PHP oracle subset 161 passed. haiku docs: all 7 surfaces consistent (pyproject/CHANGELOG/README/IDEAS/model/operations/structure_php), 9 langs listed, Bash the sole remaining. Clean full-diversity panel \u2192 streak 1."
+    },
+    {
+      "id": "R259",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 20732f1 \u2192 streak 2 \u2192 RELEASABLE. opus INDEPENDENT re-certification with a fresh multi-generator campaign: ~24,900 valid cases (curated + deep-random-nested depth-0..3 + \u00a75c-hazard-targeted + 4,000 MULTI-param differential + ~3,060 malformed/garbage), of which ~19,200 were genuine VFG-reads (~77% non-vacuous) \u2014 0 invariant violations, 0 well-formedness failures, 0 key-parity failures, 0 raises, determinism stable across PYTHONHASHSEED 0/1/999/12345. Every \u00a75c defect-class pattern verified to read IDENTICALLY in both builders (member/method NAME not read; dynamic $o->$v drops in both / $o->$v() reads in both via the shared generic fallback since tree-sitter emits member_call_expression; scoped Foo::$v/($v)::X opaque in both; foreach k=>v pair + list() destructure in lock-step; match/heredoc/encapsed/casts/RMW/spread/named-args/refs/static-locals/try-catch-finally/closures-as-NESTED all consistent). All observed VFG\u2260PDG cases are the ALLOWED PDG\u2265VFG direction (copy-prop/dead-value discards). sonnet gates (re-verified by main on frozen code): ruff clean, mypy clean, cardinal rule clean, PHP oracle subset 122 passed; full suite 2214 passed / 24 skipped stands. haiku docs: all 7 surfaces consistent. PHP (statement-oriented, easier tier) closed in 2 panels / 0 defects \u2014 the front-loaded VFG-mirror + differential oracle held from panel 1. Tag left to the maintainer."
     }
   ]
 }
