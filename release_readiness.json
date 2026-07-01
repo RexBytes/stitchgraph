@@ -2943,6 +2943,38 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 9575760 → streak 2 → RELEASABLE. opus independent re-certification with ~24,000 fresh depth-3 fuzz + ~75 curated cases across every position class — could not falsify; one informational safe-direction artifact (a vexing-parse GNU stmt-expr `({ long(v); })` where tree-sitter parses `long(v)` as a redeclaration: the VFG over-reads, the PDG is correct — accepted criterion-(a) over-read, same family as `int (x)=v`, no dangerous PDG-drops-a-real-read). sonnet 1194 passed + cardinal + byte-identical isolation. haiku docs. Gate met; tag left to the maintainer."
+    },
+    {
+      "id": "R250",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 1
+      },
+      "theme": "FIRST Java panel (v3.14.0, §5c STATEMENT/PDG language 6). Java built with the recurring VFG-vs-PDG divergence class fully FRONT-LOADED — the differential oracle (test_pdg_java_vfg_differential.py) + type/method-name/field/label guards shipped WITH panel 1, and the builder mirrors the VFG's ev/bind node-for-node. opus deep-cert of the brand-new builder: 0 VFG⟹PDG violations across ~50 hand-built + a 4000-iteration nested fuzz; precision clean; determinism/well-formedness/key-parity all pass — NO code defect on the first panel. sonnet gate 1312 passed + cardinal + byte-identical isolation. haiku: one doc nit (the Python PDG oracle docstring omitted Java among the sibling pdg_source companions). Docs-only; dirty."
+    },
+    {
+      "id": "R251",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on frozen HEAD 35eeb58 → streak 1. opus independent falsification with a fresh ~75-case corpus + 5000 depth-3 fuzz, 0 DROP / 0 spurious; two accepted informational artifacts (a `case v:` label constant safe over-read; a catch-param-shadowing-a-method-param case that is INVALID Java and reverse-direction — the PDG is more precise than the VFG). sonnet 1312 passed + cardinal + byte-identical isolation. haiku docs (17 checkpoints)."
+    },
+    {
+      "id": "R252",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 35eeb58 → streak 2 → RELEASABLE. opus independent re-certification with ~80 fresh cases + 8000 depth-3 fuzz (statement- and expression-position) + a 21-case name-collision corpus — could not falsify; all divergences accepted safe-direction/symmetric artifacts; docstring accurate. sonnet 1312 passed + cardinal + byte-identical isolation. haiku docs. Java shipped with ZERO code defects across all three panels — front-loading the oracle + guards closed the class before it opened. Tag left to the maintainer."
     }
   ]
 }
