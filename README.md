@@ -63,11 +63,11 @@ for LLM agents. The full operation list and the question each answers is in the 
   clones and `graph_diff` flags a data-flow change that leaves the call graph
   identical — advisory and read-only, never feeding dead-code detection.
 - **Layered — one graph, pick the depth (§5c).** `get_matrix(layer="call")` is the
-  inter-procedural relation graph; `layer="expression"` (v3.8.0) drills into a
-  function's value-flow graph (all 12 languages); `layer="statement"` (v3.9.0) drills
-  into its program-dependence graph (control/data deps, Python for now). Same
-  primitives, call → statement → expression depth; the deeper layers are advisory and
-  computed on demand.
+  inter-procedural relation graph; `layer="statement"` (v3.9.0) drills into a
+  function's program-dependence graph (control/data deps, Python for now);
+  `layer="expression"` (v3.8.0) drills into its value-flow graph (all 12 languages).
+  Same primitives, call → statement → expression depth; the deeper layers are advisory
+  and computed on demand.
 - **Scales to monorepos.** The v2 **constant-memory streaming indexer** indexes
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
