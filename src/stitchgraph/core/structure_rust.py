@@ -670,6 +670,11 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         if t == "field_expression":
             collect(n.child_by_field_name("value"), loads, stores)  # read object; skip field name
             return
+        if t == "macro_invocation":  # read only the token-tree args; the macro name is not a value
+            for c in n.named_children:
+                if c.type == "token_tree":
+                    collect(c, loads, stores)
+            return
         for c in n.named_children:
             collect(c, loads, stores)
 

@@ -215,6 +215,21 @@ def test_pdg_let_chain_plain_clause_reads_are_captured():
         assert len(entry_d) >= 2, f"let-chain plain clause read not captured: {src} -> {edges}"
 
 
+def test_pdg_macro_name_is_not_a_spurious_read():
+    # R226: a macro invocation's name is not a value. `collect` must read only the token-tree args,
+    # never the macro name identifier — else a local whose name collides with a common macro
+    # (`matches`, `write`, `assert`, `select`, `format`, `pin`, …) gets a phantom data edge.
+    _l, e = structure_rust.pdg_source(
+        "fn f() { let matches = 5; if matches!(x, Some(_)) { let z = matches + 1; } }"
+    )["f"]
+    # node 1 = `let matches`, node 2 = the If (its condition is the macro call). No edge 1 -> 2:
+    # the macro NAME must not be read as the local `matches`.
+    assert (1, 2, "D") not in e, "macro name read as a colliding local variable (spurious edge)"
+    # a genuine variable passed to a macro is still read
+    _l2, e2 = structure_rust.pdg_source("fn f(v: i32) { println!(\"{}\", v); }")["f"]
+    assert any(k == "D" and s == 0 for s, d, k in e2), "genuine macro-arg read was dropped"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.
