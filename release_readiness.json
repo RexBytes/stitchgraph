@@ -2815,6 +2815,134 @@
       ],
       "findings": {},
       "theme": "Second consecutive clean full-diversity panel on frozen HEAD 00792d1 → streak 2 → RELEASABLE. opus independent re-derivation (55+ fresh constructs + 6000-composition depth-3 fuzz + 3000-program well-formedness/determinism fuzz + comment-invariance + key-parity — 0 violations), sonnet gate 1061 passed + cardinal + byte-identical isolation, haiku docs. Gate met; tag left to the maintainer."
+    },
+    {
+      "id": "R239",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "NIT": 1
+      },
+      "theme": "FIRST C/C++ panel (v3.13.0, §5c STATEMENT/PDG language 5). C/C++ built with the recurring VFG-vs-PDG divergence class front-loaded — guards + a white-box differential oracle (test_pdg_cpp_vfg_differential.py) from the start. opus: a parenthesized read-modify-write target `(x)+=`/`(x)++` recorded no STORE (rmw_target didn't unwrap parenthesized_expression), so a later use threaded from ENTRY not the RMW. haiku: stale test_layer_matrix module docstring. Both fixed + regressed."
+    },
+    {
+      "id": "R240",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: a GNU statement-expression `({ stmt; …; value })` in value position had its inner reads/writes dropped — `collect` blanket-skipped compound_statement. Fold its statements' reads/writes into the enclosing statement (the VFG captured them). Regressed."
+    },
+    {
+      "id": "R241",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: a C++ lambda init-capture `[z = v]` initializer — enclosing-scope flow the VFG deliberately walks (RELEASE_NOTES_v3.5.0) — was dropped because `collect` early-returned on _FUNC_NODES before inspecting captures. Fold each lambda_capture_initializer's `right` before the early-return; plain by-copy/ref captures stay opaque. Regressed."
+    },
+    {
+      "id": "R242",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 2
+      },
+      "theme": "opus: the default-parameter-value VFG/PDG asymmetry (VFG walks defaults, PDG doesn't) was undocumented → docstring note. haiku: the Python PDG oracle docstring omitted C/C++ among the sibling pdg_source companions. sonnet clean. Docs only."
+    },
+    {
+      "id": "R243",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 1
+      },
+      "theme": "opus: variadic template/function parameter packs (`template<class...T> void f(T...v)`) are seeded by NEITHER builder (both filter to (optional_)parameter_declaration) — a symmetric, mutually-consistent under-approximation that was undocumented. Completed the under-approximation list in the pdg_source docstring. sonnet+haiku clean. Docs only."
+    },
+    {
+      "id": "R244",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on the post-fix HEAD. opus 360 single-position + ~4300 composed cases, 0 VFG⟹PDG violations; sonnet 1186 passed + cardinal + byte-identical isolation; haiku docs. Streak 1 (broken by R245 — this panel's corpus omitted decltype/template-type-arg positions)."
+    },
+    {
+      "id": "R245",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "opus: the VFG (`ev`) read a param name in a TYPE position — `g<v>()`, `decltype(v)`, template TYPE args, alias/typedef — that the correct PDG rightly drops (an unevaluated compile-time operand), a literal VFG-reads-but-PDG-drops divergence and a violation of the differential oracle's own precision contract. Mirror the PDG's _TYPE_NODES skip into `ev` (return a name-agnostic TYPE node, no descent; qualified_identifier excepted as it can be a value); genuine value operands (`g<int>(v)`, `static_cast<int>(v)`) still read. Extended the differential oracle's no-spurious-read family with template-type-arg/decltype/alias/typedef cases. This is exactly the class the differential oracle exists to catch — R244 had missed it."
+    },
+    {
+      "id": "R246",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1,
+        "NIT": 1
+      },
+      "theme": "opus: the VFG (`bind`) dropped a USED destructured/structured-binding param `auto [a,b]=v; use(a)` — the RHS was evaluated then discarded (a value-flow under-read; the PDG reads the RHS). Added a structured_binding_declarator case binding each name to the RHS; routed the _DECL_WRAP branch through `_decl_child` (not the bare `declarator` field) so `reference_declarator` (`auto& [a,b]`) reaches its inner name. Tightened the pdg_source docstring to separate the one accepted VFG/PDG asymmetry (default-param) from the two symmetric gaps. haiku: bare-'JS' nomenclature in the _build_pdg docstring. Extended the oracle with structured-binding-reaches-use cases."
+    },
+    {
+      "id": "R247",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 1
+      },
+      "theme": "opus + sonnet CLEAN — both the R245 type-position and R246 structured-binding fixes held under 47 hand-written + ~856 fuzz cases and the 1194-test gate + cardinal byte-identical isolation; no reverse-direction regressions from the _decl_child routing. haiku: one pre-existing bare-'JS' nomenclature in the Rust _build_pdg docstring (harmonized). Docs only; dirty (broke the would-be streak)."
+    },
+    {
+      "id": "R248",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on frozen HEAD 9575760 → streak 1. opus independent re-derivation with a fresh ~10,100-case corpus (adversarial + depth-3 composition fuzz, per-parameter attribution), 0 VFG⟹PDG violations; docstring exceptions verified accurate. sonnet 1194 passed + cardinal + byte-identical isolation. haiku docs (nomenclature now uniform)."
+    },
+    {
+      "id": "R249",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 9575760 → streak 2 → RELEASABLE. opus independent re-certification with ~24,000 fresh depth-3 fuzz + ~75 curated cases across every position class — could not falsify; one informational safe-direction artifact (a vexing-parse GNU stmt-expr `({ long(v); })` where tree-sitter parses `long(v)` as a redeclaration: the VFG over-reads, the PDG is correct — accepted criterion-(a) over-read, same family as `int (x)=v`, no dangerous PDG-drops-a-real-read). sonnet 1194 passed + cardinal + byte-identical isolation. haiku docs. Gate met; tag left to the maintainer."
     }
   ]
 }
