@@ -145,16 +145,37 @@ def test_statement_layer_drills_a_rust_function(tmp_path):
         assert "If" in r["labels"]
 
 
-def test_statement_layer_refuses_unsupported_language(tmp_path):
-    # A language without a STATEMENT frontend yet (C++) refuses cleanly; no crash.
-    (tmp_path / "m.cpp").write_text("int f(int a) { return a + 1; }\n")
+def test_statement_layer_drills_a_cpp_function(tmp_path):
+    # The STATEMENT layer covers C/C++ as well (v3.13.0).
+    (tmp_path / "m.cpp").write_text(
+        "int classify(int x) {\n"
+        "  int a = x + 1;\n"
+        "  if (a > 0) { return a; }\n"
+        "  return 0;\n"
+        "}\n"
+    )
     store = sg.Store(":memory:")
     sg.reindex(store, str(tmp_path))
-    cid = [n for n in store.all_node_ids() if n.endswith("::f") and ".cpp" in n]
+    cid = [n for n in store.all_node_ids() if n.endswith("m.cpp::classify")]
     if cid:  # only if the tree-sitter extra indexed the C++ file
         m = sg.get_matrix(store, cid[0], layer="statement")
+        assert m.ok, m.review_reasons
+        r = m.result
+        assert r["layer"] == "statement" and r["labels"][0] == "ENTRY"
+        assert {c["k"] for c in r["cells"]} <= {"C", "D"}
+        assert "If" in r["labels"] and r["labels"].count("Return") == 2
+
+
+def test_statement_layer_refuses_unsupported_language(tmp_path):
+    # A language without a STATEMENT frontend yet (Ruby) refuses cleanly; no crash.
+    (tmp_path / "m.rb").write_text("def f(a)\n  a + 1\nend\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    rid = [n for n in store.all_node_ids() if n.endswith("::f") and ".rb" in n]
+    if rid:  # only if the tree-sitter extra indexed the Ruby file
+        m = sg.get_matrix(store, rid[0], layer="statement")
         msg = " ".join(m.review_reasons).lower()
-        assert not m.ok and "supported-language" in msg and "rust" in msg
+        assert not m.ok and "supported-language" in msg and "c/c++" in msg
 
 
 def test_statement_layer_never_affects_liveness(tmp_path):

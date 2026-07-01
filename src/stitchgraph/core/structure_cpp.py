@@ -186,6 +186,15 @@ def vfg_source(source: str, lang: str = "cpp") -> dict[str, tuple[list[str], lis
     return _walk(source, lang, lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
+def pdg_source(source: str, lang: str = "cpp") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every function/method — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested functions/lambdas are opaque NESTED leaves. Advisory, on
+    demand."""
+    return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
+
+
 def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one C/C++ function/lambda node into a value-flow graph, mirroring
     `structure._build_vfg`: PARAM seeds, copy propagation through declarations, operations and control
@@ -586,3 +595,320 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c sweep, C/C++ ---------------------------------------------
+
+_PDG_STMT_LABEL = {
+    "declaration": "Decl", "expression_statement": "Expr", "return_statement": "Return",
+    "if_statement": "If", "for_statement": "For", "while_statement": "While",
+    "do_statement": "Do", "for_range_loop": "ForRange", "switch_statement": "Switch",
+    "try_statement": "Try", "labeled_statement": "Labeled", "compound_statement": "Block",
+    "break_statement": "Break", "continue_statement": "Continue", "goto_statement": "Goto",
+    "case_statement": "Case",
+}
+# TYPE positions — a name here is structural, never a value read (the typed-language hazard that
+# recurred across TS and Rust). Mirrors the VFG, which routes type names through `freevar`.
+_TYPE_NODES = frozenset({
+    "type_identifier", "namespace_identifier", "primitive_type", "sized_type_specifier",
+    "qualified_identifier", "type_descriptor", "template_type", "placeholder_type_specifier",
+    "auto", "dependent_type", "decltype",
+})
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a C/C++ function/method — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and the JS/Go/Rust PDG builders: statement nodes + a synthetic
+    ENTRY carrying the parameters, control ('C') / data ('D', sequential reaching-def) edges. C/C++
+    is statement-oriented (like Go). Nested functions/lambdas are opaque NESTED leaves;
+    reorder-invariant. A structural approximation (no SSA/alias analysis), advisory only — never
+    feeds liveness. Its read/write projection (`collect`/`bind_target`) reads ONLY genuine value
+    operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind`: TYPE positions,
+    statement/goto LABELs, and field/member names are never read as values."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    fdecl = _func_declarator(fn.child_by_field_name("declarator")) \
+        if fn.type == "function_definition" else None
+    if fdecl is None:
+        fdecl = fn.child_by_field_name("declarator")
+    params = fdecl.child_by_field_name("parameters") if fdecl is not None else None
+    if params is not None:
+        for p in params.named_children:
+            if p.type in ("parameter_declaration", "optional_parameter_declaration"):
+                nm = _name_of_declarator(p.child_by_field_name("declarator"), text)
+                if nm:
+                    last_def[nm] = entry
+
+    def bind_decl(decl, loads: set, stores: set) -> None:
+        """Names bound by a declarator (a `store`), unwrapping pointer/reference/array/function
+        wrappers to the underlying identifier — mirroring the VFG's `bind` on `_DECL_WRAP`. An
+        array_declarator/VLA size expression is a READ (`int a[n];` reads n). A qualified_identifier
+        declarator (an out-of-line member name) binds nothing local."""
+        if decl is None:
+            return
+        t = decl.type
+        if t == "identifier" or t == "field_identifier":
+            stores.add(text(decl))
+        elif t == "array_declarator":
+            sz = decl.child_by_field_name("size")
+            if sz is not None:
+                collect(sz, loads, stores)
+            bind_decl(decl.child_by_field_name("declarator"), loads, stores)
+        elif t in _DECL_WRAP or t == "function_declarator":
+            bind_decl(_decl_child(decl), loads, stores)
+
+    def bind_place(target, loads: set, stores: set) -> None:
+        """An assignment/update target. A plain identifier defines a name (a STORE); a place/deref/
+        index/field target (`*p = …`, `a[i] = …`, `s.f = …`, `obj->m = …`) defines no name — its
+        object/index are READS (mirrors the VFG's `bind`)."""
+        if target is None:
+            return
+        t = target.type
+        if t == "identifier" or t == "field_identifier":
+            stores.add(text(target))
+        elif t == "parenthesized_expression":
+            bind_place(_last(target), loads, stores)
+        else:
+            # field_expression / subscript_expression / pointer_expression / qualified_identifier
+            # place: no name defined — read the object/index operands (collect skips the field name).
+            collect(target, loads, stores)
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header — stops at nested blocks (their own nodes) and
+        nested functions/lambdas (opaque), mirroring Python's header_names and the sibling PDGs.
+        Never reads a TYPE position, a statement/goto LABEL, or a field/member name."""
+        if n is None:
+            return
+        t = n.type
+        if t in _FUNC_NODES or t in ("compound_statement", "comment"):
+            return
+        if t in _TYPE_NODES:
+            return  # a type name carries no value read
+        if t in ("statement_identifier",):
+            return  # a label (labeled_statement / goto target) is a control point, not a value
+        if t == "field_identifier":
+            return  # a struct/member field name is not a value read
+        if t == "declaration":
+            for decl in n.named_children:
+                if decl.type == "init_declarator":
+                    bind_decl(decl.child_by_field_name("declarator"), loads, stores)
+                    collect(decl.child_by_field_name("value"), loads, stores)
+                elif decl.type in _DECL_WRAP or decl.type == "identifier":
+                    bind_decl(decl, loads, stores)  # uninitialised: declares the name, no value
+            return
+        if t == "assignment_expression":
+            op = _op_text(n, text)
+            left = n.child_by_field_name("left")
+            if op and op != "=" and op.endswith("="):  # `x += e` reads AND writes the left operand
+                if left is not None and left.type in ("identifier", "field_identifier"):
+                    stores.add(text(left))
+                    loads.add(text(left))
+                else:
+                    collect(left, loads, stores)
+            else:
+                bind_place(left, loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "update_expression":  # `x++` / `--x` reads and writes its operand
+            arg = n.child_by_field_name("argument")
+            if arg is not None and arg.type in ("identifier", "field_identifier"):
+                stores.add(text(arg))
+                loads.add(text(arg))
+            elif arg is not None:
+                collect(arg, loads, stores)
+            return
+        if t == "field_expression":  # read the object; the field name is not a value
+            collect(n.child_by_field_name("argument"), loads, stores)
+            return
+        if t == "cast_expression":  # `(T)x` — the type carries no read; the value does
+            collect(n.child_by_field_name("value"), loads, stores)
+            return
+        if t == "new_expression":  # `new T(args)` / `new T[n]` — type is not a read; args/size are
+            for c in n.named_children:
+                if c.type not in _TYPE_NODES:
+                    collect(c, loads, stores)
+            return
+        if t == "sizeof_expression":  # `sizeof(T)` / `sizeof x` — a compile-time constant, no read
+            return
+        if t == "identifier":
+            loads.add(text(n))
+            return
+        for c in n.named_children:
+            collect(c, loads, stores)
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
+        # list (and get_matrix cells) non-reproducible across processes (R205).
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def bind_target(decl, sid: int) -> None:
+        """Bind a declarator (a for-range loop var / an exception parameter) as a STORE at sid."""
+        st: set = set()
+        bind_decl(decl, set(), st)
+        for nm in sorted(st):
+            last_def[nm] = sid
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type == "comment":
+            return
+        if blk.type == "compound_statement":
+            for st in blk.named_children:
+                block(st, parent)
+        elif blk.type == "else_clause":
+            for st in blk.named_children:
+                block(st, parent)
+        else:
+            process(blk, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        if t == "if_statement":
+            # The condition_clause holds an optional C++17 `if (init; cond)` initializer (an
+            # init_statement wrapping a declaration) plus the condition value — collect descends into
+            # both, so the init's bindings + reads and the condition's reads all land on this header.
+            data_edges(node.child_by_field_name("condition"), sid)
+            block(node.child_by_field_name("consequence"), sid)
+            block(node.child_by_field_name("alternative"), sid)
+        elif t in ("for_statement", "while_statement", "do_statement"):
+            for fld in ("initializer", "condition", "update"):
+                sub = node.child_by_field_name(fld)
+                if sub is not None:
+                    data_edges(sub, sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t == "for_range_loop":
+            init = node.child_by_field_name("initializer")  # C++20 `for (init; auto x : c)`
+            if init is not None:
+                for c in init.named_children:
+                    data_edges(c, sid)
+            data_edges(node.child_by_field_name("right"), sid)  # the iterated container is a read
+            bind_target(node.child_by_field_name("declarator"), sid)  # the loop var binds
+            block(node.child_by_field_name("body"), sid)
+        elif t == "switch_statement":
+            data_edges(node.child_by_field_name("condition"), sid)  # scrutinee (+ C++17 init)
+            body = node.child_by_field_name("body")
+            if body is not None:
+                for case in body.named_children:
+                    if case.type == "case_statement":
+                        # A `case <value>:` selector is a constant SELECTOR, not a statement and not
+                        # a value read — it must never become a PDG node nor thread a read (the
+                        # case-operand class fixed in Go R219 / Python R210). Only the case BODY
+                        # statements are descended.
+                        val = case.child_by_field_name("value")
+                        vspan = (val.start_byte, val.end_byte) if val is not None else None
+                        for st in case.named_children:
+                            if (st.start_byte, st.end_byte) != vspan and st.type != "comment":
+                                block(st, sid)
+        elif t == "try_statement":
+            block(node.child_by_field_name("body"), sid)
+            for ch in node.named_children:
+                if ch.type == "catch_clause":
+                    # the caught exception is a fresh binding; its body is descended
+                    plist = ch.child_by_field_name("parameters")
+                    if plist is not None:
+                        for p in plist.named_children:
+                            if p.type in ("parameter_declaration",
+                                          "optional_parameter_declaration"):
+                                bind_target(p.child_by_field_name("declarator"), sid)
+                    block(ch.child_by_field_name("body"), sid)
+        elif t == "labeled_statement":
+            # descend the inner statement; the LABEL (a statement_identifier) is NOT a value.
+            for c in node.named_children:
+                if c.type != "statement_identifier" and c.type != "comment":
+                    block(c, sid)
+        elif t == "compound_statement":
+            for c in node.named_children:
+                block(c, sid)
+        elif t in ("break_statement", "continue_statement", "goto_statement"):
+            pass  # no reads — and goto's/label's statement_identifier is NOT a value
+        else:
+            # a simple statement (declaration / expression / return / …): the whole node is its
+            # header. collect stops at nested blocks/functions, so nothing leaks. Any nested block
+            # child is still descended (parity with the sibling PDGs / Python walk_block).
+            data_edges(node, sid)
+            for c in node.named_children:
+                if c.type == "compound_statement":
+                    block(c, sid)
+
+    # A constructor/destructor function-try-block (`S() try : init {...} catch(...) {}`) has NO
+    # `body` field — the grammar gives an unnamed `try_statement` child holding the member-init list,
+    # the body, and the catch clauses (mirrors _build_vfg's func_try handling).
+    func_try = None
+    if fn.child_by_field_name("body") is None:
+        for ch in fn.named_children:
+            if ch.type == "try_statement":
+                func_try = ch
+                break
+
+    # C++ constructor member-initializer-list (`S(int x): n(compute(x)), m(0) {}`) is a SIBLING of
+    # the body (a `field_initializer_list`), so it is never reached by walking `body`. Model each
+    # member init as a statement node that READS its init-expression operands; the member NAME being
+    # initialised is a field name, not a value read.
+    for ch in (func_try if func_try is not None else fn).named_children:
+        if ch.type != "field_initializer_list":
+            continue
+        for fi in ch.named_children:
+            if fi.type != "field_initializer":
+                continue
+            sid = new_id("MemberInit")
+            edges.append((entry, sid, "C"))
+            for c in fi.named_children:
+                if c.type in ("field_identifier", "qualified_identifier", "type_identifier"):
+                    continue  # the member being initialised — a name, not a value read
+                if c.type == "argument_list":
+                    for a in c.named_children:
+                        data_edges(a, sid)
+                else:
+                    data_edges(c, sid)
+
+    if func_try is not None:
+        # the function-try-block: descend the body + every catch clause (the member-init list above
+        # was already handled from the try_statement's children).
+        block(func_try.child_by_field_name("body"), entry)
+        for ch in func_try.named_children:
+            if ch.type == "catch_clause":
+                plist = ch.child_by_field_name("parameters")
+                if plist is not None:
+                    for p in plist.named_children:
+                        if p.type in ("parameter_declaration", "optional_parameter_declaration"):
+                            bind_target(p.child_by_field_name("declarator"), entry)
+                block(ch.child_by_field_name("body"), entry)
+    else:
+        body = fn.child_by_field_name("body")
+        if body is not None:
+            block(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges
