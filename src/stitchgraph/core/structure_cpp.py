@@ -191,7 +191,13 @@ def pdg_source(source: str, lang: str = "cpp") -> dict[str, tuple[list[str], lis
     fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
     drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
     reaching-def approximation; nested functions/lambdas are opaque NESTED leaves. Advisory, on
-    demand."""
+    demand.
+
+    Accepted layer-level under-approximation (cross-language consistent, mirrors the Python
+    reference): default-parameter-value expressions are NOT walked here — parameters are only
+    seeded at ENTRY by name. The VFG *does* walk them (v3.7.0), so for `int f(int v, int w=v)`
+    the VFG reads v while this PDG does not; this asymmetry is intentional and shared by every
+    sibling PDG builder."""
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
