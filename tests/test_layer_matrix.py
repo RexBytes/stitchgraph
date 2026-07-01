@@ -2,8 +2,8 @@
 
 The CALL layer is the shipped inter-procedural relation submatrix (now tagged `layer="call"`); the
 EXPRESSION layer drills into a SINGLE function's intra-procedural value-flow graph (all 12 languages);
-the STATEMENT layer drills into its program-dependence graph (Python + the JS family + Go + Rust so
-far). All on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
+the STATEMENT layer drills into its program-dependence graph (Python + the JS family + Go + Rust +
+C/C++ so far). All on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
 """
 from __future__ import annotations
 
