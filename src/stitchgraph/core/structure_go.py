@@ -625,6 +625,10 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             process(blk, parent)
 
     def _case_body(case, sid: int, skip) -> None:
+        # Only genuine statements are the case body. A case's value/type operands (expression_case
+        # values under field `value`, type_case types under field `type`) are NOT statements and must
+        # never become PDG nodes — keying on statement-ness (not a skip-span) closes that class,
+        # including the type-switch `type_case` whose types have no `value` field to skip (R219).
         skip_span = (skip.start_byte, skip.end_byte) if skip is not None else None
         for st in case.named_children:
             if st.type == "comment" or (st.start_byte, st.end_byte) == skip_span:
@@ -632,7 +636,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             if st.type == "statement_list":
                 for s in st.named_children:
                     block(s, sid)
-            elif st.type not in ("expression_list",) or skip is None:
+            elif st.type.endswith("_statement") or st.type in (
+                    "block", "short_var_declaration", "var_declaration", "const_declaration"):
                 block(st, sid)
 
     def process(node, parent: int) -> None:

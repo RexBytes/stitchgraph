@@ -937,8 +937,8 @@ def _expression_vfg(store: Store, node) -> tuple[list[str], list] | None:
 def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
     """The STATEMENT-layer program-dependence graph for one Function/Method node, or None if it can't
     be built (unsupported language, source unreadable, or the tree-sitter extra missing). Python (deep
-    stdlib ast) and the JS family (js/ts/tsx, tree-sitter) so far; other languages are a future sweep.
-    Selects the frontend by extension and the function by the qualname in the id."""
+    stdlib ast), the JS family (js/ts/tsx), and Go (tree-sitter) so far; other languages are a future
+    sweep. Selects the frontend by extension and the function by the qualname in the id."""
     from pathlib import Path
 
     from . import structure, structure_go, structure_js

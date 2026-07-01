@@ -129,6 +129,26 @@ def test_pdg_handles_go_specific_statements():
         assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
 
 
+def test_pdg_type_switch_case_types_are_not_nodes():
+    # A type-switch `case <T>:` type operand lives under field `type` (not `value`); it must NOT
+    # leak in as a statement node — only the case *bodies* are statements (R219).
+    src = (
+        "package m\n"
+        "func f(v interface{}) int {\n"
+        "\tswitch t := v.(type) {\n"
+        "\tcase int:\n\t\treturn t\n"
+        "\tcase string, bool:\n\t\treturn 1\n"
+        "\tdefault:\n\t\treturn 0\n"
+        "\t}\n"
+        "}\n"
+    )
+    labels, edges = structure_go.pdg_source(src)["f"]
+    assert "TypeIdentifier" not in labels, f"type-case type leaked as a node: {labels}"
+    assert labels.count("Return") == 3, f"case bodies: {labels}"
+    for s, d, k in edges:
+        assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
+
+
 def test_pdg_source_never_raises_on_bad_input():
     for bad in ("", "package", "func (", "@@@ not go", "func f() {", "package m\nvar x ="):
         assert isinstance(structure_go.pdg_source(bad), dict)
