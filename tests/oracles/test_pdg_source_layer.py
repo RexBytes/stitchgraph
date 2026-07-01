@@ -3,7 +3,7 @@
 The STATEMENT layer is a program-dependence graph (PDG) per function: nodes = statements (+ a
 synthetic ENTRY carrying the parameters), edges = CONTROL ('C', nested-under-a-header) and DATA
 ('D', a def reaching a later use). This oracle covers the Python frontend (`structure.pdg_source`,
-deep stdlib `ast`); the JS family, Go, and Rust each have their own `pdg_source` + oracle. This pins:
+deep stdlib `ast`); the JS family, Go, Rust, and C/C++ each have their own `pdg_source` + oracle. This pins:
 
   1. `pdg_source` keys EXACTLY match `fingerprint_source` keys (shared `_walk_functions` traversal).
   2. every graph is well-formed — a non-empty label list starting with ENTRY, edges as
