@@ -460,3 +460,329 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c sweep, Java ----------------------------------------------
+
+_PDG_STMT_LABEL = {
+    "local_variable_declaration": "Decl", "expression_statement": "Expr",
+    "return_statement": "Return", "if_statement": "If", "for_statement": "For",
+    "enhanced_for_statement": "ForEach", "while_statement": "While", "do_statement": "Do",
+    "switch_statement": "Switch", "switch_expression": "Switch", "try_statement": "Try",
+    "try_with_resources_statement": "Try", "throw_statement": "Throw", "yield_statement": "Yield",
+    "labeled_statement": "Labeled", "block": "Block", "break_statement": "Break",
+    "continue_statement": "Continue", "synchronized_statement": "Sync",
+    "assert_statement": "Assert", "explicit_constructor_invocation": "Expr",
+}
+# TYPE positions — a name here is structural, never a value read (the typed-language hazard that
+# recurred across TS/Rust/C++). Mirrors the VFG, which routes type names through `freevar` / drops
+# the cast type. A `type_identifier` in a value expression (a bare class-name reference) is genuinely
+# not a value read in either builder.
+_PDG_TYPE_NODES = frozenset({
+    "type_identifier", "scoped_type_identifier", "generic_type", "integral_type",
+    "floating_point_type", "boolean_type", "void_type", "array_type", "annotated_type",
+    "wildcard", "type_parameter", "type_arguments",
+})
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def pdg_source(source: str, lang: str = "java") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every method/constructor — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested methods/lambdas/anonymous classes are opaque NESTED leaves.
+    Advisory, on demand.
+
+    Accepted layer-level under-approximations (cross-language consistent, mirror the Python
+    reference and the sibling PDGs), all *symmetric* — shared by BOTH the PDG and the VFG so they
+    create no VFG/PDG divergence: lambda / anonymous-class bodies are opaque (a param used only
+    inside one is read by neither builder), and an `instanceof`/`switch` pattern binding is not
+    modelled as flow by either builder."""
+    return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a Java method/constructor — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++ PDG builders: statement nodes + a
+    synthetic ENTRY carrying the parameters, control ('C') / data ('D', sequential reaching-def)
+    edges. Java is statement-oriented (like Go and C/C++). Nested methods/lambdas/anonymous classes
+    are opaque NESTED leaves; reorder-invariant. A structural approximation (no SSA/alias analysis),
+    advisory only — never feeds liveness. Its read/write projection (`collect`/`bind_place`) reads
+    ONLY genuine value operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind`:
+    TYPE positions, statement LABELs, the method NAME in a call, and field/member names are never
+    read as values."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.named_children:
+            if p.type in ("formal_parameter", "spread_parameter"):
+                nm = p.child_by_field_name("name")
+                if nm is None:  # spread_parameter wraps a variable_declarator
+                    for c in p.named_children:
+                        if c.type == "variable_declarator":
+                            nm = c.child_by_field_name("name")
+                if nm is not None:
+                    last_def[text(nm)] = entry
+
+    def bind_place(target, loads: set, stores: set) -> None:
+        """An assignment target. A plain identifier defines a name (a STORE); a field/array place
+        (`s.f = …`, `a[i] = …`) defines no name — its object/index are READS (mirrors the VFG's
+        `bind`)."""
+        if target is None:
+            return
+        t = target.type
+        if t == "identifier":
+            stores.add(text(target))
+        elif t == "parenthesized_expression":
+            bind_place(_last(target), loads, stores)
+        else:  # field_access / array_access: no name defined — read the object/index operands
+            collect(target, loads, stores)
+
+    def rmw_target(target, loads: set, stores: set) -> None:
+        """A read-modify-write target (`x += e`, `x++`): a plain lvalue both READS and WRITES the
+        name; a field/array place reads its operands (no name defined). Unwraps parentheses."""
+        while target is not None and target.type == "parenthesized_expression":
+            target = _last(target)
+        if target is None:
+            return
+        if target.type == "identifier":
+            stores.add(text(target))
+            loads.add(text(target))
+        else:
+            collect(target, loads, stores)
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header — stops at nested blocks (their own nodes) and
+        nested functions/lambdas/anonymous classes (opaque), mirroring the sibling PDGs. Never reads
+        a TYPE position, a statement LABEL, a call's method NAME, or a field/member name."""
+        if n is None:
+            return
+        t = n.type
+        if t in _FUNC_NODES or t in ("line_comment", "block_comment"):
+            return  # a lambda / nested body is opaque (matches the VFG's NESTED leaf)
+        if t in _PDG_TYPE_NODES or t in _CONST:
+            return  # a type name / literal carries no value read
+        if t in ("this", "super"):
+            return  # the VFG routes these through `freevar` — not a parameter read
+        if t == "identifier":
+            loads.add(text(n))
+            return
+        if t == "field_access":  # read the object; the field name is not a value
+            collect(n.child_by_field_name("object"), loads, stores)
+            return
+        if t == "method_invocation":  # read the receiver + args; the method NAME is not a value
+            collect(n.child_by_field_name("object"), loads, stores)
+            args = n.child_by_field_name("arguments")
+            if args is not None:
+                for a in args.named_children:
+                    collect(a, loads, stores)
+            return
+        if t == "array_access":
+            collect(n.child_by_field_name("array"), loads, stores)
+            collect(n.child_by_field_name("index"), loads, stores)
+            return
+        if t == "object_creation_expression":  # `new T(args)` — the type is not a read; args are
+            args = n.child_by_field_name("arguments")
+            if args is not None:
+                for a in args.named_children:
+                    collect(a, loads, stores)
+            return  # an anonymous-class body (if any) is opaque
+        if t == "array_creation_expression":  # `new T[n]{init}` — type not read; dims/init are
+            for c in n.named_children:
+                if c.type == "dimensions_expr":
+                    for d in c.named_children:
+                        collect(d, loads, stores)
+                elif c.type == "array_initializer":
+                    collect(c, loads, stores)
+            return
+        if t == "cast_expression":  # `(T) x` — the cast type carries no read; the value does
+            collect(n.child_by_field_name("value"), loads, stores)
+            return
+        if t == "instanceof_expression":  # read the left operand; the type + pattern var are not reads
+            collect(n.child_by_field_name("left"), loads, stores)
+            return
+        if t == "local_variable_declaration":
+            for decl in n.named_children:
+                if decl.type == "variable_declarator":
+                    nm = decl.child_by_field_name("name")
+                    if nm is not None:
+                        stores.add(text(nm))
+                    collect(decl.child_by_field_name("value"), loads, stores)
+            return
+        if t == "assignment_expression":
+            op = _op_text(n, text)
+            left = n.child_by_field_name("left")
+            if op and op != "=" and op.endswith("="):  # `x += e` reads AND writes the left operand
+                rmw_target(left, loads, stores)
+            else:
+                bind_place(left, loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "update_expression":  # `x++` / `--x` reads and writes its operand
+            rmw_target(_first(n), loads, stores)
+            return
+        if t == "switch_expression":  # value-position switch: fold scrutinee + labels + arm reads
+            collect(_strip(n.child_by_field_name("condition")), loads, stores)
+            body = n.child_by_field_name("body")
+            if body is not None:
+                for grp in body.named_children:
+                    if grp.type in ("switch_block_statement_group", "switch_rule"):
+                        for c in grp.named_children:
+                            if c.type == "switch_label":
+                                for lbl in c.named_children:
+                                    collect(lbl, loads, stores)
+                            else:
+                                collect(c, loads, stores)
+            return
+        for c in n.named_children:
+            collect(c, loads, stores)
+
+    def _strip(node):
+        while node is not None and node.type == "parenthesized_expression" and _nc(node):
+            node = _last(node)
+        return node
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
+        # list (and get_matrix cells) non-reproducible across processes (R205).
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type in ("line_comment", "block_comment"):
+            return
+        if blk.type in ("block", "constructor_body"):
+            for st in blk.named_children:
+                block(st, parent)
+        else:
+            process(blk, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t in ("line_comment", "block_comment"):
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        if t == "if_statement":
+            data_edges(_strip(node.child_by_field_name("condition")), sid)
+            block(node.child_by_field_name("consequence"), sid)
+            block(node.child_by_field_name("alternative"), sid)
+        elif t == "for_statement":
+            # `init`/`update` are REPEATED field children for comma forms (`i++, j--`); iterate every
+            # named child by field name — child_by_field_name returns only the first (R197 parity).
+            for i in range(node.named_child_count):
+                fld = node.field_name_for_named_child(i)
+                if fld in ("init", "condition", "update"):
+                    data_edges(node.named_children[i], sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t == "enhanced_for_statement":  # `for (T x : iterable)`
+            data_edges(node.child_by_field_name("value"), sid)  # the iterated value is a read
+            nm = node.child_by_field_name("name")
+            if nm is not None:
+                last_def[text(nm)] = sid  # the loop var binds
+            block(node.child_by_field_name("body"), sid)
+        elif t in ("while_statement", "do_statement"):
+            data_edges(_strip(node.child_by_field_name("condition")), sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t in ("switch_statement", "switch_expression"):
+            data_edges(_strip(node.child_by_field_name("condition")), sid)  # scrutinee
+            body = node.child_by_field_name("body")
+            if body is not None:
+                for grp in body.named_children:
+                    if grp.type == "switch_block_statement_group":  # classic `case L:` + stmts
+                        for st in grp.named_children:
+                            if st.type == "switch_label":
+                                for lbl in st.named_children:
+                                    data_edges(lbl, sid)  # a case selector reads on the header
+                            elif st.type not in ("line_comment", "block_comment"):
+                                block(st, sid)
+                    elif grp.type == "switch_rule":  # arrow `case L -> expr/block/throw;`
+                        for c in grp.named_children:
+                            if c.type == "switch_label":
+                                for lbl in c.named_children:
+                                    data_edges(lbl, sid)
+                            elif c.type in ("block", "expression_statement", "throw_statement"):
+                                block(c, sid)
+                            elif c.type not in ("line_comment", "block_comment"):
+                                data_edges(c, sid)  # arrow value expression reads on the header
+        elif t in ("try_statement", "try_with_resources_statement"):
+            for ch in node.named_children:
+                if ch.type == "resource_specification":
+                    for r in ch.named_children:
+                        if r.type == "resource":
+                            val = r.child_by_field_name("value")
+                            data_edges(val if val is not None else r, sid)
+                            rnm = r.child_by_field_name("name")
+                            if rnm is not None:
+                                last_def[text(rnm)] = sid
+            block(node.child_by_field_name("body"), sid)
+            for ch in node.named_children:
+                if ch.type == "catch_clause":
+                    for c in ch.named_children:
+                        if c.type == "catch_formal_parameter":
+                            cnm = c.child_by_field_name("name")
+                            if cnm is not None:
+                                last_def[text(cnm)] = sid  # the caught exception binds
+                    block(ch.child_by_field_name("body"), sid)
+                elif ch.type == "finally_clause":
+                    for c in ch.named_children:
+                        if c.type == "block":
+                            block(c, sid)
+        elif t == "synchronized_statement":
+            for c in node.named_children:
+                if c.type == "block":
+                    block(c, sid)
+                elif c.type not in ("line_comment", "block_comment"):
+                    data_edges(c, sid)  # the lock expression is a read
+        elif t == "labeled_statement":
+            # descend the inner statement; the LABEL (an identifier) is NOT a value.
+            for c in node.named_children:
+                if c.type != "identifier" and c.type not in ("line_comment", "block_comment"):
+                    block(c, sid)
+        elif t == "block":
+            for c in node.named_children:
+                block(c, sid)
+        elif t in ("break_statement", "continue_statement"):
+            pass  # a break/continue LABEL is a control target, not a value read
+        else:
+            # a simple statement (declaration / expression / return / throw / yield / assert / …):
+            # the whole node is its header. collect stops at nested blocks/functions, so nothing
+            # leaks. Any nested block child is still descended (parity with the sibling PDGs).
+            data_edges(node, sid)
+            for c in node.named_children:
+                if c.type == "block":
+                    block(c, sid)
+
+    body = fn.child_by_field_name("body")
+    block(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges

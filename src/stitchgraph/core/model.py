@@ -60,7 +60,7 @@ class Layer(str, Enum):
     - CALL: the shipped inter-procedural graph (defs ↔ defs via CALLS/REFERENCES/INHERITS/…).
     - STATEMENT: control + data dependence between statements within a function (the PDG) — nodes are
       statements, edges are control ('C') / data ('D') dependence. Python (deep stdlib `ast`), the
-      JS family (js/ts/tsx), Go, Rust, and C/C++ (tree-sitter) so far; the other tree-sitter
+      JS family (js/ts/tsx), Go, Rust, C/C++, and Java (tree-sitter) so far; the other tree-sitter
       languages are a future sweep.
     - EXPRESSION: a function's intra-procedural value-flow graph (operations + the values flowing
       between them) — what `core/structure.py` builds; drilled into per-function via `get_matrix`.
