@@ -993,7 +993,7 @@ def _body_matrix(store: Store, scope: str, layer: str) -> Result:
     payload: dict = {
         "layer": layer,
         "function": node.id.split("::", 1)[-1],
-        "labels": labels,       # ops (expression) / statements (statement), by index
+        "labels": labels,       # statements (statement) / ops (expression), by index
         "cells": cells,         # sparse (src_index, dst_index, kind): d/c (expr) or C/D (stmt)
         "n": len(labels),
     }
@@ -1035,7 +1035,7 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     layer = layer.lower()
     if layer not in (Layer.CALL.value, Layer.STATEMENT.value, Layer.EXPRESSION.value):
         return refuse(f"unknown layer '{layer}' (call|statement|expression)", confidence=0.0)
-    if layer in (Layer.EXPRESSION.value, Layer.STATEMENT.value):
+    if layer in (Layer.STATEMENT.value, Layer.EXPRESSION.value):
         return _body_matrix(store, scope, layer)
     try:
         rel = Relation(relation.upper())
