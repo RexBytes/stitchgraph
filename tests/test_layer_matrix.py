@@ -3,7 +3,7 @@
 The CALL layer is the shipped inter-procedural relation submatrix (now tagged `layer="call"`); the
 EXPRESSION layer drills into a SINGLE function's intra-procedural value-flow graph (all 12 languages);
 the STATEMENT layer drills into its program-dependence graph (Python + the JS family + Go + Rust +
-C/C++ + Java + C# so far). All on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
+C/C++ + Java + C# + Ruby so far). All on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
 """
 from __future__ import annotations
 
@@ -212,16 +212,39 @@ def test_statement_layer_drills_a_csharp_function(tmp_path):
         assert "If" in r["labels"] and r["labels"].count("Return") == 2
 
 
-def test_statement_layer_refuses_unsupported_language(tmp_path):
-    # A language without a STATEMENT frontend yet (Ruby) refuses cleanly; no crash.
-    (tmp_path / "m.rb").write_text("def f(a)\n  a + 1\nend\n")
+def test_statement_layer_drills_a_ruby_function(tmp_path):
+    # The STATEMENT layer covers Ruby as well (v3.16.0).
+    (tmp_path / "m.rb").write_text(
+        "def classify(x)\n"
+        "  a = x + 1\n"
+        "  if a > 0\n"
+        "    return a\n"
+        "  end\n"
+        "  0\n"
+        "end\n"
+    )
     store = sg.Store(":memory:")
     sg.reindex(store, str(tmp_path))
-    rid = [n for n in store.all_node_ids() if n.endswith("::f") and ".rb" in n]
+    rid = [n for n in store.all_node_ids() if n.endswith("m.rb::classify")]
     if rid:  # only if the tree-sitter extra indexed the Ruby file
         m = sg.get_matrix(store, rid[0], layer="statement")
+        assert m.ok, m.review_reasons
+        r = m.result
+        assert r["layer"] == "statement" and r["labels"][0] == "ENTRY"
+        assert {c["k"] for c in r["cells"]} <= {"C", "D"}
+        assert "If" in r["labels"]
+
+
+def test_statement_layer_refuses_unsupported_language(tmp_path):
+    # A language without a STATEMENT frontend yet (PHP) refuses cleanly; no crash.
+    (tmp_path / "m.php").write_text("<?php\nfunction f($a) {\n  return $a + 1;\n}\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    rid = [n for n in store.all_node_ids() if n.endswith("::f") and ".php" in n]
+    if rid:  # only if the tree-sitter extra indexed the PHP file
+        m = sg.get_matrix(store, rid[0], layer="statement")
         msg = " ".join(m.review_reasons).lower()
-        assert not m.ok and "supported-language" in msg and "c#" in msg
+        assert not m.ok and "supported-language" in msg and "ruby" in msg
 
 
 def test_statement_layer_never_affects_liveness(tmp_path):

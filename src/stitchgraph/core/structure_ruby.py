@@ -391,6 +391,288 @@ def _last(node):
     return k[-1] if k else None
 
 
+# --- STATEMENT layer (PDG) — design §5c sweep, Ruby ----------------------------------------------
+
+_PDG_STMT_LABEL = {
+    "assignment": "Assign", "operator_assignment": "Assign", "call": "Call", "method_call": "Call",
+    "if": "If", "unless": "If", "if_modifier": "If", "unless_modifier": "If", "elsif": "If",
+    "case": "Case", "case_match": "Case", "while": "While", "until": "While",
+    "while_modifier": "While", "until_modifier": "While", "for": "For", "begin": "Begin",
+    "return": "Return", "yield": "Yield", "break": "Break", "next": "Next", "redo": "Redo",
+    "retry": "Retry", "binary": "Expr", "identifier": "Expr",
+}
+# control constructs that become their own PDG node in STATEMENT position (and fold in VALUE position)
+_CONTROL = frozenset({
+    "if", "unless", "if_modifier", "unless_modifier", "case", "case_match", "while", "until",
+    "while_modifier", "until_modifier", "for", "begin",
+})
+# env-looked-up value names in the VFG's `ev` — the only ones that can BE the single free param `v`;
+# `self`/`instance_variable` route through `freevar` there (never a param), so they are not reads.
+_READ_NAMES = frozenset({"identifier", "constant", "global_variable", "class_variable"})
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def pdg_source(source: str, lang: str = "ruby") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every method — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; blocks / do-end / lambdas are opaque NESTED leaves. Advisory, on
+    demand.
+
+    Ruby is EXPRESSION-oriented (like Rust): control constructs (`if`/`case`/`while`/`for`) become
+    control nodes in STATEMENT position but FOLD their reads into the enclosing statement in VALUE
+    position (`x = if c then a else b end`). Accepted layer-level under-approximations, all symmetric
+    (shared by BOTH the PDG and the VFG, so no VFG/PDG divergence): block/do-end/lambda bodies are
+    opaque, and a `for`/rescue binding is modelled as a store but its pattern is not deep-destructured.
+    Method-parameter default-value expressions are read by the VFG but not seeded here (the one
+    accepted asymmetry, shared by every sibling PDG)."""
+    return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a Ruby method — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++/Java/C# PDG builders: statement
+    nodes + a synthetic ENTRY carrying the parameters, control ('C') / data ('D', sequential
+    reaching-def) edges. Ruby is expression-oriented, so the read/write projection (`collect`) folds
+    value-position control; blocks/lambdas are opaque NESTED leaves; reorder-invariant. A structural
+    approximation (no SSA/alias analysis), advisory only — never feeds liveness. The projection reads
+    ONLY genuine value operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind`: a
+    call's method NAME, `self`/`@ivar`, and rescue/for pattern names are never read as values."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.named_children:
+            nm = p if p.type == "identifier" else p.child_by_field_name("name")
+            if nm is None and p.named_children:
+                nm = p.named_children[0]
+            if nm is not None and nm.type == "identifier":
+                last_def[text(nm)] = entry
+
+    def bind_place(target, loads: set, stores: set) -> None:
+        """An assignment target. A plain name defines it (a STORE); an index/attribute place
+        (`a[i] = …`, `obj.attr = …`) defines no name — its object/index are READS (mirrors `bind`).
+        A `left_assignment_list` (`a, b = …`) deconstructs — each element binds."""
+        if target is None:
+            return
+        t = target.type
+        if t in _READ_NAMES or t == "instance_variable":
+            stores.add(text(target))
+        elif t in ("left_assignment_list", "destructured_left_assignment"):
+            for c in target.named_children:
+                bind_place(c, loads, stores)
+        elif t == "rest_assignment":
+            for c in target.named_children:
+                bind_place(c, loads, stores)
+        else:  # element_reference / call attribute-write: no name — read the object/index operands
+            collect(target, loads, stores)
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement — mirrors the VFG's `ev`. Value-position control folds
+        (its condition + branch bodies' reads accumulate here). Stops at blocks/lambdas (opaque)."""
+        if n is None:
+            return
+        t = n.type
+        if t in _FUNC_NODES or t == "comment":
+            return  # a block / do-end / lambda is an opaque closure (matches the VFG's NESTED leaf)
+        if t in _READ_NAMES:
+            loads.add(text(n))
+            return
+        if t in ("self", "instance_variable") or t in _CONST:
+            return  # self/@ivar route through freevar in the VFG — never the single free param
+        if t in ("string", "subshell", "heredoc_beginning"):
+            for c in n.named_children:
+                if c.type == "interpolation":
+                    for ic in c.named_children:
+                        collect(ic, loads, stores)
+            return
+        if t == "call" or t == "method_call":
+            collect(n.child_by_field_name("receiver"), loads, stores)  # method NAME + block: not reads
+            args = n.child_by_field_name("arguments")
+            if args is not None:
+                for a in args.named_children:
+                    collect(a, loads, stores)
+            return
+        if t == "element_reference":
+            for c in n.named_children:
+                collect(c, loads, stores)  # object + index operands are all reads
+            return
+        if t == "assignment":
+            bind_place(n.child_by_field_name("left"), loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "operator_assignment":  # `x += e` reads AND writes the left operand
+            left = n.child_by_field_name("left")
+            if left is not None and left.type in _READ_NAMES:
+                stores.add(text(left))
+                loads.add(text(left))
+            else:
+                collect(left, loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t in ("parenthesized_statements", "begin"):
+            _collect_body(n, loads, stores)
+            return
+        if t in ("if", "unless", "if_modifier", "unless_modifier"):
+            collect(n.child_by_field_name("condition"), loads, stores)
+            _collect_body(n.child_by_field_name("consequence"), loads, stores)
+            _collect_body(n.child_by_field_name("body"), loads, stores)
+            _collect_body(n.child_by_field_name("alternative"), loads, stores)
+            return
+        if t in ("case", "case_match"):
+            collect(n.child_by_field_name("value"), loads, stores)
+            for c in n.named_children:
+                if c.type in ("when", "in_clause"):
+                    for i in range(c.named_child_count):
+                        if c.field_name_for_named_child(i) == "pattern":
+                            collect(c.named_children[i], loads, stores)
+                    _collect_body(c.child_by_field_name("body"), loads, stores)
+                elif c.type == "else":
+                    _collect_body(c, loads, stores)
+            return
+        if t in ("while", "until", "while_modifier", "until_modifier"):
+            collect(n.child_by_field_name("condition"), loads, stores)
+            _collect_body(n.child_by_field_name("body"), loads, stores)
+            return
+        if t == "for":
+            collect(n.child_by_field_name("value"), loads, stores)  # iterated collection is a read
+            bind_place(n.child_by_field_name("pattern"), loads, stores)  # loop var binds
+            _collect_body(n.child_by_field_name("body"), loads, stores)
+            return
+        if t in ("return", "yield", "break", "next"):
+            for c in n.named_children:
+                if c.type == "argument_list":
+                    for a in c.named_children:
+                        collect(a, loads, stores)
+                else:
+                    collect(c, loads, stores)
+            return
+        for c in n.named_children:
+            collect(c, loads, stores)
+
+    def _collect_body(node, loads: set, stores: set) -> None:
+        """Fold a value-position body's statement reads into the enclosing header."""
+        if node is None:
+            return
+        if node.type in ("body_statement", "then", "else", "do", "block_body", "ensure",
+                         "begin", "parenthesized_statements"):
+            for c in node.named_children:
+                if c.type == "rescue":
+                    exc = c.child_by_field_name("exceptions")
+                    for ec in (exc.named_children if exc is not None else []):
+                        collect(ec, loads, stores)
+                    _collect_body(c.child_by_field_name("body"), loads, stores)
+                elif c.type in ("else", "ensure"):
+                    _collect_body(c.child_by_field_name("body") or c, loads, stores)
+                elif c.type != "comment":
+                    collect(c, loads, stores)
+        else:
+            collect(node, loads, stores)
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        for nm in sorted(loads):  # sorted: PYTHONHASHSEED-independent edge order (R205)
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def bind_target(target, sid: int) -> None:
+        st: set = set()
+        bind_place(target, set(), st)
+        for nm in sorted(st):
+            last_def[nm] = sid
+
+    def walk_body(node, parent: int) -> None:
+        if node is None or node.type == "comment":
+            return
+        if node.type in ("body_statement", "then", "else", "do", "block_body", "ensure", "begin",
+                         "parenthesized_statements"):
+            for st in node.named_children:
+                if st.type in ("rescue", "ensure", "else", "comment"):
+                    continue
+                process(st, parent)
+            for c in node.named_children:
+                if c.type == "rescue":
+                    sid = new_id("Rescue")
+                    edges.append((parent, sid, "C"))
+                    exc = c.child_by_field_name("exceptions")
+                    for ec in (exc.named_children if exc is not None else []):
+                        data_edges(ec, sid)
+                    walk_body(c.child_by_field_name("body"), parent)
+                elif c.type in ("else", "ensure"):
+                    walk_body(c.child_by_field_name("body") or c, parent)
+        else:
+            process(node, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        if t not in _CONTROL:
+            # a simple statement (assignment / call / trailing expression / return / …): the whole
+            # node is its header; `collect` folds any value-position control and stops at blocks.
+            sid = new_id(_pdg_label(t))
+            edges.append((parent, sid, "C"))
+            data_edges(node, sid)
+            return
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        if t in ("if", "unless", "if_modifier", "unless_modifier"):
+            data_edges(node.child_by_field_name("condition"), sid)
+            walk_body(node.child_by_field_name("consequence"), sid)
+            walk_body(node.child_by_field_name("body"), sid)
+            walk_body(node.child_by_field_name("alternative"), sid)
+        elif t in ("case", "case_match"):
+            data_edges(node.child_by_field_name("value"), sid)
+            for c in node.named_children:
+                if c.type in ("when", "in_clause"):
+                    for i in range(c.named_child_count):
+                        if c.field_name_for_named_child(i) == "pattern":
+                            data_edges(c.named_children[i], sid)  # selectors read on the header
+                    walk_body(c.child_by_field_name("body"), sid)
+                elif c.type == "else":
+                    walk_body(c, sid)
+        elif t in ("while", "until", "while_modifier", "until_modifier"):
+            data_edges(node.child_by_field_name("condition"), sid)
+            walk_body(node.child_by_field_name("body"), sid)
+        elif t == "for":
+            data_edges(node.child_by_field_name("value"), sid)  # the iterated collection is a read
+            bind_target(node.child_by_field_name("pattern"), sid)  # the loop var binds
+            walk_body(node.child_by_field_name("body"), sid)
+        elif t == "begin":
+            walk_body(node, sid)
+
+    body = fn.child_by_field_name("body")
+    walk_body(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges
+
+
 def _op_text(node, text) -> str:
     op = node.child_by_field_name("operator")
     if op is not None:

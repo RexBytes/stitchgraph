@@ -4,6 +4,24 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.16.0] — 2026-07-01
+
+**The STATEMENT layer learns Ruby (§5c sweep, language 8).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), Java (v3.14.0), and C# (v3.15.0), v3.16.0
+adds Ruby to the program-dependence-graph layer: `structure_ruby.pdg_source` builds a per-function
+PDG (statement nodes + a synthetic `ENTRY` carrying params; control `C` / data `D`
+sequential-reaching-def edges) and `get_matrix(layer="statement")` drills it. Ruby is
+**expression-oriented** (like Rust): control constructs (`if`/`case`/`while`/`for`) become control
+nodes in statement position but FOLD their reads into the enclosing statement in value position
+(`x = if c then a else b end`). A call's method name carries no value read (receiver + args do);
+`self`/`@ivar` route through free variables; blocks / `do…end` / lambdas are opaque NESTED leaves;
+`for`/rescue bindings are stores; string-interpolation holes are read. A new white-box VFG-vs-PDG
+differential oracle (`tests/oracles/test_pdg_ruby_vfg_differential.py`) cross-checks the statement-
+and expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the JS family
++ Go + Rust + C/C++ + Java + C# + Ruby; the remaining tree-sitter languages (PHP, Bash) are the rest
+of the sweep and refuse with a supported-set message. On-demand, advisory, never feeds liveness
+(cardinal rule re-verified). Backward-compatible (no schema change, default behavior unchanged) → MINOR.
+
 ## [3.15.0] — 2026-07-01
 
 **The STATEMENT layer learns C# (§5c sweep, language 7).** After Python (v3.9.0), the JS family

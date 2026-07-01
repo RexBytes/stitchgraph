@@ -64,7 +64,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   identical — advisory and read-only, never feeding dead-code detection.
 - **Layered — one graph, pick the depth (§5c).** `get_matrix(layer="call")` is the
   inter-procedural relation graph; `layer="statement"` (v3.9.0) drills into a
-  function's program-dependence graph (control/data deps, Python + the JS family + Go + Rust + C/C++ + Java + C# for now);
+  function's program-dependence graph (control/data deps, Python + the JS family + Go + Rust + C/C++ + Java + C# + Ruby for now);
   `layer="expression"` (v3.8.0) drills into its value-flow graph (all 12 languages).
   Same primitives, call → statement → expression depth; the deeper layers are advisory
   and computed on demand.
@@ -72,7 +72,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.15.0 — layered code-property graph: call ↔ statement ↔ expression drill-down over the 12-language body matrix)
+## Status (v3.16.0 — layered code-property graph: call ↔ statement ↔ expression drill-down over the 12-language body matrix)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
