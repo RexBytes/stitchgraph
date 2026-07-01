@@ -124,6 +124,23 @@ def test_pdg_descends_into_block_bearing_statements():
         assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
 
 
+def test_pdg_typeof_in_type_position_is_not_a_data_read():
+    # `typeof x` in a TS TYPE position (type_query) is erased at runtime — it must NOT create a data
+    # edge from x (R216). In VALUE position `typeof x` is a unary_expression and still flows.
+    for src in (
+        "function g(payload) { type L = typeof payload; return 1; }",
+        "function g(payload) { return make<typeof payload>(1); }",
+        "function g(payload) { let x = 1 as typeof payload; return x; }",
+    ):
+        _labels, edges = structure_js.pdg_source(src, "typescript")["g"]
+        assert not any(k == "D" and s == 0 for s, d, k in edges), \
+            f"typeof-in-type-position leaked a data read: {src!r} -> {edges}"
+    # a genuine value read still links (guards against over-correction).
+    _labels, edges = structure_js.pdg_source(
+        "function g(payload) { let x = payload + 1; return x; }", "typescript")["g"]
+    assert any(k == "D" and s == 0 for s, d, k in edges)
+
+
 def test_pdg_source_never_raises_on_bad_or_typed_input():
     cases = [
         "",

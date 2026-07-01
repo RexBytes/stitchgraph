@@ -582,6 +582,9 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         t = n.type
         if t in _FUNC_NODES or t == "statement_block" or t == "comment":
             return
+        if t == "type_query":
+            return  # `typeof x` in a TS TYPE position is erased at runtime — no data read (R216).
+            #        (In VALUE position `typeof x` is a unary_expression, so this is unambiguous.)
         if t == "variable_declarator":
             nm = n.child_by_field_name("name")
             if nm is not None:
