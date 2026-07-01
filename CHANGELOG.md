@@ -4,6 +4,42 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.12.0] — 2026-07-01
+
+**The STATEMENT layer learns Rust (§5c sweep, language 4).** After Python (v3.9.0), the JS family
+(v3.10.0), and Go (v3.11.0), v3.12.0 adds Rust to the program-dependence-graph layer.
+Backward-compatible (no schema change, default behavior unchanged) → MINOR.
+
+### Added
+- **`structure_rust.pdg_source`** — a Rust function's program-dependence graph. Rust is
+  expression-oriented, so control-flow *expressions* (`if`/`match`/`loop`/`while`/`for`) in statement
+  position become control nodes; in value position (`let y = if …`) they fold into the enclosing
+  statement's reads (mirroring how the Python PDG folds walrus/comprehensions). ENTRY seeds params +
+  `self`; `if let`/`while let` bind their pattern and read their scrutinee; `for` binds its pattern
+  and reads the iterator; `match` descends each arm body; closures/nested fns are opaque `NESTED`.
+  Type positions (`type_identifier` / `*_type` / scoped paths) carry no value read, so `let x: T = …`
+  and `x as T` never leak a false dependency. Keyed identically to `fingerprint_source`/`vfg_source`.
+- **`get_matrix(layer="statement")` now covers Rust** — dispatches `.py` → `structure`, js/ts/tsx →
+  `structure_js`, `.go` → `structure_go`, `.rs` → `structure_rust`. Other languages refuse with a
+  supported-set message.
+
+### Notes
+- A structural **approximation** (sequential reaching-def, no SSA/alias analysis), **advisory** —
+  never persisted, never feeds `find_stale`. Remaining tree-sitter languages (C/C++, Java, C#, Ruby,
+  PHP, Bash) are the rest of the sweep.
+
+### Guarantees
+- Advisory — the STATEMENT layer never feeds `find_stale`/liveness (a test pins a Rust drill-down
+  cannot change `find_stale`).
+- **Deterministic output** — byte-reproducible across processes (sorted edge emission).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_rust_layer.py`
+  (key-parity, well-formed C/D graph, reorder-invariance, dependence sensitivity, type-position
+  safety, Rust-specific constructs [if-let/while-let/match-guards/labeled-loop/closures/macros/`?`],
+  never-raises, cross-`PYTHONHASHSEED` determinism) + a Rust drill case in `tests/test_layer_matrix.py`.
+  Two-round full-diversity adversarial panel clean.
+
 ## [3.11.0] — 2026-07-01
 
 **The STATEMENT layer learns Go (§5c sweep, language 3).** After Python (v3.9.0) and the JS family
