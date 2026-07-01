@@ -613,6 +613,9 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             if text(n) != "_":
                 loads.add(text(n))
             return
+        if t in ("self", "super", "crate"):
+            loads.add(t)  # receiver / path root is a value read (mirrors the seed at ENTRY)
+            return
         if t == "field_expression":
             collect(n.child_by_field_name("value"), loads, stores)  # read object; skip field name
             return

@@ -142,6 +142,27 @@ def test_pdg_handles_rust_specific_constructs():
         assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
 
 
+def test_pdg_self_receiver_reads_thread_from_entry():
+    # R222: a `self` receiver reference is a `self` node (not `identifier`); the PDG must record
+    # it as a value read so receiver-mediated dependences link from the ENTRY `self` seed. A
+    # method whose body reads `self.field` must have a D-edge out of ENTRY (node 0).
+    src = (
+        "struct C { n: i32 }\n"
+        "impl C {\n"
+        "    fn m(&mut self) -> i32 {\n"
+        "        self.n = 5;\n"
+        "        let a = self.n + 1;\n"
+        "        a\n"
+        "    }\n"
+        "}\n"
+    )
+    labels, edges = structure_rust.pdg_source(src)["C.m"]
+    assert labels[0] == "ENTRY"
+    assert any(k == "D" and s == 0 for s, d, k in edges), (
+        "self-receiver read must produce a data edge from the ENTRY self seed"
+    )
+
+
 def test_pdg_source_never_raises_on_bad_input():
     for bad in ("", "fn (", "@@@ not rust", "fn f() {", "let x ="):
         assert isinstance(structure_rust.pdg_source(bad), dict)
