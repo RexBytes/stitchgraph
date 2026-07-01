@@ -456,3 +456,84 @@ def vfg_source(source: str) -> dict[str, tuple[list[str], list[tuple[int, int, s
     — the EXPRESSION-layer companion to `fingerprint_source` (identical keys). Computed on demand,
     never persisted, advisory; the raw graph `get_matrix(layer="expression")` drills into."""
     return _walk_functions(source, vfg)
+
+
+_PDG_BLOCK_FIELDS = ("body", "orelse", "finalbody")
+
+
+def _build_pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer (design §5c) — a program-dependence graph of the function body: nodes are
+    statements (+ a synthetic ENTRY carrying the parameters), CONTROL edges ('C') link a statement to
+    the header (if/for/while/try/with) it nests under, DATA edges ('D') link a def to a later use (a
+    sequential reaching-def approximation — no SSA/alias analysis; see research/03-pdg/FINDINGS.md).
+    Nested defs/classes are opaque NESTED leaves. Order-invariant once WL-fingerprinted."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    flat: list[tuple[int, ast.AST, int | None]] = []
+    counter = 0
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+
+    def walk_block(stmts: list[ast.stmt], parent: int) -> None:
+        for s in stmts:
+            if isinstance(s, _OPAQUE):
+                flat.append((new_id("NESTED"), s, parent))
+                continue
+            sid = new_id(type(s).__name__)
+            flat.append((sid, s, parent))
+            for field in _PDG_BLOCK_FIELDS:
+                block = getattr(s, field, None)
+                if isinstance(block, list):
+                    walk_block([x for x in block if isinstance(x, ast.stmt)], sid)
+            for handler in getattr(s, "handlers", []) or []:
+                walk_block([x for x in handler.body if isinstance(x, ast.stmt)], sid)
+
+    walk_block(fn.body, entry)
+
+    def header_names(node: ast.AST) -> tuple[set[str], set[str]]:
+        loads: set[str] = set()
+        stores: set[str] = set()
+        for field, value in ast.iter_fields(node):
+            if field in _PDG_BLOCK_FIELDS or field == "handlers":
+                continue  # a nested block is its own node, not part of this statement's header
+            for v in (value if isinstance(value, list) else [value]):
+                if isinstance(v, ast.AST):
+                    for sub in ast.walk(v):
+                        if isinstance(sub, ast.Name):
+                            (stores if isinstance(sub.ctx, ast.Store) else loads).add(sub.id)
+        return loads, stores
+
+    last_def: dict[str, int] = {a.arg: entry for a in _all_args(fn)}
+    for sid, node, parent in sorted(flat, key=lambda t: t[0]):
+        if parent is not None:
+            edges.append((parent, sid, "C"))
+        loads, stores = header_names(node)
+        for name in loads:
+            if name in last_def and last_def[name] != sid:
+                edges.append((last_def[name], sid, "D"))
+        for name in stores:
+            last_def[name] = sid
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges
+
+
+def pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """A function body's program-dependence graph — the STATEMENT layer of the code-property graph
+    (design §5c): statement nodes + control ('C') / data ('D') dependence edges. Advisory, computed
+    on demand; Python-only so far (deep stdlib ast)."""
+    return _build_pdg(fn)
+
+
+def pdg_source(source: str) -> dict[str, tuple[list[str], list[tuple[int, int, str]]]]:
+    """Program-dependence graph of every function/method in a Python source string, keyed by
+    qualified name — the STATEMENT-layer companion to `fingerprint_source`/`vfg_source` (identical
+    keys). Computed on demand, never persisted, advisory; the graph `get_matrix(layer="statement")`
+    drills into."""
+    return _walk_functions(source, pdg)

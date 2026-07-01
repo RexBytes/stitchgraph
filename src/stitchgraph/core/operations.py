@@ -934,30 +934,53 @@ def _expression_vfg(store: Store, node) -> tuple[list[str], list] | None:
     return vfgs.get(qual)
 
 
-def _expression_matrix(store: Store, scope: str) -> Result:
-    """Drill into ONE function's value-flow graph (the EXPRESSION layer). `scope` must resolve to a
-    single Function/Method; returns its VFG in the same shape as the call-layer matrix (labels =
-    operations, cells = data/control edges tagged `k`). Advisory — the body matrix never feeds
-    liveness."""
+def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
+    """The STATEMENT-layer program-dependence graph for one Python Function/Method node, or None if
+    it can't be built (non-.py, source unreadable). Python-only so far (deep stdlib ast); the .py
+    guard is enforced by the caller for a precise message and repeated here defensively."""
+    from pathlib import Path
+
+    from . import structure
+    path, sep, qual = node.id.partition("::")
+    if not sep or not path.endswith(".py"):
+        return None
+    qual = qual.split("#", 1)[0]
+    try:
+        src = Path(store.get_meta("root") or ".", path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return structure.pdg_source(src).get(qual)
+
+
+def _body_matrix(store: Store, scope: str, layer: str) -> Result:
+    """Drill into ONE function's body graph — the EXPRESSION (value-flow) or STATEMENT (program-
+    dependence) layer. `scope` must resolve to a single Function/Method; returns the graph in the
+    same shape as the call-layer matrix (labels + cells tagged by edge kind). Advisory — the body
+    matrix never feeds liveness."""
+    kind_word = "value-flow graph" if layer == Layer.EXPRESSION.value else "program-dependence graph"
     fns = [nid for nid in store.all_node_ids() if _under_scope(nid, scope)
            and (nd := store.get_node(nid)) is not None
            and nd.kind in (NodeKind.FUNCTION, NodeKind.METHOD)]
     if not fns:
-        return refuse(f"no function/method under scope '{scope}' — the expression layer drills into "
-                      "one function's value-flow graph", confidence=0.0)
+        return refuse(f"no function/method under scope '{scope}' — the {layer} layer drills into one "
+                      f"function's {kind_word}", confidence=0.0)
     if len(fns) > 1:
-        return refuse(f"scope '{scope}' matches {len(fns)} functions; the expression layer needs a "
+        return refuse(f"scope '{scope}' matches {len(fns)} functions; the {layer} layer needs a "
                       "SINGLE function (give its full id)", confidence=0.0, node_count=len(fns))
     node = store.get_node(fns[0])
     if node is None:
         return refuse(f"node '{fns[0]}' vanished during lookup", confidence=0.0)
-    graph = _expression_vfg(store, node)
+    if layer == Layer.STATEMENT.value and not fns[0].partition("::")[0].endswith(".py"):
+        return refuse(f"the statement (PDG) layer is Python-only so far; '{fns[0]}' is not a .py "
+                      "function", confidence=0.0)
+    graph = _expression_vfg(store, node) if layer == Layer.EXPRESSION.value \
+        else _pdg_for_node(store, node)
     if graph is None:
-        return refuse(f"could not build the value-flow graph for '{fns[0]}' (source unavailable or "
-                      "the tree-sitter extra is not installed)", confidence=0.0)
+        return refuse(f"could not build the {kind_word} for '{fns[0]}' (source unavailable or the "
+                      "required extractor is not installed)", confidence=0.0)
     labels, edges = graph
     if len(labels) > _EXPRESSION_MAX_NODES:
-        return refuse(f"function '{fns[0]}' has {len(labels)} value-flow nodes (> "
+        return refuse(f"function '{fns[0]}' has {len(labels)} {layer}-layer nodes (> "
                       f"{_EXPRESSION_MAX_NODES}); too large to read as a matrix", confidence=0.0,
                       node_count=len(labels))
     seen: dict[tuple[int, int, str], None] = {}
@@ -965,10 +988,10 @@ def _expression_matrix(store: Store, scope: str) -> Result:
         seen.setdefault((int(s), int(d), k), None)
     cells = [{"src": s, "dst": d, "k": k} for (s, d, k) in seen]
     payload: dict = {
-        "layer": Layer.EXPRESSION.value,
+        "layer": layer,
         "function": node.id.split("::", 1)[-1],
-        "labels": labels,       # value-flow operations / control points, by index
-        "cells": cells,         # sparse (src_index, dst_index, kind 'd'=data / 'c'=control)
+        "labels": labels,       # ops (expression) / statements (statement), by index
+        "cells": cells,         # sparse (src_index, dst_index, kind): d/c (expr) or C/D (stmt)
         "n": len(labels),
     }
     if len(labels) <= 12:
@@ -976,7 +999,7 @@ def _expression_matrix(store: Store, scope: str) -> Result:
         for s, d, _k in seen:
             grid[s][d] = 1
         payload["grid"] = grid
-    return ok(payload, layer=Layer.EXPRESSION.value, nodes=len(labels), edges=len(cells))
+    return ok(payload, layer=layer, nodes=len(labels), edges=len(cells))
 
 
 @operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
@@ -991,8 +1014,10 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
 
     `layer` selects the granularity (design §5c): "call" (default) is the
     inter-procedural relation graph; "expression" drills into a SINGLE function's
-    intra-procedural value-flow graph (labels = operations, cells tagged data/control).
-    The expression layer is advisory and computed on demand — it never feeds liveness.
+    intra-procedural value-flow graph (labels = operations, cells tagged data/control);
+    "statement" drills into its program-dependence graph (labels = statements, cells
+    tagged C=control / D=data dependence — Python-only so far). The deeper layers are
+    advisory and computed on demand — they never feed liveness.
     """
     # Validate arg types BEFORE using them — relation.upper()/startswith()/`> limit` would
     # otherwise raise on None/wrong-type from a library or MCP call (panel R18B).
@@ -1005,13 +1030,10 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     if not isinstance(layer, str):
         return refuse("layer must be a string", confidence=0.0)
     layer = layer.lower()
-    if layer == Layer.STATEMENT.value:
-        return refuse("the statement (PDG) layer is reserved and not built yet; use 'call' or "
-                      "'expression'", confidence=0.0)
-    if layer not in (Layer.CALL.value, Layer.EXPRESSION.value):
-        return refuse(f"unknown layer '{layer}' (call|expression)", confidence=0.0)
-    if layer == Layer.EXPRESSION.value:
-        return _expression_matrix(store, scope)
+    if layer not in (Layer.CALL.value, Layer.EXPRESSION.value, Layer.STATEMENT.value):
+        return refuse(f"unknown layer '{layer}' (call|expression|statement)", confidence=0.0)
+    if layer in (Layer.EXPRESSION.value, Layer.STATEMENT.value):
+        return _body_matrix(store, scope, layer)
     try:
         rel = Relation(relation.upper())
     except ValueError:

@@ -61,10 +61,42 @@ def test_expression_layer_refuses_when_no_function(tmp_path):
     assert not m.ok
 
 
-def test_statement_layer_is_reserved(tmp_path):
+def test_statement_layer_drills_the_pdg(tmp_path):
     store, calc_id = _index_one(tmp_path)
     m = sg.get_matrix(store, calc_id, layer="statement")
-    assert not m.ok and "reserved" in " ".join(m.review_reasons).lower()
+    assert m.ok, m.review_reasons
+    r = m.result
+    assert r["layer"] == "statement"
+    assert r["function"] == "calc"
+    assert r["labels"][0] == "ENTRY"                       # PDG entry node carries the params
+    assert {c["k"] for c in r["cells"]} <= {"C", "D"}      # control / data dependence
+    for c in r["cells"]:
+        assert 0 <= c["src"] < r["n"] and 0 <= c["dst"] < r["n"]
+
+
+def test_statement_layer_refuses_multi_function_scope(tmp_path):
+    store, _ = _index_one(tmp_path)
+    m = sg.get_matrix(store, "m.py", layer="statement")   # calc AND other
+    assert not m.ok and "single function" in " ".join(m.review_reasons).lower()
+
+
+def test_statement_layer_is_python_only_for_now(tmp_path):
+    # A non-.py function refuses cleanly (Python-first); no crash.
+    (tmp_path / "m.go").write_text("func f(a int) int { return a }\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    gid = [n for n in store.all_node_ids() if n.endswith("::f") and ".go" in n]
+    if gid:  # only if the tree-sitter extra indexed the Go file
+        m = sg.get_matrix(store, gid[0], layer="statement")
+        assert not m.ok and "python-only" in " ".join(m.review_reasons).lower()
+
+
+def test_statement_layer_never_affects_liveness(tmp_path):
+    store, calc_id = _index_one(tmp_path)
+    before = sg.find_stale(store)
+    sg.get_matrix(store, calc_id, layer="statement")
+    after = sg.find_stale(store)
+    assert before.result == after.result
 
 
 def test_unknown_layer_refused(tmp_path):

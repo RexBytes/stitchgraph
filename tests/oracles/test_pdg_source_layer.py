@@ -1,0 +1,96 @@
+"""Oracle for the STATEMENT layer's public surface: `structure.pdg_source` (design §5c phase 2).
+
+The STATEMENT layer is a program-dependence graph (PDG) per function: nodes = statements (+ a
+synthetic ENTRY carrying the parameters), edges = CONTROL ('C', nested-under-a-header) and DATA
+('D', a def reaching a later use). Python-only so far (deep stdlib `ast`). This pins:
+
+  1. `pdg_source` keys EXACTLY match `fingerprint_source` keys (shared `_walk_functions` traversal).
+  2. every graph is well-formed — a non-empty label list starting with ENTRY, edges as
+     `(int src, int dst, kind)` with kind 'C'/'D' and endpoints in range.
+  3. the defining STATEMENT-layer property — **reorder-invariance**: swapping two INDEPENDENT
+     statements does not change the WL fingerprint of the PDG (the dependence graph is the same),
+     whereas the raw statement order did change. This is what the PDG buys over a token/AST sequence.
+  4. sensitivity — introducing a real data dependence between two statements DOES change it.
+
+Advisory layer — computed on demand, never feeds liveness.
+"""
+from __future__ import annotations
+
+import ast
+import collections
+import hashlib
+
+from stitchgraph.core import structure
+
+
+def _wl(labels: list[str], edges: list[tuple[int, int, str]], iters: int = 3) -> collections.Counter:
+    """Weisfeiler-Lehman kernel bag over a serialized graph — mirrors structure._wl_features, but on
+    the (labels, edges) pair `pdg`/`vfg` return (so the oracle needs no private _VFG)."""
+    inc: dict[int, list[tuple[str, int]]] = collections.defaultdict(list)
+    for s, d, k in edges:
+        inc[d].append(("<" + k, s))
+        inc[s].append((">" + k, d))
+    lab = dict(enumerate(labels))
+    feats: collections.Counter = collections.Counter(f"0:{v}" for v in lab.values())
+    for it in range(1, iters + 1):
+        nxt = {}
+        for n in lab:
+            sig = sorted((t, lab[m]) for t, m in inc.get(n, []))
+            nxt[n] = hashlib.md5((lab[n] + "|" + repr(sig)).encode()).hexdigest()[:8]
+        lab = nxt
+        feats.update(f"{it}:{v}" for v in lab.values())
+    return feats
+
+
+def _pdg_wl(src: str) -> collections.Counter:
+    fn = ast.parse(src).body[0]
+    return _wl(*structure.pdg(fn))
+
+
+_SAMPLE = (
+    "def calc(data):\n"
+    "    result = []\n"
+    "    for x in data:\n"
+    "        if x > 0:\n"
+    "            result.append(x)\n"
+    "    return result\n"
+)
+
+
+def test_pdg_source_keys_match_fingerprint_source():
+    src = _SAMPLE + "\ndef other(a):\n    return a\n"
+    assert set(structure.pdg_source(src)) == set(structure.fingerprint_source(src)) != set()
+
+
+def test_pdg_graphs_are_well_formed():
+    for name, (labels, edges) in structure.pdg_source(_SAMPLE).items():
+        assert labels and labels[0] == "ENTRY", f"{name}: PDG must start with ENTRY"
+        assert isinstance(edges, list)
+        for e in edges:
+            assert isinstance(e, tuple) and len(e) == 3, f"{name}: edge not a 3-tuple: {e!r}"
+            s, d, k = e
+            assert isinstance(s, int) and isinstance(d, int)
+            assert 0 <= s < len(labels) and 0 <= d < len(labels), f"{name}: edge index OOR"
+            assert k in ("C", "D"), f"{name}: edge kind {k!r} not control/data"
+
+
+def test_pdg_is_reorder_invariant_for_independent_statements():
+    # `x = a+1` and `y = b+2` are independent; swapping them changes source order but NOT the
+    # dependence graph — the PDG fingerprint must be identical. (AST-token / expression order would
+    # differ; this is what the statement layer buys.)
+    a = _pdg_wl("def f(a, b):\n    x = a + 1\n    y = b + 2\n    return x + y\n")
+    b = _pdg_wl("def f(a, b):\n    y = b + 2\n    x = a + 1\n    return x + y\n")
+    assert a == b
+
+
+def test_pdg_distinguishes_a_real_dependence_change():
+    # Independent vs a genuine data dependence (`y = x + 2` now uses x) — different dependence graph,
+    # so the fingerprints must differ (guards against the invariant over-collapsing everything).
+    indep = _pdg_wl("def f(a, b):\n    x = a + 1\n    y = b + 2\n    return x + y\n")
+    dep = _pdg_wl("def f(a, b):\n    x = a + 1\n    y = x + 2\n    return x + y\n")
+    assert indep != dep
+
+
+def test_pdg_source_never_raises_on_bad_input():
+    for bad in ("", "def (:\n", "not python at all !!!", "def f(:\n  pass"):
+        assert structure.pdg_source(bad) == {} or isinstance(structure.pdg_source(bad), dict)
