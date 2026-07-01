@@ -578,18 +578,67 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                 if c.type == "identifier" and text(c) != "_":
                     stores.add(text(c))
 
+    def _cond_reads(cond, loads: set, stores: set) -> None:
+        """Reads within an `if`/`while` condition, skipping `if let PAT = EXPR` / let-chain binding
+        patterns: EXPR is a value read, PAT binds only inside the branch (no visible store)."""
+        if cond is None:
+            return
+        if cond.type in ("let_condition", "let_chain"):
+            for c in cond.named_children:
+                if c.type in ("let_condition", "let_chain"):
+                    _cond_reads(c, loads, stores)
+            collect(cond.child_by_field_name("value"), loads, stores)
+        else:
+            collect(cond, loads, stores)
+
     def collect(n, loads: set, stores: set) -> None:
-        """Reads/writes within one statement's header — stops at nested blocks (their own nodes),
-        nested functions/closures (opaque), and TYPE positions (no runtime value flow)."""
+        """Reads/writes within one statement's header. Nested functions/closures are opaque and TYPE
+        positions carry no value read. Rust is expression-oriented, so a control-flow expression in
+        VALUE position (`let y = if …/match …/loop …/{ … }`) is folded here: its condition/scrutinee/
+        iterator reads and its body reads flow into the enclosing statement, mirroring the read
+        projection of `process` for statement position. Loop/arm/if-let binding patterns are skipped
+        (they bind only inside the branch), matching the statement-position under-approximation."""
         if n is None:
             return
         t = n.type
-        if t in _FUNC_NODES or t in _PDG_COMMENT or t == "block":
+        if t in _FUNC_NODES or t in _PDG_COMMENT:
             return
         if t == "type_identifier" or t == "scoped_type_identifier" or t.endswith("_type"):
             return  # a type position carries no value read
         if t == "scoped_identifier":
             return  # a module/type path (`Foo::bar`), not a local variable read
+        if t == "block":  # value-position block: fold its statements' reads/stores
+            for c in n.named_children:
+                collect(c, loads, stores)
+            return
+        if t == "if_expression":
+            _cond_reads(n.child_by_field_name("condition"), loads, stores)
+            collect(n.child_by_field_name("consequence"), loads, stores)
+            collect(n.child_by_field_name("alternative"), loads, stores)
+            return
+        if t == "else_clause":
+            for c in n.named_children:
+                collect(c, loads, stores)
+            return
+        if t == "match_expression":  # read scrutinee + arm bodies; skip arm patterns/guards
+            collect(n.child_by_field_name("value"), loads, stores)
+            body = n.child_by_field_name("body")
+            if body is not None:
+                for arm in body.named_children:
+                    if arm.type == "match_arm":
+                        collect(arm.child_by_field_name("value"), loads, stores)
+            return
+        if t == "while_expression":
+            _cond_reads(n.child_by_field_name("condition"), loads, stores)
+            collect(n.child_by_field_name("body"), loads, stores)
+            return
+        if t == "for_expression":  # iterator is a read; the loop pattern binds nothing visible outside
+            collect(n.child_by_field_name("value"), loads, stores)
+            collect(n.child_by_field_name("body"), loads, stores)
+            return
+        if t == "loop_expression":
+            collect(n.child_by_field_name("body"), loads, stores)
+            return
         if t == "let_declaration":
             pat = n.child_by_field_name("pattern")
             if pat is not None:
@@ -715,14 +764,12 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                     process(c, sid)
             return
         # a simple statement / trailing expression (return/macro/call/assign/break/…): the whole node
-        # is its header — collect stops at nested blocks/functions, so nothing leaks. Descend any
-        # nested block child (closes the class, parity with the JS/Go layers).
+        # is its header. collect() folds any value-position blocks it wraps (`return { … }`,
+        # `unsafe { … }`, value-position if/match/loop bodies) into this node's reads; nested
+        # functions/closures stay opaque.
         sid = new_id(_pdg_label(t))
         edges.append((parent, sid, "C"))
         data_edges(node, sid)
-        for c in node.named_children:
-            if c.type == "block":
-                block(c, sid)
 
     body = fn.child_by_field_name("body")
     if body is not None:

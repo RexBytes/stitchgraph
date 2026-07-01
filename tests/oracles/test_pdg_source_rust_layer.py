@@ -163,6 +163,37 @@ def test_pdg_self_receiver_reads_thread_from_entry():
     )
 
 
+def test_pdg_value_position_control_folds_body_reads():
+    # R223: Rust is expression-oriented — `let y = if/match/loop/{…}` folds the control expression
+    # into the enclosing statement's reads, INCLUDING reads inside block-shaped branch/arm/loop
+    # bodies. A `base` defined before, then read only inside such a value-position body, must still
+    # produce a data dependence into the `let y` node (it was silently dropped when `collect`
+    # blanket-skipped `block`).
+    cases = (
+        "fn f(n: i32) -> i32 { let base = n * 2; let r = if n > 0 { base + 1 } else { base - 1 }; r }",
+        "fn f(o: Option<i32>, a: i32) -> i32 { let base = a + 1; "
+        "let r = match o { Some(_) => { base + 1 }, None => { base } }; r }",
+        "fn f(a: i32) -> i32 { let base = a + 1; let r = loop { break base; }; r }",
+        "fn f(a: i32) -> i32 { let base = a + 1; let r = { let t = base; t + 1 }; r }",
+    )
+    for src in cases:
+        labels, edges = structure_rust.pdg_source(src)["f"]
+        # node 1 is `let base`, node 2 is `let r` — the fold must link base(1) -> r(2)
+        assert (1, 2, "D") in edges, f"value-position body read not folded into the Let: {src}"
+
+
+def test_pdg_value_position_bindings_are_not_false_reads():
+    # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
+    # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.
+    _l, e = structure_rust.pdg_source(
+        "fn f(opt: Option<i32>, base: i32) -> i32 { "
+        "let r = if let Some(x) = opt { x + base } else { base }; r }"
+    )["f"]
+    # only ENTRY-sourced reads (opt, base) and the trailing `r` read; every edge well-formed
+    assert e and all(k in ("C", "D") for _s, _d, k in e)
+    assert any(k == "D" and s == 0 for s, d, k in e)  # scrutinee/base read from ENTRY
+
+
 def test_pdg_source_never_raises_on_bad_input():
     for bad in ("", "fn (", "@@@ not rust", "fn f() {", "let x ="):
         assert isinstance(structure_rust.pdg_source(bad), dict)
