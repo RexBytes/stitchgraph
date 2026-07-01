@@ -152,10 +152,13 @@ _SPURIOUS = {
     "macro_name": ("matches", "let _z = matches!(sel(), Some(_));"),
     "field_name": ("field", "let _z = holder().field;"),
     "method_name": ("method", "let _z = holder().method();"),
-    # a loop label is a control target, not a value — a local sharing its name must not be read
+    # a loop/block label is a control target, not a value — a local sharing its name must not be read
     "break_label": ("outer", "let _z = 'outer: loop { break 'outer; };"),
     "break_label_value": ("outer", "let _z = 'outer: loop { break 'outer 1; };"),
     "continue_label": ("lbl", "'lbl: loop { if cond() { continue 'lbl; } break; }"),
+    "block_label_value": ("blk", "let _z = 'blk: { 5 };"),
+    "block_label_stmt": ("blk", "'blk: { g(); }"),
+    "block_label_break": ("blk", "let _z = 'blk: { break 'blk 1; };"),
 }
 
 

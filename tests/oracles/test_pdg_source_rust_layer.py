@@ -258,6 +258,22 @@ def test_pdg_loop_label_is_not_a_spurious_read():
     assert len(entry_reads) == 1, f"loop label read as a value (phantom edge): {e}"
 
 
+def test_pdg_block_label_is_not_a_spurious_read():
+    # R230: a labeled BLOCK's label (`'blk: { … }`) is likewise a control target, not a value — it
+    # lives as a child of the `block` node, so both the value-position fold and statement-position
+    # walk must skip it (and not mint a spurious Label node). The label `'blk` collides with param
+    # `blk`; the block reads nothing, so `blk` must not be read.
+    _l, e = structure_rust.pdg_source(
+        "fn f(blk: i32) -> i32 { let _x = 'blk: { 5 }; _x }"
+    )["f"]
+    assert not any(s == 0 and k == "D" for s, _d, k in e), "block label read as a value (phantom)"
+    # a genuine read inside the labeled block is still captured
+    _l2, e2 = structure_rust.pdg_source(
+        "fn f(v: i32) -> i32 { let _x = 'blk: { v + 1 }; _x }"
+    )["f"]
+    assert any(s == 0 and k == "D" for s, _d, k in e2), "read inside a labeled block was dropped"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.

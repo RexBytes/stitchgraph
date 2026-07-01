@@ -609,6 +609,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         t = n.type
         if t in _FUNC_NODES or t in _PDG_COMMENT:
             return
+        if t == "label":
+            return  # a loop/block label (`'outer`) is a control-flow target, not a value read
         if t == "type_identifier" or t == "scoped_type_identifier" or t.endswith("_type"):
             return  # a type position carries no value read
         if t == "scoped_identifier":
@@ -739,6 +741,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         t = node.type
         if t in _PDG_COMMENT:
             return
+        if t == "label":
+            return  # a labeled-block label (`'blk: {…}`) is a control target — no node, no read
         if t in _FUNC_NODES:
             edges.append((parent, new_id("NESTED"), "C"))
             return
