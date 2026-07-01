@@ -4,6 +4,42 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.10.0] — 2026-07-01
+
+**The STATEMENT layer learns the JS family — js/ts/tsx (§5c sweep, language 2).** v3.9.0 shipped the
+program-dependence-graph (PDG) layer for Python; v3.10.0 begins sweeping it to the tree-sitter
+languages, starting with the JS family. Backward-compatible (no schema change, default behavior
+unchanged) → MINOR.
+
+### Added
+- **`structure_js.pdg_source`** — a JS/TS/TSX function's program-dependence graph, built from the
+  tree-sitter tree and mirroring `structure.pdg_source` (Python): statement nodes (+ a synthetic
+  `ENTRY` carrying the parameters), `C` (control: nested-under-a-header) and `D` (data: a sequential
+  reaching-def) edges. Nested functions are opaque `NESTED` leaves; try/catch/finally, switch cases,
+  and `for…of`/`for…in` bindings are covered. The STATEMENT-layer companion to
+  `fingerprint_source`/`vfg_source`, keyed identically (shared `_walk`).
+- **`get_matrix(layer="statement")` now covers the JS family** — dispatches `.py` → `structure`
+  and `.js/.jsx/.mjs/.cjs/.ts/.mts/.cts/.tsx` → `structure_js`. Other languages refuse cleanly with a
+  message naming the supported set (Python + JS family).
+
+### Notes
+- Like the Python PDG, this is a structural **approximation** (sequential reaching-def, no SSA/alias
+  analysis) and **advisory** — computed on demand, never persisted, never feeds `find_stale`. The
+  remaining tree-sitter languages (Go, Rust, C/C++, Java, C#, Ruby, PHP, Bash) are a future sweep.
+
+### Guarantees
+- Advisory — the STATEMENT layer never feeds `find_stale`/liveness (a test pins that a JS drill-down
+  cannot change `find_stale`).
+- **Deterministic output** — `pdg_source`'s edges and `get_matrix`'s `cells` are byte-reproducible
+  across processes (edges emitted in sorted order, not `set`/`PYTHONHASHSEED` order).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_js_layer.py`
+  (key-parity, well-formed C/D graph, **reorder-invariance**, dependence-change sensitivity,
+  never-raises on TS/exotic input, try/switch/for-of, cross-`PYTHONHASHSEED` determinism) + a JS
+  statement-drill case and an unsupported-language refusal in `tests/test_layer_matrix.py`.
+  Two-round full-diversity adversarial panel clean.
+
 ## [3.9.0] — 2026-07-01
 
 **The STATEMENT layer — drill into a function's program-dependence graph (§5c phase 2).** v3.8.0
