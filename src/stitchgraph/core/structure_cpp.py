@@ -640,7 +640,7 @@ def _pdg_label(t: str) -> str:
 
 def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a C/C++ function/method — a program-dependence graph mirroring
-    `structure._build_pdg` (Python) and the JS/Go/Rust PDG builders: statement nodes + a synthetic
+    `structure._build_pdg` (Python) and the JS-family/Go/Rust PDG builders: statement nodes + a synthetic
     ENTRY carrying the parameters, control ('C') / data ('D', sequential reaching-def) edges. C/C++
     is statement-oriented (like Go). Nested functions/lambdas are opaque NESTED leaves;
     reorder-invariant. A structural approximation (no SSA/alias analysis), advisory only — never
