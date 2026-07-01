@@ -3047,6 +3047,18 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 20732f1 \u2192 streak 2 \u2192 RELEASABLE. opus INDEPENDENT re-certification with a fresh multi-generator campaign: ~24,900 valid cases (curated + deep-random-nested depth-0..3 + \u00a75c-hazard-targeted + 4,000 MULTI-param differential + ~3,060 malformed/garbage), of which ~19,200 were genuine VFG-reads (~77% non-vacuous) \u2014 0 invariant violations, 0 well-formedness failures, 0 key-parity failures, 0 raises, determinism stable across PYTHONHASHSEED 0/1/999/12345. Every \u00a75c defect-class pattern verified to read IDENTICALLY in both builders (member/method NAME not read; dynamic $o->$v drops in both / $o->$v() reads in both via the shared generic fallback since tree-sitter emits member_call_expression; scoped Foo::$v/($v)::X opaque in both; foreach k=>v pair + list() destructure in lock-step; match/heredoc/encapsed/casts/RMW/spread/named-args/refs/static-locals/try-catch-finally/closures-as-NESTED all consistent). All observed VFG\u2260PDG cases are the ALLOWED PDG\u2265VFG direction (copy-prop/dead-value discards). sonnet gates (re-verified by main on frozen code): ruff clean, mypy clean, cardinal rule clean, PHP oracle subset 122 passed; full suite 2214 passed / 24 skipped stands. haiku docs: all 7 surfaces consistent. PHP (statement-oriented, easier tier) closed in 2 panels / 0 defects \u2014 the front-loaded VFG-mirror + differential oracle held from panel 1. Tag left to the maintainer."
+    },
+    {
+      "id": "R260",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "FIRST Bash panel (v3.18.0, \u00a75c STATEMENT/PDG language 10 \u2014 the FINAL language; command-oriented outlier, shell functions have NO parameter list so ENTRY carries no params, mirroring the VFG which seeds no PARAM nodes). Front-loaded: read-projection mirrors the VFG ev/bind/_do node-for-node; differential oracle SEEDED via a first `v=$SEED` assignment (node 0 = SEED's FREE node in the VFG created first; node 1 = the seed assignment in the PDG). Grammar-probed the command_name literal-vs-dynamic split (a LITERAL command name is a free callee, never a var read; a dynamic $cmd/$(\u2026) name reads its expansions). opus INDEPENDENT falsification: ~39,900 unique valid cases across 3 generators (curated hazards + depth-4 grammar nesting + sequencing/rebind mix), ~29,600 genuine VFG-reads \u2014 0 invariant violations, 0 raises, 0 malformed graphs, 0 key mismatches, determinism stable; even proved the node-1 attribution axis sound (a rebind that moves last_def[v] also kills the VFG seed, lifting the obligation). sonnet gates: full suite 2276 passed / 24 skipped (re-run by main), ruff clean, mypy clean, cardinal rule clean (structure_bash lazy-imported in operations.py function bodies), byte-identical find_stale isolation, Bash oracle subset 61 passed. haiku found ONE LOW: the README `## Status (v\u2026)` header was stale at v3.16.0 (not bumped during the PHP release either) \u2014 fixed to v3.18.0 + noted the statement layer now spans every body-matrix language. Dirty (1 LOW)."
     }
   ]
 }
