@@ -230,6 +230,21 @@ def test_pdg_macro_name_is_not_a_spurious_read():
     assert any(k == "D" and s == 0 for s, d, k in e2), "genuine macro-arg read was dropped"
 
 
+def test_pdg_struct_pattern_shorthand_bindings_are_stored():
+    # R228: `let Struct { field, .. } = expr` shorthand field bindings must be recorded as stores so
+    # later reads of those names get a data edge. A shorthand `field_pattern` has no inner `pattern`
+    # field — its leaf `shorthand_field_identifier` IS the binding (mirrors `_pattern_names`).
+    for src in (
+        "fn f(p: P) { let Point { x, y } = p; let z = x + y; }",
+        "fn f(p: P) { let Point { x } = p; let z = x + 1; }",
+        "fn f(p: P) { let Point { ref x, mut y } = p; let z = x + y; }",
+        "fn f(p: P) { let Point { x, .. } = p; let z = x + 1; }",
+    ):
+        _l, e = structure_rust.pdg_source(src)["f"]
+        # node 1 = the struct-pattern let, node 2 = the read — the binding must reach it
+        assert (1, 2, "D") in e, f"struct-pattern shorthand binding not tracked: {src}"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.

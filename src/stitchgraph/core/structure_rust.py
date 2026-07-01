@@ -569,7 +569,12 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                 add_target(c, loads, stores)
         elif t == "field_pattern":
             inner = n.child_by_field_name("pattern")
-            add_target(inner if inner is not None else _last(n), loads, stores)
+            if inner is not None:
+                add_target(inner, loads, stores)  # `Struct { field: subpat }` — renamed binding
+            else:  # `Struct { field }` / `{ ref field }` / `{ mut field }` shorthand — leaf name binds
+                leaf = _last(n)
+                if leaf is not None and text(leaf) != "_":
+                    stores.add(text(leaf))
         elif t in ("field_expression", "index_expression", "unary_expression",
                    "reference_expression"):
             collect(n, loads, stores)
