@@ -241,9 +241,15 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return None
         if t in ("label", "lifetime"):  # a loop/block label or lifetime is a control/type construct,
             return None                 # not a value — reading it corrupts the fingerprint by name
-        if t in ("identifier", "field_identifier", "type_identifier", "shorthand_field_identifier"):
+        if t in ("identifier", "field_identifier", "shorthand_field_identifier"):
             name = text(node)
             return env[name] if name in env else freevar(name)
+        if t in ("type_identifier", "scoped_type_identifier"):
+            # a type name (incl. turbofish `foo::<T>()` args) is structural, never a value binding —
+            # always a name-agnostic FREE node, never an env/PARAM lookup, so a type-arg name that
+            # collides with a value param does not spuriously thread a data edge (mirrors the PDG,
+            # which skips type positions; keeps fingerprints type-name-invariant).
+            return freevar(text(node))
         if t in ("self", "super", "crate"):
             return freevar(t)
         if t in _CONST:

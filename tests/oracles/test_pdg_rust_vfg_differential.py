@@ -215,6 +215,7 @@ _NONVALUE_V = {
     "block_label": "let _z = 'v: { 5 }; 0",
     "block_label_stmt": "'v: { g(); } 0",
     "lifetime_turbofish": "let _z = foo::<'v>(); 0",
+    "type_turbofish": "let _z = foo::<v>(); 0",  # a turbofish TYPE arg named v is a type, not a value
 }
 
 
