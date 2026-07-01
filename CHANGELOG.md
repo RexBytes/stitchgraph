@@ -4,6 +4,27 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.18.0] — 2026-07-01
+
+**The STATEMENT layer learns Bash — the §5c sweep is COMPLETE (language 10, all body-matrix
+languages).** After Python (v3.9.0), the JS family (v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++
+(v3.13.0), Java (v3.14.0), C# (v3.15.0), Ruby (v3.16.0), and PHP (v3.17.0), v3.18.0 adds Bash to the
+program-dependence-graph layer: `structure_bash.pdg_source` builds a per-function PDG (statement
+nodes + a synthetic `ENTRY`; control `C` / data `D` sequential-reaching-def edges) and
+`get_matrix(layer="statement")` drills it. Bash is the **command-oriented** outlier and has **no
+declared parameter list** (shell functions read positional `$1…` as free variables), so `ENTRY`
+carries no params — the same as the value-flow builder, which seeds no `PARAM` nodes. Its read/write
+projection (`collect`/`bind_place`) mirrors the VFG's `ev`/`bind` node-for-node: a **literal command
+name is a free callee, never a variable read** (a *dynamic* `$cmd`/`$(…)` name reads its expansions),
+a bare `local x` declaration binds no value, `for` loop variables bind, and `$x`/`${x}`/`$(( … ))`/
+string / here-string interpolation holes are read. A new white-box VFG-vs-PDG differential oracle
+(`tests/oracles/test_pdg_bash_vfg_differential.py`) cross-checks the statement- and expression-layer
+builders. `get_matrix(layer="statement")` now dispatches **every body-matrix language** (Python + the
+JS family + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash); the layer-level "unsupported language"
+refusal is now reachable only for a foreign file extension. On-demand, advisory, never feeds liveness
+(cardinal rule re-verified). Backward-compatible (no schema change, default behavior unchanged) →
+MINOR.
+
 ## [3.17.0] — 2026-07-01
 
 **The STATEMENT layer learns PHP (§5c sweep, language 9).** After Python (v3.9.0), the JS family

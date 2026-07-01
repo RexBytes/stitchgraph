@@ -161,9 +161,9 @@ Phase 2 (v3.9.0): `get_matrix(layer="statement")` drills into a function's progr
 (`structure.pdg_source` — statement nodes, control/data edges). Phase 3 begins sweeping the STATEMENT
 layer to the tree-sitter languages: **v3.10.0 adds the JS family** (js/ts/tsx, `structure_js.pdg_source`)
 **v3.11.0 adds Go**, **v3.12.0 adds Rust**, **v3.13.0 adds C/C++**, **v3.14.0 adds Java**, and
-**v3.15.0 adds C#**, **v3.16.0 adds Ruby**, and **v3.17.0 adds PHP**, so the statement layer now
-covers **Python + the JS family (js/ts/tsx) + Go + Rust + C/C++ + Java + C# + Ruby + PHP**; the last
-tree-sitter language (Bash) is the rest of the sweep. All on-demand (no persisted deep edges —
+**v3.15.0 adds C#**, **v3.16.0 adds Ruby**, **v3.17.0 adds PHP**, and **v3.18.0 adds Bash — the
+sweep is COMPLETE**, so the statement layer now covers **every body-matrix language: Python + the JS
+family (js/ts/tsx) + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash**. All on-demand (no persisted deep edges —
 the scale-driven choice below), advisory-only (never feeds liveness). Original design note follows.
 
 When the deeper granularity (§5b) is promoted, do NOT build a second, separate graph. Carry a

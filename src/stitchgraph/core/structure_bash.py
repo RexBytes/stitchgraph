@@ -378,3 +378,241 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c sweep, Bash (the final language) --------------------------
+
+_PDG_STMT_LABEL = {
+    "variable_assignment": "Assign", "declaration_command": "Decl", "command": "Command",
+    "redirected_statement": "Redirect", "negated_command": "Negate", "test_command": "Test",
+    "if_statement": "If", "for_statement": "For", "c_style_for_statement": "For",
+    "while_statement": "While", "until_statement": "Until", "case_statement": "Case",
+}
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def pdg_source(source: str, lang: str = "bash") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every function — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested function definitions are opaque NESTED leaves. Advisory, on
+    demand.
+
+    Bash is command-oriented and has NO declared parameter list (shell functions read positional
+    `$1…` as free variables), so ENTRY carries no params — the same as the VFG, which seeds no PARAM
+    nodes. Accepted layer-level under-approximations, all *symmetric* (shared by BOTH the PDG and the
+    VFG, so they create no VFG/PDG divergence): nested function bodies are opaque; a LITERAL command
+    name is a free callee, never a variable read (a *dynamic* `$cmd`/`$(…)` name reads its
+    expansions); a `${var#$(cmd)}` strip pattern is one opaque token; a single-quoted deferred action
+    (`trap '$(cmd)' EXIT`) is a constant (no-eval rule)."""
+    return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a Bash function — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++/Java/C#/Ruby/PHP PDG builders:
+    statement nodes + a synthetic ENTRY (empty — Bash has no parameter list), control ('C') / data
+    ('D', sequential reaching-def) edges. Bash is command-oriented (a command is a statement whose
+    callee + arguments are reads). Nested function definitions are opaque NESTED leaves;
+    reorder-invariant. A structural approximation (no word-splitting/alias analysis), advisory only —
+    never feeds liveness. Its read/write projection (`collect`/`bind_place`) reads ONLY genuine value
+    operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind` node-for-node: a
+    LITERAL command name and a `local x` bare declaration are never read as values."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")  # empty seed — shell functions have no declared parameters
+
+    def _varname(node) -> str:
+        t = text(node).lstrip("$").strip("{}")
+        return t.split("[", 1)[0].split(":", 1)[0] or t
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header, mirroring the VFG's `ev`/`bind` node-for-node.
+        Stops at nested function definitions (opaque NESTED, like the VFG's NESTED leaf). A LITERAL
+        command name is a free callee (never a variable read); a `local x` bare declaration binds no
+        value; a member/index expansion reads the base name + its index/default sub-expressions."""
+        if n is None:
+            return
+        t = n.type
+        if t == "comment" or t in _FUNC_NODES:
+            return
+        if t == "variable_name":
+            loads.add(text(n))
+            return
+        if t == "simple_expansion":  # `$x`
+            loads.add(_varname(n))
+            return
+        if t == "expansion":  # `${x}`, `${x:-default}`, `${x[i]}`
+            loads.add(_varname(n))
+            for c in n.named_children:
+                if c.type == "subscript":
+                    idx = c.child_by_field_name("index")
+                    if idx is not None:
+                        collect(idx, loads, stores)
+                elif c.type != "variable_name":  # the base name is already read above
+                    collect(c, loads, stores)
+            return
+        if t in _CONST:  # number / raw_string / word / regex — a literal, no read
+            return
+        if t in ("string", "raw_string", "translated_string", "ansi_c_string"):
+            for c in n.named_children:
+                if c.type not in ("string_content",):
+                    collect(c, loads, stores)
+            return
+        if t == "command_name":
+            # A literal command name (`echo`, `helper`) is a free callee — NOT a variable read
+            # (the VFG routes it through `freevar`). A *dynamic* name (`$x`/`$(…)`/concatenation)
+            # carries flow that determines the callee; read its expansions.
+            parts = n.named_children
+            if len(parts) == 1 and parts[0].type in ("word", "number"):
+                return
+            for c in parts:
+                collect(c, loads, stores)
+            return
+        if t == "variable_assignment":  # `x=…` / `arr[i]=…` (incl. `FOO=bar` command prefix)
+            collect(n.child_by_field_name("value"), loads, stores)
+            target = n.child_by_field_name("name")
+            if target is not None and target.type == "subscript":
+                idx = target.child_by_field_name("index")
+                if idx is not None:
+                    collect(idx, loads, stores)  # LHS index reads; no simple name to bind
+            elif target is not None and target.type in ("variable_name", "word"):
+                stores.add(text(target))
+            return
+        if t == "declaration_command":  # local/declare/export/readonly/typeset …
+            for c in n.named_children:
+                if c.type in ("variable_name", "word"):
+                    pass  # a bare `local x` declares without a value — not a read (mirrors the VFG)
+                else:
+                    collect(c, loads, stores)
+            return
+        for c in n.named_children:  # generic recursion — parity with the VFG's `ev` fallback
+            collect(c, loads, stores)
+
+    def data_from(loads: set, stores: set, sid: int) -> None:
+        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
+        # list (and get_matrix cells) non-reproducible across processes (R205).
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        data_from(loads, stores, sid)
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type == "comment":
+            return
+        if blk.type in ("compound_statement", "do_group", "subshell"):
+            for st in blk.named_children:
+                block(st, parent)
+        else:
+            process(blk, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        if t in ("pipeline", "list", "compound_statement", "subshell", "do_group"):
+            for c in node.named_children:  # transparent grouping — each child is its own statement
+                block(c, parent)
+            return
+        if t == "if_statement":
+            sid = new_id("If")
+            edges.append((parent, sid, "C"))
+            data_edges(node.child_by_field_name("condition"), sid)
+            for i, c in enumerate(node.named_children):
+                if node.field_name_for_named_child(i) == "condition":
+                    continue
+                if c.type == "elif_clause":
+                    for j, cc in enumerate(c.named_children):
+                        if c.field_name_for_named_child(j) == "condition":
+                            data_edges(cc, sid)
+                        else:
+                            block(cc, sid)
+                elif c.type == "else_clause":
+                    for cc in c.named_children:
+                        block(cc, sid)
+                else:
+                    block(c, sid)
+            return
+        if t == "for_statement":
+            sid = new_id("For")
+            edges.append((parent, sid, "C"))
+            loads: set = set()
+            stores: set = set()
+            for i, c in enumerate(node.named_children):
+                if node.field_name_for_named_child(i) == "value":
+                    collect(c, loads, stores)  # the iterated list carries reads
+            var = node.child_by_field_name("variable")
+            if var is not None and var.type in ("variable_name", "word"):
+                stores.add(text(var))  # the loop variable binds
+            data_from(loads, stores, sid)
+            block(node.child_by_field_name("body"), sid)
+            return
+        if t == "c_style_for_statement":
+            sid = new_id("For")
+            edges.append((parent, sid, "C"))
+            for c in node.named_children:
+                if c.type not in ("do_group", "compound_statement"):
+                    data_edges(c, sid)  # init / condition / update arithmetic
+            block(node.child_by_field_name("body"), sid)
+            return
+        if t in ("while_statement", "until_statement"):
+            sid = new_id(_pdg_label(t))
+            edges.append((parent, sid, "C"))
+            data_edges(node.child_by_field_name("condition"), sid)
+            block(node.child_by_field_name("body"), sid)
+            return
+        if t == "case_statement":
+            sid = new_id("Case")
+            edges.append((parent, sid, "C"))
+            data_edges(node.child_by_field_name("value"), sid)  # the scrutinee
+            for item in node.named_children:
+                if item.type != "case_item":
+                    continue
+                for i, c in enumerate(item.named_children):
+                    if item.field_name_for_named_child(i) == "value":
+                        data_edges(c, sid)  # the pattern(s) read on the header
+                    elif c.type in _STMT_TYPES or c.type in ("command", "variable_assignment",
+                                                             "pipeline", "list"):
+                        block(c, sid)  # the case body
+                    else:
+                        data_edges(c, sid)
+            return
+        # a leaf statement (command / assignment / declaration / redirected / negated / test): the
+        # whole node is its header. collect gathers every read (incl. nested command substitutions)
+        # and every binding; a literal command name and a bare `local x` are correctly not read.
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        data_edges(node, sid)
+
+    body = fn.child_by_field_name("body")
+    block(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges

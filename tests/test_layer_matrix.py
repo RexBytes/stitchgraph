@@ -3,7 +3,7 @@
 The CALL layer is the shipped inter-procedural relation submatrix (now tagged `layer="call"`); the
 EXPRESSION layer drills into a SINGLE function's intra-procedural value-flow graph (all 12 languages);
 the STATEMENT layer drills into its program-dependence graph (Python + the JS family + Go + Rust +
-C/C++ + Java + C# + Ruby + PHP so far). All on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
+C/C++ + Java + C# + Ruby + PHP + Bash — every body-matrix language). All on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
 """
 from __future__ import annotations
 
@@ -259,16 +259,41 @@ def test_statement_layer_drills_a_php_function(tmp_path):
         assert "If" in r["labels"]
 
 
-def test_statement_layer_refuses_unsupported_language(tmp_path):
-    # A language without a STATEMENT frontend yet (Bash) refuses cleanly; no crash.
-    (tmp_path / "m.sh").write_text("#!/bin/bash\nf() {\n  local a=$1\n  echo $a\n}\n")
+def test_statement_layer_drills_a_bash_function(tmp_path):
+    # The STATEMENT layer covers Bash as well (v3.18.0) — the final language of the sweep.
+    (tmp_path / "m.sh").write_text(
+        "#!/bin/bash\n"
+        "classify() {\n"
+        "  a=$1\n"
+        "  if [[ $a -gt 0 ]]; then\n"
+        "    echo $a\n"
+        "  fi\n"
+        "  echo 0\n"
+        "}\n"
+    )
     store = sg.Store(":memory:")
     sg.reindex(store, str(tmp_path))
-    rid = [n for n in store.all_node_ids() if n.endswith("::f") and ".sh" in n]
+    rid = [n for n in store.all_node_ids() if n.endswith("m.sh::classify")]
     if rid:  # only if the tree-sitter extra indexed the Bash file
         m = sg.get_matrix(store, rid[0], layer="statement")
-        msg = " ".join(m.review_reasons).lower()
-        assert not m.ok and "supported-language" in msg and "php" in msg
+        assert m.ok, m.review_reasons
+        r = m.result
+        assert r["layer"] == "statement" and r["labels"][0] == "ENTRY"
+        assert {c["k"] for c in r["cells"]} <= {"C", "D"}
+        assert "If" in r["labels"]
+
+
+def test_statement_layer_refuses_unsupported_language():
+    # The STATEMENT-layer sweep now covers every body-matrix language, so an unsupported-language
+    # function is only reachable via a synthetic node with a foreign extension. It must refuse
+    # cleanly (no crash) and name the supported set.
+    from stitchgraph.core.model import Node, NodeKind
+    store = sg.Store(":memory:")
+    fid = Node.make_id("m.pl", "foo")
+    store.add_node(Node(id=fid, kind=NodeKind.FUNCTION, name="foo", location="m.pl:1:0"), file="m.pl")
+    m = sg.get_matrix(store, fid, layer="statement")
+    msg = " ".join(m.review_reasons).lower()
+    assert not m.ok and "supported-language" in msg and "bash" in msg
 
 
 def test_statement_layer_never_affects_liveness(tmp_path):
