@@ -2617,6 +2617,204 @@
       ],
       "findings": {},
       "theme": "v3.11.0 FINAL sign-off on 37cd045 — all three CLEAN. opus 3000 fuzz + all Go statement kinds + exact >300 boundary + cardinal (find_stale byte-identical); sonnet 780 passed + ruff/mypy + import-hygiene + byte-identical Go isolation; haiku 11/11 docs. Second consecutive fully-clean full-diversity panel → streak 2 → RELEASABLE. Tag left to maintainer."
+    },
+    {
+      "id": "R222",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "v3.12.0 (§5c sweep language 4) — the STATEMENT layer learns Rust (structure_rust.pdg_source/_build_pdg; expression-oriented: control-flow in statement position → control nodes, in value position folded into the enclosing statement's reads). opus: `self`/`super`/`crate` receiver references (tree-sitter `self` nodes, not `identifier`) were dropped by `collect`, leaving the ENTRY `self` seed dead and dropping every receiver-mediated data dependence. Fixed class-wide + oracle."
+    },
+    {
+      "id": "R223",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: value-position control/block BODY reads dropped — `collect` blanket-skipped every `block`, so reads inside value-position if/match/loop/while/bare-block bodies vanished (the EXPRESSION/VFG sibling captured them, so the STATEMENT layer was inconsistently weaker). Gave `collect` explicit value-position handling mirroring `process`'s read projection (reads condition/scrutinee/iterator, folds bodies, skips binding patterns). Fixed + regression tests."
+    },
+    {
+      "id": "R224",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: let-else `else {…}` block reads dropped — the let_declaration handler folded only pattern + value, never the `alternative` field (unconditional control flow on refutation), diverging from the VFG. Folded the alternative. Fixed + oracle."
+    },
+    {
+      "id": "R225",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: let-chain plain (non-let) clause reads dropped — `_cond_reads`/`cond_edges` recursed only into let_condition/let_chain children, so `x` in `let Some(a)=q && x>0` was dropped in both value and statement position. Dispatch per child type. Fixed + oracle (both clause orders, value/statement position)."
+    },
+    {
+      "id": "R226",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "opus: spurious read of a macro-invocation NAME — `collect` had no macro_invocation case; the generic fallback read the macro name identifier, so a local colliding with a macro name (`matches`, `write`, `assert`, …) got a phantom edge. Read only the token_tree args (mirrors the VFG). Fixed + oracle."
+    },
+    {
+      "id": "R227",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "First clean full-diversity panel on the post-fix HEAD. opus deep-cert (VFG-vs-PDG differential, all five R222–R226 fixes verified, no sixth divergence), sonnet gate 795 passed + cardinal + byte-identical isolation, haiku docs. Streak 1 (broken by R228)."
+    },
+    {
+      "id": "R228",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "NIT": 1
+      },
+      "theme": "opus: struct-pattern shorthand bindings dropped — `add_target` fell back to `_last(n)` (a `shorthand_field_identifier` leaf it doesn't handle) for `let Point{x,y}=p`, so every def-use edge through x/y (and `{ref x}`/`{mut x}`/`{x, ..}`) was lost; mirror `_pattern_names`. haiku: two stale test-module docstrings ('Python + the JS family so far' / 'Python-only so far'). Both fixed. ADDED tests/oracles/test_pdg_rust_vfg_differential.py — a white-box differential oracle (generated value-position wrapper corpus composed to depth 2, cross-checked VFG-reads ⟹ PDG-reads; binding-reaches-use; no-spurious-read families) to regress the whole class at once."
+    },
+    {
+      "id": "R229",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "opus: spurious loop-label read — `break 'lbl`/`continue 'lbl` fell to the generic fallback which read the label identifier, so a local colliding with a label name got a phantom edge (VFG evaluates only the carried value). Added break/continue handling in `collect` (skip the label) + extended the oracle precision family to label positions."
+    },
+    {
+      "id": "R230",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "opus: spurious labeled-BLOCK label read — `'blk: {…}` carries its label as a `block` child, so the R229 break/continue fix didn't cover it; `collect` folded it (value position) and `process` even minted a spurious Label node (statement position). Guard `label` nodes uniformly (early-return in both `collect` and `process`). Fixed + oracle."
+    },
+    {
+      "id": "R231",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: function-local `const K=…;`/`static S=…;` binding dropped + declared name spuriously self-read — `collect` had no const_item/static_item case, so the generic fallback read the declared name as a value and never recorded the binding (later `let z=K` lost its def-use edge; a shadowing param chained through the decl). Store the name, read the initializer (mirrors the VFG's _walk_block; the JS/Go PDGs already thread it). Fixed + oracle."
+    },
+    {
+      "id": "R232",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "opus: PDG spurious read of a lifetime in a turbofish (`foo::<'lt>()`) — `collect` had no `lifetime` guard, so the generic fallback read the lifetime identifier. Guard `lifetime` alongside `label`; const-generic `foo::<{n}>()` (a block) still reads `n`. Fixed + oracle."
+    },
+    {
+      "id": "R233",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1
+      },
+      "theme": "opus: the label/lifetime spurious-read class was still live in the VFG sibling (`_build_vfg`/`ev`) — `'v: loop { break 'v; }` and `foo::<'v>()` read the label/lifetime as values, so two structurally identical functions differing only in a label name produced DIFFERENT WL fingerprints (find_similar/fingerprint_source corruption). Guard `label`/`lifetime` in `ev` (return None) + emit a BREAK/CONTINUE node for a bare label; harden the differential oracle to assert NEITHER builder reads a non-value token. Fixed; full structure/similar suite unregressed."
+    },
+    {
+      "id": "R234",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "opus: VFG read a turbofish TYPE argument (`foo::<v>()`) as a value — `ev`'s identifier branch included `type_identifier`, so a type-arg name colliding with a value param threaded a spurious PARAM edge and made fingerprints differ by type-arg name. Give type names a dedicated name-agnostic `freevar` branch (never env/PARAM), mirroring the PDG's type-position skip; const-generic `{n}` still reads `n`. Minimal blast radius (only collisions change); field/method positions confirmed non-colliding. Fixed + oracle."
+    },
+    {
+      "id": "R235",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on the post-fix HEAD. opus deep-cert (read/write projection complete in both builders — every identifier-bearing non-value position enumerated and confirmed guarded), sonnet gate 1058 passed + cardinal + byte-identical isolation, haiku docs. Streak 1 (broken by R236)."
+    },
+    {
+      "id": "R236",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "NIT": 1
+      },
+      "theme": "opus: VFG read `if let`/`while let` pattern BINDINGS (and struct field-pattern names) as values — `ev` had no let_condition/let_chain handler, so the condition fell to the generic fallback which env-looked-up the pattern's binding identifiers; a binding name colliding with an in-scope value minted a spurious PARAM edge and made fingerprints depend on the bound variable's name. Add a let_condition handler that reads only the scrutinee and BINDS the pattern (mirrors the PDG's _cond_reads) + a let_chain handler. haiku: `_build_pdg` docstring clarity (mirrors its Python/JS/Go predecessors). Both fixed; oracle gains if-let/while-let/field-pattern binding precision cases; structure/similar suite unregressed."
+    },
+    {
+      "id": "R237",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on frozen HEAD 00792d1. opus independent re-derivation: complete VFG-side sweep of every pattern/type/label position (closures, matches!/macro patterns, @-bindings, or-patterns, ref/box, nested, slice, match-arm/for/let-else bindings, all type positions, labels/lifetimes, scoped paths) — each bound/guarded/non-colliding in BOTH builders; projection complete and precise. sonnet gate 1061 passed + cardinal HOLDS + byte-identical isolation. haiku docs. Streak 1."
+    },
+    {
+      "id": "R238",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Second consecutive clean full-diversity panel on frozen HEAD 00792d1 → streak 2 → RELEASABLE. opus independent re-derivation (55+ fresh constructs + 6000-composition depth-3 fuzz + 3000-program well-formedness/determinism fuzz + comment-invariance + key-parity — 0 violations), sonnet gate 1061 passed + cardinal + byte-identical isolation, haiku docs. Gate met; tag left to the maintainer."
     }
   ]
 }
