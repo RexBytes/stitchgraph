@@ -2975,6 +2975,26 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 35eeb58 → streak 2 → RELEASABLE. opus independent re-certification with ~80 fresh cases + 8000 depth-3 fuzz (statement- and expression-position) + a 21-case name-collision corpus — could not falsify; all divergences accepted safe-direction/symmetric artifacts; docstring accurate. sonnet 1312 passed + cardinal + byte-identical isolation. haiku docs. Java shipped with ZERO code defects across all three panels — front-loading the oracle + guards closed the class before it opened. Tag left to the maintainer."
+    },
+    {
+      "id": "R253",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "FIRST C# panel (v3.15.0, §5c STATEMENT/PDG language 7) AND a clean one — the recurring VFG-vs-PDG divergence class fully front-loaded (differential oracle + type/member-name/label guards shipped with panel 1; builder mirrors the VFG ev/bind node-for-node). opus deep-cert of the brand-new builder: 0 VFG⟹PDG violations across ~75 hand-built + 1728 depth-3 wrapper composs + 3150 context×wrapper fuzz; all observations symmetric/accepted (typeof/default/sizeof/as/nameof read the fieldless type token by BOTH; lambda/local-fn opacity). Also FIXED a pre-existing C# VFG quirk found while mirroring: `_do_var_declaration` skipped ALL identifier declarator children, dropping a bare-identifier copy `int r = v;` — fixed via name-FIELD exclusion in BOTH the VFG and the new PDG so they stay consistent. sonnet gate 1432 passed + cardinal + byte-identical isolation (no structure/find_similar regression from the VFG fix). haiku's only note was the [3.14.0] changelog 'remaining languages' list — REJECTED as an immutable point-in-time historical record (no edit); panel is clean on substance. Streak 1."
+    },
+    {
+      "id": "R254",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD ee66402 → streak 2 → RELEASABLE. opus independent re-certification with a fresh corpus + depth-3 composition fuzz — 317,057 tested cases across every C# value/non-value position incl. LINQ, stackalloc, `with`, collection expressions `[..]`, patterns — 0 VFG⟹PDG divergences, 0 spurious reads; keys/determinism/well-formedness all pass; docstring accurate. sonnet 1432 passed + cardinal + byte-identical isolation. haiku docs clean (prior-version changelog entries correctly treated as immutable). C# shipped with ZERO code defects across both panels (2nd language after Java to do so). Tag left to the maintainer."
     }
   ]
 }
