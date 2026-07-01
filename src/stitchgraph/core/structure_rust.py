@@ -541,7 +541,7 @@ def _pdg_label(t: str) -> str:
 
 def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a Rust function — a program-dependence graph mirroring its
-    predecessors, the Python (`structure._build_pdg`), JS, and Go PDG builders: statement nodes + a synthetic ENTRY
+    predecessors, the Python (`structure._build_pdg`), the JS family, and Go PDG builders: statement nodes + a synthetic ENTRY
     carrying params (and `self`), control ('C') / data ('D', sequential reaching-def) edges. Rust is
     expression-oriented, so control-flow *expressions* (if/match/loop/while/for) in statement position
     become control nodes; in value position they are folded into the enclosing statement's reads.
