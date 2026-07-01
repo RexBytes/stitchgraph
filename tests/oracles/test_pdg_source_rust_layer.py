@@ -194,6 +194,27 @@ def test_pdg_let_else_alternative_block_reads_are_folded():
     assert (1, 2, "D") in e, "let-else `else` block reads were not folded into the let node"
 
 
+def test_pdg_let_chain_plain_clause_reads_are_captured():
+    # R225: a let-chain condition (`let PAT = EXPR && <plain expr> && let …`) mixes let-condition
+    # clauses with plain boolean clauses. The plain clauses' reads must be recorded (they were
+    # dropped when only let_condition/let_chain children were recursed into). `x` (a plain clause
+    # read) must flow from ENTRY into the control node, in both statement and value position and
+    # regardless of clause order.
+    for src, key in (
+        ("fn f(x: i32, q: Option<i32>) { if let Some(a) = q && x > 0 { let z = a; } }", "f"),
+        ("fn f(x: i32, q: Option<i32>) -> i32 { let r = if let Some(a) = q && x > 0 { a } "
+         "else { 0 }; r }", "f"),
+        ("fn f(x: i32, q: Option<i32>) { while let Some(a) = q && x > 0 { let z = a; } }", "f"),
+        ("fn f(x: i32, q: Option<i32>) { if x > 0 && let Some(a) = q { let z = a; } }", "f"),
+    ):
+        labels, edges = structure_rust.pdg_source(src)[key]
+        # node 1 is the control node (If/While/Let); its reads must include an ENTRY-sourced D edge
+        # for the plain-clause read `x` (ENTRY carries both params). At least two D edges from ENTRY
+        # into node 1 (q scrutinee + x plain clause).
+        entry_d = [(s, d) for s, d, k in edges if k == "D" and s == 0 and d == 1]
+        assert len(entry_d) >= 2, f"let-chain plain clause read not captured: {src} -> {edges}"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.

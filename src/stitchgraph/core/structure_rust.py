@@ -579,15 +579,16 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                     stores.add(text(c))
 
     def _cond_reads(cond, loads: set, stores: set) -> None:
-        """Reads within an `if`/`while` condition, skipping `if let PAT = EXPR` / let-chain binding
-        patterns: EXPR is a value read, PAT binds only inside the branch (no visible store)."""
+        """Reads within an `if`/`while` condition. `if let PAT = EXPR`: EXPR is a value read, PAT
+        binds only inside the branch (no visible store). A let-chain (`let … && expr && let …`) mixes
+        let-condition clauses with plain boolean clauses — every clause's reads count."""
         if cond is None:
             return
-        if cond.type in ("let_condition", "let_chain"):
-            for c in cond.named_children:
-                if c.type in ("let_condition", "let_chain"):
-                    _cond_reads(c, loads, stores)
-            collect(cond.child_by_field_name("value"), loads, stores)
+        if cond.type == "let_condition":
+            collect(cond.child_by_field_name("value"), loads, stores)  # scrutinee; skip the pattern
+        elif cond.type == "let_chain":
+            for c in cond.named_children:  # let clauses + plain boolean clauses alike
+                _cond_reads(c, loads, stores)
         else:
             collect(cond, loads, stores)
 
@@ -694,16 +695,16 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         # `if let PAT = EXPR` / `while let …` (+ let-chains): EXPR is read, PAT binds.
         if cond is None:
             return
-        if cond.type in ("let_condition", "let_chain"):
-            for c in cond.named_children:
-                if c.type in ("let_condition", "let_chain"):
-                    cond_edges(c, sid)
+        if cond.type == "let_condition":
             val = cond.child_by_field_name("value")
             if val is not None:
                 data_edges(val, sid)
             pat = cond.child_by_field_name("pattern")
             if pat is not None:
                 bind_target(pat, sid)
+        elif cond.type == "let_chain":  # let clauses + plain boolean clauses alike
+            for c in cond.named_children:
+                cond_edges(c, sid)
         else:
             data_edges(cond, sid)
 
