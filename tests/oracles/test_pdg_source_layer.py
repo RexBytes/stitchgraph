@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import collections
 import hashlib
+import os
 import subprocess
 import sys
 
@@ -115,13 +116,20 @@ _MULTIREAD = (
 
 
 def _pdg_edges_under_seed(seed: str) -> str:
-    """Serialize `pdg`'s edge list (order-sensitive) from a fresh interpreter pinned to `seed`."""
+    """Serialize `pdg`'s edge list (order-sensitive) from a fresh interpreter pinned to `seed`.
+
+    PYTHONHASHSEED must be set in the CHILD's env (not inherited): if the parent process ever pins it
+    — a common CI reproducibility setting — inheriting would make every child share one seed and the
+    test would go inert (pass even against the buggy set-iteration code). Setting it per child forces
+    genuinely different string-set iteration orders, so a regression actually diverges."""
     prog = (
         "import ast;from stitchgraph.core import structure\n"
         f"fn=ast.parse({_MULTIREAD!r}).body[0]\n"
         "print([list(e) for e in structure.pdg(fn)[1]])\n"
     )
-    out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True, check=True)
+    env = {**os.environ, "PYTHONHASHSEED": seed}
+    out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True,
+                         check=True, env=env)
     return out.stdout.strip()
 
 
