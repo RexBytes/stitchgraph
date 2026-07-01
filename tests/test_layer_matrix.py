@@ -1,8 +1,9 @@
 """End-to-end tests for the layered code-property matrix (design §5c): `get_matrix(layer=...)`.
 
 The CALL layer is the shipped inter-procedural relation submatrix (now tagged `layer="call"`); the
-EXPRESSION layer drills into a SINGLE function's intra-procedural value-flow graph, on demand and
-advisory. Statement/PDG is reserved. These pin the drill-down, the layer tag, and the refusal paths.
+EXPRESSION layer drills into a SINGLE function's intra-procedural value-flow graph (all 12 languages);
+the STATEMENT layer drills into its program-dependence graph (Python + the JS family so far). All
+on demand and advisory. These pin the drill-down, the layer tag, and the refusal paths.
 """
 from __future__ import annotations
 
@@ -80,15 +81,37 @@ def test_statement_layer_refuses_multi_function_scope(tmp_path):
     assert not m.ok and "single function" in " ".join(m.review_reasons).lower()
 
 
-def test_statement_layer_is_python_only_for_now(tmp_path):
-    # A non-.py function refuses cleanly (Python-first); no crash.
-    (tmp_path / "m.go").write_text("func f(a int) int { return a }\n")
+def test_statement_layer_drills_a_js_function(tmp_path):
+    # The STATEMENT layer covers the JS family (js/ts/tsx) as well as Python (v3.10.0).
+    (tmp_path / "app.ts").write_text(
+        "export function classify(x: number): string {\n"
+        "  const a = x + 1;\n"
+        "  if (a > 0) { return 'pos'; }\n"
+        "  return 'neg';\n"
+        "}\n"
+    )
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    jid = [n for n in store.all_node_ids() if n.endswith("app.ts::classify")]
+    if jid:  # only if the tree-sitter extra indexed the TS file
+        m = sg.get_matrix(store, jid[0], layer="statement")
+        assert m.ok, m.review_reasons
+        r = m.result
+        assert r["layer"] == "statement" and r["labels"][0] == "ENTRY"
+        assert {c["k"] for c in r["cells"]} <= {"C", "D"}
+        assert "If" in r["labels"] and r["labels"].count("Return") == 2
+
+
+def test_statement_layer_refuses_unsupported_language(tmp_path):
+    # A language without a STATEMENT frontend yet (Go) refuses cleanly; no crash.
+    (tmp_path / "m.go").write_text("package m\nfunc f(a int) int { return a }\n")
     store = sg.Store(":memory:")
     sg.reindex(store, str(tmp_path))
     gid = [n for n in store.all_node_ids() if n.endswith("::f") and ".go" in n]
     if gid:  # only if the tree-sitter extra indexed the Go file
         m = sg.get_matrix(store, gid[0], layer="statement")
-        assert not m.ok and "python-only" in " ".join(m.review_reasons).lower()
+        msg = " ".join(m.review_reasons).lower()
+        assert not m.ok and "supported-language" in msg and "js/ts/tsx" in msg
 
 
 def test_statement_layer_never_affects_liveness(tmp_path):

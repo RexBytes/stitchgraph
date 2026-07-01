@@ -147,6 +147,14 @@ def vfg_source(source: str, lang: str = "javascript") -> dict[str, tuple[list[st
     return _walk(source, lang, lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
+def pdg_source(source: str, lang: str = "javascript") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every function/method — the STATEMENT-layer companion to
+    `fingerprint_source`/`vfg_source` (identical keys), the raw graph `get_matrix(layer="statement")`
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested functions are opaque NESTED leaves. Advisory, on demand."""
+    return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
+
+
 def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one function node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds, copy propagation through locals, operations and
@@ -497,3 +505,219 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c phase 2, JS/TS/TSX ---------------------------------------
+
+_PDG_STMT_LABEL = {
+    "if_statement": "If",
+    "for_statement": "For", "for_in_statement": "For",
+    "while_statement": "While", "do_statement": "While",
+    "return_statement": "Return", "throw_statement": "Throw",
+    "try_statement": "Try", "switch_statement": "Switch",
+    "variable_declaration": "Assign", "lexical_declaration": "Assign",
+    "expression_statement": "Expr", "break_statement": "Break",
+    "continue_statement": "Continue", "labeled_statement": "Labeled",
+    "empty_statement": "Empty", "debugger_statement": "Debugger",
+}
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a JS-family function — a program-dependence graph mirroring
+    `structure._build_pdg` (Python): statement nodes + a synthetic ENTRY carrying the parameters,
+    control ('C', nested-under-a-header) and data ('D', a sequential reaching-def) edges. Nested
+    functions are opaque NESTED leaves; reorder-invariant once WL-fingerprinted. A structural
+    approximation (copy-free, no SSA/alias analysis), advisory only — never feeds liveness."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.named_children:
+            for nm in _param_names(p, text):
+                last_def[nm] = entry
+
+    def add_target(n, stores: set) -> None:
+        """Identifiers bound by an assignment/declaration target (a `store`). Member/subscript
+        targets define no name — their reads are picked up by `collect` instead."""
+        t = n.type
+        if t in ("identifier", "shorthand_property_identifier_pattern",
+                 "shorthand_property_identifier"):
+            stores.add(text(n))
+        elif t in ("array_pattern", "object_pattern", "array", "object",
+                   "rest_pattern", "rest_element", "spread_element"):
+            for c in n.named_children:
+                add_target(c, stores)
+        elif t == "pair_pattern":
+            v = n.child_by_field_name("value")
+            if v is not None:
+                add_target(v, stores)
+        elif t in ("assignment_pattern", "object_assignment_pattern"):
+            left = n.child_by_field_name("left")
+            if left is not None:
+                add_target(left, stores)
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header — stops at nested blocks (their own nodes) and
+        nested functions (opaque), mirroring Python's header_names."""
+        if n is None:
+            return
+        t = n.type
+        if t in _FUNC_NODES or t == "statement_block" or t == "comment":
+            return
+        if t == "variable_declarator":
+            nm = n.child_by_field_name("name")
+            if nm is not None:
+                add_target(nm, stores)
+            collect(n.child_by_field_name("value"), loads, stores)
+            return
+        if t == "assignment_expression":
+            left = n.child_by_field_name("left")
+            if left is not None and left.type in ("member_expression", "subscript_expression"):
+                collect(left, loads, stores)   # obj.x = / a[i] = : object & index are reads
+            elif left is not None:
+                add_target(left, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "augmented_assignment_expression":
+            left = n.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                stores.add(text(left))   # x += e reads and writes x
+                loads.add(text(left))
+            else:
+                collect(left, loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "update_expression":
+            arg = n.child_by_field_name("argument")
+            if arg is not None and arg.type == "identifier":
+                stores.add(text(arg))    # x++ reads and writes x
+                loads.add(text(arg))
+            else:
+                collect(arg, loads, stores)
+            return
+        if t in ("identifier", "shorthand_property_identifier"):
+            loads.add(text(n))
+            return
+        if t == "member_expression":
+            collect(n.child_by_field_name("object"), loads, stores)  # skip the property name
+            return
+        for c in n.named_children:
+            collect(c, loads, stores)
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
+        # list (and get_matrix cells) non-reproducible across processes (R205).
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def bind_target(node, sid: int) -> None:
+        # a for-of/for-in binding without a declaration (`for (x of xs)`) STORES x.
+        st: set = set()
+        add_target(node, st)
+        for nm in sorted(st):
+            last_def[nm] = sid
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type == "comment":
+            return
+        if blk.type in ("statement_block", "else_clause"):
+            for st in blk.named_children:
+                block(st, parent)
+        else:
+            process(blk, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        if t == "if_statement":
+            data_edges(node.child_by_field_name("condition"), sid)
+            block(node.child_by_field_name("consequence"), sid)
+            block(node.child_by_field_name("alternative"), sid)
+        elif t in ("while_statement", "do_statement"):
+            data_edges(node.child_by_field_name("condition"), sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t == "for_statement":
+            for f in ("initializer", "condition", "increment"):
+                data_edges(node.child_by_field_name(f), sid)
+            block(node.child_by_field_name("body"), sid)
+        elif t == "for_in_statement":
+            data_edges(node.child_by_field_name("right"), sid)
+            left = node.child_by_field_name("left")
+            if left is not None:
+                if left.type in ("lexical_declaration", "variable_declaration"):
+                    data_edges(left, sid)
+                else:
+                    bind_target(left, sid)  # bare binding: `for (x of xs)`
+            block(node.child_by_field_name("body"), sid)
+        elif t == "try_statement":
+            block(node.child_by_field_name("body"), sid)
+            handler = node.child_by_field_name("handler")
+            if handler is not None:  # catch_clause — descend its body only (skip the `catch (e)` bind)
+                block(handler.child_by_field_name("body"), sid)
+            fin = node.child_by_field_name("finalizer")
+            if fin is not None:  # `finally_clause` wraps a statement_block — descend into it
+                fb = fin.child_by_field_name("body") or next(
+                    (c for c in fin.named_children if c.type == "statement_block"), None)
+                block(fb, sid)
+        elif t == "switch_statement":
+            data_edges(node.child_by_field_name("value"), sid)
+            body = node.child_by_field_name("body")
+            if body is not None:
+                for case in body.named_children:
+                    cval = case.child_by_field_name("value")
+                    vspan = (cval.start_byte, cval.end_byte) if cval is not None else None
+                    if cval is not None:
+                        data_edges(cval, sid)  # case value reads count toward the switch header
+                    for st in case.named_children:
+                        if st.type != "comment" and (st.start_byte, st.end_byte) != vspan:
+                            block(st, sid)
+        elif t == "labeled_statement":
+            block(node.child_by_field_name("body"), sid)
+        else:
+            # a simple statement (expression/return/throw/declaration/break/…): the whole node is
+            # its header — collect stops at any nested block/function, so nothing leaks.
+            data_edges(node, sid)
+
+    body = fn.child_by_field_name("body")
+    if body is not None:
+        if body.type == "statement_block":
+            for st in body.named_children:
+                block(st, entry)
+        else:  # arrow function with an expression body: `(x) => x + 1`
+            sid = new_id("Return")
+            edges.append((entry, sid, "C"))
+            data_edges(body, sid)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges
