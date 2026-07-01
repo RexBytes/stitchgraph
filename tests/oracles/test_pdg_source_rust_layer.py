@@ -245,6 +245,19 @@ def test_pdg_struct_pattern_shorthand_bindings_are_stored():
         assert (1, 2, "D") in e, f"struct-pattern shorthand binding not tracked: {src}"
 
 
+def test_pdg_loop_label_is_not_a_spurious_read():
+    # R229: a loop/block label (`'outer`) in a `break`/`continue` is a control-flow target, not a
+    # value. Reading its bare name would create a phantom data edge whenever a local shares the name.
+    # Here the label `'outer` collides with the param `outer`; the value-less break must NOT read it.
+    _l, e = structure_rust.pdg_source(
+        "fn f(outer: i32) -> i32 { 'outer: loop { if outer > 0 { break 'outer; } } 0 }"
+    )["f"]
+    # `outer` IS read by the `if outer > 0` guard (one ENTRY-D edge is legitimate). The label must
+    # not add a SECOND read: exactly one ENTRY-sourced D edge, from the guard, not the break label.
+    entry_reads = [(s, d) for s, d, k in e if k == "D" and s == 0]
+    assert len(entry_reads) == 1, f"loop label read as a value (phantom edge): {e}"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.

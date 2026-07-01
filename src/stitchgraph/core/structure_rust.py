@@ -680,6 +680,11 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                 if c.type == "token_tree":
                     collect(c, loads, stores)
             return
+        if t in ("break_expression", "continue_expression"):
+            for c in n.named_children:  # read the carried value; a loop label is a control target
+                if c.type != "label":
+                    collect(c, loads, stores)
+            return
         for c in n.named_children:
             collect(c, loads, stores)
 
