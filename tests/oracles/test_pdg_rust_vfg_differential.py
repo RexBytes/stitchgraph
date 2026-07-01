@@ -203,3 +203,23 @@ def test_non_value_position_name_is_not_read(name):
     assert not any(s == 1 and k == "D" for s, _d, k in edges), (
         f"{name}: a name in a non-value position was read as a value (phantom edge)"
     )
+
+
+# The precision side must hold for BOTH builders, not just the PDG. Using the VFG as a lower-bound
+# ground truth (VFG-reads ⟹ PDG-reads) is only sound if the VFG itself does not spuriously read a
+# non-value token — otherwise it would demand a read the correct PDG rightly omits. So assert neither
+# builder reads a control/type token (label / lifetime) even when it collides with the param name.
+_NONVALUE_V = {
+    "loop_label": "'v: loop { break 'v; }",
+    "continue_label": "'v: loop { if cond() { continue 'v; } break; }",
+    "block_label": "let _z = 'v: { 5 }; 0",
+    "block_label_stmt": "'v: { g(); } 0",
+    "lifetime_turbofish": "let _z = foo::<'v>(); 0",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_NONVALUE_V))
+def test_non_value_token_read_by_neither_builder(name):
+    body = _NONVALUE_V[name]
+    assert not _pdg_reads_v(body), f"{name}: PDG read a non-value token as the param value"
+    assert not _vfg_reads_v(body), f"{name}: VFG read a non-value token as the param value"

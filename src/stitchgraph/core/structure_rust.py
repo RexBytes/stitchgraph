@@ -239,6 +239,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         t = node.type
         if t in ("line_comment", "block_comment"):  # trivia: never alters the fingerprint
             return None
+        if t in ("label", "lifetime"):  # a loop/block label or lifetime is a control/type construct,
+            return None                 # not a value — reading it corrupts the fingerprint by name
         if t in ("identifier", "field_identifier", "type_identifier", "shorthand_field_identifier"):
             name = text(node)
             return env[name] if name in env else freevar(name)
@@ -391,7 +393,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return n
         if t in ("break_expression", "continue_expression", "yield_expression"):
             inner = _last_expr(node)
-            return ev(inner, ctrl) if inner is not None else g.add(t.split("_")[0].upper())
+            val = ev(inner, ctrl) if inner is not None else None  # a bare `'label` yields None
+            return val if val is not None else g.add(t.split("_")[0].upper())
         if t in _FUNC_NODES:
             return g.add("NESTED")
         # generic fallback: a node fed by its sub-expressions (the completeness oracle makes gaps
