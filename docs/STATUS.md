@@ -36,7 +36,7 @@ spec and section references.
 | Operations | `trace_path` (best-confidence path) | ✅ Done | full-stack, (max,×) semiring |
 | Operations | `scan` (ranked issues + urgency) | ✅ Done | stubs/holes/cycles/god-objects |
 | Operations | `reindex` | ✅ Done | full rebuild; `--precise`; ignore globs |
-| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope; small dense grid; `layer=call\|expression` (§5c drill-down into a function's value-flow graph) |
+| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope; small dense grid; `layer=call\|statement\|expression` (§5c drill-down into a function's PDG / value-flow graph) |
 | Operations | `summarize_subsystem` | ✅ Done | counts, hubs, public surface, deps |
 | Operations | `ingest_trace` (runtime fusion) | ✅ Done | coverage.py JSON / LCOV / Go coverprofile |
 | Operations | `risk` (git × structure) | ✅ Done | hotspots + hidden coupling |

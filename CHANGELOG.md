@@ -4,6 +4,41 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.9.0] — 2026-07-01
+
+**The STATEMENT layer — drill into a function's program-dependence graph (§5c phase 2).** v3.8.0
+added the call↔expression drill-down; v3.9.0 adds the middle layer: the **PDG** (nodes = statements,
+edges = control + data dependence). Promotes the validated `research/03-pdg/` prototype. Python-only
+so far (deep stdlib `ast`), on demand, advisory. Backward-compatible (no schema change, default
+behavior unchanged) → MINOR.
+
+### Added
+- **`structure.pdg` / `pdg_source`** — a function's program-dependence graph: statement nodes (+ a
+  synthetic `ENTRY` carrying the parameters), `C` (control: nested-under-a-header) and `D` (data: a
+  def reaching a later use, a sequential reaching-def approximation) edges. The STATEMENT-layer
+  companion to `fingerprint_source`/`vfg_source`, keyed identically (shared `_walk_functions`).
+- **`get_matrix(..., layer="statement")`** — drills a SINGLE Python function's PDG, in the same
+  Result shape (labels = statements, cells tagged `C`/`D`, dense grid when small). Refuses cleanly on
+  a multi-function scope, a missing function, an oversized graph, or a **non-Python** function (the
+  layer is Python-only for now — a precise "Python-only so far" refusal, no crash).
+
+### Notes
+- The PDG is **complementary**, not a strict upgrade to the expression/token fingerprints: it is
+  order-invariant by construction (reordering independent statements leaves it unchanged) and the
+  only layer that models statement-level data flow, but a naive reaching-def over-penalises
+  temp-variable factoring (see `research/03-pdg/FINDINGS.md`). Exposed as a drill-down + public
+  `pdg_source`; `find_similar`/`graph_diff` remain on the expression layer.
+
+### Guarantees
+- On-demand only (no store schema change); advisory — the STATEMENT layer never feeds
+  `find_stale`/liveness (a test pins that a drill-down cannot change `find_stale`).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_layer.py`
+  (key-parity, well-formed C/D graph, **reorder-invariance**, dependence-change sensitivity,
+  never-raises) + statement-layer cases in `tests/test_layer_matrix.py` (drill, refusals incl.
+  non-Python, cardinal isolation). Two-round full-diversity adversarial panel clean.
+
 ## [3.8.0] — 2026-07-01
 
 **The graph learns layers — drill from the call graph into a function's value-flow graph (§5c

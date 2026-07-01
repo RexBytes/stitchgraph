@@ -62,15 +62,17 @@ for LLM agents. The full operation list and the question each answers is in the 
   name-invariantly, so `find_similar(mode="structure")` catches renamed / reordered
   clones and `graph_diff` flags a data-flow change that leaves the call graph
   identical — advisory and read-only, never feeding dead-code detection.
-- **Layered — one graph, pick the depth (v3.8.0, §5c).** `get_matrix(layer="call")`
-  is the inter-procedural relation graph; `get_matrix(layer="expression")` drills
-  into a single function's value-flow graph. Same primitives, call ↔ expression depth;
-  the deeper layer is advisory and computed on demand.
+- **Layered — one graph, pick the depth (§5c).** `get_matrix(layer="call")` is the
+  inter-procedural relation graph; `layer="expression"` (v3.8.0) drills into a
+  function's value-flow graph (all 12 languages); `layer="statement"` (v3.9.0) drills
+  into its program-dependence graph (control/data deps, Python for now). Same
+  primitives, call → statement → expression depth; the deeper layers are advisory and
+  computed on demand.
 - **Scales to monorepos.** The v2 **constant-memory streaming indexer** indexes
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.8.0 — layered code-property graph: call ↔ expression drill-down over the 12-language body matrix)
+## Status (v3.9.0 — layered code-property graph: call ↔ statement ↔ expression drill-down over the 12-language body matrix)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),

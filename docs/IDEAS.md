@@ -154,12 +154,14 @@ i.e. a genuine **MAJOR / v3.0.0** release, and it's the natural home for:
   per-language CFG/DFG is a large surface). Prototype + validate in `research/` first.
 
 ### 5c. Tag the matrix by granularity layer (the layered / Code-Property-Graph design)
-**Phase 1 SHIPPED (v3.8.0): the CALL and EXPRESSION layers.** `model.Layer` (CALL / EXPRESSION;
-STATEMENT reserved) tags the granularity; `get_matrix(layer="expression")` drills from the call
-graph into a single function's value-flow graph (exposed by `structure.vfg_source` across all 12
-languages), and `graph_diff` is the two-layer diff. On-demand (no persisted deep edges — the
-scale-driven choice below), advisory-only (never feeds liveness). The STATEMENT/PDG layer is the
-remaining phase. Original design note follows.
+**Phases 1–2 SHIPPED: all three layers exist.** `model.Layer` (CALL / EXPRESSION / STATEMENT) tags
+the granularity. Phase 1 (v3.8.0): `get_matrix(layer="expression")` drills into a function's
+value-flow graph (`structure.vfg_source`, all 12 languages) and `graph_diff` is the two-layer diff.
+Phase 2 (v3.9.0): `get_matrix(layer="statement")` drills into a function's program-dependence graph
+(`structure.pdg_source` — statement nodes, control/data edges; **Python-only so far**, other
+languages a future sweep). All on-demand (no persisted deep edges — the scale-driven choice below),
+advisory-only (never feeds liveness). Remaining: sweep the STATEMENT layer to the tree-sitter
+languages. Original design note follows.
 
 When the deeper granularity (§5b) is promoted, do NOT build a second, separate graph. Carry a
 **granularity/layer tag** on nodes and edges so all layers coexist in one matrix and a consumer
