@@ -32,12 +32,16 @@ behavior unchanged) → MINOR.
 ### Guarantees
 - On-demand only (no store schema change); advisory — the STATEMENT layer never feeds
   `find_stale`/liveness (a test pins that a drill-down cannot change `find_stale`).
+- **Deterministic output** — `pdg`'s edge list and `get_matrix`'s `cells` are byte-reproducible
+  across processes (edges emitted in sorted order, not `set`/`PYTHONHASHSEED` order), matching the
+  guarantee the CALL layer already upheld.
 
 ### Quality gate
 - ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_layer.py`
   (key-parity, well-formed C/D graph, **reorder-invariance**, dependence-change sensitivity,
-  never-raises) + statement-layer cases in `tests/test_layer_matrix.py` (drill, refusals incl.
-  non-Python, cardinal isolation). Two-round full-diversity adversarial panel clean.
+  never-raises, **cross-`PYTHONHASHSEED` determinism**) + statement-layer cases in
+  `tests/test_layer_matrix.py` (drill, refusals incl. non-Python, cardinal isolation).
+  Full-diversity adversarial panel clean (a mid-review round caught + fixed the determinism nit).
 
 ## [3.8.0] — 2026-07-01
 
