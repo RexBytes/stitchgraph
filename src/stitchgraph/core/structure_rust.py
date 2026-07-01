@@ -128,6 +128,17 @@ def vfg_source(source: str, lang: str = "rust") -> dict[str, tuple[list[str], li
     return _walk(source, lang, build=lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
+def pdg_source(source: str, lang: str = "rust") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every function/method — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested functions/closures are opaque NESTED leaves. Rust is
+    expression-oriented, so control-flow expressions (if/match/loop/while/for) in statement position
+    become control nodes; in value position (e.g. `let y = if …`) they are folded into the enclosing
+    statement's reads. Advisory, on demand."""
+    return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
+
+
 def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one Rust function/closure node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds (incl. `self`), copy propagation through `let`
@@ -487,3 +498,231 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c sweep, Rust ----------------------------------------------
+
+_PDG_STMT_LABEL = {
+    "let_declaration": "Let", "expression_statement": "Expr", "empty_statement": "Empty",
+    "if_expression": "If", "match_expression": "Match", "loop_expression": "Loop",
+    "while_expression": "While", "for_expression": "For", "return_expression": "Return",
+    "macro_invocation": "Macro", "break_expression": "Break", "continue_expression": "Continue",
+}
+_PDG_CONTROL = frozenset({"if_expression", "match_expression", "loop_expression",
+                          "while_expression", "for_expression"})
+_PDG_COMMENT = frozenset({"line_comment", "block_comment"})
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a Rust function — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and the JS/Go builders: statement nodes + a synthetic ENTRY
+    carrying params (and `self`), control ('C') / data ('D', sequential reaching-def) edges. Rust is
+    expression-oriented, so control-flow *expressions* (if/match/loop/while/for) in statement position
+    become control nodes; in value position they are folded into the enclosing statement's reads.
+    Nested functions/closures are opaque NESTED leaves. Advisory only — never feeds liveness."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    params = fn.child_by_field_name("parameters")
+    if params is not None:
+        for p in params.named_children:
+            if p.type == "self_parameter":
+                last_def["self"] = entry
+            elif p.type == "parameter":
+                pat = p.child_by_field_name("pattern")
+                for nm in (_pattern_names(pat, text) if pat is not None else []):
+                    last_def[nm] = entry
+            else:
+                for nm in _pattern_names(p, text):
+                    last_def[nm] = entry
+
+    def add_target(n, loads: set, stores: set) -> None:
+        """Names bound by a `let`/assignment pattern (a `store`). Place/deref targets
+        (`obj.f = …`, `a[i] = …`, `*p = …`) define no name — their object/index are READS."""
+        if n is None:
+            return
+        t = n.type
+        if t == "identifier":
+            if text(n) != "_":
+                stores.add(text(n))
+        elif t in ("mut_pattern", "ref_pattern", "reference_pattern", "tuple_pattern",
+                   "tuple_struct_pattern", "slice_pattern", "struct_pattern", "or_pattern",
+                   "captured_pattern", "ref_pattern"):
+            for c in n.named_children:
+                add_target(c, loads, stores)
+        elif t == "field_pattern":
+            inner = n.child_by_field_name("pattern")
+            add_target(inner if inner is not None else _last(n), loads, stores)
+        elif t in ("field_expression", "index_expression", "unary_expression",
+                   "reference_expression"):
+            collect(n, loads, stores)
+        elif n.named_children:  # e.g. `let Some(x) = …` — bind bare identifiers within
+            for c in n.named_children:
+                if c.type == "identifier" and text(c) != "_":
+                    stores.add(text(c))
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header — stops at nested blocks (their own nodes),
+        nested functions/closures (opaque), and TYPE positions (no runtime value flow)."""
+        if n is None:
+            return
+        t = n.type
+        if t in _FUNC_NODES or t in _PDG_COMMENT or t == "block":
+            return
+        if t == "type_identifier" or t == "scoped_type_identifier" or t.endswith("_type"):
+            return  # a type position carries no value read
+        if t == "scoped_identifier":
+            return  # a module/type path (`Foo::bar`), not a local variable read
+        if t == "let_declaration":
+            pat = n.child_by_field_name("pattern")
+            if pat is not None:
+                add_target(pat, loads, stores)
+            collect(n.child_by_field_name("value"), loads, stores)
+            return
+        if t == "assignment_expression":
+            add_target(n.child_by_field_name("left"), loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "compound_assignment_expr":
+            left = n.child_by_field_name("left")
+            if left is not None and left.type == "identifier":
+                stores.add(text(left))
+                loads.add(text(left))
+            elif left is not None:
+                collect(left, loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t == "identifier":
+            if text(n) != "_":
+                loads.add(text(n))
+            return
+        if t == "field_expression":
+            collect(n.child_by_field_name("value"), loads, stores)  # read object; skip field name
+            return
+        for c in n.named_children:
+            collect(c, loads, stores)
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def bind_target(node, sid: int) -> None:
+        st: set = set()
+        add_target(node, set(), st)
+        for nm in sorted(st):
+            last_def[nm] = sid
+
+    def cond_edges(cond, sid: int) -> None:
+        # `if let PAT = EXPR` / `while let …` (+ let-chains): EXPR is read, PAT binds.
+        if cond is None:
+            return
+        if cond.type in ("let_condition", "let_chain"):
+            for c in cond.named_children:
+                if c.type in ("let_condition", "let_chain"):
+                    cond_edges(c, sid)
+            val = cond.child_by_field_name("value")
+            if val is not None:
+                data_edges(val, sid)
+            pat = cond.child_by_field_name("pattern")
+            if pat is not None:
+                bind_target(pat, sid)
+        else:
+            data_edges(cond, sid)
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type in _PDG_COMMENT:
+            return
+        if blk.type == "block":
+            for c in blk.named_children:
+                process(c, parent)
+        elif blk.type == "else_clause":
+            for c in blk.named_children:
+                block(c, parent)
+        else:
+            process(blk, parent)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t in _PDG_COMMENT:
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        if t == "expression_statement":
+            for c in node.named_children:
+                process(c, parent)
+            return
+        if t == "let_declaration":
+            sid = new_id("Let")
+            edges.append((parent, sid, "C"))
+            data_edges(node, sid)  # pattern stores + value reads (value-position control folded)
+            return
+        if t in _PDG_CONTROL or t == "block":
+            sid = new_id(_pdg_label(t))
+            edges.append((parent, sid, "C"))
+            if t == "if_expression":
+                cond_edges(node.child_by_field_name("condition"), sid)
+                block(node.child_by_field_name("consequence"), sid)
+                block(node.child_by_field_name("alternative"), sid)
+            elif t == "while_expression":
+                cond_edges(node.child_by_field_name("condition"), sid)
+                block(node.child_by_field_name("body"), sid)
+            elif t == "loop_expression":
+                block(node.child_by_field_name("body"), sid)
+            elif t == "for_expression":
+                data_edges(node.child_by_field_name("value"), sid)  # iterator
+                pat = node.child_by_field_name("pattern")
+                if pat is not None:
+                    bind_target(pat, sid)
+                block(node.child_by_field_name("body"), sid)
+            elif t == "match_expression":
+                data_edges(node.child_by_field_name("value"), sid)  # scrutinee
+                body = node.child_by_field_name("body")
+                if body is not None:
+                    for arm in body.named_children:
+                        if arm.type == "match_arm":
+                            block(arm.child_by_field_name("value"), sid)  # arm body
+            else:  # bare block expression
+                for c in node.named_children:
+                    process(c, sid)
+            return
+        # a simple statement / trailing expression (return/macro/call/assign/break/…): the whole node
+        # is its header — collect stops at nested blocks/functions, so nothing leaks. Descend any
+        # nested block child (closes the class, parity with the JS/Go layers).
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        data_edges(node, sid)
+        for c in node.named_children:
+            if c.type == "block":
+                block(c, sid)
+
+    body = fn.child_by_field_name("body")
+    if body is not None:
+        block(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges

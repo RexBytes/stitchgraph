@@ -124,16 +124,37 @@ def test_statement_layer_drills_a_go_function(tmp_path):
         assert "If" in r["labels"] and r["labels"].count("Return") == 2
 
 
-def test_statement_layer_refuses_unsupported_language(tmp_path):
-    # A language without a STATEMENT frontend yet (Rust) refuses cleanly; no crash.
-    (tmp_path / "lib.rs").write_text("fn f(a: i32) -> i32 { a + 1 }\n")
+def test_statement_layer_drills_a_rust_function(tmp_path):
+    # The STATEMENT layer covers Rust as well (v3.12.0).
+    (tmp_path / "lib.rs").write_text(
+        "fn classify(x: i32) -> String {\n"
+        "    let a = x + 1;\n"
+        "    if a > 0 { return \"pos\".to_string(); }\n"
+        "    \"neg\".to_string()\n"
+        "}\n"
+    )
     store = sg.Store(":memory:")
     sg.reindex(store, str(tmp_path))
-    rid = [n for n in store.all_node_ids() if n.endswith("::f") and ".rs" in n]
+    rid = [n for n in store.all_node_ids() if n.endswith("lib.rs::classify")]
     if rid:  # only if the tree-sitter extra indexed the Rust file
         m = sg.get_matrix(store, rid[0], layer="statement")
+        assert m.ok, m.review_reasons
+        r = m.result
+        assert r["layer"] == "statement" and r["labels"][0] == "ENTRY"
+        assert {c["k"] for c in r["cells"]} <= {"C", "D"}
+        assert "If" in r["labels"]
+
+
+def test_statement_layer_refuses_unsupported_language(tmp_path):
+    # A language without a STATEMENT frontend yet (C++) refuses cleanly; no crash.
+    (tmp_path / "m.cpp").write_text("int f(int a) { return a + 1; }\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    cid = [n for n in store.all_node_ids() if n.endswith("::f") and ".cpp" in n]
+    if cid:  # only if the tree-sitter extra indexed the C++ file
+        m = sg.get_matrix(store, cid[0], layer="statement")
         msg = " ".join(m.review_reasons).lower()
-        assert not m.ok and "supported-language" in msg and "go" in msg
+        assert not m.ok and "supported-language" in msg and "rust" in msg
 
 
 def test_statement_layer_never_affects_liveness(tmp_path):
