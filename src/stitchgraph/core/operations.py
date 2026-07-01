@@ -19,7 +19,7 @@ from typing import Any
 
 from .entrypoints import EntryPointDetector, PythonLibraryDetector
 from .envelope import Provenance, Result, Urgency, ok, refuse
-from .model import Edge, NodeKind, Relation
+from .model import Edge, Layer, NodeKind, Relation
 from .reach import (
     LIVENESS_RELATIONS,
     best_path,
@@ -634,12 +634,15 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
 def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
                body_threshold: float = 0.95) -> Result:
     """Compare this index with another built index at `other_db` (a stitchgraph `.db` path).
-    Reports located node/edge deltas — mode="id" is exact (same codebase: did a refactor change the
-    graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
-    *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
-    tracks the extractor). With `body`, Python, JS/TS/TSX, Go, Rust, C/C++, Java, C#, Ruby, PHP, and Bash
-    functions present in both whose *body shape* diverged are listed too (same-language only). Advisory and
-    read-only; never edits source, never feeds find_stale.
+
+    A two-LAYER diff of the code-property graph (design §5c): the CALL layer (located node/edge
+    deltas) always, and — with `body` — the EXPRESSION layer (per-function value-flow shape, the
+    same graph `get_matrix(layer="expression")` surfaces). mode="id" is exact (same codebase: did a
+    refactor change the graph? does the actual match the plan?), mode="leaf" reduces names to their
+    last component so two *different* codebases (e.g. a translation) can be compared (advisory:
+    cross-language topology tracks the extractor). With `body`, Python, JS/TS/TSX, Go, Rust, C/C++,
+    Java, C#, Ruby, PHP, and Bash functions present in both whose *body shape* diverged are listed
+    too (same-language only). Advisory and read-only; never edits source, never feeds find_stale.
 
     Note: the body layer fingerprints functions from their **source files at diff time** (the body
     matrix is computed on demand, not persisted, for scale). If a side's source has moved or been
@@ -887,15 +890,109 @@ def summarize_subsystem(store: Store, path: str) -> Result:
     return ok(payload, total=len(members))
 
 
+_EXPRESSION_MAX_NODES = 300  # a value-flow graph beyond this is unreadable as a matrix (advisory)
+
+
+def _expression_vfg(store: Store, node) -> tuple[list[str], list] | None:
+    """The EXPRESSION-layer value-flow graph for one Function/Method node, or None if it can't be
+    built (source unreadable, unknown language, or the tree-sitter extra missing). Reads the node's
+    source file and runs the matching frontend's `vfg_source`, selecting by the qualname in the id —
+    the same on-demand scheme `find_similar(mode="structure")` / `graph_diff(body=True)` use."""
+    from pathlib import Path
+
+    from . import (
+        structure,
+        structure_bash,
+        structure_cpp,
+        structure_csharp,
+        structure_go,
+        structure_java,
+        structure_js,
+        structure_php,
+        structure_ruby,
+        structure_rust,
+    )
+    path, sep, qual = node.id.partition("::")
+    if not sep:
+        return None
+    qual = qual.split("#", 1)[0]
+    try:
+        src = Path(store.get_meta("root") or ".", path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    suf = Path(path).suffix.lower()
+    vfgs: dict = {}
+    if suf == ".py":
+        vfgs = structure.vfg_source(src)
+    else:
+        for mod in (structure_js, structure_go, structure_rust, structure_cpp, structure_java,
+                    structure_csharp, structure_ruby, structure_php, structure_bash):
+            lang = mod._lang_for_ext(suf)
+            if lang is not None:
+                vfgs = mod.vfg_source(src, lang=lang)
+                break
+    return vfgs.get(qual)
+
+
+def _expression_matrix(store: Store, scope: str) -> Result:
+    """Drill into ONE function's value-flow graph (the EXPRESSION layer). `scope` must resolve to a
+    single Function/Method; returns its VFG in the same shape as the call-layer matrix (labels =
+    operations, cells = data/control edges tagged `k`). Advisory — the body matrix never feeds
+    liveness."""
+    fns = [nid for nid in store.all_node_ids() if _under_scope(nid, scope)
+           and (nd := store.get_node(nid)) is not None
+           and nd.kind in (NodeKind.FUNCTION, NodeKind.METHOD)]
+    if not fns:
+        return refuse(f"no function/method under scope '{scope}' — the expression layer drills into "
+                      "one function's value-flow graph", confidence=0.0)
+    if len(fns) > 1:
+        return refuse(f"scope '{scope}' matches {len(fns)} functions; the expression layer needs a "
+                      "SINGLE function (give its full id)", confidence=0.0, node_count=len(fns))
+    node = store.get_node(fns[0])
+    if node is None:
+        return refuse(f"node '{fns[0]}' vanished during lookup", confidence=0.0)
+    graph = _expression_vfg(store, node)
+    if graph is None:
+        return refuse(f"could not build the value-flow graph for '{fns[0]}' (source unavailable or "
+                      "the tree-sitter extra is not installed)", confidence=0.0)
+    labels, edges = graph
+    if len(labels) > _EXPRESSION_MAX_NODES:
+        return refuse(f"function '{fns[0]}' has {len(labels)} value-flow nodes (> "
+                      f"{_EXPRESSION_MAX_NODES}); too large to read as a matrix", confidence=0.0,
+                      node_count=len(labels))
+    seen: dict[tuple[int, int, str], None] = {}
+    for s, d, k in edges:  # collapse duplicate (src, dst, kind) triples
+        seen.setdefault((int(s), int(d), k), None)
+    cells = [{"src": s, "dst": d, "k": k} for (s, d, k) in seen]
+    payload: dict = {
+        "layer": Layer.EXPRESSION.value,
+        "function": node.id.split("::", 1)[-1],
+        "labels": labels,       # value-flow operations / control points, by index
+        "cells": cells,         # sparse (src_index, dst_index, kind 'd'=data / 'c'=control)
+        "n": len(labels),
+    }
+    if len(labels) <= 12:
+        grid = [[0] * len(labels) for _ in labels]
+        for s, d, _k in seen:
+            grid[s][d] = 1
+        payload["grid"] = grid
+    return ok(payload, layer=Layer.EXPRESSION.value, nodes=len(labels), edges=len(cells))
+
+
 @operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
 def get_matrix(store: Store, scope: str, relation: str = "CALLS",
-               limit: int = 25) -> Result:
+               limit: int = 25, layer: str = "call") -> Result:
     """Return a *bounded* sparse submatrix for the nodes under `scope` (an id
     prefix, e.g. a file or class), for one relation (design §8).
 
     Never the whole-repo N×N matrix — that's the dense anti-pattern (design §12).
     Refuses when the scope exceeds `limit` so the result stays small enough for an
     LLM to actually reason over.
+
+    `layer` selects the granularity (design §5c): "call" (default) is the
+    inter-procedural relation graph; "expression" drills into a SINGLE function's
+    intra-procedural value-flow graph (labels = operations, cells tagged data/control).
+    The expression layer is advisory and computed on demand — it never feeds liveness.
     """
     # Validate arg types BEFORE using them — relation.upper()/startswith()/`> limit` would
     # otherwise raise on None/wrong-type from a library or MCP call (panel R18B).
@@ -905,6 +1002,16 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         return refuse("relation must be a string", confidence=0.0)
     if not isinstance(limit, int) or isinstance(limit, bool):
         return refuse("limit must be an integer", confidence=0.0)
+    if not isinstance(layer, str):
+        return refuse("layer must be a string", confidence=0.0)
+    layer = layer.lower()
+    if layer == Layer.STATEMENT.value:
+        return refuse("the statement (PDG) layer is reserved and not built yet; use 'call' or "
+                      "'expression'", confidence=0.0)
+    if layer not in (Layer.CALL.value, Layer.EXPRESSION.value):
+        return refuse(f"unknown layer '{layer}' (call|expression)", confidence=0.0)
+    if layer == Layer.EXPRESSION.value:
+        return _expression_matrix(store, scope)
     try:
         rel = Relation(relation.upper())
     except ValueError:
@@ -931,6 +1038,7 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     cells = [{"src": s, "dst": d, "w": w} for (s, d), w in sorted(cell_w.items())]
     labels = [m.split("::", 1)[-1] for m in members]
     payload = {
+        "layer": Layer.CALL.value,
         "relation": rel.value,
         "labels": labels,
         "cells": cells,        # sparse (src_index, dst_index, weight)
