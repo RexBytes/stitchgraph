@@ -72,7 +72,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.16.0 — layered code-property graph: call ↔ statement ↔ expression drill-down over the 12-language body matrix)
+## Status (v3.18.0 — layered code-property graph: call ↔ statement ↔ expression drill-down; the statement (PDG) layer now spans every one of the 12 body-matrix languages)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
