@@ -216,6 +216,11 @@ _NONVALUE_V = {
     "block_label_stmt": "'v: { g(); } 0",
     "lifetime_turbofish": "let _z = foo::<'v>(); 0",
     "type_turbofish": "let _z = foo::<v>(); 0",  # a turbofish TYPE arg named v is a type, not a value
+    # an `if let`/`while let` pattern binding (and struct field-pattern name) is a fresh binding, not
+    # a read of the outer value it collides with
+    "iflet_binding": "if let Some(v) = mk() { 0 } else { 1 }",
+    "whilelet_binding": "while let Some(v) = mk() { } 0",
+    "iflet_field_binding": "if let S { v: _x } = mk() { 0 } else { 1 }",
 }
 
 

@@ -401,6 +401,19 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             inner = _last_expr(node)
             val = ev(inner, ctrl) if inner is not None else None  # a bare `'label` yields None
             return val if val is not None else g.add(t.split("_")[0].upper())
+        if t == "let_condition":
+            # `if let PAT = EXPR` / `while let …`: EXPR is a value read; PAT is a BINDING, not a read
+            # (mirrors the PDG's `_cond_reads` — without this the generic fallback would env-lookup
+            # the pattern's binding identifiers as values, corrupting the fingerprint by name).
+            v = ev(node.child_by_field_name("value"), ctrl)
+            bind(node.child_by_field_name("pattern"), v)
+            return v
+        if t == "let_chain":  # `let … && <expr> && let …` — combine each clause's value flow
+            n = g.add("LET_CHAIN")
+            for c in node.named_children:
+                g.link(ev(c, ctrl), n, _DATA)
+            g.link(ctrl, n, _CTRL)
+            return n
         if t in _FUNC_NODES:
             return g.add("NESTED")
         # generic fallback: a node fed by its sub-expressions (the completeness oracle makes gaps
@@ -527,8 +540,8 @@ def _pdg_label(t: str) -> str:
 
 
 def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
-    """The STATEMENT layer for a Rust function — a program-dependence graph mirroring
-    `structure._build_pdg` (Python) and the JS/Go builders: statement nodes + a synthetic ENTRY
+    """The STATEMENT layer for a Rust function — a program-dependence graph mirroring its
+    predecessors, the Python (`structure._build_pdg`), JS, and Go PDG builders: statement nodes + a synthetic ENTRY
     carrying params (and `self`), control ('C') / data ('D', sequential reaching-def) edges. Rust is
     expression-oriented, so control-flow *expressions* (if/match/loop/while/for) in statement position
     become control nodes; in value position they are folded into the enclosing statement's reads.
