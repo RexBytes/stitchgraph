@@ -62,16 +62,22 @@ for LLM agents. The full operation list and the question each answers is in the 
   name-invariantly, so `find_similar(mode="structure")` catches renamed / reordered
   clones and `graph_diff` flags a data-flow change that leaves the call graph
   identical — advisory and read-only, never feeding dead-code detection.
+- **Layered — one graph, pick the depth (v3.8.0, §5c).** `get_matrix(layer="call")`
+  is the inter-procedural relation graph; `get_matrix(layer="expression")` drills
+  into a single function's value-flow graph. Same primitives, call ↔ expression depth;
+  the deeper layer is advisory and computed on demand.
 - **Scales to monorepos.** The v2 **constant-memory streaming indexer** indexes
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.7.0 — intra-procedural body matrix for Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash)
+## Status (v3.8.0 — layered code-property graph: call ↔ expression drill-down over the 12-language body matrix)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
 and the body matrix (v3.0.0) now spans Python, the JS family (v3.2.0), Go (v3.3.0),
-Rust (v3.4.0), C/C++ (v3.5.0), Java + C# (v3.6.0), and Ruby + PHP + Bash (v3.7.0). See [`docs/STATUS.md`](docs/STATUS.md)
+Rust (v3.4.0), C/C++ (v3.5.0), Java + C# (v3.6.0), and Ruby + PHP + Bash (v3.7.0) — all 12 languages.
+**v3.8.0 makes it a layered graph (§5c):** `get_matrix`/`graph_diff` now drill from the
+call layer into a function's value-flow (expression) layer. See [`docs/STATUS.md`](docs/STATUS.md)
 for the full table + roadmap.
 
 ### Headline: the intra-procedural body matrix (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash)

@@ -4,6 +4,46 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.8.0] — 2026-07-01
+
+**The graph learns layers — drill from the call graph into a function's value-flow graph (§5c
+phase 1).** v3.0.0–v3.7.0 built the intra-procedural body matrix for all 12 languages but kept it an
+internal fingerprint input. v3.8.0 makes it a first-class, drill-down-able **layer** of the
+code-property graph (`docs/IDEAS.md` §5c): the same `get_matrix` / `graph_diff` primitives now work
+at call OR expression depth. New capability for an existing representation, backward-compatible
+(schema, indexes, and every operation's default behavior unchanged) → MINOR.
+
+### Added
+- **`model.Layer`** — the granularity tag (`CALL` / `EXPRESSION`; `STATEMENT`/PDG reserved for a
+  future phase), analogous to how `Relation`/`Provenance` qualify edges. One graph, picked depths.
+- **`structure.vfg` / `vfg_source`** (and the same `vfg_source` on all 9 tree-sitter frontends) —
+  expose the per-function value-flow graph publicly: `{qualname: (node_labels, [(src, dst, kind)])}`,
+  kind `d`=data / `c`=control. The EXPRESSION-layer companion to `fingerprint_source` (guaranteed
+  identical keys — they share one traversal). Computed on demand, never persisted.
+- **`get_matrix(..., layer="call"|"expression")`** — `"call"` is unchanged (now tagged
+  `layer="call"`); `"expression"` drills into a SINGLE function's value-flow graph, returned in the
+  same shape (labels = operations, cells tagged data/control, a dense grid when small). Dispatched by
+  file extension across all 12 languages; refuses cleanly on a multi-function scope, a missing
+  function, an oversized graph, the reserved `statement` layer, or an unknown layer. CLI
+  `--layer expression` and the MCP tool schema pick it up automatically (registry-generated).
+
+### Changed
+- `graph_diff` is documented as the two-layer diff: call-layer node/edge deltas always, plus (with
+  `body`) the expression-layer `body_changed` — the same graph `get_matrix(layer="expression")`
+  surfaces. API unchanged.
+
+### Guarantees
+- **On-demand only** — no store schema change, no indexer/scale impact; the CALL layer stays the sole
+  persisted graph. The EXPRESSION layer is **advisory** and never feeds `find_stale`/liveness — the
+  cardinal rule is a call-layer property (a test pins that a drill-down cannot change `find_stale`).
+
+### Quality gate
+- ruff + mypy clean; full suite passing.
+- New tests: `tests/test_layer_matrix.py` (drill-down, layer tag, every refusal path, cardinal
+  isolation) and `tests/oracles/test_vfg_source_layers.py` (vfg_source keys == fingerprint keys,
+  well-formed graphs, metamorphic body-value-flow — all 12 languages).
+- Two-round full-diversity adversarial panel clean on the post-fix HEAD.
+
 ## [3.7.0] — 2026-06-30
 
 **The body matrix completes the language sweep — Ruby, PHP, and Bash.** v3.6.0 added Java and C#;
