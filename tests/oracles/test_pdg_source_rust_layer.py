@@ -182,6 +182,18 @@ def test_pdg_value_position_control_folds_body_reads():
         assert (1, 2, "D") in edges, f"value-position body read not folded into the Let: {src}"
 
 
+def test_pdg_let_else_alternative_block_reads_are_folded():
+    # R224: `let PAT = EXPR else { … }` (let-else) — the `else` block is unconditional control flow
+    # (runs on refutation). Its reads must fold into the let node, mirroring the VFG. A var defined
+    # before, read only inside the `else` block, must still link into the let-else statement.
+    _l, e = structure_rust.pdg_source(
+        "fn f(o: Option<i32>) -> i32 { let d = compute(); "
+        "let Some(x) = o else { return d + 1; }; x }"
+    )["f"]
+    # node 1 = `let d`, node 2 = the let-else — the else-block read of `d` must link 1 -> 2
+    assert (1, 2, "D") in e, "let-else `else` block reads were not folded into the let node"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.

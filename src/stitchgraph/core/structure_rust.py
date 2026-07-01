@@ -644,6 +644,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             if pat is not None:
                 add_target(pat, loads, stores)
             collect(n.child_by_field_name("value"), loads, stores)
+            collect(n.child_by_field_name("alternative"), loads, stores)  # let-else `else {…}` block
             return
         if t == "assignment_expression":
             add_target(n.child_by_field_name("left"), loads, stores)
