@@ -108,6 +108,14 @@ def vfg_source(source: str, lang: str = "go") -> dict[str, tuple[list[str], list
     return _walk(source, lang, lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
+def pdg_source(source: str, lang: str = "go") -> dict[str, tuple[list[str], list]]:
+    """Program-dependence graph of every function/method — the STATEMENT-layer companion to
+    fingerprint_source/vfg_source (identical keys), the raw graph get_matrix(layer="statement")
+    drills into. Statement nodes + control ('C') / data ('D') dependence edges via a sequential
+    reaching-def approximation; nested functions are opaque NESTED leaves. Advisory, on demand."""
+    return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
+
+
 def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one Go function/method node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds (receiver + params + named results), copy
@@ -469,3 +477,223 @@ def _op_text(node, text) -> str:
         if not c.is_named and c.text:
             return c.text.decode("utf-8", "replace")
     return "?"
+
+
+# --- STATEMENT layer (PDG) — design §5c sweep, Go ------------------------------------------------
+
+_PDG_STMT_LABEL = {
+    "if_statement": "If",
+    "for_statement": "For",
+    "expression_switch_statement": "Switch", "type_switch_statement": "Switch",
+    "select_statement": "Select",
+    "return_statement": "Return",
+    "short_var_declaration": "Assign", "assignment_statement": "Assign",
+    "var_declaration": "Assign", "const_declaration": "Assign",
+    "expression_statement": "Expr", "send_statement": "Send",
+    "inc_statement": "IncDec", "dec_statement": "IncDec",
+    "go_statement": "Go", "defer_statement": "Defer", "labeled_statement": "Labeled",
+    "break_statement": "Break", "continue_statement": "Continue",
+    "goto_statement": "Goto", "fallthrough_statement": "Fallthrough", "empty_statement": "Empty",
+}
+
+
+def _pdg_label(t: str) -> str:
+    return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
+
+
+def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The STATEMENT layer for a Go function — a program-dependence graph mirroring
+    `structure._build_pdg` (Python) and `structure_js._build_pdg`: statement nodes + a synthetic
+    ENTRY carrying the parameters (and receiver), control ('C') / data ('D', sequential reaching-def)
+    edges. Nested functions (`func_literal`) are opaque NESTED leaves; reorder-invariant. A structural
+    approximation (no SSA/alias analysis), advisory only — never feeds liveness."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = 0
+    last_def: dict[str, int] = {}
+
+    def text(n) -> str:
+        return n.text.decode("utf-8", "replace")
+
+    def new_id(label: str) -> int:
+        nonlocal counter
+        i = counter
+        counter += 1
+        nodes[i] = label
+        return i
+
+    entry = new_id("ENTRY")
+    for fld in ("receiver", "parameters"):
+        plist = fn.child_by_field_name(fld)
+        if plist is not None:
+            for p in plist.named_children:
+                for nm in _param_names(p, text):
+                    last_def[nm] = entry
+
+    def add_target(n, loads: set, stores: set) -> None:
+        """Names bound by an assignment/declaration target (a `store`). A selector/index target
+        (`obj.f = …`, `a[i] = …`) defines no name — its object/index are READS."""
+        if n is None:
+            return
+        t = n.type
+        if t == "identifier":
+            stores.add(text(n))
+        elif t in ("expression_list", "parenthesized_expression"):
+            for c in n.named_children:
+                add_target(c, loads, stores)
+        elif t in ("selector_expression", "index_expression", "unary_expression"):
+            collect(n, loads, stores)  # pointer-deref `*p = …`, `obj.f = …`, `a[i] = …` → reads
+
+    def collect(n, loads: set, stores: set) -> None:
+        """Reads/writes within one statement's header — stops at nested blocks (their own nodes) and
+        nested functions (opaque), mirroring Python's header_names."""
+        if n is None:
+            return
+        t = n.type
+        if t in _FUNC_NODES or t in ("block", "comment"):
+            return
+        if t == "short_var_declaration":
+            add_target(n.child_by_field_name("left"), loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t in ("var_spec", "const_spec"):
+            for c in n.named_children:
+                if c.type == "identifier":
+                    stores.add(text(c))
+            collect(n.child_by_field_name("value"), loads, stores)
+            return
+        if t == "assignment_statement":
+            op = _op_text(n, text)
+            left = n.child_by_field_name("left")
+            if op and op != "=" and op.endswith("="):
+                # `x op= e` reads and writes each left operand.
+                for tgt in (left.named_children if left is not None else []):
+                    if tgt.type == "identifier":
+                        stores.add(text(tgt))
+                        loads.add(text(tgt))
+                    else:
+                        collect(tgt, loads, stores)
+            else:
+                add_target(left, loads, stores)
+            collect(n.child_by_field_name("right"), loads, stores)
+            return
+        if t in ("inc_statement", "dec_statement"):
+            arg = _first(n)
+            if arg is not None and arg.type == "identifier":
+                stores.add(text(arg))
+                loads.add(text(arg))
+            elif arg is not None:
+                collect(arg, loads, stores)
+            return
+        if t == "identifier":
+            loads.add(text(n))
+            return
+        if t == "selector_expression":
+            collect(n.child_by_field_name("operand"), loads, stores)  # skip the field name
+            return
+        for c in n.named_children:
+            collect(c, loads, stores)
+
+    def data_edges(hdr, sid: int) -> None:
+        if hdr is None:
+            return
+        loads: set = set()
+        stores: set = set()
+        collect(hdr, loads, stores)
+        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
+        # list (and get_matrix cells) non-reproducible across processes (R205).
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    def bind_target(node, sid: int) -> None:
+        # a `range` binding (`for k, v := range m`) STORES its loop vars.
+        st: set = set()
+        add_target(node, set(), st)
+        for nm in sorted(st):
+            last_def[nm] = sid
+
+    def block(blk, parent: int) -> None:
+        if blk is None or blk.type == "comment":
+            return
+        if blk.type in ("block", "statement_list"):
+            for st in blk.named_children:
+                block(st, parent)
+        else:
+            process(blk, parent)
+
+    def _case_body(case, sid: int, skip) -> None:
+        skip_span = (skip.start_byte, skip.end_byte) if skip is not None else None
+        for st in case.named_children:
+            if st.type == "comment" or (st.start_byte, st.end_byte) == skip_span:
+                continue
+            if st.type == "statement_list":
+                for s in st.named_children:
+                    block(s, sid)
+            elif st.type not in ("expression_list",) or skip is None:
+                block(st, sid)
+
+    def process(node, parent: int) -> None:
+        t = node.type
+        if t == "comment":
+            return
+        if t in _FUNC_NODES:
+            edges.append((parent, new_id("NESTED"), "C"))
+            return
+        sid = new_id(_pdg_label(t))
+        edges.append((parent, sid, "C"))
+        if t == "if_statement":
+            data_edges(node.child_by_field_name("initializer"), sid)
+            data_edges(node.child_by_field_name("condition"), sid)
+            block(node.child_by_field_name("consequence"), sid)
+            block(node.child_by_field_name("alternative"), sid)
+        elif t == "for_statement":
+            for child in node.named_children:
+                ct = child.type
+                if ct == "for_clause":
+                    data_edges(child, sid)
+                elif ct == "range_clause":
+                    data_edges(child.child_by_field_name("right"), sid)
+                    left = child.child_by_field_name("left")
+                    if left is not None:
+                        bind_target(left, sid)
+                elif ct == "block":
+                    block(child, sid)
+                elif ct != "comment":
+                    data_edges(child, sid)  # a bare condition expression
+        elif t in ("expression_switch_statement", "type_switch_statement"):
+            data_edges(node.child_by_field_name("initializer"), sid)
+            data_edges(node.child_by_field_name("value"), sid)
+            for case in node.named_children:
+                if case.type in ("expression_case", "type_case", "default_case"):
+                    cval = case.child_by_field_name("value")
+                    if cval is not None:
+                        data_edges(cval, sid)
+                    _case_body(case, sid, cval)
+        elif t == "select_statement":
+            for case in node.named_children:
+                if case.type in ("communication_case", "default_case"):
+                    comm = case.child_by_field_name("communication")
+                    if comm is not None:
+                        data_edges(comm, sid)
+                    _case_body(case, sid, comm)
+        elif t == "labeled_statement":
+            for c in node.named_children:
+                if c.type not in ("label_name", "comment"):
+                    block(c, sid)
+        else:
+            # a simple statement (return/send/inc-dec/expr/assign/var/const/go/defer/break/…): the
+            # whole node is its header — collect stops at nested blocks/functions, so nothing leaks.
+            # Any nested block child is still descended (parity with the JS layer / Python walk_block).
+            data_edges(node, sid)
+            for c in node.named_children:
+                if c.type == "block":
+                    block(c, sid)
+
+    body = fn.child_by_field_name("body")
+    if body is not None:
+        block(body, entry)
+    labels = [nodes[i] for i in range(len(nodes))]
+    return labels, edges

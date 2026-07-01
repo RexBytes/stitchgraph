@@ -102,16 +102,38 @@ def test_statement_layer_drills_a_js_function(tmp_path):
         assert "If" in r["labels"] and r["labels"].count("Return") == 2
 
 
-def test_statement_layer_refuses_unsupported_language(tmp_path):
-    # A language without a STATEMENT frontend yet (Go) refuses cleanly; no crash.
-    (tmp_path / "m.go").write_text("package m\nfunc f(a int) int { return a }\n")
+def test_statement_layer_drills_a_go_function(tmp_path):
+    # The STATEMENT layer covers Go as well as Python + the JS family (v3.11.0).
+    (tmp_path / "m.go").write_text(
+        "package m\n"
+        "func classify(x int) string {\n"
+        "\ta := x + 1\n"
+        "\tif a > 0 { return \"pos\" }\n"
+        "\treturn \"neg\"\n"
+        "}\n"
+    )
     store = sg.Store(":memory:")
     sg.reindex(store, str(tmp_path))
-    gid = [n for n in store.all_node_ids() if n.endswith("::f") and ".go" in n]
+    gid = [n for n in store.all_node_ids() if n.endswith("m.go::classify")]
     if gid:  # only if the tree-sitter extra indexed the Go file
         m = sg.get_matrix(store, gid[0], layer="statement")
+        assert m.ok, m.review_reasons
+        r = m.result
+        assert r["layer"] == "statement" and r["labels"][0] == "ENTRY"
+        assert {c["k"] for c in r["cells"]} <= {"C", "D"}
+        assert "If" in r["labels"] and r["labels"].count("Return") == 2
+
+
+def test_statement_layer_refuses_unsupported_language(tmp_path):
+    # A language without a STATEMENT frontend yet (Rust) refuses cleanly; no crash.
+    (tmp_path / "lib.rs").write_text("fn f(a: i32) -> i32 { a + 1 }\n")
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    rid = [n for n in store.all_node_ids() if n.endswith("::f") and ".rs" in n]
+    if rid:  # only if the tree-sitter extra indexed the Rust file
+        m = sg.get_matrix(store, rid[0], layer="statement")
         msg = " ".join(m.review_reasons).lower()
-        assert not m.ok and "supported-language" in msg and "js/ts/tsx" in msg
+        assert not m.ok and "supported-language" in msg and "go" in msg
 
 
 def test_statement_layer_never_affects_liveness(tmp_path):

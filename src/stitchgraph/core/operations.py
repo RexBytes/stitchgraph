@@ -941,7 +941,7 @@ def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
     Selects the frontend by extension and the function by the qualname in the id."""
     from pathlib import Path
 
-    from . import structure, structure_js
+    from . import structure, structure_go, structure_js
     path, sep, qual = node.id.partition("::")
     if not sep:
         return None
@@ -953,9 +953,10 @@ def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
     suf = Path(path).suffix.lower()
     if suf == ".py":
         return structure.pdg_source(src).get(qual)
-    lang = structure_js._lang_for_ext(suf)
-    if lang is not None:
-        return structure_js.pdg_source(src, lang=lang).get(qual)
+    for mod in (structure_js, structure_go):  # tree-sitter frontends with a STATEMENT layer
+        lang = mod._lang_for_ext(suf)
+        if lang is not None:
+            return mod.pdg_source(src, lang=lang).get(qual)
     return None
 
 
@@ -978,12 +979,13 @@ def _body_matrix(store: Store, scope: str, layer: str) -> Result:
     if node is None:
         return refuse(f"node '{fns[0]}' vanished during lookup", confidence=0.0)
     if layer == Layer.STATEMENT.value:
-        from . import structure_js
-        _suf = fns[0].partition("::")[0]
-        _suf = _suf[_suf.rfind("."):].lower() if "." in _suf else ""
-        if _suf != ".py" and structure_js._lang_for_ext(_suf) is None:
-            return refuse(f"the statement (PDG) layer supports Python and the JS family (js/ts/tsx) "
-                          f"so far; '{fns[0]}' is not a supported-language function", confidence=0.0)
+        from . import structure_go, structure_js
+        _path = fns[0].partition("::")[0]
+        _suf = _path[_path.rfind("."):].lower() if "." in _path else ""
+        if (_suf != ".py" and structure_js._lang_for_ext(_suf) is None
+                and structure_go._lang_for_ext(_suf) is None):
+            return refuse("the statement (PDG) layer supports Python, the JS family (js/ts/tsx), and "
+                          f"Go so far; '{fns[0]}' is not a supported-language function", confidence=0.0)
     graph = _expression_vfg(store, node) if layer == Layer.EXPRESSION.value \
         else _pdg_for_node(store, node)
     if graph is None:
