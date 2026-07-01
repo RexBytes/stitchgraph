@@ -937,13 +937,14 @@ def _expression_vfg(store: Store, node) -> tuple[list[str], list] | None:
 def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
     """The STATEMENT-layer program-dependence graph for one Function/Method node, or None if it can't
     be built (unsupported language, source unreadable, or the tree-sitter extra missing). Python (deep
-    stdlib ast), the JS family (js/ts/tsx), Go, Rust, C/C++, and Java (tree-sitter) so far; other
+    stdlib ast), the JS family (js/ts/tsx), Go, Rust, C/C++, Java, and C# (tree-sitter) so far; other
     languages are a future sweep. Selects the frontend by extension and the function by the qualname in the id."""
     from pathlib import Path
 
     from . import (
         structure,
         structure_cpp,
+        structure_csharp,
         structure_go,
         structure_java,
         structure_js,
@@ -961,7 +962,8 @@ def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
     if suf == ".py":
         return structure.pdg_source(src).get(qual)
     # tree-sitter frontends with a STATEMENT layer.
-    for mod in (structure_js, structure_go, structure_rust, structure_cpp, structure_java):
+    for mod in (structure_js, structure_go, structure_rust, structure_cpp, structure_java,
+                structure_csharp):
         lang = mod._lang_for_ext(suf)
         if lang is not None:
             return mod.pdg_source(src, lang=lang).get(qual)
@@ -987,16 +989,24 @@ def _body_matrix(store: Store, scope: str, layer: str) -> Result:
     if node is None:
         return refuse(f"node '{fns[0]}' vanished during lookup", confidence=0.0)
     if layer == Layer.STATEMENT.value:
-        from . import structure_cpp, structure_go, structure_java, structure_js, structure_rust
+        from . import (
+            structure_cpp,
+            structure_csharp,
+            structure_go,
+            structure_java,
+            structure_js,
+            structure_rust,
+        )
         _path = fns[0].partition("::")[0]
         _suf = _path[_path.rfind("."):].lower() if "." in _path else ""
         if (_suf != ".py" and structure_js._lang_for_ext(_suf) is None
                 and structure_go._lang_for_ext(_suf) is None
                 and structure_rust._lang_for_ext(_suf) is None
                 and structure_cpp._lang_for_ext(_suf) is None
-                and structure_java._lang_for_ext(_suf) is None):
+                and structure_java._lang_for_ext(_suf) is None
+                and structure_csharp._lang_for_ext(_suf) is None):
             return refuse("the statement (PDG) layer supports Python, the JS family (js/ts/tsx), Go, "
-                          "Rust, C/C++, and Java so far; "
+                          "Rust, C/C++, Java, and C# so far; "
                           f"'{fns[0]}' is not a supported-language function",
                           confidence=0.0)
     graph = _expression_vfg(store, node) if layer == Layer.EXPRESSION.value \
@@ -1044,7 +1054,7 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     `layer` selects the granularity (design §5c), coarse→fine: "call" (default) is
     the inter-procedural relation graph; "statement" drills into a SINGLE function's
     program-dependence graph (labels = statements, cells tagged C=control / D=data
-    dependence — Python + the JS family + Go + Rust + C/C++ + Java so far); "expression" drills into its intra-procedural
+    dependence — Python + the JS family + Go + Rust + C/C++ + Java + C# so far); "expression" drills into its intra-procedural
     value-flow graph (labels = operations, cells tagged data/control). The deeper
     layers are advisory and computed on demand — they never feed liveness.
     """

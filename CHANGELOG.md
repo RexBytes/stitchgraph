@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.15.0] — 2026-07-01
+
+**The STATEMENT layer learns C# (§5c sweep, language 7).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), and Java (v3.14.0), v3.15.0 adds C# to the
+program-dependence-graph layer: `structure_csharp.pdg_source` builds a per-function PDG (statement
+nodes + a synthetic `ENTRY` carrying params; control `C` / data `D` sequential-reaching-def edges)
+and `get_matrix(layer="statement")` drills it. Type positions, the member name in a `.` access, and
+pattern/label selectors carry no value read; member/element assignment targets are reads, not stores;
+`foreach` loop vars, `using` resources, and tuple deconstructions bind; expression-bodied members
+(`=> expr`), interpolated-string holes, and switch expressions/patterns are modelled. A new white-box
+VFG-vs-PDG differential oracle (`tests/oracles/test_pdg_csharp_vfg_differential.py`) cross-checks the
+statement- and expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the
+JS family + Go + Rust + C/C++ + Java + C#; the remaining tree-sitter languages (Ruby, PHP, Bash) are
+the rest of the sweep and refuse with a supported-set message. On-demand, advisory, never feeds
+liveness (cardinal rule re-verified). Backward-compatible (no schema change, default behavior
+unchanged) → MINOR.
+
 ## [3.14.0] — 2026-07-01
 
 **The STATEMENT layer learns Java (§5c sweep, language 6).** After Python (v3.9.0), the JS family
