@@ -2438,7 +2438,7 @@
         "haiku"
       ],
       "findings": {
-        "opus": "DETERMINISM: _build_pdg emitted data edges by iterating a set of load names, so pdg edges / get_matrix cells were PYTHONHASHSEED-dependent (non-reproducible across processes) — the CALL layer's determinism guarantee regressed. Advisory-only, cardinal rule never at risk (WL fingerprints sort internally, so the oracle stayed green). Fixed 6010687: sorted(loads)/sorted(stores) in _build_pdg + sorted(seen) cells in _body_matrix + cross-PYTHONHASHSEED subprocess regression test."
+        "MEDIUM": 1
       },
       "theme": "v3.9.0 round 2 on 83e18a1 — opus caught the STATEMENT-layer non-determinism; sonnet+haiku CLEAN. Determinism fixed at root cause + choke point."
     },
@@ -2460,7 +2460,7 @@
         "haiku"
       ],
       "findings": {
-        "haiku": "COSMETIC: the unknown-layer refuse message + membership tuple listed layers call|expression|statement, not the enum/doc depth order call|statement|expression. Fixed 2da922b."
+        "NIT": 1
       },
       "theme": "v3.9.0 on 4b500f8/2da922b — opus+sonnet CLEAN (exhaustive re-cert, gate green, cardinal). haiku found a cosmetic layer-order nit in the error message; fixed."
     },
@@ -2482,7 +2482,7 @@
         "haiku"
       ],
       "findings": {
-        "haiku": "COSMETIC (same class as R207): docs/IDEAS.md §5c listed model.Layer as (CALL / EXPRESSION / STATEMENT) not the enum order (CALL / STATEMENT / EXPRESSION). Closed CLASS-WIDE at 2a7c18d (model.py docstring bullets, get_matrix/_body_matrix docstrings, IDEAS.md all normalized to call→statement→expression)."
+        "NIT": 1
       },
       "theme": "v3.9.0 on 2da922b — opus+sonnet CLEAN (opus 4000+ fuzz, 4-seed determinism, repo-wide key parity, cardinal digest byte-identical across 60 drills). haiku found another layer-order instance; closed the whole class matrix-wide."
     },
@@ -2494,7 +2494,7 @@
         "haiku"
       ],
       "findings": {
-        "opus": "COMPLETENESS DEFECT (real): ast.Match/case bodies were dropped from the PDG — walk_block descended only into body/orelse/finalbody+handlers, but Match sub-statements live in cases[].body, so every case-body statement vanished and header_names misattributed case-body names to the Match node. The EXPRESSION layer already handled match, so STATEMENT was inconsistent. Fixed e861ebd: walk_block descends into cases[].body; header_names excludes cases; +oracle tests. Match is the only such compound in Python's grammar — class closed."
+        "MEDIUM": 1
       },
       "theme": "v3.9.0 on 2a7c18d — opus found the match/case completeness gap (real, not cosmetic); sonnet+haiku CLEAN. Fixed + regression-tested."
     },
@@ -2506,7 +2506,7 @@
         "haiku"
       ],
       "findings": {
-        "haiku": "COSMETIC (layer-order class): README 'Layered' bullet listed layers in release order (expression v3.8.0 before statement v3.9.0), contradicting its own 'call→statement→expression depth' clause. Fixed 4995196; two remaining in-code instances (labels comment + dispatch tuple) normalized ad7ff46."
+        "NIT": 1
       },
       "theme": "v3.9.0 on e861ebd — opus CLEAN with an EXHAUSTIVE structural-completeness hunt (enumerated every ast.stmt compound; zero unwalked statement-bearing fields remain; match was the last gap — class closed). sonnet gate CLEAN. haiku found the last layer-order instance; closed class-wide."
     },
