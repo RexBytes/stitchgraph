@@ -609,8 +609,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         t = n.type
         if t in _FUNC_NODES or t in _PDG_COMMENT:
             return
-        if t == "label":
-            return  # a loop/block label (`'outer`) is a control-flow target, not a value read
+        if t == "label" or t == "lifetime":
+            return  # a label (`'outer`) or lifetime (`'a`, incl. turbofish `foo::<'a>()`) is not a value
         if t == "type_identifier" or t == "scoped_type_identifier" or t.endswith("_type"):
             return  # a type position carries no value read
         if t == "scoped_identifier":

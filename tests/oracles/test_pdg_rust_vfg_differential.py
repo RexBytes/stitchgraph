@@ -188,6 +188,8 @@ _SPURIOUS = {
     "block_label_value": ("blk", "let _z = 'blk: { 5 };"),
     "block_label_stmt": ("blk", "'blk: { g(); }"),
     "block_label_break": ("blk", "let _z = 'blk: { break 'blk 1; };"),
+    # a lifetime in a turbofish type-argument list is a type position, not a value
+    "lifetime_turbofish": ("lt", "let _z = foo::<'lt>();"),
 }
 
 

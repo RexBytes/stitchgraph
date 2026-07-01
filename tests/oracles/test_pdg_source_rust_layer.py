@@ -274,6 +274,18 @@ def test_pdg_block_label_is_not_a_spurious_read():
     assert any(s == 0 and k == "D" for s, _d, k in e2), "read inside a labeled block was dropped"
 
 
+def test_pdg_lifetime_turbofish_is_not_a_spurious_read():
+    # R232: a lifetime in a turbofish type-argument list (`foo::<'lt>()`) is a type position, not a
+    # value. Reading its bare identifier would be a phantom read if a local shares the name. A
+    # const-generic argument (`foo::<{n}>()`) IS a value position and must still read `n`.
+    _l, e = structure_rust.pdg_source(
+        "fn f() -> i32 { let lt = 1; let _z = foo::<'lt>(); 0 }"
+    )["f"]
+    assert (1, 2, "D") not in e, "lifetime turbofish read as a colliding local (spurious edge)"
+    _l2, e2 = structure_rust.pdg_source("fn f(n: i32) -> i32 { let _z = foo::<{n}>(); 0 }")["f"]
+    assert any(s == 0 and k == "D" for s, _d, k in e2), "const-generic value argument read dropped"
+
+
 def test_pdg_value_position_bindings_are_not_false_reads():
     # if-let / for / match-arm binding patterns bind only inside the branch — they must NOT be read
     # as outer values. `opt` (the scrutinee) is a real read; `x` (the if-let binding) is not.
