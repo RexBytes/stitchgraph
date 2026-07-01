@@ -133,6 +133,53 @@ def _pdg_edges_under_seed(seed: str) -> str:
     return out.stdout.strip()
 
 
+def test_pdg_descends_into_match_case_bodies():
+    # ast.Match is the one compound statement whose sub-statements live in cases[].body, not in
+    # body/orelse/finalbody/handlers. Each case-body statement must become its own PDG node (parented
+    # to the Match), and the Match header must NOT absorb case-body names (R210). An if/else and the
+    # equivalent match should both expand their branch bodies into nodes.
+    src = (
+        "def f(x):\n"
+        "    q = source()\n"
+        "    match x:\n"
+        "        case 1:\n"
+        "            a = q + 1\n"
+        "            return a\n"
+        "        case _:\n"
+        "            return q\n"
+    )
+    labels, edges = structure.pdg_source(src)["f"]
+    # ENTRY, Assign(q), Match, Assign(a), Return(a), Return(q) — case bodies are present, not dropped.
+    assert labels.count("Return") == 2, f"case bodies dropped: {labels}"
+    assert "Assign" in labels[2:], f"in-case assign missing: {labels}"
+    midx = labels.index("Match")
+    # No q-def → Match misattribution: the q def (index 1) must reach the in-case `a = q + 1`, not the
+    # Match header. So there is a D-edge from 1 into some node that is NOT the Match node.
+    d_from_q = [(s, d) for s, d, k in edges if k == "D" and s == 1]
+    assert d_from_q, "q def reaches nothing"
+    assert all(d != midx for _, d in d_from_q), f"q misattributed to Match header: {d_from_q}"
+
+
+def test_pdg_match_never_raises_on_exotic_patterns():
+    # guard, sequence/mapping/class/capture patterns, wildcard — none may crash the builder.
+    src = (
+        "def g(x):\n"
+        "    match x:\n"
+        "        case [a, b] if a > 0:\n"
+        "            return a + b\n"
+        "        case {'k': v}:\n"
+        "            return v\n"
+        "        case str() as s:\n"
+        "            return s\n"
+        "        case _:\n"
+        "            return None\n"
+    )
+    labels, edges = structure.pdg_source(src)["g"]
+    assert labels[0] == "ENTRY" and labels.count("Return") == 4
+    for s, d, k in edges:
+        assert 0 <= s < len(labels) and 0 <= d < len(labels) and k in ("C", "D")
+
+
 def test_pdg_edge_order_is_deterministic_across_hash_seeds():
     # The edge list must be byte-identical regardless of PYTHONHASHSEED — set iteration order must
     # not leak into the output (R205). Distinct seeds shuffle string-set iteration order.

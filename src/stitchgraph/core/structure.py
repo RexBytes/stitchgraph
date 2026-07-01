@@ -494,6 +494,8 @@ def _build_pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], l
                     walk_block([x for x in block if isinstance(x, ast.stmt)], sid)
             for handler in getattr(s, "handlers", []) or []:
                 walk_block([x for x in handler.body if isinstance(x, ast.stmt)], sid)
+            for case in getattr(s, "cases", []) or []:  # ast.Match: each case body is a nested block
+                walk_block([x for x in case.body if isinstance(x, ast.stmt)], sid)
 
     walk_block(fn.body, entry)
 
@@ -501,8 +503,11 @@ def _build_pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], l
         loads: set[str] = set()
         stores: set[str] = set()
         for field, value in ast.iter_fields(node):
-            if field in _PDG_BLOCK_FIELDS or field == "handlers":
+            if field in _PDG_BLOCK_FIELDS or field in ("handlers", "cases"):
                 continue  # a nested block is its own node, not part of this statement's header
+                # (ast.Match.cases too: case bodies are their own nodes; the Match header keeps
+                #  only the subject expression's reads — guard/pattern-capture names are an
+                #  accepted under-approximation, consistent with the no-SSA disclaimer above).
             for v in (value if isinstance(value, list) else [value]):
                 if isinstance(v, ast.AST):
                     for sub in ast.walk(v):
