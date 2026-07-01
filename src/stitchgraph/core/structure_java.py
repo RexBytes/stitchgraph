@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import collections
 
-from .structure import _CTRL, _DATA, _VFG, _wl_features
+from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
 
 _EXTS = {".java": "java"}
 
@@ -61,10 +61,8 @@ def _lang_for_ext(ext: str) -> str | None:
     return _EXTS.get(ext.lower())
 
 
-def fingerprint_source(source: str, lang: str = "java") -> dict[str, collections.Counter[str]]:
-    """Fingerprint every method/constructor in a Java source string, keyed by the extractor's scheme
-    (`Outer.compute`, nested `Outer.Inner.m`, constructor `C.C`). Returns {} on a parse failure, a
-    missing tree-sitter extra, or a too-deep tree (advisory, never raises)."""
+def _walk(source: str, lang: str = "java", *, build) -> dict:
+    """Shared traversal for `fingerprint_source` / `vfg_source`: apply `build(fn_node, data)` per keyed method."""
     parser = _parser()
     if parser is None:
         return {}
@@ -82,7 +80,7 @@ def fingerprint_source(source: str, lang: str = "java") -> dict[str, collections
         if not name:
             return
         try:
-            out[name] = _wl_features(_build_vfg(fn_node, data))
+            out[name] = build(fn_node, data)
         except RecursionError:
             pass
 
@@ -113,6 +111,19 @@ def fingerprint_source(source: str, lang: str = "java") -> dict[str, collections
     except (RecursionError, ValueError):
         return out
     return out
+
+
+def fingerprint_source(source: str, lang: str = "java") -> dict[str, collections.Counter[str]]:
+    """Fingerprint every method/constructor in a Java source string, keyed by the extractor's scheme
+    (`Outer.compute`, nested `Outer.Inner.m`, constructor `C.C`). Returns {} on a parse failure, a
+    missing tree-sitter extra, or a too-deep tree (advisory, never raises)."""
+    return _walk(source, lang, build=lambda fn, data: _wl_features(_build_vfg(fn, data)))
+
+
+def vfg_source(source: str, lang: str = "java") -> dict[str, tuple[list[str], list]]:
+    """Value-flow graph of every function/method — EXPRESSION-layer companion to fingerprint_source
+    (identical keys). Advisory, on demand."""
+    return _walk(source, lang, build=lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
 def _build_vfg(fn, data: bytes) -> _VFG:

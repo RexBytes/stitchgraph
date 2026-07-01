@@ -49,6 +49,24 @@ class Relation(str, Enum):
     RUNTIME_HITS = "RUNTIME_HITS"
 
 
+class Layer(str, Enum):
+    """Granularity layer of the code-property graph (design §5c). One matrix, three depths; a
+    consumer picks the layer that fits. The CALL layer is the persisted whole-repo graph (Node +
+    Relation). The deeper layers are computed on demand from source and are strictly ADVISORY —
+    they never feed liveness (the cardinal rule is a CALL-layer property).
+
+    - CALL: the shipped inter-procedural graph (defs ↔ defs via CALLS/REFERENCES/INHERITS/…).
+    - EXPRESSION: a function's intra-procedural value-flow graph (operations + the values flowing
+      between them) — what `core/structure.py` builds; drilled into per-function via `get_matrix`.
+    - STATEMENT: control + data dependence between statements within a function (the PDG). Reserved;
+      not built yet (a future phase — `research/03-pdg/`).
+    """
+
+    CALL = "call"
+    STATEMENT = "statement"
+    EXPRESSION = "expression"
+
+
 @dataclass(slots=True)
 class Node:
     """A code entity. `id` is `path::qualified.name` (design §4 — stable ids).

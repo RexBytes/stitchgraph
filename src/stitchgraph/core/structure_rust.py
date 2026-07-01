@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import collections
 
-from .structure import _CTRL, _DATA, _VFG, _wl_features
+from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
 
 _EXTS = {".rs": "rust"}
 
@@ -65,10 +65,8 @@ def _lang_for_ext(ext: str) -> str | None:
     return _EXTS.get(ext.lower())
 
 
-def fingerprint_source(source: str, lang: str = "rust") -> dict[str, collections.Counter[str]]:
-    """Fingerprint every function/method in a Rust source string, keyed by qualified name (`free_fn`,
-    `Type.method`) — the same scheme the tree-sitter Rust extractor produces. Returns {} on a parse
-    failure, a missing tree-sitter extra, or a too-deep tree (advisory, never raises)."""
+def _walk(source: str, lang: str = "rust", *, build):
+    """Shared traversal applying build(<fn_node>, data) per function."""
     parser = _parser()
     if parser is None:
         return {}
@@ -86,7 +84,7 @@ def fingerprint_source(source: str, lang: str = "rust") -> dict[str, collections
         if not name:
             return
         try:
-            out[name] = _wl_features(_build_vfg(fn_node, data))
+            out[name] = build(fn_node, data)
         except RecursionError:
             pass
 
@@ -115,6 +113,19 @@ def fingerprint_source(source: str, lang: str = "rust") -> dict[str, collections
     except (RecursionError, ValueError):
         return out
     return out
+
+
+def fingerprint_source(source: str, lang: str = "rust") -> dict[str, collections.Counter[str]]:
+    """Fingerprint every function/method in a Rust source string, keyed by qualified name (`free_fn`,
+    `Type.method`) — the same scheme the tree-sitter Rust extractor produces. Returns {} on a parse
+    failure, a missing tree-sitter extra, or a too-deep tree (advisory, never raises)."""
+    return _walk(source, lang, build=lambda fn, data: _wl_features(_build_vfg(fn, data)))
+
+
+def vfg_source(source: str, lang: str = "rust") -> dict[str, tuple[list[str], list]]:
+    """Value-flow graph of every function/method — EXPRESSION-layer companion to fingerprint_source
+    (identical keys). Advisory, on demand."""
+    return _walk(source, lang, build=lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
 def _build_vfg(fn, data: bytes) -> _VFG:

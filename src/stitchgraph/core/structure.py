@@ -391,18 +391,34 @@ def similarity(a: collections.Counter[str], b: collections.Counter[str]) -> floa
     return min(1.0, dot / (na * nb)) if na and nb else 0.0
 
 
-def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
-    """Fingerprint every function/method in a Python source string, keyed by qualified name
-    (`Class.method`, nested `outer.inner`). Returns {} (or partial results) on a syntax error or a
-    too-deep AST — advisory, never raises. A deep-but-valid expression (a long `a + a + …` chain in
-    a generated builder) parses fine but can overflow the recursive walk; the extractor indexes such
-    files (extract/python.py guards `ast.parse`), so the body layer must degrade, not crash (R156).
-    """
+def _serialize_vfg(g: _VFG) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """The value-flow graph as consumer-facing primitives: node labels indexed 0..n-1 (VFG ids are
+    assigned sequentially by `_VFG.add`, so list index == node id) and edges as (src, dst, kind)
+    with kind `_DATA` ('d') or `_CTRL` ('c'). Shared by every frontend's `vfg_source` — they all
+    build the same `_VFG`."""
+    labels = [g.nodes[i] for i in range(len(g.nodes))]
+    return labels, list(g.edges)
+
+
+def vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], list[tuple[int, int, str]]]:
+    """A function body's value-flow graph — the EXPRESSION layer of the code-property graph (design
+    §5c), the level below the call graph: node labels + data/control edges. Advisory, computed on
+    demand; `fingerprint` is the order/name-invariant digest of this same graph."""
+    return _serialize_vfg(_build_vfg(fn))
+
+
+def _walk_functions(source: str, build):
+    """Shared traversal for `fingerprint_source` / `vfg_source`: apply `build(fn_node)` to every
+    function/method keyed by qualified name (`Class.method`, nested `outer.inner`). Returns {} (or
+    partial) on a syntax error or too-deep AST — advisory, never raises. A deep-but-valid expression
+    (a long `a + a + …` chain in a generated builder) parses fine but can overflow the recursive
+    walk; the extractor indexes such files (extract/python.py guards `ast.parse`), so the body layer
+    must degrade, not crash (R156)."""
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError, RecursionError):
         return {}
-    out: dict[str, collections.Counter[str]] = {}
+    out: dict = {}
 
     def visit(node: ast.AST, prefix: str) -> None:
         for child in ast.iter_child_nodes(node):
@@ -410,7 +426,7 @@ def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
                 visit(child, prefix + child.name + ".")
             elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 try:
-                    out[prefix + child.name] = fingerprint(child)
+                    out[prefix + child.name] = build(child)
                 except RecursionError:
                     pass  # deep-but-valid body — skip this function, keep the rest (advisory)
                 visit(child, prefix + child.name + ".")
@@ -426,3 +442,17 @@ def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
     except RecursionError:
         return out  # a too-deep AST overflowed the walk itself — return what we have, never raise
     return out
+
+
+def fingerprint_source(source: str) -> dict[str, collections.Counter[str]]:
+    """Fingerprint every function/method in a Python source string, keyed by qualified name
+    (`Class.method`, nested `outer.inner`). Returns {} (or partial results) on a syntax error or a
+    too-deep AST — advisory, never raises."""
+    return _walk_functions(source, fingerprint)
+
+
+def vfg_source(source: str) -> dict[str, tuple[list[str], list[tuple[int, int, str]]]]:
+    """Value-flow graph of every function/method in a Python source string, keyed by qualified name
+    — the EXPRESSION-layer companion to `fingerprint_source` (identical keys). Computed on demand,
+    never persisted, advisory; the raw graph `get_matrix(layer="expression")` drills into."""
+    return _walk_functions(source, vfg)

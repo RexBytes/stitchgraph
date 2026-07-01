@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import collections
 
-from .structure import _CTRL, _DATA, _VFG, _wl_features
+from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
 
 _EXTS = {".rb": "ruby"}
 
@@ -54,10 +54,8 @@ def _lang_for_ext(ext: str) -> str | None:
     return _EXTS.get(ext.lower())
 
 
-def fingerprint_source(source: str, lang: str = "ruby") -> dict[str, collections.Counter[str]]:
-    """Fingerprint every method in a Ruby source string, keyed by the extractor's scheme (`M.Calc.m`,
-    module-level `M.top`, bare `free_fn`). Returns {} on a parse failure, a missing tree-sitter extra,
-    or a too-deep tree (advisory, never raises)."""
+def _walk(source, lang, build):
+    """Shared traversal for `fingerprint_source` / `vfg_source`: apply `build(fn_node, data)` per method."""
     parser = _parser()
     if parser is None:
         return {}
@@ -75,7 +73,7 @@ def fingerprint_source(source: str, lang: str = "ruby") -> dict[str, collections
         if not name:
             return
         try:
-            out[name] = _wl_features(_build_vfg(fn_node, data))
+            out[name] = build(fn_node, data)
         except RecursionError:
             pass
 
@@ -100,6 +98,15 @@ def fingerprint_source(source: str, lang: str = "ruby") -> dict[str, collections
     except (RecursionError, ValueError):
         return out
     return out
+
+
+def fingerprint_source(source: str, lang: str = "ruby") -> dict[str, collections.Counter[str]]:
+    return _walk(source, lang, lambda fn, data: _wl_features(_build_vfg(fn, data)))
+
+
+def vfg_source(source: str, lang: str = "ruby") -> dict[str, tuple[list[str], list]]:
+    """Value-flow graph of every method — EXPRESSION-layer companion to fingerprint_source (identical keys). Advisory, on demand."""
+    return _walk(source, lang, lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
 def _build_vfg(fn, data: bytes) -> _VFG:
