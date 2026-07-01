@@ -2529,6 +2529,62 @@
       ],
       "findings": {},
       "theme": "v3.9.0 FINAL sign-off on ad7ff46 — all three CLEAN (opus 6000+ fuzz + 4-seed determinism + cardinal airtight; sonnet 761 passed + ruff/mypy + the 3 PDG tests, cardinal import-hygiene + byte-identical find_stale isolation on a match fn verified; haiku 11/11 docs consistent). Second consecutive fully-clean full-diversity panel → streak 2 → RELEASABLE. Tag left to maintainer."
+    },
+    {
+      "id": "R214",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "NIT": 1
+      },
+      "theme": "v3.10.0 (§5c sweep phase 3) round 1 on b631e5d — the STATEMENT/PDG layer extended to the JS family (structure_js.pdg_source; get_matrix(layer=\"statement\") dispatches .py + js/ts/tsx). opus caught a real completeness gap: a `with`-statement body was dropped from the JS PDG (a block-bearing statement not routed through the block descender) — fixed fc89810 by making the generic else branch descend any statement_block/else_clause child (class-wide, not with-specific) + oracle test. haiku: stale \"Python-only\" get_matrix/structure.pdg docstrings — fixed 74f9f40. sonnet CLEAN (769 passed, cardinal airtight, byte-identical JS drill)."
+    },
+    {
+      "id": "R215",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v3.10.0 post-with-fix (fc89810) — all three CLEAN. opus verified the with-fix is general (3599+ fuzz, every JS/TS statement kind, TS type positions don't leak, cardinal); sonnet 770 passed + cardinal + byte-identical isolation; haiku docs. First clean panel of the pair — but superseded when R216 found a further defect."
+    },
+    {
+      "id": "R216",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1,
+        "NIT": 1
+      },
+      "theme": "v3.10.0 on fc89810 — opus caught a LOW precision defect: `typeof x` in a TS TYPE position (type_query) leaked a false data read (type-erased at runtime) — fixed b488617 (collect returns at type_query; value-position typeof is a unary_expression, unambiguous) + oracle test. haiku: README/IDEAS said \"JS/TS\" where the CHANGELOG/model say \"the JS family (js/ts/tsx)\" — normalized 52d0b2b. sonnet CLEAN (770 passed, cardinal, byte-identical)."
+    },
+    {
+      "id": "R217",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v3.10.0 post-type_query-fix (b488617) — all three CLEAN. opus re-cert verified BOTH fixes general (4000 fuzz; exhaustive TS type-position probe — type_query is the only leak vector, now pruned; with/block descent); sonnet 771 passed + cardinal + byte-identical; haiku docs consistent (Python-only + JS/TS classes closed)."
+    },
+    {
+      "id": "R218",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v3.10.0 FINAL sign-off on b488617 — all three CLEAN. opus 4000 fuzz × 3 langs + all statement kinds + exact >300 boundary + cardinal; sonnet 771 passed + ruff/mypy + import-hygiene + byte-identical JS isolation; haiku 7/7 docs. Second consecutive fully-clean full-diversity panel → streak 2 → RELEASABLE. Tag left to maintainer."
     }
   ]
 }
