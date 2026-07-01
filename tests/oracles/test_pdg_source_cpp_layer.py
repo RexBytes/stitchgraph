@@ -209,6 +209,22 @@ _MULTIREAD = (
 )
 
 
+def test_pdg_gnu_statement_expression_folds_reads_and_writes():
+    # R240: a GNU statement-expression `({ stmt; …; value })` is a VALUE operand (nests under a
+    # parenthesized_expression), so reads/writes inside it must fold into the enclosing statement —
+    # not vanish. `collect` blanket-skipped compound_statement, dropping them (VFG captured them).
+    _l, e = structure_cpp.pdg_source(
+        "int f(int v) { int r = ({ int t = v; t + 1; }); return r; }"
+    )["f"]
+    assert any(s == 0 and k == "D" for s, _d, k in e), "stmt-expr read of a param was dropped"
+    # a write inside the stmt-expr must be recorded so a later use threads from it
+    _l2, e2 = structure_cpp.pdg_source(
+        "int f(int v) { int x = 0; int r = ({ x = v; x; }); return x; }"
+    )["f"]
+    # node 2 = the stmt-expr `let r` (writes x), node 3 = `return x` — the write must reach the use
+    assert (2, 3, "D") in e2, "stmt-expr write was dropped (return threads from the wrong def)"
+
+
 def test_pdg_parenthesized_rmw_target_records_the_store():
     # R239: `(x) += v` / `(x)++` — a read-modify-write of a parenthesized simple lvalue must record
     # the STORE (not just a read), so a later use threads from the RMW statement, not from ENTRY.

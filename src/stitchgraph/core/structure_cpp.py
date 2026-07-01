@@ -712,7 +712,15 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         if n is None:
             return
         t = n.type
-        if t in _FUNC_NODES or t in ("compound_statement", "comment"):
+        if t in _FUNC_NODES or t == "comment":
+            return
+        if t == "compound_statement":
+            # A GNU statement-expression `({ stmt; …; value })` reached here is a VALUE operand (it
+            # nests under a parenthesized_expression, never a statement-position block — those go
+            # through `process`/`block`). Fold its statements' reads/writes into the enclosing
+            # header, mirroring the VFG's inline treatment; else every read/write inside vanishes.
+            for c in n.named_children:
+                collect(c, loads, stores)
             return
         if t in _TYPE_NODES:
             return  # a type name carries no value read
