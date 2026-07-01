@@ -154,7 +154,7 @@ i.e. a genuine **MAJOR / v3.0.0** release, and it's the natural home for:
   per-language CFG/DFG is a large surface). Prototype + validate in `research/` first.
 
 ### 5c. Tag the matrix by granularity layer (the layered / Code-Property-Graph design)
-**Phases 1–2 SHIPPED: all three layers exist.** `model.Layer` (CALL / EXPRESSION / STATEMENT) tags
+**Phases 1–2 SHIPPED: all three layers exist.** `model.Layer` (CALL / STATEMENT / EXPRESSION) tags
 the granularity. Phase 1 (v3.8.0): `get_matrix(layer="expression")` drills into a function's
 value-flow graph (`structure.vfg_source`, all 12 languages) and `graph_diff` is the two-layer diff.
 Phase 2 (v3.9.0): `get_matrix(layer="statement")` drills into a function's program-dependence graph

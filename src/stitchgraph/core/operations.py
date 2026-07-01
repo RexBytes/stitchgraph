@@ -953,8 +953,8 @@ def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
 
 
 def _body_matrix(store: Store, scope: str, layer: str) -> Result:
-    """Drill into ONE function's body graph — the EXPRESSION (value-flow) or STATEMENT (program-
-    dependence) layer. `scope` must resolve to a single Function/Method; returns the graph in the
+    """Drill into ONE function's body graph — the STATEMENT (program-dependence) or EXPRESSION
+    (value-flow) layer. `scope` must resolve to a single Function/Method; returns the graph in the
     same shape as the call-layer matrix (labels + cells tagged by edge kind). Advisory — the body
     matrix never feeds liveness."""
     kind_word = "value-flow graph" if layer == Layer.EXPRESSION.value else "program-dependence graph"
@@ -1015,12 +1015,12 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     Refuses when the scope exceeds `limit` so the result stays small enough for an
     LLM to actually reason over.
 
-    `layer` selects the granularity (design §5c): "call" (default) is the
-    inter-procedural relation graph; "expression" drills into a SINGLE function's
-    intra-procedural value-flow graph (labels = operations, cells tagged data/control);
-    "statement" drills into its program-dependence graph (labels = statements, cells
-    tagged C=control / D=data dependence — Python-only so far). The deeper layers are
-    advisory and computed on demand — they never feed liveness.
+    `layer` selects the granularity (design §5c), coarse→fine: "call" (default) is
+    the inter-procedural relation graph; "statement" drills into a SINGLE function's
+    program-dependence graph (labels = statements, cells tagged C=control / D=data
+    dependence — Python-only so far); "expression" drills into its intra-procedural
+    value-flow graph (labels = operations, cells tagged data/control). The deeper
+    layers are advisory and computed on demand — they never feed liveness.
     """
     # Validate arg types BEFORE using them — relation.upper()/startswith()/`> limit` would
     # otherwise raise on None/wrong-type from a library or MCP call (panel R18B).
