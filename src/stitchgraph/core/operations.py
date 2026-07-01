@@ -1033,8 +1033,8 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     if not isinstance(layer, str):
         return refuse("layer must be a string", confidence=0.0)
     layer = layer.lower()
-    if layer not in (Layer.CALL.value, Layer.EXPRESSION.value, Layer.STATEMENT.value):
-        return refuse(f"unknown layer '{layer}' (call|expression|statement)", confidence=0.0)
+    if layer not in (Layer.CALL.value, Layer.STATEMENT.value, Layer.EXPRESSION.value):
+        return refuse(f"unknown layer '{layer}' (call|statement|expression)", confidence=0.0)
     if layer in (Layer.EXPRESSION.value, Layer.STATEMENT.value):
         return _body_matrix(store, scope, layer)
     try:
