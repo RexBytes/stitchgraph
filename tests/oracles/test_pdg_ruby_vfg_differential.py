@@ -90,6 +90,11 @@ def test_composed_wrappers_read_not_dropped(outer, inner):
     "  x = case v\n  when 1 then 9\n  else 0\n  end\n  x",
     "  x = (v > 0 ? v : -v)\n  x",
     "  x = [v, v + 1].first\n  x",
+    # R255: a `case/in` guard `in P if <cond>` — the guard condition is an executed read the VFG's
+    # generic fallback captured but the PDG hand-enumeration dropped (read only pattern + body).
+    "  case obj\n  in Integer if v then 1\n  end",
+    "  case obj\n  in Integer unless v then 1\n  end",
+    "  y = case obj\n  in Integer if v then 1\n  else 0\n  end\n  y",
 ])
 def test_value_position_control_reads(body):
     assert _vfg_reads_v(body), f"(sanity) VFG should read v: {body}"

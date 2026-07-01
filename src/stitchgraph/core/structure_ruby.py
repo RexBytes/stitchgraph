@@ -543,6 +543,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                     for i in range(c.named_child_count):
                         if c.field_name_for_named_child(i) == "pattern":
                             collect(c.named_children[i], loads, stores)
+                    collect(c.child_by_field_name("guard"), loads, stores)  # `in P if <cond>` guard
                     _collect_body(c.child_by_field_name("body"), loads, stores)
                 elif c.type == "else":
                     _collect_body(c, loads, stores)
@@ -654,6 +655,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                     for i in range(c.named_child_count):
                         if c.field_name_for_named_child(i) == "pattern":
                             data_edges(c.named_children[i], sid)  # selectors read on the header
+                    # `in <pattern> if/unless <cond>` — the guard condition is an executed read.
+                    data_edges(c.child_by_field_name("guard"), sid)
                     walk_body(c.child_by_field_name("body"), sid)
                 elif c.type == "else":
                     walk_body(c, sid)
