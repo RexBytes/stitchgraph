@@ -624,6 +624,29 @@ def find_chokepoints(store: Store, limit: int = 20) -> Result:
               chokepoints=len(aps))
 
 
+@operation("Discover the natural subsystems of a codebase (spectral clustering, auto-labelled).")
+def find_subsystems(store: Store, k: int | None = None) -> Result:
+    """Partition the call/reference graph into its natural **subsystems** by spectral clustering of
+    the graph Laplacian (design §6), each auto-labelled with the identifier tokens that most
+    distinguish it — the structural complement to the semantic `find_similar`/`summarize_subsystem`
+    (it *discovers* the boundaries rather than describing a named scope). `k` is the number of
+    subsystems (auto-selected from the spectral eigengap when None). Clusters the giant component of
+    the graph, largest subsystem first. Advisory and read-only: like `orient`/`risk` it never feeds
+    `find_stale`. Needs numpy; the optional `[spectral]` extra (scipy) removes the dense-solver size
+    cap and scales via a sparse solver — without it, a graph beyond the cap refuses cleanly."""
+    from . import spectral
+
+    if not spectral.HAS_NUMPY:
+        return refuse("subsystem decomposition needs numpy (install 'stitchgraph[spectral]')",
+                      confidence=0.0)
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        clusters, meta = spectral.decompose(store, k=want)
+    except RuntimeError as exc:  # too large for the dense fallback / numpy missing
+        return refuse(str(exc), confidence=0.0)
+    return ok(clusters, provenance=Provenance.EXTRACTED, count=len(clusters), **meta)
+
+
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:

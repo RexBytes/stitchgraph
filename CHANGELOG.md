@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.20.0] — 2026-07-02
+
+**New advisory operation: `find_subsystems` — automatic subsystem decomposition (§6 spectral
+research, win 2).** The second §6 result graduates in. `find_subsystems` partitions a repo's
+call/reference graph into its **natural subsystems** by spectral clustering of the graph Laplacian,
+and auto-labels each cluster with the identifier tokens that most distinguish it (a
+"spectral-summarize"). It's the *structural* complement to the semantic `find_similar` /
+`summarize_subsystem`: it **discovers** the module boundaries rather than describing a scope you name.
+The cluster count is auto-selected from the spectral eigengap (or set via `k`). Backed by a new
+`core/spectral.py` (normalised-Laplacian embedding + deterministic k-means++ + distinctive-token
+labelling). Numerics: numpy-only out of the box (dense eigendecomposition, fine for typical repos,
+capped at 2500 giant-component nodes); the optional **`[spectral]` extra (scipy)** swaps in a sparse
+ARPACK solver that removes the cap and scales to large graphs — matrix-free in spirit (top-k
+eigenvectors only). Deterministic (fixed ARPACK start vector, seeded k-means++). **Advisory and
+read-only — like `orient`/`risk` it never feeds `find_stale`** (re-verified byte-identical).
+Auto-exposed on the library API, CLI, and MCP. Backward-compatible → MINOR.
+
 ## [3.19.0] — 2026-07-02
 
 **New advisory operation: `find_chokepoints` — structural criticality (§6 spectral research,
