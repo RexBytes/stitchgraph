@@ -60,7 +60,7 @@ cov = coverage.Coverage(); cov.load(); data = cov.get_data()
 tests = {}
 for f in data.measured_files():
     if not f.endswith(".py"): continue
-    rel = os.path.relpath(f, SRC) if SRC != "." else f
+    rel = os.path.relpath(f, SRC)      # always relative (SRC='.' → relative to cwd) for clean ids
     ranges = func_ranges(f)
     try: cbl = data.contexts_by_lineno(f)
     except Exception: continue
