@@ -74,15 +74,20 @@ for LLM agents. The full operation list and the question each answers is in the 
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.18.0 — layered code-property graph: call ↔ statement ↔ expression drill-down; the statement (PDG) layer now spans every one of the 12 body-matrix languages)
+## Status (v3.20.0 — spectral analysis operations: `find_chokepoints` + `find_subsystems`, atop the layered call ↔ statement ↔ expression code-property graph)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
 and the body matrix (v3.0.0) now spans Python, the JS family (v3.2.0), Go (v3.3.0),
 Rust (v3.4.0), C/C++ (v3.5.0), Java + C# (v3.6.0), and Ruby + PHP + Bash (v3.7.0) — all 12 languages.
 **v3.8.0 makes it a layered graph (§5c):** `get_matrix`/`graph_diff` now drill from the
-call layer into a function's value-flow (expression) layer. See [`docs/STATUS.md`](docs/STATUS.md)
-for the full table + roadmap.
+call layer into a function's value-flow (expression) layer, and the statement (PDG)
+layer spans every one of the 12 body-matrix languages. **v3.19.0–v3.20.0 add the first
+spectral-analysis operations (§6):** `find_chokepoints` (articulation points ranked by
+blast radius) and `find_subsystems` (spectral clustering of the call graph into
+auto-labelled subsystems) — both advisory, both read-only. See
+[`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the one-page capability map and
+[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
 
 ### Headline: the intra-procedural body matrix (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash)
 

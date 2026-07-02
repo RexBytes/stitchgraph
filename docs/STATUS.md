@@ -62,12 +62,14 @@ spec and section references.
 
 ## Test coverage
 
-1269 tests (`tests/`): envelope, store + incremental + migration, polyglot
+2298 tests (`tests/`): envelope, store + incremental + migration, polyglot
 extraction (Python + 11 tree-sitter languages), operations, config, `get_matrix`,
-cross-language resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/
-SQL/ORM) + full-stack traces, the GraphBLAS algebra (accelerated sweeps agree with
-the pure-Python reference), git-risk fusion, multi-format runtime traces, a
-pluggable-embedder check, file-watching, and a precision/recall eval harness.
+the body-matrix walkers + value-flow/PDG layers (all 12 languages), cross-language
+resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/SQL/ORM) + full-stack
+traces, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
+reference), spectral subsystem decomposition + articulation-point criticality,
+git-risk fusion, multi-format runtime traces, a pluggable-embedder check,
+file-watching, and a precision/recall eval harness.
 
 ## Roadmap (what's left)
 
