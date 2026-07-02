@@ -114,6 +114,39 @@ def test_minimal_test_set_is_a_full_cover_even_when_large(tmp_path):
     assert len(covered) == 500                            # genuinely a full cover
 
 
+def test_feature_map_gives_full_ids_files_tests(tmp_path):
+    r = sg.feature_map(sg.Store(":memory:"), _artifact(tmp_path))
+    assert r.ok and r.provenance.value == "extracted"
+    feats = r.result["features"]
+    assert feats and all({"mode", "energy", "label", "functions", "files", "tests"} <= set(f)
+                         for f in feats)
+    # functions are FULL ids (path::name), not bare leaves; files are the modules
+    assert all("::" in fn for f in feats for fn in f["functions"])
+    assert feats[0]["files"] == ["m.py"]
+
+
+def test_feature_map_bad_input_refuses(tmp_path):
+    st = sg.Store(":memory:")
+    assert not sg.feature_map(st, "/does/not/exist.json").ok
+    assert not sg.feature_map(st, 123).ok                     # type: ignore[arg-type]
+
+
+def test_find_outlier_tests_classifies(tmp_path):
+    r = sg.find_outlier_tests(sg.Store(":memory:"), _artifact(tmp_path))
+    assert r.ok
+    rows = r.result["outliers"]
+    assert rows and all(0.0 <= x["residual"] <= 1.0 for x in rows)
+    assert all(x["kind"] in {"typical", "unique", "smoke"} for x in rows)
+    # sorted by residual, descending
+    assert [x["residual"] for x in rows] == sorted((x["residual"] for x in rows), reverse=True)
+
+
+def test_find_outlier_tests_bad_input_refuses(tmp_path):
+    st = sg.Store(":memory:")
+    assert not sg.find_outlier_tests(st, "/does/not/exist.json").ok
+    assert not sg.find_outlier_tests(st, 123).ok              # type: ignore[arg-type]
+
+
 def test_scaffold_writes_a_sandboxed_kit(tmp_path):
     st = sg.Store(":memory:")
     st.add_node(Node(id="m.py::parse", kind=NodeKind.FUNCTION, name="parse", location="m.py:1:0"))

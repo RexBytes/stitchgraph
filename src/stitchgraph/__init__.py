@@ -30,12 +30,14 @@ from .core import (
 )
 from .core.operations import (
     co_change,
+    feature_map,
     find_chokepoints,
     find_core,
     find_coupling,
     find_gaps,
     find_holes,
     find_modes,
+    find_outlier_tests,
     find_similar,
     find_stale,
     find_subsystems,
@@ -77,4 +79,5 @@ __all__ = [
     "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
     "select_tests", "co_change", "find_coupling",
     "find_gaps", "test_order", "redundant_tests", "find_core",
+    "feature_map", "find_outlier_tests",
 ]

@@ -702,6 +702,56 @@ def scaffold_coverage(store: Store, out_dir: str = "stitchgraph-coverage",
               count=len(manifest["files"]), languages=manifest["languages"])
 
 
+@operation("Feature map: each behavioural mode's implementing functions × files × expressing tests.")
+def feature_map(store: Store, coverage: str = "coverage_modes.json", k: int | None = None) -> Result:
+    """The actionable, full-id view of the behavioural modes (design §6): per mode, the top-loading
+    **functions** (the feature's implementation), the **files** they span, and the **tests** that most
+    express it — a feature ↔ code ↔ test map for "which tests exercise feature X", coverage-gap-by-
+    feature, and onboarding slices. Advisory, read-only; needs numpy (POD/SVD)."""
+    from . import modes
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not modes.HAS_NUMPY:
+        return refuse("feature-map analysis needs numpy (install 'stitchgraph[spectral]')",
+                      confidence=0.0)
+    if not modes.load_coverage(coverage):
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        features, meta = modes.feature_map(store, coverage, k=want)
+    except (RuntimeError, MemoryError) as exc:
+        return refuse(f"coverage matrix too large to decompose in memory ({exc}); install the "
+                      "'spectral' extra or reduce the suite", confidence=0.0)
+    return ok({"features": features}, provenance=Provenance.EXTRACTED, count=len(features), **meta)
+
+
+@operation("Behavioural outlier tests: unique-behaviour vs everything-touching smoke (mode residual).")
+def find_outlier_tests(store: Store, coverage: str = "coverage_modes.json",
+                       limit: int = 20, k: int | None = None) -> Result:
+    """Tests the mainstream behavioural modes reconstruct poorly (design §6): a high residual marks a
+    *unique-behaviour* test (the only thing covering something — keep it) or an *everything-touching
+    smoke* test (high load on mode 1). Ranked by residual. Advisory, read-only; needs numpy (POD/SVD)."""
+    from . import modes
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not modes.HAS_NUMPY:
+        return refuse("outlier analysis needs numpy (install 'stitchgraph[spectral]')", confidence=0.0)
+    if not modes.load_coverage(coverage):
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        rows, meta = modes.outlier_tests(store, coverage, k=want, limit=lim)
+    except (RuntimeError, MemoryError) as exc:
+        return refuse(f"coverage matrix too large to decompose in memory ({exc}); install the "
+                      "'spectral' extra or reduce the suite", confidence=0.0)
+    return ok({"outliers": rows}, provenance=Provenance.EXTRACTED, count=len(rows), **meta)
+
+
 @operation("Which tests to run for a change: runtime coverage fused with the static blast radius.")
 def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json") -> Result:
     """Forward-looking test selection for a change to `name` (design §6). Fuses two signals: the tests

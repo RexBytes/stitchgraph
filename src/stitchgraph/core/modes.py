@@ -206,3 +206,115 @@ def decompose(store: Store, coverage_path: str, k: int | None = None
     }
     meta = {"tests": nT, "functions": nF, "density": round(density, 4), "solver": solver}
     return payload, meta
+
+
+def _pod(cov: dict[str, list[str]], k: int | None = None) -> Any:
+    """Shared POD builder for `feature_map` / `outlier_tests`. Returns
+    (tests, funcs, U, S, Vt, kk, density, solver, row_energy) or raises RuntimeError (numpy missing /
+    matrix too large without scipy / SVD non-convergence). Mirrors `decompose`'s matrix build + mean-
+    centred SVD — kept separate so the gated `decompose` stays untouched. `row_energy` is per-test
+    total variance (centred on the dense path; uncentred on the scipy path — flagged by `solver`)."""
+    if not HAS_NUMPY:
+        raise RuntimeError("behavioural-mode analysis needs numpy")
+    tests = sorted(cov)
+    funcs = sorted({f for fs in cov.values() for f in fs})
+    fidx = {f: i for i, f in enumerate(funcs)}
+    nT, nF = len(tests), len(funcs)
+    smaller = min(nT, nF)
+    if not HAS_SCIPY and smaller > _DENSE_CAP:
+        raise RuntimeError(
+            f"co-activation matrix is {nT}x{nF} (min dim {smaller} > {_DENSE_CAP}); install the "
+            "'spectral' extra (pip install 'stitchgraph[spectral]') for the sparse SVD that scales")
+    M = np.zeros((nT, nF), dtype=float)
+    for ti, tid in enumerate(tests):
+        for f in cov[tid]:
+            M[ti, fidx[f]] = 1.0
+    density = float(M.mean())
+    kk = min(smaller - 1, 16 if k is None else max(2, min(k, smaller - 1)))
+    Mc = M - M.mean(axis=0, keepdims=True)
+    try:
+        if HAS_SCIPY and smaller > _DENSE_CAP:
+            A = csr_matrix(M)
+            v0 = np.ones(min(A.shape)) / math.sqrt(min(A.shape))
+            u, s, vt = svds(A, k=kk, v0=v0)
+            order = np.argsort(-s)
+            S, Vt, U = s[order], vt[order], u[:, order]
+            solver = "scipy"
+            row_energy = (M ** 2).sum(axis=1)          # uncentred (svds path)
+        else:
+            U, S, Vt = np.linalg.svd(Mc, full_matrices=False)
+            U, S, Vt = U[:, :kk], S[:kk], Vt[:kk]
+            solver = "numpy-dense"
+            row_energy = (Mc ** 2).sum(axis=1)         # centred
+    except np.linalg.LinAlgError as exc:
+        raise RuntimeError(f"SVD did not converge on the {nT}x{nF} co-activation matrix: {exc}") from exc
+    return tests, funcs, U, S, Vt, kk, density, solver, row_energy
+
+
+def feature_map(store: Store, coverage_path: str, k: int | None = None,
+                top_funcs: int = 10, top_tests: int = 8) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Per behavioural mode, the feature it represents: its top-loading **functions** (full ids — the
+    feature's implementation), the **files** they span, and the **tests** that most express it. The
+    actionable, full-id view of `find_modes`' modes. Raises like `decompose`. Advisory, read-only."""
+    cov = load_coverage(coverage_path)
+    funcs_all = {f for fs in cov.values() for f in fs}
+    if len(cov) < 4 or len(funcs_all) < 4:
+        return ([], {"tests": len(cov), "functions": len(funcs_all), "solver": "none",
+                     "reason": "need at least 4 tests and 4 executed functions"})
+    tests, funcs, U, S, Vt, kk, density, solver, _ = _pod(cov, k)
+    energy = S ** 2
+    tot = float(energy.sum())
+    frac = energy / tot if tot > 0 else np.zeros_like(energy)
+    nmodes = kk if k is None else min(k, kk)
+    features: list[dict[str, Any]] = []
+    for m in range(nmodes):
+        order = np.argsort(-np.abs(Vt[m]))[:top_funcs]
+        fns = [funcs[i] for i in order]
+        tf: collections.Counter[str] = collections.Counter()
+        for fid in fns:
+            tf.update(set(_toks(_leaf(fid))))
+        label = " ".join(t for t, _ in tf.most_common(4)) or "(unlabelled)"
+        files = sorted({_module(f) for f in fns})[:8]
+        texpr = np.argsort(-np.abs(U[:, m]))[:top_tests]
+        features.append({
+            "mode": m + 1,
+            "energy": round(float(frac[m]), 4),
+            "label": label,
+            "functions": fns,
+            "files": files,
+            "tests": [tests[i] for i in texpr.tolist()],
+        })
+    meta = {"tests": len(tests), "functions": len(funcs), "density": round(density, 4),
+            "solver": solver, "modes": nmodes}
+    return features, meta
+
+
+def outlier_tests(store: Store, coverage_path: str, k: int | None = None, limit: int = 20
+                  ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Tests ranked by how poorly the top behavioural modes reconstruct them (residual in mode space).
+    A **high residual** test exercises behaviour the mainstream modes don't capture: either a
+    *unique-behaviour* test (keep it — it's the only thing covering something) or an *everything-touching
+    smoke* test (distinguished by a high load on mode 1, the 'always-on' axis). Raises like `decompose`.
+    Advisory, read-only."""
+    cov = load_coverage(coverage_path)
+    funcs_all = {f for fs in cov.values() for f in fs}
+    if len(cov) < 4 or len(funcs_all) < 4:
+        return ([], {"tests": len(cov), "functions": len(funcs_all), "solver": "none",
+                     "reason": "need at least 4 tests and 4 executed functions"})
+    tests, funcs, U, S, Vt, kk, density, solver, row_energy = _pod(cov, k)
+    captured = ((U[:, :kk] * S[:kk]) ** 2).sum(axis=1)
+    mode1 = np.abs(U[:, 0]) if U.shape[1] else np.zeros(len(tests))
+    m1_hi = float(np.quantile(mode1, 0.90)) if len(mode1) else 0.0
+    rows: list[dict[str, Any]] = []
+    for i, tid in enumerate(tests):
+        tot_i = float(row_energy[i])
+        resid = 0.0 if tot_i <= 0 else max(0.0, 1.0 - float(captured[i]) / tot_i)
+        kind = "typical"
+        if resid >= 0.5:
+            kind = "smoke" if mode1[i] >= m1_hi else "unique"
+        rows.append({"test": tid, "residual": round(resid, 4),
+                     "mode1_load": round(float(mode1[i]), 4), "kind": kind})
+    rows.sort(key=lambda r: (-r["residual"], r["test"]))
+    meta = {"tests": len(tests), "functions": len(funcs), "density": round(density, 4),
+            "solver": solver}
+    return rows[:limit], meta
