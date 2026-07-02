@@ -232,3 +232,69 @@ with a strict, tie-free ranking so `reverse=True` / the `> 0` filter are pinned;
 fake-embedder fixture (or skip-marks gated on the `model2vec` extra) that distinguishes the
 config/model-load mutants. Goal: `similar.py` joins `structure.py`/`graphdiff.py` at a clean
 mutation score under a documented kill-signal.
+
+## 6. Spectral / linear-algebraic analysis of the system matrix (POD / SVD / Laplacian)
+
+Maintainer idea (2026-07-02). **Framing:** a program's functions are like components in a complex
+electronic system, and stitchgraph already materialises the *system matrix* — the sparse adjacency
+`A` over nodes (CALLS/REFERENCES/INHERITS/IMPORTS), the same matrix `orient`/`risk` already run
+GraphBLAS reachability and PageRank over. So this asks: **do classical matrix decompositions (SVD,
+POD/PCA, the graph Laplacian, electrical-network methods) extract structure the current
+frontier-BFS / PageRank sweeps don't — especially a principled "importance of parts of the code"?**
+
+Note stitchgraph is *already doing one spectral method*: PageRank is the dominant eigenvector of the
+stochastic adjacency. This generalises that from one eigenvector to the full spectrum + SVD + the
+Laplacian, and asks what each buys.
+
+**Candidate decompositions and what each would compute:**
+- **SVD of `A` (≡ HITS).** Left/right singular vectors of the adjacency are exactly hub/authority
+  scores; the top **authority** vector ranks the most-depended-upon code (interfaces you break most
+  by touching), the top **hub** vector ranks orchestrators — a *different* importance axis from
+  PageRank (which conflates the two). Singular-value magnitude = how dominant each mode is.
+- **POD / PCA (SVD of a snapshot matrix).** The rows of `A` are per-node connectivity profiles;
+  PCA over them yields the dominant *connectivity modes* and a low-dim node embedding whose clusters
+  are subsystems. A richer snapshot source: the **runtime coverage matrix** stitchgraph already
+  ingests (`ingest_trace`) — POD over "which functions fired together across executions" finds
+  co-activation modes ("this cluster is the request path"), the genuinely control-theory-flavoured
+  version.
+- **Graph Laplacian `L = D − A`.** Count of near-zero eigenvalues ≈ number of weakly-coupled
+  subsystems; the **Fiedler vector** gives the best 2-way cut → automatic module decomposition
+  (spectral clustering) that would sharpen `summarize_subsystem`. The **spectral gap** is a single
+  "how decoupled is this architecture" number — trackable across versions via `graph_diff`.
+- **Electrical-network view (leaning into the analogy).** Treat edges as conductances: **effective
+  resistance** between nodes measures true coupling (beats shortest-path), and **current-flow
+  betweenness** ranks load-bearing functions whose removal fragments the system — a physical
+  criticality/robustness measure complementing `impact_of`'s reverse reachability.
+- **Structural controllability (control theory proper).** Driver-node analysis (Liu–Slotine–Barabási)
+  finds the minimal set of nodes that control the whole system — a first-principles take on
+  entry-point / leverage-set detection.
+
+**How we'd use it (the "so what"):**
+- a spectral **importance score** for `risk`/`orient` (authority weight = "most dangerous to touch");
+- automatic **subsystem boundaries** (spectral clustering) for `summarize_subsystem`;
+- an architecture **modularity/health metric** (spectral gap) + drift detection across builds;
+- **criticality ranking** (effective resistance / current-flow) for robustness triage;
+- **driver/leverage set** as a principled entry-point complement.
+
+**Caveats (load-bearing — set scope honestly):**
+- **The §2 finding bounds this.** Topology tracks the *extractor/language*, not the *function*
+  (0/21 archetype accuracy). So any spectral measure over pure topology inherits that bias: this is
+  a **within-repo / within-language structural** tool (importance, modularity, criticality,
+  decomposition), **not** a cross-language "what does it do" signal (that stays the semantic-name /
+  embedder axis from §2/§3). Don't repeat §2's mistake of expecting topology to carry meaning.
+- **Cardinal rule.** Every score here is **advisory** — spectral importance must never feed
+  `find_stale` liveness, exactly as PageRank hubs and `risk` are fenced off today.
+- **Scale.** Dense SVD/eigendecomposition is O(n²)+ and fights the constant-memory streaming
+  indexer; needs **sparse iterative** methods (`scipy.sparse.linalg.svds`/`eigsh`, randomized SVD)
+  or per-subsystem computation. python-graphblas is already a dependency but is a boolean/tropical
+  *semiring* engine — real-field decompositions want scipy.sparse, so this adds a numerical-linalg
+  surface (likely an optional extra).
+- **Validate before shipping.** Like every idea here: prototype in `research/` first — the load-
+  bearing spike is "does authority-SVD / Fiedler decomposition produce *sensibly different and
+  useful* rankings vs the shipped PageRank/reachability on real repos, and does it survive the
+  language-confound?" — before any `src/` surface.
+
+_Relationship to the rest of the backlog: this is the **structural** counterpart to §2/§3's
+**semantic** axis — §2/§3 answer "what does this code do" (names/embeddings), §6 answers "which parts
+matter and how is it decomposed" (spectrum of the system matrix). They compose: semantic labels on
+spectral clusters = "this dominant mode is the auth subsystem."_
