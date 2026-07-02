@@ -70,6 +70,16 @@ How big a corpus is needed before patterns are stable?
 > cross-language boundary signals (routes/SQL/events) it already extracts, **not**
 > via pure topology. The pattern DB should store these semantic+boundary
 > fingerprints, not graph shapes.
+>
+> **Scale-up (2026-07-02, `research/archetype_scale.py`, 11 archetypes × py/js, n=21):** the result
+> replicates and strengthens — NAMES_TFIDF holds at **13/21 (~62%, ~6× chance)** and stays the only
+> fingerprint whose same-archetype cosine beats same-language; TOPOLOGY stays ~chance (2/21). **NEW:
+> the "augment with boundary signals" idea below is REFUTED** — route/SQL/event/ORM signals as a
+> *global* fingerprint track language (0/21) because they're sparse across archetypes (only web has
+> routes, only orm has MAPS_TO) so the vector collapses onto its language-driven kind-mix; blending
+> them into the name vector *degrades* it (13/21 → 1/21). Boundary signals are a positive *detector*
+> for the archetype that bears them, not a general classifier. Path stays: semantic-name axis, ideally
+> the dense embedder. Full writeup: `research/05-archetype-purpose/FINDINGS.md`.
 
 ## 3. If we can infer the *purpose* of code, what else can we do with that?
 
@@ -96,6 +106,15 @@ once the graph is tied to function.
 > `find_component(query)` op (advisory, confidence-carrying) and a dense embedder in
 > place of token similarity. This is the on-brand path: graph = verifiable
 > role-aware structure, LLM/embedder = the fuzzy purpose layer on top.
+>
+> **Quantified (2026-07-02, `research/find_component_eval.py`, 17 labelled queries × 17 py+js
+> packages):** ablation confirms both ingredients earn their place — RAW `find_similar` **53% P@1 /
+> 0.64 MRR** → drop-tests **59% / 0.70** → +public-boost **76% P@1 / 0.80 MRR** (the recipe). Failure
+> modes both argue for the dense embedder: **minified npm dist tarballs** (`marked`/`dayjs` ship
+> bundled single-char names) defeat name search outright, and token cosine can drown a specific public
+> fn under same-token siblings (pygments `highlight` vs dozens of `*Lexer`). Works cross-language where
+> *source* ships (express→`app.route`, axios→`Axios.request`). Full writeup:
+> `research/05-archetype-purpose/FINDINGS.md`.
 
 ## 4. Do all of the above together, across a wide, varied corpus
 
