@@ -84,6 +84,16 @@ trivially replicated by one `grep` — which is how the control found the same 2
 stitchgraph query that helped added nothing grep didn't, and its headline feature for this exact
 question (`impact_of` → "tests_to_run") was too imprecise to use.
 
+**Not even a token/efficiency win.** Per-agent averages: stitchgraph **95,802 tokens / 44.0 tool
+calls / 384 s** vs control **93,054 / 45.3 / 432 s** — tokens ~tied (**+3% for stitchgraph**), tool
+calls tied, wall-clock noisy (a control outlier spawned sub-agents). The expected "index query →
+tiny answer → fewer tokens than grep+read" did **not** materialise, for two reasons: (1) `impact_of`
+dumped its ~379-test over-approximation into context, which the agents ingested and then discarded —
+a token cost with negative value; (2) both arms had to read the source anyway to make the
+runtime-gating judgment, so the index queries were *additive*, not *substitutive*. A token win from
+querying the graph only appears on tasks that need **no** code-reading judgment (e.g. "just list the
+direct callers") — the easy case where the answer is small either way.
+
 **The real bottleneck was shared and semantic, not structural:** both arms over-approximated ~2×
 because the true set depends on whether each blueprint test *dynamically dispatches through a dotted
 endpoint* — a runtime-gating judgment neither a call graph nor grep resolves. The 14 false positives
@@ -107,3 +117,32 @@ to be tractable at all; **decoy-heavy** names where grep over-matches and struct
 a dependency") over precision; and human (non-LLM) users of the CLI/report. For a strong LLM agent on
 clean, well-named, in-context-tractable code — which is most of what we tested — **an LLM does the same
 work without stitchgraph.** That is the honest answer.
+
+## The strongest untested hypothesis: low context / long-session memory
+
+Every round used a **top-tier model with a large context** on a repo that **fit** — the regime least
+favorable to the tool, because the agent could hold the code and re-derive structure at will. The
+mechanism by which stitchgraph *should* win is the opposite regime, and we never created it:
+
+- **A small context window / a weaker model** that cannot hold the codebase — so answering "who calls
+  X?" means *re-reading files every time*, at recurring token cost, with rising odds of missing a
+  file it can't fit.
+- **A long or compacted session** where structure discovered earlier is *forgotten*. The SQLite index
+  is **deterministic external memory**: a `get_callers` query is always correct-as-of-index and costs
+  the same whether it's the 1st or 100th lookup, whereas an LLM's recall of "who called X" degrades
+  as the session grows and gets summarized.
+
+In that regime a graph query is **substitutive** (it replaces re-reading — a token win that *did not*
+appear here because the agent read once and held it) **and** a **reliability win** (external memory
+beats fallible recall). Important caveat from what we observed: this favors the **precise, exact**
+operations (`find_symbol` / `get_callers` / `get_callees` / `find_stale`) — a low-context agent that
+*can't afford to verify by reading* would be misled by an over-approximating op like `impact_of` (379
+vs 13). So the low-context value is "cheap exact structural memory," not "trust the broad impact set."
+
+**How to actually test it (the decisive next experiment):** give both arms a task needing *many*
+structural lookups across a large repo (e.g. "for each of these 20 functions list its callers and flag
+test callers") under a **tight context budget** (or a deliberately weaker model, or forced periodic
+context resets). Prediction: the control's tokens balloon (repeated re-reading) and recall drops
+(files it can't hold / lookups it forgot), while the stitchgraph arm stays flat (N cheap deterministic
+queries). If *that* shows a gap, it locates the tool's real value precisely; if it doesn't, the
+skeptical verdict hardens. This is the experiment this sandbox's big-context top model could not create.
