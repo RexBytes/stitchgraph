@@ -55,6 +55,24 @@ source, at any context size. You cannot "read your way" to "these 57 tests cover
 suite has 14 behavioural modes concentrated in these modules." **This is the first capability in the
 thread that is genuinely LLM-complementary rather than LLM-redundant.**
 
+## Self-dogfood: POD on stitchgraph itself (via the shipped `find_modes` op)
+
+Ran stitchgraph's own tests under the **shipped** capture recipe (`pytest --cov-context=test`) →
+shipped `to_canonical.py` → `find_modes` (representative 7-test-file subset; the full ~2,300-test run
+under per-test contexts was too slow to block on):
+
+```
+81 tests × 622 functions,  density 0.126
+intrinsic dimensionality:  8 modes (90% energy)
+minimal covering set:      33 / 81 tests cover all 622 executed functions
+```
+The modes recovered stitchgraph's own subsystems: (1) extraction+store [46%], (2) tree-sitter polyglot
+extraction [21%], (3) similarity / body-matrix, (4) graph algebra, (5) operations/get_matrix,
+(7) spectral decomposition. i.e. POD run on its own author factors it into extraction → tree-sitter →
+body-matrix → algebra → operations → spectral — the real architecture — and flags ~40% of these tests
+as redundant for function coverage. Confirms the op reproduces the research spike (Flask: 831→57) on a
+second, independent codebase (stitchgraph).
+
 ## Honest caveats
 
 - **Requires a runnable suite + coverage** — the "runtime" cost. Unlike static ops it isn't free; you
