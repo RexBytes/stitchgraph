@@ -208,6 +208,7 @@ tool auditing its own author, findings acted on, re-gated.
 | 10 | **POD** (SVD over per-test coverage) — what's it for? | **The exception — LLM-*complementary*.** Behavioural modes, intrinsic dimensionality, minimal covering set: grounded in runtime + linear algebra, not reproducible by reading. Full self-run: **stitchgraph 2315→62** (later 2338→67); recovers its own per-language architecture. | `10-pod-python/` |
 | 11 | What *else* can the co-activation matrix do for users? | A ranked roadmap (untested-fns, diff→CI subset, feature maps, runtime risk, drift, …). Every concrete item was then **built** (v3.22.0–v3.23.0). | `11-pod-roadmap.md` |
 | 12 | **stitchgraph ⊳ stitchgraph** — full 30-op self-analysis | **The dogfood paid off:** found a real `scan` `live_stub` false-positive (Typer `@app.callback` empty body RED-flagged) + genuine coverage gaps (`Edge.to_dict`/`resolved`) — both **fixed in v3.23.1**. Confirmed architecture stable (10 modes), `find_holes` 0, `coverage_drift` shows the new POD code shipped under test. | `12-self-analysis.md` |
+| 13 | **Large-repo dogfood** — does it scale to infamous massive repos? | **Yes for large Python, and the wall is disk not memory.** Django 5.2: **47,429 nodes in 166 s**, flat memory; spectral clustered its 43,624-node giant component into 7 legible subsystems (ORM/SQL/forms/admin) in 13 s once given scipy. Full Home Assistant hit the container's **~12 GB disk ceiling with memory flat at ~3.3 GB** — a streaming *success* bounded by an environmental limit; a 4,638-file HA slice (38,930 nodes, 5.4 GB store) corroborated the curve. Linux kernel documented as **ambitious future research** (blocked by git egress here; macro/pointer-table dispatch caveat). | `13-large-repos.md` |
 
 **Honest through-line.** For a capable in-context LLM, stitchgraph's *static* ops mostly tie with "just
 read the code" (07–09). Its *runtime/POD* ops are the genuine complement (10) because you cannot read
@@ -224,6 +225,7 @@ and only sees exercised code.
 - `10-pod-python/` — `pod_modes.py`/`pod_uses.py`, `full_stitchgraph_pod.txt` (the self-run), `FINDINGS.md`.
 - `11-pod-roadmap.md` — the full menu of POD/co-activation capabilities, ranked, with op sketches.
 - `12-self-analysis.md` — the 30-op self-audit; findings → v3.23.1 fixes.
+- `13-large-repos.md` — Django + Home Assistant at scale (the disk-ceiling finding), Linux kernel as ambitious future research.
 
 ### Run (self-analysis is reproducible)
 ```bash
