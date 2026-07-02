@@ -323,3 +323,18 @@ spectral clusters = "this dominant mode is the auth subsystem."_
 > by the largest block of structurally-identical nodes (per-frontend `text`/`ev` helpers), so
 > PageRank stays the better importance ranking; revisit only with node de-duplication. Full writeup:
 > `research/06-spectral/FINDINGS.md`. Pursue decomposition; deprioritise authority-importance.
+>
+> **Full sweep (2026-07-02, "research them all", `research/06-spectral/` A–D):** every candidate run
+> to a verdict. **PURSUE (3):** (1) *spectral-summarize* — k-way clustering + per-cluster distinctive
+> name-tokens auto-labels subsystems (stitchgraph clusters read as `fingerprint`/`resolver`/`body-
+> builder`), a `summarize_subsystem` upgrade; (2) *articulation points* — 43 cut-vertices
+> (`graph_diff`, `*Resolver.resolve`, `build_app`) = interpretable chokepoint criticality, distinct
+> from PageRank; (3) *POD over runtime coverage* — SVD of a test-module×function co-activation matrix
+> recovers dynamic functional modes (reachability / scan / cycle-detection) and, being runtime-based,
+> **sidesteps the §2 language-confound entirely** — the most novel win. **DROP (3):** authority-SVD
+> importance (repo-dependent — 8/10 public API on requests but 0/10 on stitchgraph; PageRank better),
+> current-flow closeness (redundant, Jaccard 0.67 w/ PageRank), structural-controllability drivers
+> (42% of nodes → too diffuse for code graphs). **Scale design VALIDATED:** matrix-free streamed-edge
+> `svds` reproduces dense to Δ2.9e-3, and a 100k-node/80 GB-dense graph ran in 6 MB / 1.5 s at NMI
+> 0.959 — O(edges) memory, reusing find_stale's edge-streaming. Optional `[spectral]` extra (scipy);
+> all advisory (cardinal rule holds).

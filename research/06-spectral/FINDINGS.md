@@ -51,10 +51,67 @@ renormalisation before it competes. Verdict: "sensibly different" ✓, "useful a
 - Consistent with the §2 finding: spectral measures are a **within-repo structural** tool (here,
   decomposition), never a cross-language "what does it do" signal.
 
-## What would move it further (not done)
-- De-duplicate structurally-identical nodes, then re-test authority-SVD.
-- A finer ground-truth than directories (e.g. hand-labelled subsystems) to measure decomposition NMI
-  without the flat-`core` penalty.
-- Sparse iterative decomposition (scipy `svds`/`eigsh`) so it scales past the dense 10³-node PoC.
-- POD over the **runtime coverage matrix** (`ingest_trace`) — co-activation modes, the idea's most
-  control-theory-faithful form; needs a repo with ingested traces.
+---
+
+# Full sweep — pushes A–D (2026-07-02, "research them all")
+
+Ran every §6 candidate to a verdict. Scripts: `spectral_decompose.py` (A), `spectral_scale.py` (B),
+`spectral_criticality.py` (C), `pod_coverage.py` (D).
+
+## A — decomposition done right (`spectral_decompose.py`, 3 repos)
+- **Spectral-summarize is the keeper.** k-way spectral clustering + per-cluster distinctive
+  name-tokens (composing §6 clusters with §2/§3's semantic axis) auto-labels subsystems. On the
+  well-structured repo (stitchgraph, purity 0.82 / NMI 0.41) the labels *name the real subsystems*:
+  `source, fingerprint, parser, walk, vfg` / `resolve, resolver, route, edges` / `build, pdg, vfg`.
+  This is the concrete capability — a `summarize_subsystem` upgrade.
+- **Authority-SVD is repo-dependent, not a general importance measure.** Overlap of its top-10 with
+  exported public API: requests **8/10** (mode 0), flask **5/10** (mode 2, not the dominant mode!),
+  stitchgraph **0/10** (the 12 near-identical `structure_*` frontends hijack the top modes). So it
+  can complement PageRank on hub-and-spoke codebases but can't replace it; de-dup didn't rescue it
+  (the dominant modes aren't true graph-twins — `dedup` collapses only 185/839 nodes and not the
+  helper block). **PageRank stays the importance ranking.**
+- **Confound:** PyPI sdists bundle large test suites (requests giant = 439 nodes, 282 tests),
+  wrecking the directory ground-truth (requests NMI 0.05). A real eval needs source-only / hand
+  labels.
+
+## B — the scaling design, validated (`spectral_scale.py`)
+- **B1 matrix-free = dense:** a `LinearOperator` whose matvec STREAMS the edge list (no matrix
+  formed) fed to scipy `svds` reproduces the dense top-6 singular values to **max Δ = 2.9e-3**.
+- **B2 scale:** a synthetic planted graph of **100 000 nodes / 400 k edges** — **80 GB dense** — held
+  as **6 MB sparse CSR**, decomposed (`eigsh`) + clustered in **1.5 s**, recovering the planted
+  communities at **NMI 0.959**. The matrix-free / O(edges)-memory design in IDEAS §6 is correct and
+  fast; it reuses the same edge-streaming pattern `find_stale` already uses.
+
+## C — criticality & controllability (`spectral_criticality.py`, stitchgraph)
+- **Articulation points = promising.** 43/830 cut-vertices (`graph_diff`, `OrmResolver.resolve`,
+  `WebRouteResolver.resolve`, `build_app`) — a small, interpretable set of structural chokepoints
+  whose removal fragments the graph; distinct from PageRank hubs. A real criticality signal for
+  robustness triage / `impact_of`.
+- **Current-flow closeness = redundant** with PageRank (Jaccard@10 = 0.67) and inherits the
+  helper-noise — not additive.
+- **Structural-controllability driver nodes = negative.** N_D = 348 (42% of the giant) — far too
+  diffuse to be a "leverage set", and only 48% entry-point recall. Code call-graphs (many leaves/
+  sinks) aren't the sparse controllable networks the theory targets. Drop this one.
+
+## D — POD over runtime coverage (`pod_coverage.py`) — the novel win
+Snapshot matrix = 8 test modules × 359 activated functions (each module run under coverage). POD
+(SVD of the centred matrix) recovers interpretable **dynamic co-activation modes**:
+- mode 0 (84% energy): the universal indexing substrate (`core/extract` — every test reindexes);
+- mode 1 (7.7%): the **reachability subsystem** (`reachable_from`, `pagerank`, `transitive_fan_in`);
+- mode 2 (3.2%): the **scan/resolution** mode (`_scan_calls.rec`, `_import_names.rec`);
+- mode 3 (2.7%): the **cycle-detection** mode (`tarjan_scc.strongconnect`, `find_data_loops`).
+
+Crucially, POD-over-coverage uses **runtime behaviour, not topology**, so it **sidesteps the §2
+language-confound entirely** — it decomposes what actually executes together. It's the most
+control-theory-faithful reading of the "components in a system" analogy and it produces meaningful
+functional modes even at 8 snapshots. Best paired with `ingest_trace` (which already fuses coverage).
+
+## Verdict for the backlog (what to pursue vs drop)
+- **Pursue:** (1) **spectral-summarize** — labelled clustering → `summarize_subsystem`; (2)
+  **articulation-point criticality** — chokepoint triage; (3) **POD over coverage** — dynamic
+  subsystem modes, confound-free. All advisory, all matrix-free/streamable per push B.
+- **Drop / deprioritise:** authority-SVD as importance (PageRank is better), current-flow closeness
+  (redundant), structural-controllability drivers (too diffuse for code graphs).
+- **Design settled:** never materialise the matrix — matrix-free Krylov over streamed edges,
+  O(k·n) time / O(n) memory (push B); an optional `[spectral]` extra (scipy). Cardinal rule holds —
+  all of this is advisory, never feeds `find_stale`.
