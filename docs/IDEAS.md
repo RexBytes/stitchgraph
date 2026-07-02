@@ -128,7 +128,13 @@ regardless of whether §2 pans out._
 Captured during the post-v2.2.1 research thread (`research/` — matrix-as-oracle). stitchgraph
 **works as shipped**; nothing here is urgent. Two items, one small + concrete, one large + strategic.
 
-### 5a. Refactor: extract a shared `_tarjan_scc(adj)` helper (candidate v2.3.x)
+### 5a. Refactor: extract a shared `_tarjan_scc(adj)` helper → **SHIPPED v2.3.0**
+**Done.** The shared core now lives in `core/_scc.py` as `tarjan_scc(adj, seeds, node_count)`;
+`core/reach.py` (`strongly_connected_components`) and `core/dataloop.py` (`_tarjan`) both build their
+own adjacency + post-filter around it, and the duplicated ~40-line `strongconnect` (with the
+`panel QQQ LOW` recursion-limit handling) exists once. `_scc.py` imports only `sys` + `collections.abc`,
+so `reach.py` importing it introduces no cardinal-rule violation. Original note follows.
+
 The body-matrix spike (`research/02-body-matrix/`) found a **byte-identical Tarjan SCC core**
 duplicated in `core/dataloop.py` (`_tarjan`) and `core/reach.py` (`strongly_connected_components`)
 — same `index`/`low`/`on_stack`/`stack` setup, the same recursion-limit raise (down to the
