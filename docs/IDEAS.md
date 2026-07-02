@@ -298,3 +298,15 @@ _Relationship to the rest of the backlog: this is the **structural** counterpart
 **semantic** axis — §2/§3 answer "what does this code do" (names/embeddings), §6 answers "which parts
 matter and how is it decomposed" (spectrum of the system matrix). They compose: semantic labels on
 spectral clusters = "this dominant mode is the auth subsystem."_
+
+> **Spike result (2026-07-02, `research/06-spectral/`, PoC on stitchgraph's own src, 839 nodes):**
+> three verdicts. (1) **Low-rank confirmed** — top-10 singular modes carry **69.5%** of the matrix
+> energy (σ₁=57.5 ≫ σ₂=28.5), so a modal/reduced-order view is meaningful. (2) **Laplacian spectral
+> clustering is the promising thread** — k-way clustering recovers the directory subsystems at
+> **purity 0.82 (vs 0.66 majority baseline), NMI 0.41**, cleanly isolating `extract` (94%-pure
+> cluster); signal is likely understated by the coarse flat-`core` label. This is the candidate to
+> sharpen `summarize_subsystem` + a spectral-gap modularity metric. (3) **Authority-SVD (HITS)
+> importance is not-yet** — complementary to PageRank (Jaccard@10=0.54) but its top mode is captured
+> by the largest block of structurally-identical nodes (per-frontend `text`/`ev` helpers), so
+> PageRank stays the better importance ranking; revisit only with node de-duplication. Full writeup:
+> `research/06-spectral/FINDINGS.md`. Pursue decomposition; deprioritise authority-importance.
