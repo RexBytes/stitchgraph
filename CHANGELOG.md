@@ -4,6 +4,26 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.21.0] — 2026-07-02
+
+**New advisory operations: `find_modes` + `scaffold_coverage` — behavioural analysis from runtime
+coverage (§6 spectral research, win 3 — "POD over runtime coverage").** `find_modes` decomposes a
+codebase's *runtime* behaviour via **POD** (mean-centred SVD of the per-test co-activation matrix
+`M[test, function]`): it returns the ranked **behavioural modes** (function groups that fire together —
+routing, sessions, …), the **intrinsic dimensionality** (modes to 90% energy), a **minimal test set**
+that covers every executed function, and a redundant-test-pair count. It is the *runtime* complement to
+the static `find_subsystems`, and — unlike static analysis — **language-agnostic**: it consumes a
+canonical `stitchgraph-coverage-v1` JSON (`{test_id: [function_id, …]}`) produced by any language's
+per-test coverage tool. Backed by a new `core/modes.py` (numpy SVD; sparse `svds` via the optional
+`[spectral]` extra for large matrices). **stitchgraph never executes your code** — it only reads the
+inert matrix. `scaffold_coverage` **generates a sandboxed capture kit** (`core/coverage_scaffold.py`)
+so you can produce that matrix safely: per detected language it writes three interchangeable recipes —
+**Docker** (no-network, non-root, read-only rootfs, capped), **plain shell**, and a **CI** snippet —
+plus a README and the canonical-format spec; Python is turnkey (coverage.py `--cov-context=test` +
+an AST line→function converter), JS/Go/Rust/Java ship a wired template. It writes helper files only
+(like `report`), never touches source, never runs anything. Both advisory and read-only — never feed
+`find_stale`. Auto-exposed on the library API, CLI, and MCP. Backward-compatible → MINOR.
+
 ## [3.20.1] — 2026-07-02
 
 **Fix: `get_callers` / `get_callees` name resolution gives precise, actionable refusals.** Surfaced by

@@ -29,6 +29,8 @@ thin surfaces (library / CLI / MCP) over the same operation set.
 | `get_matrix` | Understand | Bounded relation submatrix; drills into a function's PDG / value-flow (`layer=call\|statement\|expression`) |
 | `find_chokepoints` | Understand | Which nodes fragment the graph if removed? (articulation points × blast radius) |
 | `find_subsystems` | Understand | What are the natural subsystems? (spectral clustering + auto-labels) |
+| `find_modes` | Understand | What are the *runtime* behavioural modes? (POD/SVD of per-test coverage) — modes, intrinsic dimensionality, and a minimal covering test set; language-agnostic |
+| `scaffold_coverage` | Admin | Generate a sandboxed capture kit (Docker/shell/CI) to produce the per-test coverage `find_modes` needs — the tool never runs your code |
 | `impact_of` | Change safety | What breaks if I change this? Which tests to run? |
 | `trace_path` | Change safety | How does a request flow end-to-end, with confidence? |
 | `graph_diff` | Change safety | How do two builds differ — call-level *and* body-shape? |

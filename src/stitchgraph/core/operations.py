@@ -647,6 +647,60 @@ def find_subsystems(store: Store, k: int | None = None) -> Result:
     return ok(clusters, provenance=Provenance.EXTRACTED, count=len(clusters), **meta)
 
 
+@operation("Behavioural modes from runtime coverage (POD): functional modes + minimal test set.")
+def find_modes(store: Store, coverage: str = "coverage_modes.json",
+               k: int | None = None) -> Result:
+    """Decompose a codebase's **runtime behaviour** via POD (SVD of the per-test co-activation matrix)
+    — the runtime complement to the static `find_subsystems` (design §6). Reads a per-test coverage
+    artifact (canonical `stitchgraph-coverage-v1` JSON of which test executed which function) and
+    returns the ranked **behavioural modes** (function groups that fire together — routing, sessions,
+    …), the **intrinsic dimensionality** (modes to 90% energy), a **minimal test set** that covers all
+    executed functions, and a redundant-test-pair count. Advisory and read-only — never feeds
+    `find_stale`; stitchgraph never runs your code, it only reads the inert matrix (produce it in your
+    own sandbox with `scaffold_coverage`). Needs numpy; the `[spectral]` extra scales large matrices."""
+    from . import modes
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not modes.HAS_NUMPY:
+        return refuse("behavioural-mode analysis needs numpy (install 'stitchgraph[spectral]')",
+                      confidence=0.0)
+    if not modes.load_coverage(coverage):
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected {modes.FORMAT} JSON; "
+                      "generate it with scaffold_coverage)", confidence=0.0)
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        payload, meta = modes.decompose(store, coverage, k=want)
+    except RuntimeError as exc:  # numpy missing / matrix too big for dense path
+        return refuse(str(exc), confidence=0.0)
+    return ok(payload, provenance=Provenance.EXTRACTED,
+              count=len(payload["modes"]), **meta)
+
+
+@operation("Generate a sandboxed per-test-coverage capture kit (Docker / shell / CI) for find_modes.")
+def scaffold_coverage(store: Store, out_dir: str = "stitchgraph-coverage",
+                      language: str | None = None) -> Result:
+    """Write a sandboxed capture kit that produces the per-test coverage artifact `find_modes` needs
+    (design §6). Producing coverage means running the project's tests (arbitrary code), so stitchgraph
+    **generates the recipe but never runs it** — you run it in your own jail. Emits, per detected
+    language, three interchangeable options (Docker, plain shell, CI) plus a README and the canonical
+    format spec; Python is turnkey, other languages ship a wired template. Writes helper files into
+    `out_dir` only (like `report`) — never touches source, never executes. Read-only w.r.t. the graph;
+    never feeds `find_stale`."""
+    from . import coverage_scaffold
+
+    if not isinstance(out_dir, str) or not out_dir:
+        return refuse("out_dir must be a non-empty string", confidence=0.0)
+    if language is not None and not isinstance(language, str):
+        return refuse("language must be a string", confidence=0.0)
+    try:
+        manifest = coverage_scaffold.generate(store, out_dir, language=language)
+    except OSError as exc:
+        return refuse(f"could not write coverage kit to '{out_dir}': {exc}", confidence=0.0)
+    return ok(manifest, provenance=Provenance.EXTRACTED,
+              count=len(manifest["files"]), languages=manifest["languages"])
+
+
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:

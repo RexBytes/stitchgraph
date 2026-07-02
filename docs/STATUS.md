@@ -42,6 +42,8 @@ spec and section references.
 | Operations | `risk` (git × structure) | ✅ Done | hotspots + hidden coupling |
 | Operations | `find_chokepoints` (criticality) | ✅ Done | articulation points ranked by blast radius (§6); advisory |
 | Operations | `find_subsystems` (decomposition) | ✅ Done | spectral clustering + token labels (§6); numpy-dense, sparse via `[spectral]`; advisory |
+| Operations | `find_modes` (runtime behaviour) | ✅ Done | POD/SVD of per-test coverage (§6); modes + intrinsic dim + minimal test set; language-agnostic; advisory |
+| Operations | `scaffold_coverage` (capture kit) | ✅ Done | generates sandboxed Docker/shell/CI recipe for per-test coverage; tool never executes code |
 | Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |

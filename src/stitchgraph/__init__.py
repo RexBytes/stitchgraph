@@ -31,6 +31,7 @@ from .core import (
 from .core.operations import (
     find_chokepoints,
     find_holes,
+    find_modes,
     find_similar,
     find_stale,
     find_subsystems,
@@ -44,6 +45,7 @@ from .core.operations import (
     orient,
     reindex,
     risk,
+    scaffold_coverage,
     scan,
     summarize_subsystem,
     trace_path,
@@ -65,5 +67,5 @@ __all__ = [
     "find_symbol", "get_callers", "get_callees", "find_holes", "find_stale",
     "orient", "impact_of", "trace_path", "scan", "reindex", "get_matrix", "risk",
     "ingest_trace", "find_similar", "summarize_subsystem", "graph_diff",
-    "find_chokepoints", "find_subsystems",
+    "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
 ]

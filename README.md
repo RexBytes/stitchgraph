@@ -213,6 +213,8 @@ millions of edges are ever all resident at once.
 | `risk` | Which files are most dangerous to touch (churn × centrality × coupling)? |
 | `find_chokepoints` | Which code entities (functions/methods/classes) are structural chokepoints — sole bridges whose removal fragments the graph — ranked by blast radius? |
 | `find_subsystems` | What are the codebase's natural subsystems? — spectral clustering of the call graph, each cluster auto-labelled with its distinctive tokens. |
+| `find_modes` | What are the codebase's *runtime* behavioural modes? — POD/SVD of a per-test coverage matrix; also yields the intrinsic dimensionality and a **minimal test set** that covers every executed function. Language-agnostic. |
+| `scaffold_coverage` | Generate a **sandboxed** capture kit (Docker / shell / CI) that produces the per-test coverage artifact `find_modes` needs — stitchgraph never runs your code, you run the kit in your jail. |
 | `scan` | Give me a ranked sweep of issues across the whole repo. |
 | `summarize_subsystem` | What is this package/folder, in one shot? |
 | `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash). |
