@@ -29,7 +29,9 @@ from .core import (
     registry,
 )
 from .core.operations import (
+    co_change,
     find_chokepoints,
+    find_coupling,
     find_holes,
     find_modes,
     find_similar,
@@ -47,6 +49,7 @@ from .core.operations import (
     risk,
     scaffold_coverage,
     scan,
+    select_tests,
     summarize_subsystem,
     trace_path,
 )
@@ -68,4 +71,5 @@ __all__ = [
     "orient", "impact_of", "trace_path", "scan", "reindex", "get_matrix", "risk",
     "ingest_trace", "find_similar", "summarize_subsystem", "graph_diff",
     "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
+    "select_tests", "co_change", "find_coupling",
 ]

@@ -4,6 +4,30 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.22.0] — 2026-07-02
+
+**Forward-looking POD-based operations: `select_tests`, `co_change`, `find_coupling` — turn the runtime
+co-activation matrix from advisory analysis into actionable, change-oriented queries (§6).** All three
+are pure set math over the same inert `stitchgraph-coverage-v1` matrix `find_modes` consumes — **no
+numpy**, advisory, read-only (stitchgraph never executes your code, never touches the graph). Backed by
+a new `core/coverage_query.py`.
+
+- **`select_tests(name, coverage)` — "which tests should I run for this change?"** Fuses the tests that
+  *actually executed* the symbol (runtime ground truth) with the tests that *statically reach* it (like
+  `impact_of`), classifying the union into `both`, `runtime_only` (ran it via a path the call graph
+  missed — dynamic dispatch / framework), and `static_only` (reachable but never run — a coverage gap).
+- **`co_change(name, coverage)` — "what code moves together / what implements this outcome?"** The
+  functions whose per-test activation most resembles the symbol's (cosine over the test columns) — its
+  behavioural neighbourhood. The runtime complement to static `get_callers`/`get_callees`.
+- **`find_coupling(coverage)` — implicit coupling.** Function pairs that co-activate strongly yet have
+  **no static edge** between them: dependencies (shared state, dispatch, protocol, or a common caller)
+  the call graph cannot see. The runtime∖structure gap; `cross_file` pairs are the interesting ones.
+
+Test-id keys are normalised to graph node-id convention (pytest `[param]` and coverage.py `|phase`
+suffixes stripped; `file::Class::method` → `file::Class.method`), so runtime and static ids line up.
+Dogfooded on stitchgraph's own 2315×764 coverage. All exposed as library API + CLI (`select-tests`,
+`co-change`, `find-coupling`) + MCP. Total operations: 22 + admin `reindex`.
+
 ## [3.21.0] — 2026-07-02
 
 **New advisory operations: `find_modes` + `scaffold_coverage` — behavioural analysis from runtime

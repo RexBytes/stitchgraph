@@ -74,7 +74,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.21.0 — behavioural + spectral analysis operations: `find_modes`/`scaffold_coverage`, `find_chokepoints`, `find_subsystems`, atop the layered call ↔ statement ↔ expression code-property graph)
+## Status (v3.22.0 — forward-looking POD ops `select_tests`/`co_change`/`find_coupling` atop the behavioural + spectral analysis layer `find_modes`/`find_subsystems`/`find_chokepoints`, over the layered call ↔ statement ↔ expression code-property graph)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
@@ -89,7 +89,11 @@ auto-labelled subsystems). **v3.21.0 adds behavioural analysis (§6 win 3):**
 `find_modes` (POD/SVD of a per-test coverage matrix → runtime behavioural modes,
 intrinsic dimensionality, minimal covering test set) and `scaffold_coverage` (generates
 a sandboxed Docker/shell/CI kit so you capture that coverage in your own jail —
-stitchgraph never runs your code, it only reads the inert matrix). All advisory, all
+stitchgraph never runs your code, it only reads the inert matrix). **v3.22.0 turns that
+matrix into forward-looking, change-oriented queries (§6):** `select_tests` (which tests
+to run for a change — runtime coverage fused with the static blast radius), `co_change`
+(what code moves together / implements an outcome), and `find_coupling` (implicit
+coupling — functions that co-run but never statically call each other). All advisory, all
 read-only. See
 [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the one-page capability map and
 [`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
@@ -180,11 +184,12 @@ millions of edges are ever all resident at once.
   incremental updates and forward-compatible schema migration.
 - **Universal `Result` envelope** — `confidence / provenance / needs_review /
   urgency`; provenance gates the urgency ceiling.
-- **19 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
+- **22 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
   `orient`, `find_stale`, `find_holes`, `impact_of`, `trace_path`, `scan`,
   `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
   `graph_diff`, `find_chokepoints`, `find_subsystems`, `find_modes`,
-  `scaffold_coverage`, plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
+  `scaffold_coverage`, `select_tests`, `co_change`, `find_coupling`, plus admin
+  `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
   `report`, a `watch` command, and a `doctor` grammar self-check.
 - **Intra-procedural body matrix (Python v3.0.0; JS/TS/TSX v3.2.0; Go v3.3.0; Rust v3.4.0; C/C++ v3.5.0;
   Java + C# v3.6.0, Ruby + PHP + Bash v3.7.0)** — a

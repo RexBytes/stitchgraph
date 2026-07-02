@@ -702,6 +702,145 @@ def scaffold_coverage(store: Store, out_dir: str = "stitchgraph-coverage",
               count=len(manifest["files"]), languages=manifest["languages"])
 
 
+@operation("Which tests to run for a change: runtime coverage fused with the static blast radius.")
+def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json") -> Result:
+    """Forward-looking test selection for a change to `name` (design §6). Fuses two signals: the tests
+    that **actually executed** the symbol (from a per-test coverage artifact — ground truth) and the
+    tests that **statically reach** it via the call graph (like `impact_of`). Classifies the union into
+    `both` (high confidence), `runtime_only` (ran it via a path the static graph missed — dynamic
+    dispatch / framework), and `static_only` (reachable but never run in the recorded suite — a coverage
+    gap). `run_these` is the recommended set. Advisory, read-only; needs no numpy — pure set math over
+    the inert matrix (produce it in your own sandbox with `scaffold_coverage`)."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    target, candidates = _resolve_target(store, name)
+    if target is None:
+        if len(candidates) > 1:
+            res = refuse(
+                f"'{name}' matches {len(candidates)} symbols — pass a qualified id to scope to one "
+                f"(e.g. {candidates[0].id!r})", confidence=0.0)
+            res.alternatives = [n.to_dict() for n in candidates]
+            return res
+        return refuse(f"'{name}' is not in the index", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage); for static-only "
+                      "selection use impact_of", confidence=0.0)
+    runtime = coverage_query.tests_for(cov, {target.id})
+    dependents = reverse_reachable_from(store, {target.id})
+    static = {d for d in dependents if (n := store.get_node(d)) and "test" in n.roles}
+    both = sorted(runtime & static)
+    runtime_only = sorted(runtime - static)
+    static_only = sorted(static - runtime)
+    recommended = sorted(runtime | static)
+    payload = {
+        "symbol": target.id,
+        "run_these": recommended,
+        "count": len(recommended),
+        "ran_it": sorted(runtime),
+        "both": both,
+        "runtime_only": runtime_only,   # exercised the symbol via a path the call graph missed
+        "static_only": static_only,     # reachable statically but never executed in this coverage
+    }
+    if not runtime:
+        res = ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
+                 runtime=0, static=len(static))
+        res.needs_review = True
+        res.add_reason("the symbol was never executed in this coverage artifact — 'run_these' is the "
+                       "static blast radius only; the coverage may predate the symbol or not exercise it")
+        return res
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
+              runtime=len(runtime), static=len(static))
+
+
+@operation("What code moves together with a symbol (co-activation neighbourhood, for planning a change).")
+def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
+              limit: int = 20) -> Result:
+    """Functions whose runtime activation most resembles `name`'s across the suite — the behavioural
+    neighbourhood you likely touch together when changing it (or the code that implements a given
+    outcome, anchored on one of its functions) (design §6). Score is cosine similarity over the per-test
+    activation columns. The runtime complement to static `get_callers`/`get_callees`: it surfaces
+    co-movement the call graph can't (functions that merely fire in the same behaviours). Advisory,
+    read-only; needs no numpy — pure set math over the inert coverage matrix."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    target, candidates = _resolve_target(store, name)
+    if target is None:
+        if len(candidates) > 1:
+            res = refuse(
+                f"'{name}' matches {len(candidates)} symbols — pass a qualified id to scope to one "
+                f"(e.g. {candidates[0].id!r})", confidence=0.0)
+            res.alternatives = [n.to_dict() for n in candidates]
+            return res
+        return refuse(f"'{name}' is not in the index", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    neighbours = coverage_query.co_functions(cov, target.id, k=lim)
+    if not neighbours:
+        res = ok({"symbol": target.id, "co_changing": []}, provenance=Provenance.EXTRACTED, count=0)
+        res.needs_review = True
+        res.add_reason("the symbol was never executed in this coverage artifact — no co-activation "
+                       "neighbourhood to report")
+        return res
+    payload = {
+        "symbol": target.id,
+        "co_changing": [{"function": g, "score": s, "shared_tests": c} for g, s, c in neighbours],
+    }
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours))
+
+
+@operation("Hidden coupling: functions that co-run but never statically call each other (implicit deps).")
+def find_coupling(store: Store, coverage: str = "coverage_modes.json",
+                  limit: int = 40, min_shared: int = 3) -> Result:
+    """Function pairs that **co-activate** strongly across the suite yet have **no static edge** between
+    them (design §6) — the runtime∖structure gap. A high co-activation score with no call/inheritance
+    edge flags *implicit* coupling the call graph cannot see: shared global state, event/dispatch, a
+    protocol contract, or a common caller. Advisory, read-only; needs no numpy — pure set math over the
+    inert coverage matrix. Each pair is a *candidate* (it also catches common-caller siblings — inspect
+    before acting); `cross_file` pairs are usually the more interesting ones."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
+    ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
+        min_shared > 0 else 3
+    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those
+    connected = {frozenset((e.src, e.dst_id)) for e in store.resolved_edges()
+                 if e.dst_id is not None}
+    try:
+        pairs = coverage_query.hidden_coupling(cov, connected, min_shared=ms, limit=lim)
+    except MemoryError:
+        return refuse("coverage matrix too large to correlate in memory; raise min_shared or reduce "
+                      "the suite", confidence=0.0)
+
+    def _file(fid: str) -> str:
+        return fid.split("::", 1)[0]
+
+    payload = {
+        "pairs": [{"a": a, "b": b, "score": s, "shared_tests": c, "cross_file": _file(a) != _file(b)}
+                  for a, b, s, c in pairs],
+        "count": len(pairs),
+    }
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs))
+    res.needs_review = True
+    res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — it "
+                   "also includes functions sharing a common caller; inspect before acting")
+    return res
+
+
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:

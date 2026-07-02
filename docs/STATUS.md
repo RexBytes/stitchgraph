@@ -44,6 +44,9 @@ spec and section references.
 | Operations | `find_subsystems` (decomposition) | ✅ Done | spectral clustering + token labels (§6); numpy-dense, sparse via `[spectral]`; advisory |
 | Operations | `find_modes` (runtime behaviour) | ✅ Done | POD/SVD of per-test coverage (§6); modes + intrinsic dim + minimal test set; language-agnostic; numpy-required, sparse via `[spectral]`; advisory |
 | Operations | `scaffold_coverage` (capture kit) | ✅ Done | generates sandboxed Docker/shell/CI recipe for per-test coverage; tool never executes code |
+| Operations | `select_tests` (change → tests) | ✅ Done | runtime coverage × static blast radius (§6); both/runtime_only/static_only; no numpy; advisory |
+| Operations | `co_change` (outcome → code) | ✅ Done | functions co-activating with a symbol (§6); behavioural neighbourhood; no numpy; advisory |
+| Operations | `find_coupling` (implicit deps) | ✅ Done | pairs that co-run but have no static edge (§6); runtime∖structure; no numpy; advisory |
 | Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
