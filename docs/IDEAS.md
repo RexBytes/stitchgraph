@@ -284,11 +284,24 @@ Laplacian, and asks what each buys.
   embedder axis from §2/§3). Don't repeat §2's mistake of expecting topology to carry meaning.
 - **Cardinal rule.** Every score here is **advisory** — spectral importance must never feed
   `find_stale` liveness, exactly as PageRank hubs and `risk` are fenced off today.
-- **Scale.** Dense SVD/eigendecomposition is O(n²)+ and fights the constant-memory streaming
-  indexer; needs **sparse iterative** methods (`scipy.sparse.linalg.svds`/`eigsh`, randomized SVD)
-  or per-subsystem computation. python-graphblas is already a dependency but is a boolean/tropical
-  *semiring* engine — real-field decompositions want scipy.sparse, so this adds a numerical-linalg
-  surface (likely an optional extra).
+- **Scale — never materialise the dense matrix (the PoC's dense array was a ≤10³-node shortcut).**
+  The design is **matrix-free**: the graph is naturally sparse (out-degree is bounded → edges ≈ O(n),
+  not O(n²)), and the top-k spectral modes come from **Krylov-subspace iterative solvers** (Lanczos
+  for the Laplacian, Golub–Kahan / `svds` for the SVD) that need *only* the matrix–vector product
+  `y = A @ x` (and `Aᵀ @ x`) — never A², AᵀA, or any dense factor. k extreme modes = ~k·(few dozen)
+  mat-vecs, i.e. **O(k·n) time, O(n) memory**, not O(n³)/O(n²). scipy's `svds`/`eigsh` take a
+  `LinearOperator` (a *function* computing `A @ x`), so no matrix is ever formed. stitchgraph already
+  does exactly this shape — **PageRank is matrix-free power iteration** (`rank.vxm(T)` in a loop).
+  - **Larger than RAM → operate by parts (out-of-core).** `A @ x` is a sum over edges
+    (`y[i] += x[j]` per edge i→j), so compute it by **streaming edges from SQLite in batches** —
+    holding only the two length-n vectors + one edge-batch, O(n) RAM for any edge count. This reuses
+    the **exact streaming pattern `find_stale` already uses** (the v2 stream-reachability fix for the
+    16M-edge OOM). If even the length-n vectors don't fit (≫10⁸ nodes), **partition**: cluster first,
+    decompose per-subsystem — which is the more useful object anyway.
+  - **Numerics split:** the sparse/streamed mat-vec `A @ x` can be GraphBLAS `plus_times`, but SVD/
+    eigen need subtraction/orthogonalisation/`sqrt` (not semiring ops), so the tiny k×k projected
+    problem inside the Krylov loop is real-field (numpy). That's precisely what scipy `svds`/`eigsh`
+    orchestrate — likely an optional `[spectral]` extra (scipy) rather than a core dependency.
 - **Validate before shipping.** Like every idea here: prototype in `research/` first — the load-
   bearing spike is "does authority-SVD / Fiedler decomposition produce *sensibly different and
   useful* rankings vs the shipped PageRank/reachability on real repos, and does it survive the
