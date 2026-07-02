@@ -123,26 +123,36 @@ def decompose(store: Store, coverage_path: str, k: int | None = None
     # --- POD (mean-centred SVD) ---
     kk = min(smaller - 1, 16 if k is None else max(2, min(k, smaller - 1)))
     Mc = M - M.mean(axis=0, keepdims=True)
-    if HAS_SCIPY and smaller > _DENSE_CAP:
-        # sparse randomized SVD on the (dense-centred) operator via svds needs a matrix; centre is
-        # dense so fall back to dense here would defeat scale — use svds on the raw sparse M and
-        # accept uncentred modes (mode 1 ≈ mean); deterministic v0.
-        A = csr_matrix(M)
-        v0 = np.ones(min(A.shape)) / math.sqrt(min(A.shape))
-        u, s, vt = svds(A, k=kk, v0=v0)
-        order = np.argsort(-s)
-        S, Vt, U = s[order], vt[order], u[:, order]
-        solver = "scipy"
-    else:
-        U, S, Vt = np.linalg.svd(Mc, full_matrices=False)
-        U, S, Vt = U[:, :kk], S[:kk], Vt[:kk]
-        solver = "numpy-dense"
+    try:
+        if HAS_SCIPY and smaller > _DENSE_CAP:
+            # sparse randomized SVD on the (dense-centred) operator via svds needs a matrix; centre is
+            # dense so fall back to dense here would defeat scale — use svds on the raw sparse M and
+            # accept uncentred modes (mode 1 ≈ mean); deterministic v0.
+            A = csr_matrix(M)
+            v0 = np.ones(min(A.shape)) / math.sqrt(min(A.shape))
+            u, s, vt = svds(A, k=kk, v0=v0)
+            order = np.argsort(-s)
+            S, Vt, U = s[order], vt[order], u[:, order]
+            solver = "scipy"
+        else:
+            U, S, Vt = np.linalg.svd(Mc, full_matrices=False)
+            U, S, Vt = U[:, :kk], S[:kk], Vt[:kk]
+            solver = "numpy-dense"
+    except np.linalg.LinAlgError as exc:  # SVD non-convergence — surface as a clean refuse
+        raise RuntimeError(f"SVD did not converge on the {nT}x{nF} co-activation matrix: {exc}") from exc
 
     energy = (S ** 2)
-    tot = float(energy.sum()) or 1.0
-    frac = energy / tot
+    tot = float(energy.sum())
+    # Guard degenerate energy: when every test has an identical profile the mean-centred matrix is
+    # all-zero (every singular value 0), so there is *no* behavioural variance. Report intrinsic
+    # dimensionality 0 rather than letting searchsorted(all-zeros, 0.90) return len(cum)+1 — which
+    # would (wrongly) exceed the number of modes actually computed (panel R272).
+    frac = energy / tot if tot > 0 else np.zeros_like(energy)
     cum = np.cumsum(frac)
-    k90 = int(np.searchsorted(cum, 0.90)) + 1 if len(cum) else 0
+    if tot <= 0 or not len(cum):
+        k90 = 0
+    else:
+        k90 = min(int(np.searchsorted(cum, 0.90)) + 1, len(cum))
 
     nmodes = kk if k is None else min(k, kk)
     modes: list[dict[str, Any]] = []

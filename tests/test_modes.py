@@ -80,6 +80,22 @@ def test_large_suite_few_functions_never_ooms(tmp_path):
     assert r.result["redundant_test_pairs"] == 6000 * 5999 // 2   # all identical profiles
 
 
+def test_intrinsic_dimensionality_never_exceeds_modes(tmp_path):
+    """Panel R272 MEDIUM: with zero behavioural variance (every test hits the same functions) the
+    mean-centred matrix is all-zero, so intrinsic dimensionality must be 0 — and in general it must
+    never exceed the number of modes actually computed."""
+    tests = {f"t.py::test_{i}": ["m.py::a", "m.py::b", "m.py::c", "m.py::d"] for i in range(6)}
+    p = tmp_path / "flat.json"
+    p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))
+    r = sg.find_modes(sg.Store(":memory:"), str(p))
+    assert r.ok
+    assert r.result["intrinsic_dimensionality"] == 0            # no behavioural variance
+    assert r.result["intrinsic_dimensionality"] <= len(r.result["modes"])
+    # and the invariant holds on the planted-behaviour artifact too
+    r2 = sg.find_modes(sg.Store(":memory:"), _artifact(tmp_path))
+    assert r2.result["intrinsic_dimensionality"] <= len(r2.result["modes"])
+
+
 def test_minimal_test_set_is_a_full_cover_even_when_large(tmp_path):
     """Panel R271 LOW: the reported minimal_test_set must actually cover everything (no silent
     truncation) — 500 tests each hitting a unique function need all 500."""
