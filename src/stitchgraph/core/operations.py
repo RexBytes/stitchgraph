@@ -709,51 +709,73 @@ def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json")
     tests that **statically reach** it via the call graph (like `impact_of`). Classifies the union into
     `both` (high confidence), `runtime_only` (ran it via a path the static graph missed — dynamic
     dispatch / framework), and `static_only` (reachable but never run in the recorded suite — a coverage
-    gap). `run_these` is the recommended set. Advisory, read-only; needs no numpy — pure set math over
-    the inert matrix (produce it in your own sandbox with `scaffold_coverage`)."""
+    gap). `run_these` is the recommended set. `name` may be a **changeset** — several comma-separated
+    symbols (e.g. a PR's touched functions) — whose tests are unioned. Advisory, read-only; needs no
+    numpy — pure set math over the inert matrix (produce it in your own sandbox with
+    `scaffold_coverage`)."""
     from . import coverage_query
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    target, candidates = _resolve_target(store, name)
-    if target is None:
-        if len(candidates) > 1:
-            res = refuse(
-                f"'{name}' matches {len(candidates)} symbols — pass a qualified id to scope to one "
-                f"(e.g. {candidates[0].id!r})", confidence=0.0)
-            res.alternatives = [n.to_dict() for n in candidates]
-            return res
-        return refuse(f"'{name}' is not in the index", confidence=0.0)
+    if not isinstance(name, str):
+        return refuse("symbol name must be a string", confidence=0.0)
+    parts = [p.strip() for p in name.split(",") if p.strip()]
+    if not parts:
+        return refuse("no symbol given", confidence=0.0)
+    unresolved: list[str] = []
+    if len(parts) == 1:  # single symbol: refuse an ambiguous homonym with candidates (as before)
+        target, candidates = _resolve_target(store, parts[0])
+        if target is None:
+            if len(candidates) > 1:
+                res = refuse(
+                    f"'{parts[0]}' matches {len(candidates)} symbols — pass a qualified id to scope to "
+                    f"one (e.g. {candidates[0].id!r})", confidence=0.0)
+                res.alternatives = [n.to_dict() for n in candidates]
+                return res
+            return refuse(f"'{parts[0]}' is not in the index", confidence=0.0)
+        targets = [target.id]
+    else:  # changeset: resolve each; an unresolvable/ambiguous one is noted, not fatal
+        targets = []
+        for p in parts:
+            t = _resolve_one(store, p)
+            (targets.append(t.id) if t is not None else unresolved.append(p))
+        if not targets:
+            return refuse(f"none of the changeset symbols resolve to a unique indexed symbol: {parts}",
+                          confidence=0.0)
     cov = coverage_query.load_coverage(coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage); for static-only "
                       "selection use impact_of", confidence=0.0)
-    runtime = coverage_query.tests_for(cov, {target.id})
-    dependents = reverse_reachable_from(store, {target.id})
+    tset = set(targets)
+    runtime = coverage_query.tests_for(cov, tset)
+    dependents = reverse_reachable_from(store, tset)
     static = {d for d in dependents if (n := store.get_node(d)) and "test" in n.roles}
-    both = sorted(runtime & static)
-    runtime_only = sorted(runtime - static)
-    static_only = sorted(static - runtime)
     recommended = sorted(runtime | static)
     payload = {
-        "symbol": target.id,
+        "symbols": sorted(tset),
         "run_these": recommended,
         "count": len(recommended),
         "ran_it": sorted(runtime),
-        "both": both,
-        "runtime_only": runtime_only,   # exercised the symbol via a path the call graph missed
-        "static_only": static_only,     # reachable statically but never executed in this coverage
+        "both": sorted(runtime & static),
+        "runtime_only": sorted(runtime - static),   # exercised via a path the call graph missed
+        "static_only": sorted(static - runtime),     # reachable but never executed in this coverage
     }
+    if len(targets) == 1:
+        payload["symbol"] = targets[0]               # back-compat for the single-symbol shape
+    if unresolved:
+        payload["unresolved"] = sorted(unresolved)
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
+             runtime=len(runtime), static=len(static))
     if not runtime:
-        res = ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
-                 runtime=0, static=len(static))
         res.needs_review = True
-        res.add_reason("the symbol was never executed in this coverage artifact — 'run_these' is the "
-                       "static blast radius only; the coverage may predate the symbol or not exercise it")
-        return res
-    return ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
-              runtime=len(runtime), static=len(static))
+        res.add_reason("none of the symbols were executed in this coverage artifact — 'run_these' is "
+                       "the static blast radius only; coverage may predate them or not exercise them")
+    if unresolved:
+        res.needs_review = True
+        res.add_reason(f"{len(unresolved)} changeset symbol(s) did not resolve to a unique indexed "
+                       "symbol and were skipped")
+    return res
 
 
 @operation("What code moves together with a symbol (co-activation neighbourhood, for planning a change).")
@@ -839,6 +861,129 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — it "
                    "also includes functions sharing a common caller; inspect before acting")
     return res
+
+
+def _function_ids(store: Store) -> set[str]:
+    """Function/method node ids in the graph (the universe coverage is measured against)."""
+    return {nid for nid in store.all_node_ids()
+            if (n := store.get_node(nid)) and n.kind in (NodeKind.FUNCTION, NodeKind.METHOD)}
+
+
+@operation("Coverage gaps: functions no test executed, split into live (write a test) vs dead.")
+def find_gaps(store: Store, coverage: str = "coverage_modes.json") -> Result:
+    """Functions the suite never executed, fused with reachability (design §6): `untested_live` are
+    reachable-from-entry-points **and** never run — genuine coverage gaps to write a test for;
+    `untested_dead` are unreachable **and** untested — corroborated dead code (cross-checks
+    `find_stale`). The runtime complement to `find_stale`: static says "no one *can* reach it",
+    coverage says "no test *did*". Advisory, read-only; needs no numpy. NOTE only sees code the suite
+    exercised, and coverage function ids must share the reindex namespace (same root as the converter's
+    SRC)."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    funcs = _function_ids(store)
+    exercised = {f for fs in cov.values() for f in fs}
+    ungapped = coverage_query.untested(cov, funcs)
+    detector = _default_detector(store)
+    reachable = _live_set(store, detector.detect(store))
+    untested_live = sorted(f for f in ungapped if f in reachable)
+    untested_dead = sorted(f for f in ungapped if f not in reachable)
+    payload = {
+        "untested_live": untested_live,
+        "untested_dead": untested_dead,
+        "tested": len(funcs) - len(ungapped),
+        "total_functions": len(funcs),
+    }
+    res = ok(payload, provenance=Provenance.INFERRED, count=len(untested_live),
+             untested_live=len(untested_live), untested_dead=len(untested_dead))
+    res.needs_review = True
+    if funcs and not (exercised & funcs):
+        res.add_reason("no coverage function id matches a graph node id — likely a namespace mismatch "
+                       "(reindex root vs converter SRC); results are not meaningful until they align")
+    else:
+        res.add_reason("reachability is name-based (no type info); an 'untested_live' gap is real, but "
+                       "verify a symbol before treating 'untested_dead' as removable")
+    return res
+
+
+@operation("Fail-fast test order: run tests so new coverage accrues fastest (prefix = a minimal cover).")
+def test_order(store: Store, coverage: str = "coverage_modes.json") -> Result:
+    """Order the suite so each next test adds the most *new* function coverage (greedy over the
+    coverage matrix) — a regression surfaces early instead of last (design §6). The prefix up to the
+    first zero-gain test is a minimal cover; the rest add no new function coverage (a fast-tier
+    candidate list). Advisory, read-only; needs no numpy. Note: coverage-greedy front-loads breadth,
+    not failure-likelihood."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    order = coverage_query.greedy_order(cov)
+    minimal = [t for t, gain in order if gain > 0]
+    payload = {
+        "order": [{"test": t, "new_functions": gain} for t, gain in order],
+        "minimal_prefix": minimal,
+        "minimal_count": len(minimal),
+        "total_tests": len(order),
+    }
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(order),
+              minimal=len(minimal), total=len(order))
+
+
+@operation("Redundant tests: groups sharing an identical coverage profile (review aid, not auto-delete).")
+def redundant_tests(store: Store, coverage: str = "coverage_modes.json") -> Result:
+    """Groups of tests with an **identical** function-coverage profile (design §6) — candidates for
+    consolidation review. Advisory, read-only; needs no numpy. IMPORTANT: coverage-identical is NOT
+    behavioural redundancy — parametrized/data-driven tests share a profile yet exercise different
+    inputs (never auto-delete on this alone); this is a review aid. Near-duplicate (not identical)
+    profiles are `co_change`'s territory."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    groups = coverage_query.redundant_groups(cov)
+    payload = {
+        "groups": [{"tests": g, "size": len(g)} for g in groups],
+        "group_count": len(groups),
+        "redundant_tests": sum(len(g) - 1 for g in groups),
+    }
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(groups),
+             redundant=sum(len(g) - 1 for g in groups))
+    res.needs_review = True
+    res.add_reason("identical coverage profile != behavioural redundancy (parametrized tests share a "
+                   "profile but test different inputs) — a consolidation review aid, not a delete list")
+    return res
+
+
+@operation("The always-on core: functions executed by the most tests (highest behavioural blast radius).")
+def find_core(store: Store, coverage: str = "coverage_modes.json", limit: int = 20) -> Result:
+    """Functions executed by the largest fraction of tests (design §6) — the always-on core touched by
+    nearly every behaviour, so the highest-blast-radius code to review before changing. The runtime
+    complement to static `find_chokepoints`. Advisory, read-only; needs no numpy."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    core = coverage_query.core_functions(cov, top=lim)
+    payload = {"core": [{"function": f, "test_count": c, "fraction": frac} for f, c, frac in core]}
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(core))
 
 
 @operation("Find code most similar to a snippet (where's the code that does X).")

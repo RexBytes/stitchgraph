@@ -18,7 +18,8 @@ import re
 from .modes import load_coverage
 
 __all__ = ["load_coverage", "base_test_id", "normalize", "invert", "tests_for", "co_functions",
-           "coactivation_pairs", "hidden_coupling"]
+           "coactivation_pairs", "hidden_coupling", "untested", "greedy_order", "redundant_groups",
+           "core_functions", "mode_drift"]
 
 # A test that touches more than this many functions contributes ~n² pairs to the co-activation count;
 # such near-global tests (a smoke/end-to-end that runs everything) add noise, not signal, so their
@@ -147,3 +148,65 @@ def hidden_coupling(cov: dict[str, list[str]], connected: set[frozenset[str]],
         if len(out) >= limit:
             break
     return out
+
+
+def untested(cov: dict[str, list[str]], function_ids: set[str]) -> set[str]:
+    """Of `function_ids`, those that no test executed (present in zero coverage rows)."""
+    exercised = {f for funcs in cov.values() for f in funcs}
+    return set(function_ids) - exercised
+
+
+def greedy_order(cov: dict[str, list[str]]) -> list[tuple[str, int]]:
+    """Fail-fast test order: repeatedly pick the test that adds the most *new* function coverage,
+    then append the rest (which add nothing new) in stable order. Returns `(test_id, new_functions)`
+    for every test — the prefix up to the first 0 is a minimal cover."""
+    norm = normalize(cov)
+    remaining = sorted(norm)
+    covered: set[str] = set()
+    order: list[tuple[str, int]] = []
+    while remaining:
+        best = max(remaining, key=lambda t: (len(norm[t] - covered), t))
+        gain = len(norm[best] - covered)
+        order.append((best, gain))
+        remaining.remove(best)
+        if gain:
+            covered |= norm[best]
+    return order
+
+
+def redundant_groups(cov: dict[str, list[str]], min_size: int = 2) -> list[list[str]]:
+    """Groups of tests with an **identical** function-coverage profile (≥ `min_size` members),
+    largest first. Exact-profile only (bounded, O(n)); near-duplicate profiles are `co_change`'s job.
+    NOTE these are coverage-identical, not necessarily behaviourally redundant — parametrized
+    data-driven tests share a profile yet test different inputs. A review aid, never auto-delete."""
+    norm = normalize(cov)
+    groups: dict[frozenset[str], list[str]] = {}
+    for tid, funcs in norm.items():
+        groups.setdefault(frozenset(funcs), []).append(tid)
+    out = [sorted(members) for members in groups.values() if len(members) >= max(2, min_size)]
+    out.sort(key=lambda g: (-len(g), g[0]))
+    return out
+
+
+def core_functions(cov: dict[str, list[str]], top: int = 20) -> list[tuple[str, int, float]]:
+    """The always-on core: functions executed by the most tests, `(function_id, test_count,
+    fraction_of_tests)`, most frequent first. High frequency ≈ high behavioural blast radius."""
+    norm = normalize(cov)
+    n = len(norm) or 1
+    freq: collections.Counter[str] = collections.Counter()
+    for funcs in norm.values():
+        for f in funcs:
+            freq[f] += 1
+    ranked = sorted(freq.items(), key=lambda kv: (-kv[1], kv[0]))[:top]
+    return [(f, c, round(c / n, 4)) for f, c in ranked]
+
+
+def mode_drift(old: dict[str, list[str]], new: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Behavioural diff between two coverage snapshots at the function-exposure level:
+    which functions gained test exposure, lost it, or are newly present / removed."""
+    old_ex = {f for funcs in old.values() for f in funcs}
+    new_ex = {f for funcs in new.values() for f in funcs}
+    return {
+        "gained_coverage": sorted(new_ex - old_ex),
+        "lost_coverage": sorted(old_ex - new_ex),
+    }

@@ -31,7 +31,9 @@ from .core import (
 from .core.operations import (
     co_change,
     find_chokepoints,
+    find_core,
     find_coupling,
+    find_gaps,
     find_holes,
     find_modes,
     find_similar,
@@ -45,12 +47,14 @@ from .core.operations import (
     impact_of,
     ingest_trace,
     orient,
+    redundant_tests,
     reindex,
     risk,
     scaffold_coverage,
     scan,
     select_tests,
     summarize_subsystem,
+    test_order,
     trace_path,
 )
 
@@ -72,4 +76,5 @@ __all__ = [
     "ingest_trace", "find_similar", "summarize_subsystem", "graph_diff",
     "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
     "select_tests", "co_change", "find_coupling",
+    "find_gaps", "test_order", "redundant_tests", "find_core",
 ]
