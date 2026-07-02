@@ -3323,6 +3323,26 @@
       ],
       "findings": {},
       "theme": "SECOND clean confirmation on frozen tip e157105 (readiness streak). opus independent re-attack with EXACT hand computation: find_core ranking/fractions exact, greedy_order pick order + minimal-prefix-is-true-cover + each test once, redundant_groups exact, coverage_drift gained/lost vs hand sets + symmetric under swap, find_gaps partition disjoint + tested+live+dead==total, select_tests changeset union + unresolved+needs_review + single-symbol ambiguous refuse with alternatives, feature_map full ids/files/tests deterministic, find_outlier_tests residual in [0,1] + all three kinds + deterministic, runtime_risk churn*centrality math + refuses non-git/empty/bad-type + namespace reason. All 4 cardinal rules re-verified (subprocess lazy-import; find_stale byte-identical + node_count after all 8 ops; 16-case never-raise; no exec). numpy-absent path refuses cleanly. 34 tests pass. One docstring-wording nuance (greedy_order zero-gain tail order) \u2014 fixed, no behaviour change."
+    },
+    {
+      "id": "R285",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "v3.23.1 self-audit fix (scan live_stub decorator FP). opus falsification P1: CLEAN \u2014 27 _is_stub snippet cases + 5 malformed-decorator cases + whole-repo old/new differential = EXACTLY ONE verdict changed (cli.py::build_app._root, the intended Typer @app.callback target), zero collateral; bare pass/@property/@overload + raise NotImplementedError (even decorated) still stubs; async identical; scan shows 0 RED live_stub on src/stitchgraph; 456 extract/regression/selfaudit tests pass; cardinal (lazy import, determinism) intact. Two LOW non-defects within documented precision-over-recall intent (@overload vs @typing.overload cosmetic inconsistency; @deco() bare-name-call counts as registration)."
+    },
+    {
+      "id": "R286",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "FINAL sign-off \u2014 streak 2, gate met, RELEASABLE. opus independent P2: 33-case _is_stub matrix all match intent, malformed decorator ASTs no exception; cardinal rules verified (lazy import; is_stub consumed only by scan.stub_nodes, NOT by find_stale/_live_set/_stale_candidates so the flag change cannot move reachability; confirmed on src + 2 crafted projects that now-not-stub registered callbacks are reachable via decorator edges and genuine dead stubs still surface); scan 0 RED on src; 490 targeted tests + full suite 2333 passed / 28 skipped. One non-defect: a method carrying BOTH @abstractmethod AND a registration decorator would miss the callback root (nonsensical construct, never arises). Gate: full suite 2333 passed, ruff+mypy clean. Tag left to the maintainer."
     }
   ]
 }

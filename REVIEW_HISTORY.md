@@ -2264,6 +2264,18 @@ changeset. New `core/coverage_query.py` helpers + a `modes._pod` shared SVD buil
 | R283 | 3 | ✓ | FIRST v3.23.0 panel — clean on first pass. opus falsification: 0 raises across the full adversarial-artifact matrix × all 8 op entrypoints (missing/bad-JSON/wrong-shape/empty/<4/dup-funcs/NaN-Inf/giant-5000-fn/non-str args); no numpy scalar/ndarray JSON leaks; `_pod` mirrors `decompose`'s numpy/`_DENSE_CAP`/LinAlgError guards; residual ∈ [0,1] incl. zero-variance; kind ⊆ {typical,unique,smoke}; find_gaps partition disjoint + sums; test_order once+cover; redundant ≥2 + caveat; runtime_risk refuses non-git/empty; coverage_drift symmetric; select_tests changeset union + unresolved-noted + ambiguous-refuse; all 4 cardinal rules (no eager import; find_stale byte-identical after all 8). haiku docs: CLEAN (version, 30-op count, CLI names, numpy split, payload fields). |
 | R284 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus independent re-attack with EXACT hand computation: find_core ranking/fractions, greedy_order pick order + minimal-prefix-is-true-cover + each-test-once, redundant_groups, coverage_drift gained/lost + symmetric-under-swap, find_gaps partition, select_tests changeset union + single-symbol ambiguous refuse, feature_map full-ids/files/tests, find_outlier_tests residual∈[0,1] + all 3 kinds + deterministic, runtime_risk churn×centrality + refuses non-git/empty/bad-type + namespace reason. All 4 cardinal rules re-verified (subprocess lazy-import; find_stale byte-identical + node_count after all 8 ops; 16-case never-raise). numpy-absent path refuses cleanly; 34 tests pass. One docstring-wording nuance (greedy_order zero-gain tail order) — fixed, no behaviour change. Gate: full suite green, ruff + mypy clean. Tag left to the maintainer. |
 
+### v3.23.1 — self-audit precision fix (scan `live_stub` on decorator callbacks)
+
+Found by turning the toolset on stitchgraph itself (`research/12`): `scan` RED-flagged a Typer
+`@app.callback` with an idiomatic `pass` body as an unimplemented `live_stub`. Fixed `_is_stub` so an
+empty body under a call/attribute decorator is not a stub; tests added for the fix + the
+`Edge.to_dict`/`Edge.resolved` coverage gaps `find_gaps` surfaced.
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R285 | 3 | ✓ | opus falsification: whole-repo old/new differential = **exactly one** verdict changed (`build_app._root`, the intended target), zero collateral; bare `pass`/`@property`/`@overload` + `raise NotImplementedError` (even decorated) still stubs; async identical; 0 RED live_stub on src; 456 tests pass; cardinal intact. Two LOW non-defects within the documented precision-over-recall intent. |
+| R286 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus independent: 33-case `_is_stub` matrix matches intent, malformed decorator ASTs raise nothing; **`is_stub` is consumed only by `scan.stub_nodes()`, not by `find_stale`/`_live_set`/`_stale_candidates`**, so the flag change cannot move reachability — verified on src + 2 crafted projects (registered callbacks reachable via decorator edges; genuine dead stubs still surface). 490 targeted + full suite **2333 passed / 28 skipped**, ruff + mypy clean. One non-defect (abstractmethod+registration combo — nonsensical, never arises). Tag left to the maintainer. |
+
 Process note: the first defect *found by dogfooding stitchgraph as a build aid rather than by a panel*
 — the round-2 extender agent's own DEVLOG recorded the confusing refusal, which became this fix. A
 reminder that the honest-envelope "refuse clearly" principle is only as good as the clarity of the
