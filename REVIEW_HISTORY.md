@@ -2235,6 +2235,22 @@ New advisory pair: `find_modes` takes the POD (mean-centred SVD) of a per-test c
 | R278 | 3 | ✓ | Clean re-confirmation on the R276/R277-fixed tip: non-turnkey run script clean (bash -n, no stray lines), python turnkey intact, sandbox flags, qualified converter, find_modes battery + determinism + JSON-clean, all cardinal rules. Recommends passing the gate. |
 | R279 | 3 | ✓ | **FINAL sign-off — streak ≥2, gate met, RELEASABLE.** opus independent re-attack: numeric hand-recompute exact, converter ids match reindex node-id parts, sandbox confinement, all 4 cardinal rules, 12/12 test_modes. One UNREACHABLE INFO (direct decompose(k<0) → negative idim; impossible via library/CLI/MCP which sanitise k to ≥2 or None) — accepted non-defect (class of R270's note); optional `max(0,…)` floor a future nicety. Gate: full suite 2305 passed / 28 skipped, ruff + mypy clean. Tag left to the maintainer. |
 
+### v3.22.0 — forward-looking POD ops `select_tests` + `co_change` + `find_coupling` (§6)
+
+Three advisory, read-only, **no-numpy** operations (new `core/coverage_query.py`) that turn the runtime
+co-activation matrix into change-oriented queries: `select_tests` (which tests to run for a change —
+runtime coverage fused with the static blast radius: both / runtime_only / static_only), `co_change`
+(functions that co-activate with a symbol — "what moves together / implements this outcome"), and
+`find_coupling` (pairs that co-run but have no static edge — implicit coupling the call graph can't see).
+Test-ids normalised to node-id convention so runtime/static namespaces align. Dogfooded on stitchgraph's
+own 2315×764 coverage. Total ops: 22 + admin `reindex`.
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R280 | 3 | ✗ | FIRST v3.22.0 panel. opus falsification: essentially CLEAN — all 4 cardinal rules verified (no eager import; find_stale byte-identical; never raises across the adversarial artifact battery incl. NaN/Inf JSON + a 5000-fn giant test; no user-code exec), select_tests partition exact, scores ∈ [0,1], self-pair excluded, find_coupling excludes any-relation/either-direction edges + handles unresolved dst_id, `_COOC_FUNC_CAP=400` bounds OOM, limit/min_shared clamp. One NIT: `base_test_id` split on '|' before stripping `[param]` → a param containing '|' or nested brackets mis-normalised (advisory under-merge, never raises) — fixed (11e18b5). haiku NIT: OVERVIEW select_tests row hyphenated `runtime-only`/`static-only` vs underscored fields — fixed (7424757). |
+| R281 | 3 | ✓ | FIRST clean confirmation on the fixed tip 11e18b5. opus: base_test_id fix correct AND complete (phase stripped before greedy end-anchored `[param]`; `test[a|b]|run`, nested `test[a[b]]`, param-containing-'run' all collapse; 2-part `file::func` intentionally not class-rewritten). Full re-attack clean: artifacts refuse cleanly, select_tests partition + homonym refuse, co_change cosine deterministic across PYTHONHASHSEED, find_coupling edge-exclusion + OOM guard + clamps, all 4 cardinal rules. |
+| R282 | 3 | ✓ | **FINAL sign-off — streak 2 (readiness streak 8), gate met, RELEASABLE.** opus independent re-attack with hand-computed numerics: select_tests both/runtime_only/static_only exact; co_change cosine matches (0.8165, 0.5774); find_coupling score/shared exact, edge-excluded both directions, normalize collapses param rows; JSON-serializable + deterministic; 72-case adversarial battery zero raises; all 4 cardinal rules. One INFO non-defect: `_COOC_FUNC_CAP` skips a >400-fn test from the pair numerator but not the sizes denominator → a pair co-running only in such a near-global test under-reports its cosine (bounded, conservative — only ever under-reports; matches documented near-global-noise suppression). No action required. Gate: full suite **2315 passed / 28 skipped** (tip a48696c; the sole subsequent change is the localised `base_test_id` regex, covered by test_coverage_query 9/9 + test_modes 12/12 on the final tip), ruff + mypy clean. Tag left to the maintainer. |
+
 Process note: the first defect *found by dogfooding stitchgraph as a build aid rather than by a panel*
 — the round-2 extender agent's own DEVLOG recorded the confusing refusal, which became this fix. A
 reminder that the honest-envelope "refuse clearly" principle is only as good as the clarity of the
