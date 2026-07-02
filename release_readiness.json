@@ -3251,6 +3251,26 @@
         "LOW": 1
       },
       "theme": "SECOND confirmation on bd49fb8. opus comprehensive: find_modes numeric hand-recompute exact (energies/intrinsic/minimal/redundant), determinism, no numpy-scalar leaks, full adversarial battery returns envelopes (incl. 4005x4005>cap refuse, 6000x4 all-identical, 500 all-unique untruncated, zero-variance intrinsic=0), scaffold sandbox flags all present + confined to out_dir, all 4 cardinal rules pass, 11 tests. LOW: non-turnkey run_coverage.sh (js/go/rust/java) built via .replace() of the Python _PY_RUN leaves a stray '--cov=. ...' line (trailing backslash in a comment doesn't continue) plus irrelevant python to_canonical.py/pip lines \u2014 template-labeled, quality wart not safety."
+    },
+    {
+      "id": "R278",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "FIRST clean confirmation on the R276/R277-fixed tip. opus: CLEAN \u2014 non-turnkey run_coverage.sh (js/go/rust/java) now a clean self-contained TODO placeholder (bash -n clean, zero stray pytest/--cov/pip/to_canonical lines, braces escaped); python turnkey recipe intact; docker sandbox flags all present; converter emits qualified ids; find_modes adversarial battery all envelopes + deterministic + JSON-clean; README carries |phase + TEMPLATE notes; all 4 cardinal rules re-verified. Recommends passing the gate."
+    },
+    {
+      "id": "R279",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND clean confirmation. opus independent re-attack: find_modes numeric hand-recompute exact (energy/intrinsic/minimal/redundant), determinism, no numpy-scalar leaks, full adversarial battery incl. 4001x4001>cap clean refuse, converter qualified ids match reindex node-id function parts exactly, scaffold sandbox flags + out_dir confinement, all 4 cardinal rules. One INFO/non-defect (UNREACHABLE): direct decompose(k<0) yields negative intrinsic_dimensionality (nmodes=min(k,kk) goes negative) \u2014 impossible via library/CLI/MCP which sanitize k to >=2 or None; optional one-line max(0,..) hardening noted as future nicety, not release-blocking (same class as R270's accepted non-defect)."
     }
   ]
 }
