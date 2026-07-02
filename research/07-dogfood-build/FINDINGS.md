@@ -65,4 +65,83 @@ a larger, pre-built codebase it did not write and asked to make a **cross-cuttin
 scenario where `orient` / `get-callers` / `impact-of` should earn their keep. Both extender agents
 get an **identical** frozen base; the only variable is stitchgraph access.
 
-_Status: in progress — results appended below when the run completes._
+**Setup.** A neutral builder agent first produced a larger base simulator (22 modules, ~1000 LOC:
+R/L/C/V/I + `.op`/`.tran`/`.dc`, with a **registry-based extension pattern** — element + analysis
+registries, base-class extension points, and an inline "how to add an element" docstring). Verified:
+5/5 regression circuits pass, VCVS cases fail (no `E` element). Frozen and copied **byte-identically**
+into two dirs. Task (`round2/CHANGE.md`): add a voltage-controlled voltage source (SPICE `E`) end to
+end — parser + element type + an MNA branch-unknown stamp + all three analyses — without regressing.
+Grader: `round2/acceptance_phase2.py` (5 regression circuits incl. RL transient + DC sweep, must
+still pass; 2 new VCVS circuits). Designed cross-file gotcha: the netlist parser had node arity `2`
+hardcoded, so a 4-node `E` line silently mis-parses unless the author finds that call site.
+
+**Result — both PASS everything, control finished ~35% sooner:**
+
+| Metric | A — with stitchgraph | B — control |
+|---|---|---|
+| Regression (5) + VCVS (2) | ✅ 7/7 | ✅ 7/7 |
+| Wall-clock | 411 s | **304 s** |
+| Tool calls | 43 | 43 |
+| New tests added | 14 (→71 total) | 11 (→68 total) |
+| Found the hidden call site (parser node-arity) | ✅ yes | ✅ yes |
+| Regressions introduced | 0 | 0 |
+
+**Both** correctly generalized the parser (`num_nodes`), added the VCVS branch-unknown stamp with the
+right control coupling, and preserved all 57 pre-existing tests. **Both found the designed cross-file
+gotcha** — but *not* primarily via structural queries: both leaned on the base's **own inline
+extension-point docstring and the prior developer's DEVLOG** to orient, then B traced the parser's
+token-slicing by reading and A confirmed the hubs with `orient`.
+
+**Where stitchgraph changed A's process** (from A's own honest reflection, `round2/DEVLOG_A_stitchgraph.md`):
+
+- ✅ **`orient` gave orientation-in-seconds** — pointed straight at `Element` / `AnalysisContext` /
+  `MNASystem` as the load-bearing hubs *before reading a line*, matching what actually mattered.
+- ✅ **`impact-of` as a regression net** — flagging the whole suite as blast radius was a forcing
+  function against under-testing (A added 14 tests vs B's 11); **`find-holes`/`find-stale`** gave a
+  fast clean post-edit signal.
+- ➖ **`find-similar` added confirmation, not discovery** — surfaced the same files A had already
+  found via the inline docstring (small, self-documented codebase).
+- ⚠️ **A real limitation surfaced:** `get-callers "nodes"` **failed** because `nodes` isn't a unique
+  symbol — bare common names need a qualified id or fall back to grep. *(Actionable product feedback.)*
+
+---
+
+## Cross-round conclusion
+
+Across **both** rounds (build-from-scratch and extend-an-unfamiliar-codebase), the outcome was the
+same: **both agents produced fully correct, acceptance-passing results, and the control finished
+sooner** (4% round 1, 35% round 2 — the gap is stitchgraph's query overhead). No speed win in either
+regime; stitchgraph's consistent, real contribution was **assurance and orientation, not speed or
+discovery**:
+
+- **find-stale** caught genuine dead code a reader would keep (round 1);
+- **orient** collapsed "where do I start" to seconds in unfamiliar code (round 2);
+- **impact-of** acted as a coverage/regression forcing-function (both rounds; A wrote more tests);
+- **find-holes** gave a cheap "nothing dangling" wiring check after edits.
+
+**Why the discovery win kept not materialising** — and the key methodological lesson: both codebases
+were **small and self-documenting** (clean layering, inline extension-point docstrings, a prior
+DEVLOG). Good documentation and clean structure substituted for structural queries, so direct reading
+reached the same answers about as fast. stitchgraph's *discovery* edge (find every caller, trace
+non-local coupling, spot dead/dangling code the author can't see) should dominate only when those
+substitutes are **absent**: a **large, poorly-documented codebase with non-obvious cross-file
+coupling** — precisely the conditions a controlled greenfield experiment keeps failing to create,
+because agents build clean, legible code.
+
+**Honest bottom line (n=1 per round):** for an *LLM agent* building or extending *well-structured,
+in-context-sized* code, stitchgraph is a **safety net and orientation aid** (fewer missed dead-code /
+wiring issues, faster onboarding, a nudge toward broader tests) at a **small time cost** — not an
+implementation-speed multiplier. That matches stitchgraph's actual design pitch (honest, advisory
+code intelligence), and it is a *different* value proposition from "makes the agent faster."
+
+**To actually catch a discovery win**, a future experiment should: (a) use a **much larger,
+deliberately under-documented** codebase with tangled cross-file coupling; (b) pose a change whose
+call sites are **not** discoverable from a docstring (e.g. rename a widely-used symbol with
+same-named decoys); (c) run **n ≥ 5** trials per arm to see past single-run noise; and (d) consider a
+weaker/faster base model, where holding the whole codebase in context is less feasible.
+
+**One concrete product bug for stitchgraph itself:** `get_callers`/`get-callees` on a **non-unique
+bare name** (`nodes`) failed instead of returning the candidate set or asking for a qualified id —
+worth a usability fix (disambiguate, or match all and label by qualified id).
+
+_Artifacts: `round1/` and `round2/` hold the specs, held-out graders, and both agents' DEVLOGs._
