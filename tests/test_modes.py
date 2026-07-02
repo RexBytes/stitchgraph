@@ -132,6 +132,28 @@ def test_scaffold_writes_a_sandboxed_kit(tmp_path):
     assert "stitchgraph-coverage-v1" in readme
 
 
+def test_converter_qualifies_method_names(tmp_path):
+    """Panel R274 HIGH: the shipped Python converter must emit qualified ids (Class.method,
+    outer.inner) matching stitchgraph node ids — never bare names that collapse distinct
+    same-named methods (A.run and B.run) into one node."""
+    import ast as _ast
+
+    from stitchgraph.core.coverage_scaffold import _PY_CONVERTER
+    ns = {"ast": _ast, "os": os}
+    src = _PY_CONVERTER
+    seg = src[src.index("def func_ranges"):src.index("cov = coverage.Coverage")]
+    exec(seg, ns)  # noqa: S102 — exercising the shipped converter's function-mapping logic
+    sample = tmp_path / "s.py"
+    sample.write_text(
+        "class A:\n    def run(self):\n        return 1\n"
+        "class B:\n    def run(self):\n        return 2\n"
+        "def top():\n    def inner():\n        return 3\n    return inner\n")
+    names = {r[0] for r in ns["func_ranges"](str(sample))}
+    assert "A.run" in names and "B.run" in names   # distinct methods stay distinct
+    assert "top" in names and "top.inner" in names  # nested qualified
+    assert "run" not in names                       # bare method name never emitted
+
+
 def test_scaffold_bad_input_refuses():
     st = sg.Store(":memory:")
     assert not sg.scaffold_coverage(st, out_dir="").ok
