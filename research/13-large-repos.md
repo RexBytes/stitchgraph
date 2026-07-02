@@ -15,6 +15,70 @@ Everything below is stitchgraph run on corpora it was never tuned for — the ho
 
 ---
 
+## What the graph actually revealed about the code (not just that it scales)
+
+Node counts and index times are facts about *stitchgraph*. Here's what the ops said about *Django and
+HA themselves* — and the striking part is that the two repos told the **same story from opposite
+directions**: in a big dynamic-Python framework, static call-graph "dead code" and "god objects" don't
+scatter randomly — **they pile up exactly at the framework's dynamic-dispatch boundaries**, and *which*
+boundary tells you how the framework is built.
+
+### Finding 1 — the most "coupled" symbol in both repos is the method name `get` (duck typing, made visible)
+`scan`'s top god-object in Django is `BaseListView.get` / `Client.get` / `DatabaseCache.get` / … all
+reporting **fan-in ≈ 3,115** — and **confident fan-in 0**. It's not fifteen god classes; it's *one*
+phenomenon: every `x.get(...)` call site in Django (dict, cache, session, HTTP response, View, ORM,
+test client) collapses onto every `def get` because a static graph can't resolve the receiver's type.
+HA shows the **identical** pattern (`StateMachine.get`, `FlowManagerResourceView.get`, fan-in ~341,
+confident 0). The insight isn't "Django is badly coupled" — it's that **method-name ambiguity in Python
+concentrates on the commonest verbs** (`get`/`set`/`save`), and stitchgraph's `confident_fan_in`
+separates "3,115 ambiguous namesakes" from "actually wired." The honest label — *"mostly name-ambiguous
+edges … verify before acting," confidence 0.38* — is the feature, not a bug.
+
+### Finding 2 — "dead code" is really a map of each framework's escape hatch from Python
+Both repos' `find_stale` lists are dominated not by rot but by **code called through a channel the
+Python call graph can't see** — and the channel differs by framework:
+
+- **Django → the code ↔ template/DOM boundary.** The stale list clusters in `contrib/admin`: the JS
+  handlers `RelatedObjectLookups.js::showAdminPopup`, `theme.js::cycleTheme`, `cancel.js::handleClick`
+  (only ever invoked from HTML `onclick=`), and `helpers.py` methods like `Fieldset.is_collapsible`,
+  `InlineAdminForm.deletion_field`, `InlineAdminFormSet.inline_formset_data` (only read from Django
+  `.html` templates as `{{ form.deletion_field }}`). Django's "dead" code is where Python/JS hands off
+  to a *template*.
+- **HA → convention-named flow state machines.** HA's stale list clusters in `auth/mfa_modules/`,
+  `config_entry_oauth2_flow`, `config_entry_flow`: methods like `async_step_init`, `async_step_setup`,
+  `async_setup_flow`. These aren't dead — HA's flow engine invokes them by *building the method name as
+  a string* (`getattr(self, f"async_step_{step_id}")`). HA's "dead" code is where it uses
+  **convention-over-call dispatch**.
+
+Same tool, same op, two different architectures fingerprinted by *where* their unreachable-looking code
+lives. That's a real, legible read on each codebase — and it's exactly why the numbers ship with a
+"these rest on dynamic dispatch" caveat rather than a "delete this" verdict.
+
+### Finding 3 — the god-object shape mirrors each framework's composition style
+Past `get`, HA's next god-objects are all `__init__` with **fan-out ~195** (`SafeLoader.__init__`,
+`ManualTriggerEntity.__init__`, `SchemaOptionsFlowHandler.__init__`) — the `super().__init__()` chains
+of its deep shared entity hierarchy. That's the quantitative shadow of the subsystem result ("one huge
+shared setup/entity nucleus every integration is a thin skin over"): HA composes by **deep
+inheritance**, so construction is where the fan-out concentrates. Django's god-objects are `.get`-style
+name collisions and `views/generic` mixins — it composes by **mixins + duck-typed protocols**. The
+coupling profile *is* the design philosophy.
+
+### Finding 4 — the cycles that are real vs. the cycles that are artifacts
+`scan` found 71 cycles in Django, 26 in HA — and it self-grades them. The ones marked *"0/N confident …
+verify"* are name-ambiguity ghosts. The ones without that caveat are genuine mutual recursion, and they
+land on exactly the code you'd expect: Django's `template/smartif.py::Operator.led` (the `{% if %}`
+Pratt-parser, inherently mutually recursive), `template/library.py::Library.filter_function`, and the
+GEOS geometry coercion (`Polygon.tuple`/`LineString.array`). The tool points at the parser and the
+geometry coercion layer as the true cyclic cores — and flags the rest as probably-noise.
+
+**The through-line:** pointed at code it had never seen, stitchgraph didn't just count nodes — it
+located each framework's dynamic-dispatch seams (templates for Django, string-named flow steps for HA),
+distinguished duck-typing artifacts from real coupling via `confident_*` edges, and told the two
+frameworks' composition styles apart (mixins vs. deep inheritance). None of that is readable off a
+`README`; all of it is verifiable from the graph.
+
+---
+
 ## Django 5.2.x — the "infamous massive Python repo"
 
 Source: Django from the PyPI sdist (no `.git`; egress policy blocks github.com, so we index the
