@@ -3204,6 +3204,53 @@
         "NIT": 1
       },
       "theme": "FIRST confirmation panel on the R272-fixed tip. opus re-falsification: CLEAN \u2014 verified intrinsic_dimensionality <= len(modes) across all-identical/one-differs/disjoint/random/boundary inputs and k in {None,2,3,5,8,100,1e5}; recomputed k90 by definition and matched decompose exactly; no NaN/inf leak (full envelope json round-trips); determinism byte-identical x5; greedy cover always complete; all 4 cardinal rules verified against real stitchgraph.db (find_stale + DB SHA-256 unchanged). One non-reachable INFO (direct decompose(k=1) \u2014 not exposed via lib/CLI/MCP) hardened anyway by clamping k90 to nmodes (f3a54d6). haiku: one NIT \u2014 docs/OVERVIEW.md [spectral] extra mentioned only find_subsystems, not find_modes (fixed ee3fc2e)."
+    },
+    {
+      "id": "R274",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1,
+        "NIT": 1
+      },
+      "theme": "opus falsification found HIGH: shipped Python converter used bare ast names -> distinct same-named methods (A.run/B.run, every __init__/run) collapsed to one node id, corrupting the co-activation matrix and contradicting the kit's own README spec (ids claimed as path::Class.method). Fixed: func_ranges walks class/function nesting for qualified ids + innermost-range attribution (bd49fb8). haiku NIT: pyproject [spectral] comment omitted find_modes (a937f70)."
+    },
+    {
+      "id": "R275",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "CLEAN. opus independent re-attack of find_modes numeric core: redundant_test_pairs exact vs brute force over 400 fuzz trials; intrinsic_dimensionality byte-matches hand recompute; greedy set-cover proven a true cover; zero numpy-scalar JSON leaks; determinism; all 4 cardinal rules re-verified against real store. 3 non-defect INFO notes (uncentred scipy path semantics, bare-dict test literally named 'format', direct decompose(k<0)) \u2014 all unreachable/documented."
+    },
+    {
+      "id": "R276",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 1
+      },
+      "theme": "FIRST confirmation on converter-fixed tip bd49fb8. opus: CLEAN \u2014 func_ranges qualified-name fix correct and COMPLETE, exact node-id set-equality vs extract_project() on the same file across staticmethod/classmethod/async/nested/class-in-class/property/overload; property+overload same-name collapse matches the extractor's own make_id behavior (consistent, not a divergence); innermost attribution verified; end-to-end real coverage capture accepted by find_modes; all 4 cardinal rules pass. NIT: coverage.py --cov-context=test suffixes test-id keys with |phase (e.g. ::test_a|run) while the README example omits it (keys are opaque; function-id values unaffected)."
+    },
+    {
+      "id": "R277",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "LOW": 1
+      },
+      "theme": "SECOND confirmation on bd49fb8. opus comprehensive: find_modes numeric hand-recompute exact (energies/intrinsic/minimal/redundant), determinism, no numpy-scalar leaks, full adversarial battery returns envelopes (incl. 4005x4005>cap refuse, 6000x4 all-identical, 500 all-unique untruncated, zero-variance intrinsic=0), scaffold sandbox flags all present + confined to out_dir, all 4 cardinal rules pass, 11 tests. LOW: non-turnkey run_coverage.sh (js/go/rust/java) built via .replace() of the Python _PY_RUN leaves a stray '--cov=. ...' line (trailing backslash in a comment doesn't continue) plus irrelevant python to_canonical.py/pip lines \u2014 template-labeled, quality wart not safety."
     }
   ]
 }
