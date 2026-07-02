@@ -3079,6 +3079,19 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD a9ac0e9 \u2192 streak 2 \u2192 RELEASABLE. Bash (the FINAL \u00a75c language) closed; the STATEMENT/PDG sweep now covers EVERY body-matrix language. opus INDEPENDENT final sign-off: 21,888 cases across 6 seeds + a 5,040 first pass + ~30 hand-targeted boundaries, 19,232 genuine VFG-reads (non-vacuous, both directions exercised) \u2014 0 invariant violations, 0 crashes, 0 well-formedness/key-parity/determinism failures; seed mechanics verified directly (VFG node 0 = SEED's FREE node bound to env['v']; PDG node 1 = the v=$SEED Assign seeding last_def). Coverage incl. all expansion forms (${v@Q}/${v^^}/slices/${!v}), let/++/coproc/time/mapfile/printf -v, select, assoc arrays, fd redirects. Reverse-direction PDG\u2265VFG over-reads (FOO=$v cmd, readonly x=$v, arr[$v]=1) confirmed allowed; the three symmetric under-reads (${#v}, v+=x, single-quoted deferred) miss in BOTH builders (not divergences). sonnet gates re-verified by main: ruff/mypy/cardinal clean, byte-identical isolation, Bash oracle 61; full suite 2276 passed / 24 skipped stands. haiku docs: all surfaces consistent, no stale markers. Bash closed in 2 clean panels / 1 doc LOW / 0 code defects \u2014 the front-loaded VFG-mirror + seeded differential oracle held from panel 1 even for the command-oriented, parameter-less outlier. \u00a75c STATEMENT-LAYER SWEEP COMPLETE (all 10 sweep-languages / 12 body-matrix languages). Tag left to the maintainer."
+    },
+    {
+      "id": "R263",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1,
+        "NIT": 1
+      },
+      "theme": "FIRST find_chokepoints panel (v3.19.0, \u00a76 win 1 \u2014 articulation-point criticality promoted from research/06-spectral into the package). opus brute-force falsification (6000 random graphs vs an independent 'removal increases component count' reference) confirmed the AP-SET detection is correct (0/6000 mismatches), determinism, robustness (20000-node chain no RecursionError \u2014 genuinely iterative DFS), and the cardinal rule (find_stale byte-identical; reach.py no module-scope structure/similar/graphdiff), BUT found ONE real HIGH: the non-root blast radius was sum(separating child subtrees), wrongly assuming the parent side is always the 'main body' \u2014 inverted the ranking on a chain (near-leaf reported as top chokepoint) and inflated counts up to N-2. Fixed to the uniform (comp_total-1)-max(pieces) definition (parent-side blob included), matching the root case + docstring; re-verified by main against brute force over 4000 random graphs (0 AP-set + 0 blast mismatches), chain blast now peaks symmetrically at centre; added a chain-symmetry regression test (the two original tests had encoded the buggy values). haiku found 1 NIT: README ops-table said 'functions' vs the actual functions/methods/classes \u2014 fixed. sonnet gate was reviewing the pre-fix tip and was stopped (superseded by the fix). Dirty (1 HIGH + 1 NIT, both fixed)."
     }
   ]
 }
