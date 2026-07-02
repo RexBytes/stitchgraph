@@ -47,6 +47,14 @@ spec and section references.
 | Operations | `select_tests` (change → tests) | ✅ Done | runtime coverage × static blast radius (§6); both/runtime_only/static_only; no numpy; advisory |
 | Operations | `co_change` (outcome → code) | ✅ Done | functions co-activating with a symbol (§6); behavioural neighbourhood; no numpy; advisory |
 | Operations | `find_coupling` (implicit deps) | ✅ Done | pairs that co-run but have no static edge (§6); runtime∖structure; no numpy; advisory |
+| Operations | `find_gaps` (coverage gaps) | ✅ Done | untested functions × reachability → live (gap) vs dead (§6); no numpy; advisory |
+| Operations | `test_order` (fail-fast) | ✅ Done | greedy new-coverage-first ordering; prefix = minimal cover (§6); no numpy; advisory |
+| Operations | `redundant_tests` (clusters) | ✅ Done | identical-profile test groups (§6); review aid, not auto-delete; no numpy; advisory |
+| Operations | `find_core` (always-on core) | ✅ Done | functions by activation frequency (§6); runtime companion to find_chokepoints; no numpy |
+| Operations | `feature_map` (mode → code × tests) | ✅ Done | per-mode functions × files × tests (§6); POD/SVD; numpy-required; advisory |
+| Operations | `find_outlier_tests` (unique vs smoke) | ✅ Done | mode-space reconstruction residual (§6); POD/SVD; numpy-required; advisory |
+| Operations | `runtime_risk` (churn × behaviour) | ✅ Done | git churn × behavioural centrality (§6); runtime companion to risk; no numpy |
+| Operations | `coverage_drift` (snapshots) | ✅ Done | functions gained/lost test exposure between two coverage snapshots (§6); no numpy |
 | Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |

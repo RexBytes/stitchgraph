@@ -4,6 +4,39 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.23.0] — 2026-07-02
+
+**POD toolkit completion: eight forward-looking runtime-analysis operations (§6).** Building on the
+co-activation matrix (`find_modes`) and the v3.22.0 query ops, this fills out the roadmap
+(`research/11-pod-roadmap.md`). All advisory, read-only, cardinal-safe; the set-math ones need no numpy.
+
+Pure set-math over the matrix (`core/coverage_query.py`):
+- **`find_gaps`** — functions no test executed, split `untested_live` (reachable → real coverage gap,
+  write a test) vs `untested_dead` (unreachable → corroborates `find_stale`). The runtime complement to
+  `find_stale`: static says "no one *can* reach it", coverage says "no test *did*".
+- **`test_order`** — fail-fast ordering: each next test adds the most new coverage; the prefix is a
+  minimal cover, the tail a fast-tier candidate list.
+- **`redundant_tests`** — groups of tests with an identical coverage profile (a consolidation *review
+  aid* — parametrized tests share a profile but test different inputs; never an auto-delete).
+- **`find_core`** — the always-on core: functions executed by the most tests (highest behavioural blast
+  radius); runtime companion to `find_chokepoints`.
+- **`runtime_risk`** — git churn × behavioural centrality: files that change often *and* are exercised
+  by many behaviours; sharper hotspots than `risk`'s churn × static-centrality.
+- **`coverage_drift`** — functions that gained/lost test exposure between two coverage snapshots; a
+  behavioural changelog to pair with `graph_diff`.
+- **`select_tests`** now also accepts a **changeset** (comma-separated symbols — a PR's touched
+  functions) and unions their tests.
+
+POD/SVD (`core/modes.py`, numpy):
+- **`feature_map`** — per behavioural mode: its implementing functions (full ids) × the files they span
+  × the tests that most express it. The actionable feature ↔ code ↔ test map.
+- **`find_outlier_tests`** — tests the mainstream modes reconstruct poorly (mode-space residual):
+  unique-behaviour tests (keep) vs everything-touching smoke (high mode-1 load).
+
+All exposed as library API + CLI + MCP. Total operations: **30 + admin `reindex`**. Dogfooded on
+stitchgraph's own 2315×764 coverage (e.g. `runtime_risk` ranks the tree-sitter/Python extractors and
+the store as top hotspots; `find_core` surfaces `Store.__init__`).
+
 ## [3.22.0] — 2026-07-02
 
 **Forward-looking POD-based operations: `select_tests`, `co_change`, `find_coupling` — turn the runtime

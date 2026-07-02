@@ -35,6 +35,14 @@ thin surfaces (library / CLI / MCP) over the same operation set.
 | `select_tests` | Change safety | Which tests to run for a change — tests that *ran* the symbol (runtime) fused with the static blast radius (`both` / `runtime_only` / `static_only`) |
 | `co_change` | Change safety | What code moves together with X / implements this outcome? (functions co-activating across the suite) |
 | `find_coupling` | Change safety | Which functions co-run but never statically call each other? (implicit coupling the call graph can't see) |
+| `find_gaps` | Health | Which functions did no test execute? split live (real coverage gap) vs dead (corroborates find_stale) |
+| `test_order` | Change safety | Fail-fast test order (new coverage first); prefix = a minimal cover |
+| `redundant_tests` | Health | Tests sharing an identical coverage profile (consolidation review aid; not auto-delete) |
+| `find_core` | Understand | The always-on core: functions executed by the most tests (highest behavioural blast radius) |
+| `feature_map` | Understand | Per behavioural mode: implementing functions × files × expressing tests (feature ↔ code ↔ test) |
+| `find_outlier_tests` | Health | Unique-behaviour tests vs everything-touching smoke (mode-space residual) |
+| `runtime_risk` | Risk | Files that change often AND are exercised by many behaviours (git churn × behavioural centrality) |
+| `coverage_drift` | Change safety | Which functions gained/lost test exposure between two coverage snapshots |
 | `trace_path` | Change safety | How does a request flow end-to-end, with confidence? |
 | `graph_diff` | Change safety | How do two builds differ — call-level *and* body-shape? |
 | `find_similar` | Search | Where's the code that does X? (by name/docs, or by body shape) |
