@@ -671,8 +671,9 @@ def find_modes(store: Store, coverage: str = "coverage_modes.json",
     want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
     try:
         payload, meta = modes.decompose(store, coverage, k=want)
-    except RuntimeError as exc:  # numpy missing / matrix too big for dense path
-        return refuse(str(exc), confidence=0.0)
+    except (RuntimeError, MemoryError) as exc:  # matrix too big for dense path / OOM on a huge artifact
+        return refuse(f"coverage matrix too large to decompose in memory ({exc}); "
+                      "install the 'spectral' extra or reduce the suite", confidence=0.0)
     return ok(payload, provenance=Provenance.EXTRACTED,
               count=len(payload["modes"]), **meta)
 

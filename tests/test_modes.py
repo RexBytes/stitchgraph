@@ -68,6 +68,31 @@ def test_find_modes_is_deterministic(tmp_path):
     assert a["minimal_test_count"] == b["minimal_test_count"]
 
 
+def test_large_suite_few_functions_never_ooms(tmp_path):
+    """Panel R271 MEDIUM: many tests but few functions must NOT allocate an O(n_tests^2) matrix and
+    must never raise — it returns a clean Result. (n far below the min-dim cap, but n^2 is huge.)"""
+    tests = {f"t.py::test_{i}": ["m.py::a", "m.py::b", "m.py::c", "m.py::d"] for i in range(6000)}
+    p = tmp_path / "big.json"
+    p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))
+    r = sg.find_modes(sg.Store(":memory:"), str(p))
+    assert r.ok                                            # no MemoryError, no raise
+    assert r.result["minimal_test_count"] == 1            # any single test covers all 4 funcs
+    assert r.result["redundant_test_pairs"] == 6000 * 5999 // 2   # all identical profiles
+
+
+def test_minimal_test_set_is_a_full_cover_even_when_large(tmp_path):
+    """Panel R271 LOW: the reported minimal_test_set must actually cover everything (no silent
+    truncation) — 500 tests each hitting a unique function need all 500."""
+    tests = {f"t.py::test_{i}": [f"m.py::f{i}"] for i in range(500)}
+    p = tmp_path / "uniq.json"
+    p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))
+    r = sg.find_modes(sg.Store(":memory:"), str(p))
+    assert r.result["minimal_test_count"] == 500
+    assert len(r.result["minimal_test_set"]) == 500       # not truncated
+    covered = {f for t in r.result["minimal_test_set"] for f in tests[t]}
+    assert len(covered) == 500                            # genuinely a full cover
+
+
 def test_scaffold_writes_a_sandboxed_kit(tmp_path):
     st = sg.Store(":memory:")
     st.add_node(Node(id="m.py::parse", kind=NodeKind.FUNCTION, name="parse", location="m.py:1:0"))

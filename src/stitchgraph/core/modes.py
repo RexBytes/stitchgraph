@@ -179,18 +179,17 @@ def decompose(store: Store, coverage_path: str, k: int | None = None
         chosen.append(tests[best])
         remaining.remove(best)
 
-    # --- redundancy: near-identical activation rows (cosine > 0.999) ---
-    norms = np.linalg.norm(M, axis=1, keepdims=True)
-    norms[norms == 0] = 1.0
-    R = M / norms
-    sims = R @ R.T
-    np.fill_diagonal(sims, 0.0)
-    redundant_pairs = int((sims > 0.999).sum() // 2)
+    # --- redundancy: tests with an identical activation profile. Counted by grouping identical
+    # function-sets (O(n_tests)) rather than a dense n×n similarity matrix — the latter is
+    # unbounded by the min-dim cap and OOMs on a big-suite / few-function artifact (panel R271). ---
+    groups: collections.Counter[frozenset[str]] = collections.Counter(
+        frozenset(cov[t]) for t in tests)
+    redundant_pairs = sum(c * (c - 1) // 2 for c in groups.values() if c > 1)
 
     payload = {
         "modes": modes,
         "intrinsic_dimensionality": k90,
-        "minimal_test_set": chosen[:200],
+        "minimal_test_set": chosen,   # a genuine cover of every executed function (see count)
         "minimal_test_count": len(chosen),
         "redundant_test_pairs": redundant_pairs,
     }
