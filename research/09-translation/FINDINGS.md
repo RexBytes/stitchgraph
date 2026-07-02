@@ -68,7 +68,30 @@ predicted. The completeness signal is real but noisy and non-decisive.
 **Verdict:** a translation succeeds equally well with or without stitchgraph; the tool adds a
 real-but-noisy completeness *reminder* at ~+35% cost, while the mechanism that actually ensures
 fidelity (differential testing) is independent of it. Consistent with rounds 1–3: assurance aid, not
-outcome multiplier. (Rust as a second target was left to a follow-up — the JS result is decisive.)
+outcome multiplier.
+
+### Second target: `semver` → Rust (same A/B) — replicates exactly
+
+| Target / arm | parity (hidden 58) | tokens | tools | sec |
+|---|---|---|---|---|
+| JS   A (stitchgraph) | 100% | 102,014 | 46 | 505 |
+| JS   B (ad-hoc)      | 100% | 75,344  | 30 | 384 |
+| Rust A (stitchgraph) | 100% | 86,995  | 37 | 431 |
+| Rust B (ad-hoc)      | 100% | 67,002  | 24 | 333 |
+
+**All four ports 100%.** In both languages the stitchgraph arm cost **+30–35% tokens** for the same
+result. In both, the agents' own **differential harness** (vs the runnable Python) was the fidelity
+mechanism (Rust B fuzzed 2700 ops, 0 mismatches). In both, `graph_diff` scored a real-but-peripheral
+completeness catch (Rust A: `replace`/`next_version`/`is_compatible` un-ported — added; JS A:
+`__hash__`/eq-semantics) that didn't affect the graded score. **The prediction that Rust's snake_case
+would cut `graph_diff`'s false-positive noise did NOT hold** — Rust A still triaged ~53 "Python-only"
+hits (dunders→traits, properties→fields, deprecated wrappers, CLI). The SNR problem is structural
+(paradigm mismatch), not just naming.
+
+**Two-language conclusion:** the result is robust across target languages — porting works, an LLM does
+it well unaided with differential testing, and stitchgraph is a consistent +30–35%-cost completeness
+reminder whose catches are real but peripheral and noise-buried. (dcsim small-port race still not run;
+superseded by this real two-language result.)
 
 ## Decision: exploratory port-race (small dcsim) not run
 
