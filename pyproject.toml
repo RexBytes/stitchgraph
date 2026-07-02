@@ -40,7 +40,7 @@ treesitter-download = ["tree-sitter>=0.25.2,<1", "tree-sitter-language-pack>=1.0
 precise = ["jedi>=0.19"]            # jedi-accurate Python resolution (reindex --precise)
 resolve = ["sqlglot>=20"]           # SQL resolver
 algebra = ["python-graphblas>=2023.0"]
-spectral = ["scipy>=1.10"]          # sparse eigensolver — uncaps find_subsystems on large graphs
+spectral = ["scipy>=1.10"]          # sparse eigensolver/svds — uncaps find_subsystems and find_modes on large graphs
 # Everything (offline-by-default grammar line).
 all = [
   "typer>=0.12",
