@@ -3271,6 +3271,18 @@
       ],
       "findings": {},
       "theme": "SECOND clean confirmation. opus independent re-attack: find_modes numeric hand-recompute exact (energy/intrinsic/minimal/redundant), determinism, no numpy-scalar leaks, full adversarial battery incl. 4001x4001>cap clean refuse, converter qualified ids match reindex node-id function parts exactly, scaffold sandbox flags + out_dir confinement, all 4 cardinal rules. One INFO/non-defect (UNREACHABLE): direct decompose(k<0) yields negative intrinsic_dimensionality (nmodes=min(k,kk) goes negative) \u2014 impossible via library/CLI/MCP which sanitize k to >=2 or None; optional one-line max(0,..) hardening noted as future nicety, not release-blocking (same class as R270's accepted non-defect)."
+    },
+    {
+      "id": "R280",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 2
+      },
+      "theme": "FIRST v3.22.0 panel (select_tests + co_change + find_coupling, new core/coverage_query.py). opus falsification: essentially CLEAN \u2014 all 4 cardinal rules verified (no eager import; find_stale byte-identical; never raises across the full adversarial artifact battery incl. NaN/Inf JSON, giant 5000-fn test; no user-code exec), select_tests partition exact (both/runtime_only/static_only/run_these), scores in [0,1], self-pair excluded, find_coupling excludes any-relation/either-direction edges + handles unresolved dst_id, _COOC_FUNC_CAP=400 bounds OOM, limit/min_shared clamp. One NIT: base_test_id split on '|' before stripping [param] \u2192 a param containing '|' or nested brackets mis-normalised (advisory under-merge, never raises) \u2014 fixed (11e18b5). haiku: one NIT \u2014 OVERVIEW select_tests row used hyphenated runtime-only/static-only vs underscored fields \u2014 fixed (7424757). All other docs consistent (version, 22-op count, CLI names, framing)."
     }
   ]
 }
