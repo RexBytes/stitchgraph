@@ -1036,6 +1036,82 @@ def find_core(store: Store, coverage: str = "coverage_modes.json", limit: int = 
     return ok(payload, provenance=Provenance.EXTRACTED, count=len(core))
 
 
+@operation("Runtime risk: files that change often AND are exercised by many behaviours (churn × coverage).")
+def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str | None = None,
+                 limit: int = 15) -> Result:
+    """The runtime companion to `risk` (design §6.H): fuses git **churn** with **behavioural
+    centrality** — how many tests exercise a file's functions (from the coverage matrix). A file that
+    changes often *and* is touched by many behaviours is the most dangerous to modify, a sharper hotspot
+    than churn × static-centrality alone. Advisory, read-only; needs no numpy (git + set math)."""
+    from . import coverage_query, gitrisk
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    path = path or store.get_meta("root") or "."
+    if not gitrisk.is_git_repo(path):
+        return refuse(f"'{path}' is not a git repository", confidence=0.0)
+    churn = gitrisk.churn(path)
+    if not churn:
+        return refuse("no git history found for indexed source files", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 15
+    # behavioural centrality per file = total activation frequency of the functions it defines
+    fmap = coverage_query.invert(cov)
+    file_beh: dict[str, float] = {}
+    for fid, tset in fmap.items():
+        f = fid.split("::", 1)[0]
+        file_beh[f] = file_beh.get(f, 0.0) + len(tset)
+    hotspots: list[dict[str, Any]] = []
+    for f, c in churn.items():
+        beh = file_beh.get(f, 0.0)
+        if beh <= 0:
+            continue
+        hotspots.append({"file": f, "churn": c, "behavioural_centrality": round(beh, 2),
+                         "risk": round(c * beh, 2)})
+    hotspots.sort(key=lambda h: h["risk"], reverse=True)
+    if hotspots:
+        top = hotspots[0]["risk"]
+        for h in hotspots:
+            h["urgency"] = (Urgency.ORANGE.value if h["risk"] >= top / 2 else Urgency.GREEN.value)
+    payload = {"hotspots": hotspots[:lim]}
+    res = ok(payload, provenance=Provenance.INFERRED, confidence=0.7, hotspots=len(hotspots))
+    res.needs_review = True
+    if not hotspots:
+        res.add_reason("no file's coverage functions matched a churned file — likely a namespace "
+                       "mismatch (coverage SRC vs git root) or the changed files are untested")
+    return res
+
+
+@operation("Coverage drift: which functions gained or lost test exposure between two coverage snapshots.")
+def coverage_drift(store: Store, old: str = "coverage_old.json",
+                   new: str = "coverage_modes.json") -> Result:
+    """Behavioural diff between two per-test coverage snapshots (design §6): functions that **gained**
+    test exposure (newly exercised) or **lost** it (no longer run) between releases — a behavioural
+    changelog to pair with the structural `graph_diff`. Advisory, read-only; needs no numpy."""
+    from . import coverage_query
+
+    if not isinstance(old, str) or not isinstance(new, str):
+        return refuse("both coverage paths must be strings", confidence=0.0)
+    o = coverage_query.load_coverage(old)
+    n = coverage_query.load_coverage(new)
+    if not o:
+        return refuse(f"no usable coverage in old snapshot '{old}'", confidence=0.0)
+    if not n:
+        return refuse(f"no usable coverage in new snapshot '{new}'", confidence=0.0)
+    drift = coverage_query.mode_drift(o, n)
+    payload = {
+        "gained_coverage": drift["gained_coverage"],
+        "lost_coverage": drift["lost_coverage"],
+        "gained": len(drift["gained_coverage"]),
+        "lost": len(drift["lost_coverage"]),
+    }
+    return ok(payload, provenance=Provenance.EXTRACTED,
+              count=len(drift["gained_coverage"]) + len(drift["lost_coverage"]))
+
+
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:

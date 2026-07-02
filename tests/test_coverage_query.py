@@ -212,6 +212,36 @@ def test_tier_a_bad_input_refuses(tmp_path):
         assert not op(st, 123).ok               # type: ignore[arg-type]
 
 
+def test_coverage_drift_reports_gained_and_lost(tmp_path):
+    st = _graph()
+    old = _cov(tmp_path, {"t::a": ["m.py::target", "m.py::helper"]})
+    new_p = tmp_path / "new.json"
+    new_p.write_text(json.dumps({"format": "stitchgraph-coverage-v1",
+                                 "tests": {"t::a": ["m.py::target", "m.py::sibling"]}}))
+    r = sg.coverage_drift(st, old, str(new_p))
+    assert r.ok
+    assert r.result["gained_coverage"] == ["m.py::sibling"]   # newly exercised
+    assert r.result["lost_coverage"] == ["m.py::helper"]      # no longer exercised
+    assert r.result["gained"] == 1 and r.result["lost"] == 1
+
+
+def test_coverage_drift_bad_input_refuses(tmp_path):
+    st = _graph()
+    good = _cov(tmp_path, {"t::a": ["m.py::target"]})
+    assert not sg.coverage_drift(st, "/no/old.json", good).ok
+    assert not sg.coverage_drift(st, good, "/no/new.json").ok
+    assert not sg.coverage_drift(st, 123, good).ok            # type: ignore[arg-type]
+
+
+def test_runtime_risk_bad_input_refuses(tmp_path):
+    st = _graph()
+    assert not sg.runtime_risk(st, "/no/such.json").ok        # unusable coverage
+    assert not sg.runtime_risk(st, 123).ok                    # type: ignore[arg-type]
+    # a non-git path refuses cleanly
+    good = _cov(tmp_path, {"t::a": ["m.py::target"]})
+    assert not sg.runtime_risk(st, good, path=str(tmp_path)).ok
+
+
 def test_cardinal_query_ops_lazy_and_liveness_untouched(tmp_path):
     import subprocess
     import sys
@@ -237,4 +267,5 @@ def test_cardinal_query_ops_lazy_and_liveness_untouched(tmp_path):
     sg.test_order(store, cov)
     sg.redundant_tests(store, cov)
     sg.find_core(store, cov)
+    sg.coverage_drift(store, cov, cov)
     assert sg.find_stale(store).result == before

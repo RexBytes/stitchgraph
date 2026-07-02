@@ -30,6 +30,7 @@ from .core import (
 )
 from .core.operations import (
     co_change,
+    coverage_drift,
     feature_map,
     find_chokepoints,
     find_core,
@@ -52,6 +53,7 @@ from .core.operations import (
     redundant_tests,
     reindex,
     risk,
+    runtime_risk,
     scaffold_coverage,
     scan,
     select_tests,
@@ -79,5 +81,5 @@ __all__ = [
     "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
     "select_tests", "co_change", "find_coupling",
     "find_gaps", "test_order", "redundant_tests", "find_core",
-    "feature_map", "find_outlier_tests",
+    "feature_map", "find_outlier_tests", "runtime_risk", "coverage_drift",
 ]
