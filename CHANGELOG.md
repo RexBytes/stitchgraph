@@ -4,6 +4,18 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.20.1] — 2026-07-02
+
+**Fix: `get_callers` / `get_callees` name resolution gives precise, actionable refusals.** Surfaced by
+the dogfood build experiment (`research/07-dogfood-build`, round 2): both ops refused an unresolvable
+name with the same message — *"'X' is not a unique symbol in the index"* — whether the name was
+**unknown** (zero matches) or genuinely **ambiguous** (multiple definitions), and never surfaced the
+candidates. Now they distinguish the two: an unknown name reports *"no symbol named 'X' in the index"*
+(matching `find_symbol`), and an ambiguous one lists the candidate ids (*"'X' is ambiguous across N
+definitions: a.py::Svc.save, b.py::Svc.save; pass a qualified id …"*) so the caller can re-issue with a
+qualified `Type.method` or full `path::qual` id. Still a clean `ok=False` Result (never raises);
+qualified/full ids resolve as before. Message/usability only — no API change → PATCH.
+
 ## [3.20.0] — 2026-07-02
 
 **New advisory operation: `find_subsystems` — automatic subsystem decomposition (§6 spectral

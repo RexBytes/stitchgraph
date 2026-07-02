@@ -1928,6 +1928,39 @@ def test_impact_of_ambiguous_name_lists_candidates_and_scopes(tmp_path):
         assert full.ok and full.result["symbol"] == "src/a.rs::Cache.get"
 
 
+def test_get_callers_distinguishes_unknown_from_ambiguous(tmp_path):
+    """Dogfood round-2 usability fix: get_callers/get_callees must NOT say "not a unique
+    symbol" for a name that simply doesn't exist, and for a genuinely ambiguous bare name
+    they must LIST the candidate ids so the caller can re-issue with a qualified id."""
+    from stitchgraph.core.model import Node, NodeKind
+    with sg.Store(":memory:") as store:
+        for path in ("a.py", "b.py"):
+            store.add_node(Node(id=f"{path}::Svc", kind=NodeKind.CLASS, name="Svc",
+                                location=f"{path}:1:0"))
+            store.add_node(Node(id=f"{path}::Svc.save", kind=NodeKind.METHOD, name="save",
+                                location=f"{path}:2:4"))
+        store.commit()
+
+        # unknown → precise "no symbol named" (not the misleading "not a unique symbol")
+        for op in (sg.get_callers, sg.get_callees):
+            r = op(store, "does_not_exist")
+            assert r.ok is False
+            reason = " ".join(r.review_reasons)
+            assert "no symbol named 'does_not_exist'" in reason
+            assert "not a unique symbol" not in reason
+
+        # ambiguous → lists BOTH candidate ids + how to disambiguate
+        for op in (sg.get_callers, sg.get_callees):
+            r = op(store, "save")
+            assert r.ok is False
+            reason = " ".join(r.review_reasons)
+            assert "ambiguous across 2 definitions" in reason
+            assert "a.py::Svc.save" in reason and "b.py::Svc.save" in reason
+
+        # a qualified/full id still resolves to exactly one (regression guard)
+        assert sg.get_callers(store, "a.py::Svc.save").ok is True
+
+
 # -- Panel W (1.0.1 confirmation): #8 attr match must be path-based, not substring ----
 def test_rust_non_test_attribute_is_not_a_test_root(tmp_path):
     """The #8 fix must match the attribute PATH, not a raw "test" substring: a

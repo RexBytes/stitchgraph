@@ -115,9 +115,9 @@ def find_symbol(store: Store, name: str) -> Result:
 @operation("Direct callers of a symbol.")
 def get_callers(store: Store, name: str) -> Result:
     """Direct callers of a symbol."""
-    target = _resolve_one(store, name)
+    target, reason = _resolve_or_explain(store, name)
     if target is None:
-        return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
+        return refuse(reason, confidence=0.0)
     edges = store.callers_of(target.id)
     callers = [{"src": e.src, "weight": round(e.weight, 3)} for e in edges]
     return _callgraph_result(callers, edges, symbol=target.id)
@@ -126,9 +126,9 @@ def get_callers(store: Store, name: str) -> Result:
 @operation("Direct callees of a symbol.")
 def get_callees(store: Store, name: str) -> Result:
     """Direct callees of a symbol."""
-    target = _resolve_one(store, name)
+    target, reason = _resolve_or_explain(store, name)
     if target is None:
-        return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
+        return refuse(reason, confidence=0.0)
     edges = store.callees_of(target.id)
     callees = [{"dst": e.dst_id, "weight": round(e.weight, 3)} for e in edges]
     return _callgraph_result(callees, edges, symbol=target.id)
@@ -1518,6 +1518,24 @@ def _resolve_target(store: Store, name: str):
 
 def _resolve_one(store: Store, name: str):
     return _resolve_target(store, name)[0]
+
+
+def _resolve_or_explain(store: Store, name: str):
+    """Resolve `name` to a single node, or return a *precise* reason it could not — distinguishing
+    an unknown name ("no symbol named X") from a genuinely ambiguous one, and in the ambiguous case
+    listing the candidate ids so the caller can re-issue with a qualified id (panel R266 / dogfood
+    round-2 usability finding: `get_callers` used to say "not a unique symbol" for both cases and
+    never surfaced the candidates). Returns `(node, None)` or `(None, reason)`."""
+    target, candidates = _resolve_target(store, name)
+    if target is not None:
+        return target, None
+    if not candidates:
+        return None, f"no symbol named '{name}' in the index"
+    ids = sorted(n.id for n in candidates)
+    shown = ", ".join(ids[:8])
+    more = "" if len(ids) <= 8 else f" (+{len(ids) - 8} more)"
+    return None, (f"'{name}' is ambiguous across {len(candidates)} definitions: {shown}{more}; "
+                  "pass a qualified id (Type.method or path::qualified.name) to disambiguate")
 
 
 def _default_detector(store: Store) -> PythonLibraryDetector:
