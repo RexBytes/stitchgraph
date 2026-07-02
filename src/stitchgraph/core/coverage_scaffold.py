@@ -108,6 +108,20 @@ python to_canonical.py . coverage_modes.json
 echo "artifact ready: coverage_modes.json  (copy it out; run: stitchgraph find-modes coverage_modes.json)"
 '''
 
+# Placeholder run script for non-turnkey languages. A clean, self-contained TODO — NOT a mangled
+# copy of the Python recipe (which would leave stray pytest/pip/converter lines; panel R277).
+_TEMPLATE_RUN = r'''#!/usr/bin/env bash
+# TEMPLATE — {lang} is not turnkey. Wire your per-test coverage tool here, then convert its output to
+# the canonical stitchgraph-coverage-v1 artifact (see README.md). Run inside the sandbox / your jail.
+set -euo pipefail
+# 1) run the test suite under per-test coverage with: {tool}
+# 2) convert the per-test coverage into coverage_modes.json — keys = test ids, values = the function
+#    ids each test executed (ids like path::Class.method, matching stitchgraph node ids; see README.md
+#    "Canonical artifact format"). Emit {{"format": "stitchgraph-coverage-v1", "tests": {{...}}}}.
+echo "TODO: implement {lang} per-test coverage capture -> coverage_modes.json (see README.md)" >&2
+exit 1
+'''
+
 _DOCKERFILE = """# Sandboxed per-test coverage capture. Build/run this in YOUR environment; it executes the
 # project's tests in an isolated, non-root, network-less container. Only coverage_modes.json leaves.
 FROM {base}
@@ -205,7 +219,8 @@ stitchgraph find-modes coverage_modes.json      # behavioural modes, dimensional
 ```
 Keys = test ids; values = the functions that test executed (ids like `path::qualified.name`, matching
 stitchgraph's node ids so `find_modes` can label modes by module). Any per-test coverage tool that can
-emit this works.
+emit this works. Keys are opaque labels — some tools suffix a phase (coverage.py's `--cov-context=test`
+emits e.g. `tests/test_x.py::test_a|run`); that is fine, only the function-id *values* must match node ids.
 """ + ("" if turnkey else f"""
 ## NOTE — {lang} is a TEMPLATE, not turnkey
 Python ships a complete converter; for {lang}, wire `{info['tool']}` in `run_coverage.sh` to run the
@@ -228,8 +243,7 @@ def generate(store: Store, out_dir: str, language: str | None = None) -> dict[st
         files = {
             "Dockerfile": _DOCKERFILE.format(base=info["base"], deps=info["deps"]),
             "docker-compose.yml": _COMPOSE,
-            "run_coverage.sh": info["run"] or _PY_RUN.replace("python -m pytest", "# TODO: run "
-                               + info["tool"]),
+            "run_coverage.sh": info["run"] or _TEMPLATE_RUN.format(lang=lang, tool=info["tool"]),
             "README.md": _readme(lang, info),
         }
         if info["converter"]:

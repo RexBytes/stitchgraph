@@ -154,6 +154,20 @@ def test_converter_qualifies_method_names(tmp_path):
     assert "run" not in names                       # bare method name never emitted
 
 
+def test_nonturnkey_run_script_is_clean(tmp_path):
+    """Panel R277 LOW: a non-turnkey language's run_coverage.sh must be a clean placeholder, not a
+    mangled copy of the Python recipe with stray pytest/pip/converter lines."""
+    st = sg.Store(":memory:")
+    out = tmp_path / "jskit"
+    r = sg.scaffold_coverage(st, out_dir=str(out), language="javascript")
+    assert r.ok
+    run = (out / "run_coverage.sh").read_text()
+    assert "--cov-context=test" not in run      # no leftover pytest coverage flags
+    assert "python to_canonical.py" not in run  # no converter call (none is shipped for js)
+    assert "pip install" not in run             # no python deps in a js kit
+    assert "TODO" in run and "c8" in run        # a real, self-contained placeholder
+
+
 def test_scaffold_bad_input_refuses():
     st = sg.Store(":memory:")
     assert not sg.scaffold_coverage(st, out_dir="").ok
