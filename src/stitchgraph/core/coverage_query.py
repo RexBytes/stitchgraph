@@ -25,16 +25,21 @@ __all__ = ["load_coverage", "base_test_id", "normalize", "invert", "tests_for", 
 # pairwise contribution is skipped — this also bounds memory on huge suites (cardinal: never OOM).
 _COOC_FUNC_CAP = 400
 
-_PARAM = re.compile(r"\[.*?\]")
+# coverage.py --cov-context=test appends exactly one of these phases after the full pytest id.
+_PHASE = re.compile(r"\|(?:run|setup|teardown)$")
+# pytest parametrization is the trailing bracket group; greedy + end-anchored so it also strips a
+# param that itself contains '|' or nested brackets (e.g. `test[a|b]`, `test[a[b]]`).
+_PARAM = re.compile(r"\[.*\]$")
 
 
 def base_test_id(tid: str) -> str:
     """Normalise a coverage test-id key to stitchgraph's test node-id convention:
     drop coverage.py's `|phase` suffix and pytest `[param]` ids, and rewrite the pytest
     `file::Class::method` separator to `file::Class.method` so class-based test ids line up with
-    the graph's `path::qualified.name` nodes."""
-    tid = tid.split("|", 1)[0]           # coverage.py --cov-context=test phase suffix
-    tid = _PARAM.sub("", tid)            # pytest parametrization
+    the graph's `path::qualified.name` nodes. The phase suffix is stripped *before* the param group
+    (and only when it is a real run/setup/teardown phase) so a param containing `|` is not truncated."""
+    tid = _PHASE.sub("", tid)            # coverage.py --cov-context=test phase (run/setup/teardown)
+    tid = _PARAM.sub("", tid)            # pytest parametrization (greedy → nested brackets / '|' safe)
     parts = tid.split("::")
     if len(parts) <= 2:
         return tid

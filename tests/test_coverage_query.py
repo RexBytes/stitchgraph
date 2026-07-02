@@ -83,6 +83,17 @@ def test_select_tests_bad_input_refuses(tmp_path):
     assert not sg.select_tests(st, "m.py::target", 123).ok          # type: ignore[arg-type]
 
 
+def test_base_test_id_normalizes_tricky_params():
+    """Panel (v3.22.0): the phase suffix is stripped before the param group, and the param group is
+    matched greedily — so a param containing '|' or nested brackets still collapses to the base id."""
+    from stitchgraph.core.coverage_query import base_test_id
+    assert base_test_id("t/test.py::test_re[a|b]|run") == "t/test.py::test_re"
+    assert base_test_id("t/test.py::test_re[c|d]|run") == "t/test.py::test_re"
+    assert base_test_id("t/test.py::test_x[a[b]]") == "t/test.py::test_x"
+    assert base_test_id("t/test.py::TestC::test_m[x|y]|setup") == "t/test.py::TestC.test_m"
+    assert base_test_id("t/test.py::test_plain") == "t/test.py::test_plain"
+
+
 def test_co_change_ranks_coactivating_functions(tmp_path):
     st = _graph()
     cov = _cov(tmp_path, {
