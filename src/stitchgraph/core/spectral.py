@@ -97,13 +97,13 @@ def _kmeans(X, k: int, seed: int = 0, iters: int = 100):
     a clean spectral embedding — collapses the result to one cluster. Labels start at -1 (not 0) so
     the first real assignment can never be mistaken for convergence."""
     rng = np.random.default_rng(seed)
-    centers = [X[int(rng.integers(len(X)))]]
+    chosen = [X[int(rng.integers(len(X)))]]
     for _ in range(1, k):
-        d2 = np.min(np.stack([((X - c) ** 2).sum(1) for c in centers]), axis=0)
+        d2 = np.min(np.stack([((X - c) ** 2).sum(1) for c in chosen]), axis=0)
         total = float(d2.sum())
         probs = (d2 / total) if total > 0 else np.full(len(X), 1.0 / len(X))
-        centers.append(X[int(rng.choice(len(X), p=probs))])
-    centers = np.array(centers)
+        chosen.append(X[int(rng.choice(len(X), p=probs))])
+    centers = np.array(chosen)
     labels = np.full(len(X), -1, dtype=int)
     for _ in range(iters):
         d = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(2)
