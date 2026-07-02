@@ -9,10 +9,17 @@ the undirected call graph recovers the module structure (measured NMI vs the dir
 per-cluster distinctive-token labels name the subsystems ("fingerprint", "resolver", "body-builder").
 
 Scale (IDEAS §6 "Scale" note): the top-k eigenvectors are all that's needed, so this is matrix-free
-in spirit. With the optional `[spectral]` extra (scipy) it uses sparse ARPACK (`eigsh`) — O(k·edges),
-no dense matrix — and has no size limit. Without scipy it falls back to a dense numpy
-eigendecomposition, which is fine for typical repos but capped at `_DENSE_CAP` nodes (above that the
-operation refuses and points at the extra). numpy is always required (it already backs `algebra`).
+in spirit. The default (numpy) path is a dense eigendecomposition — fine for typical repos and capped
+at `_DENSE_CAP` giant-component nodes. The optional `[spectral]` extra (scipy) adds a sparse ARPACK
+(`eigsh`) solver — O(k·edges), no dense matrix — that lifts the cap for large graphs; above the cap
+without it the operation refuses and points at the extra. numpy is always required (it already backs
+`algebra`).
+
+Determinism: the dense LAPACK path is reproducible even when the top Laplacian eigenvalues are
+degenerate, so it is used for *every* giant component within the cap (even when scipy is installed).
+Sparse ARPACK is reserved for above-cap graphs — real code graphs of that size carry no exact
+top-eigenvalue degeneracy, and the solver starts from a fixed-seed generic vector so it does not fall
+into ARPACK's random-restart path (panel R266). Result: same store → same partition, run to run.
 """
 from __future__ import annotations
 
@@ -111,23 +118,39 @@ def _kmeans(X, k: int, seed: int = 0, iters: int = 100):
     return labels
 
 
-def _embedding(A_rows, A_cols, n: int, kdim: int):
+def _embedding(A_rows, A_cols, n: int, kdim: int, use_sparse: bool):
     """Smallest-`kdim` eigenvectors of the normalised Laplacian L = I - D^-1/2 A D^-1/2, as an
-    (n, kdim) array. Uses sparse ARPACK (scipy) when available — deterministic via a fixed start
-    vector — else a dense numpy eigendecomposition. Returns (embedding, laplacian_eigenvalues)."""
-    if HAS_SCIPY:
+    (n, kdim) array. `use_sparse` selects sparse ARPACK (scipy) — used only above `_DENSE_CAP`, where
+    a dense matrix is too big — else a dense numpy eigendecomposition. The dense path (LAPACK) is
+    fully deterministic even under eigenvalue degeneracy, so it is preferred whenever it is affordable
+    (n ≤ cap). ARPACK is *not* deterministic when the requested top eigenvalues are degenerate (it
+    injects random restart vectors on Lanczos breakdown / invariant-subspace detection); a fixed
+    all-ones `v0` is the worst case because it is exactly the Perron vector of a regular graph — so we
+    start from a fixed-seed *generic* vector, which avoids the exact-eigenvector breakdown. Above the
+    cap, real code graphs have no exact top-eigenvalue degeneracy, so this is reproducible in practice.
+    Returns (embedding, laplacian_eigenvalues)."""
+    if use_sparse:
         A = csr_matrix((np.ones(len(A_rows)), (A_rows, A_cols)), shape=(n, n))
         A = ((A + A.T) > 0).astype(float)
         deg = np.asarray(A.sum(1)).ravel()
         dinv = np.divide(1.0, np.sqrt(deg), out=np.zeros_like(deg), where=deg > 0)
         D = diags(dinv)
         P = D @ A @ D  # normalised adjacency; its largest eigenvalues = Laplacian's smallest
+        # Deterministic symmetry-breaking: a tiny node-indexed diagonal ramp (giant is sorted, so it
+        # is reproducible) lifts any *exact* eigenvalue degeneracy — the case where ARPACK would
+        # otherwise return an arbitrary, run-varying basis of the degenerate eigenspace (panel R266
+        # HIGH). At 1e-6·(i/n) it is far below any eigengap a real decomposition turns on, and a
+        # genuinely degenerate block has no real cluster structure anyway, so the (now deterministic)
+        # choice within it is immaterial. Keeps P symmetric.
+        P = P + diags(1e-6 * (np.arange(n, dtype=float) / max(n, 1)))
         kk = min(kdim, n - 1)
-        v0 = np.ones(n) / math.sqrt(n)  # fixed start → deterministic ARPACK
+        # Fixed-seed generic start (NOT all-ones): deterministic across calls/processes, and generic
+        # enough to avoid ARPACK's random restart on an exact-eigenvector start (panel R266 HIGH).
+        v0 = np.random.default_rng(0).standard_normal(n)
         vals, vecs = eigsh(P, k=kk, which="LA", v0=v0)
         order = np.argsort(-vals)  # descending P-eigenvalue = ascending Laplacian
         return vecs[:, order], (1.0 - vals[order])
-    # dense fallback
+    # dense path (deterministic; used for every giant component within _DENSE_CAP)
     A = np.zeros((n, n))
     A[A_rows, A_cols] = 1.0
     A = ((A + A.T) > 0).astype(float)
@@ -168,6 +191,11 @@ def decompose(store: Store, k: int | None = None,
         raise RuntimeError(
             f"giant component has {n} nodes (> {_DENSE_CAP}); install the 'spectral' extra "
             "(pip install 'stitchgraph[spectral]') for the sparse solver that scales past the cap")
+    # Prefer the deterministic dense solver whenever it is affordable (n ≤ cap): ARPACK is not
+    # reproducible on graphs with degenerate top eigenvalues (regular graphs, hubs, rings), whereas
+    # dense LAPACK is (panel R266 HIGH). Sparse is reserved for above-cap graphs, which scipy makes
+    # feasible and where real code graphs carry no exact degeneracy.
+    use_sparse = HAS_SCIPY and n > _DENSE_CAP
     idx = {nid: i for i, nid in enumerate(giant)}
     rows, cols = [], []
     for u in giant:
@@ -176,7 +204,7 @@ def decompose(store: Store, k: int | None = None,
                 rows.append(idx[u])
                 cols.append(idx[v])
     kdim = 16 if k is None else min(max(k, 2), n - 1)
-    emb_full, eigvals = _embedding(np.array(rows), np.array(cols), n, kdim)
+    emb_full, eigvals = _embedding(np.array(rows), np.array(cols), n, kdim, use_sparse)
     k = _auto_k(eigvals) if k is None else max(2, min(k, n - 1))
     emb = emb_full[:, :k]
     norm = np.linalg.norm(emb, axis=1, keepdims=True)
@@ -220,5 +248,5 @@ def decompose(store: Store, k: int | None = None,
     clusters.sort(key=lambda c: (-c["size"], c["label"]))
     total_nodes = len(store.all_node_ids())
     meta = {"giant": n, "clustered": n, "outside_giant": total_nodes - n, "k": k,
-            "solver": "scipy" if HAS_SCIPY else "numpy-dense"}
+            "solver": "scipy" if use_sparse else "numpy-dense"}
     return clusters, meta

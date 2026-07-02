@@ -53,6 +53,10 @@ def test_recovers_two_planted_communities(use_scipy, monkeypatch):
     if use_scipy and not spectral.HAS_SCIPY:
         pytest.skip("scipy not installed")
     monkeypatch.setattr(spectral, "HAS_SCIPY", use_scipy)
+    # The dense (deterministic) solver is preferred for any giant within the cap, so to exercise the
+    # sparse ARPACK path on this small planted graph we drop the cap to force n > cap (panel R266).
+    if use_scipy:
+        monkeypatch.setattr(spectral, "_DENSE_CAP", 0)
     s, a, b = _two_communities()
     clusters, meta = spectral.decompose(s, k=2)
     assert len(clusters) == 2
@@ -119,6 +123,57 @@ def test_dense_fallback_refuses_over_cap_without_scipy(monkeypatch):
     s, _a, _b = _two_communities()  # 12-node giant > cap
     r = sg.find_subsystems(s)
     assert not r.ok and "spectral" in " ".join(r.review_reasons)
+
+
+def _degenerate_motifs():
+    """Graphs whose top normalised-Laplacian eigenvalues are degenerate — a star (eigenvalue-1
+    multiplicity n-2), a complete graph, and a cycle. These have no real community structure, which is
+    exactly where ARPACK used to return a run-varying arbitrary basis (panel R266 HIGH)."""
+    def build(nodes, edges):
+        s = sg.Store(":memory:")
+        for nid in sorted(nodes):
+            s.add_node(Node(id=nid, kind=NodeKind.FUNCTION, name=nid.split("::")[-1], location="m.py:1:0"))
+        for u, v in edges:
+            s.add_edge(Edge(src=u, dst_id=v, dst_symbol=v.split("::")[-1], relation=Relation.CALLS))
+        return s
+    star_ids = ["m.py::hub"] + [f"m.py::l{i}" for i in range(15)]
+    star = build(star_ids, [("m.py::hub", f"m.py::l{i}") for i in range(15)])
+    kn = [f"m.py::n{i}" for i in range(8)]
+    clique = build(kn, [(kn[i], kn[j]) for i in range(8) for j in range(i + 1, 8)])
+    cy = [f"m.py::c{i}" for i in range(10)]
+    cycle = build(cy, [(cy[i], cy[(i + 1) % 10]) for i in range(10)])
+    return {"star": star, "clique": clique, "cycle": cycle}
+
+
+def _partition_sig(result):
+    return frozenset(frozenset(c["members"]) for c in result)
+
+
+@pytest.mark.parametrize("name", ["star", "clique", "cycle"])
+def test_deterministic_on_degenerate_graphs_default_path(name):
+    """Regression for panel R266 HIGH: repeated calls on the same store must return the SAME partition
+    even on graphs with degenerate top eigenvalues (the default dense path is used, ≤ cap)."""
+    s = _degenerate_motifs()[name]
+    sigs = {_partition_sig(sg.find_subsystems(s).result) for _ in range(8)}
+    assert len(sigs) == 1
+
+
+@pytest.mark.parametrize("name", ["star", "clique", "cycle"])
+def test_deterministic_on_degenerate_graphs_sparse_path(name, monkeypatch):
+    """Same regression forcing the sparse ARPACK path (cap dropped to 0): the deterministic
+    symmetry-breaking + fixed generic start vector keep it reproducible on degenerate spectra too."""
+    if not spectral.HAS_SCIPY:
+        pytest.skip("scipy not installed")
+    monkeypatch.setattr(spectral, "_DENSE_CAP", 0)
+    s = _degenerate_motifs()[name]
+    sigs = set()
+    solver = None
+    for _ in range(8):
+        r = sg.find_subsystems(s)
+        sigs.add(_partition_sig(r.result))
+        solver = r.meta["solver"]
+    assert solver == "scipy"
+    assert len(sigs) == 1
 
 
 def test_find_subsystems_never_affects_liveness():

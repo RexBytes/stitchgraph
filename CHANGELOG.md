@@ -15,10 +15,14 @@ and auto-labels each cluster with the identifier tokens that most distinguish it
 The cluster count is auto-selected from the spectral eigengap (or set via `k`). Backed by a new
 `core/spectral.py` (normalised-Laplacian embedding + deterministic k-means++ + distinctive-token
 labelling). Numerics: numpy-only out of the box (dense eigendecomposition, fine for typical repos,
-capped at 2500 giant-component nodes); the optional **`[spectral]` extra (scipy)** swaps in a sparse
+capped at 2500 giant-component nodes); the optional **`[spectral]` extra (scipy)** adds a sparse
 ARPACK solver that removes the cap and scales to large graphs — matrix-free in spirit (top-k
-eigenvectors only). Deterministic (fixed ARPACK start vector, seeded k-means++). **Advisory and
-read-only — like `orient`/`risk` it never feeds `find_stale`** (re-verified byte-identical).
+eigenvectors only). Deterministic — same store → same partition, run to run and across processes: the
+reproducible dense (LAPACK) solver is preferred for every giant component within the cap (even when
+scipy is installed), and the above-cap sparse path starts from a fixed generic vector plus a
+deterministic symmetry-breaking term so it stays reproducible even on degenerate spectra (seeded
+k-means++ throughout). **Advisory and read-only — like `orient`/`risk` it never feeds `find_stale`**
+(re-verified byte-identical).
 Auto-exposed on the library API, CLI, and MCP. Backward-compatible → MINOR.
 
 ## [3.19.0] — 2026-07-02
