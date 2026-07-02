@@ -32,7 +32,7 @@ thin surfaces (library / CLI / MCP) over the same operation set.
 | `find_modes` | Understand | What are the *runtime* behavioural modes? (POD/SVD of per-test coverage) — modes, intrinsic dimensionality, and a minimal covering test set; language-agnostic |
 | `scaffold_coverage` | Admin | Generate a sandboxed capture kit (Docker/shell/CI) to produce the per-test coverage `find_modes` needs — the tool never runs your code |
 | `impact_of` | Change safety | What breaks if I change this? Which tests to run? (static call graph) |
-| `select_tests` | Change safety | Which tests to run for a change — tests that *ran* the symbol (runtime) fused with the static blast radius (both / runtime-only / static-only) |
+| `select_tests` | Change safety | Which tests to run for a change — tests that *ran* the symbol (runtime) fused with the static blast radius (`both` / `runtime_only` / `static_only`) |
 | `co_change` | Change safety | What code moves together with X / implements this outcome? (functions co-activating across the suite) |
 | `find_coupling` | Change safety | Which functions co-run but never statically call each other? (implicit coupling the call graph can't see) |
 | `trace_path` | Change safety | How does a request flow end-to-end, with confidence? |
