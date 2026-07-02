@@ -98,7 +98,7 @@ boundaries.
 | `precise` | jedi type-grade Python resolution (`reindex --precise`) |
 | `resolve` | SQL resolver (sqlglot) |
 | `algebra` | GraphBLAS-accelerated reachability / PageRank / transitive fan-in |
-| `spectral` | scipy sparse eigensolver — uncaps `find_subsystems` on large graphs |
+| `spectral` | scipy sparse eigensolver / `svds` — uncaps `find_subsystems` and `find_modes` on large graphs |
 
 ## What it's useful for
 
