@@ -4,6 +4,17 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.23.1] — 2026-07-02
+
+**Precision fix from the v3.23.0 self-analysis dogfood (`research/12`).** Turning the full toolset on
+stitchgraph's own source surfaced a `scan` false-positive: a function registered via a **call/attribute
+decorator** (`@app.callback(...)`, `@app.route("/")`, `@foo.register`) with an idiomatic empty
+(`pass`/`…`) body was RED-flagged as an unimplemented `live_stub`. The decorator supplies the behaviour,
+so the empty body is intentional. `_is_stub` now excludes such registered callbacks; a bare `pass`/`…`
+(no decorator or a bare-name decorator like `@property`) and any explicit `raise NotImplementedError`
+(even when decorated) are still stubs. Also added tests for two genuine coverage gaps `find_gaps` found
+(`Edge.to_dict`, `Edge.resolved`). No API change.
+
 ## [3.23.0] — 2026-07-02
 
 **POD toolkit completion: eight forward-looking runtime-analysis operations (§6).** Building on the
