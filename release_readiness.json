@@ -3164,6 +3164,46 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen tip 71d450d -> streak 2 -> RELEASABLE. v3.20.1 get_callers/get_callees resolution fix closed. opus INDEPENDENT re-cert: correctness across 0/1/2/3/many homonyms + deterministic sorted listing + 8-id cap off-by-one boundary; qualified/full ids resolve; NEVER raises on adversarial inputs incl. regex metachars ('.*'), SQL injection (\"'; DROP TABLE nodes;--\"), a 5000-char name, whitespace-only, unicode, dotted bare names; 'valid full id AND bare homonym' shown structurally impossible ('::' branch separates them); cardinal find_stale byte-identical after hammering get_callers/get_callees/impact_of/find_symbol with all adversarial inputs, import loads zero CLI/MCP, reach.py empty diff; test_regressions 440 passed. haiku docs: all surfaces consistent, message strings match code, no overclaim. sonnet gate closed by main (full suite 2295 passed / 28 skipped / 0 failures, ruff + mypy clean). Message/usability-only PATCH; no API change. Tag left to the maintainer."
+    },
+    {
+      "id": "R271",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "LOW": 1,
+        "NIT": 1
+      },
+      "theme": "FIRST v3.21.0 panel (find_modes + scaffold_coverage, \u00a76 win 3). opus falsification: redundant-pair detection allocated an O(n_tests^2) similarity matrix -> uncaught MemoryError on big-suite/few-function artifacts (MEDIUM); minimal_test_set silently truncated at [:200] so the 'cover' was not always a full cover (LOW); Python converter emitted absolute-path module ids when SRC='.' (NIT). Fixed: O(n) frozenset grouping + catch MemoryError (ec644d5); un-truncated cover (ec644d5); always-relativize converter (5955467)."
+    },
+    {
+      "id": "R272",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "MEDIUM": 1,
+        "LOW": 3,
+        "NIT": 1
+      },
+      "theme": "SECOND v3.21.0 panel on post-fix tip. opus falsification: intrinsic_dimensionality could exceed the number of modes on zero-variance coverage (all-identical rows -> mean-centred matrix all-zero -> searchsorted(all-zeros,0.90) returned len+1) (MEDIUM); numpy LinAlgError from SVD non-convergence not in the wrapper's except set (theoretical, hardened). haiku docs: README status header stale v3.20.0, README ops list stale '15 operations' missing 4 ops, STATUS.md find_modes missing numpy dep note, README status body missing v3.21.0 (LOW x3 + NIT). Fixed: k90=0 on zero variance + clamp to len(cum) + convert LinAlgError to RuntimeError refuse (f9df991); README/STATUS sync (7b6346b)."
+    },
+    {
+      "id": "R273",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "NIT": 1
+      },
+      "theme": "FIRST confirmation panel on the R272-fixed tip. opus re-falsification: CLEAN \u2014 verified intrinsic_dimensionality <= len(modes) across all-identical/one-differs/disjoint/random/boundary inputs and k in {None,2,3,5,8,100,1e5}; recomputed k90 by definition and matched decompose exactly; no NaN/inf leak (full envelope json round-trips); determinism byte-identical x5; greedy cover always complete; all 4 cardinal rules verified against real stitchgraph.db (find_stale + DB SHA-256 unchanged). One non-reachable INFO (direct decompose(k=1) \u2014 not exposed via lib/CLI/MCP) hardened anyway by clamping k90 to nmodes (f3a54d6). haiku: one NIT \u2014 docs/OVERVIEW.md [spectral] extra mentioned only find_subsystems, not find_modes (fixed ee3fc2e)."
     }
   ]
 }
