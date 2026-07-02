@@ -157,9 +157,9 @@ def untested(cov: dict[str, list[str]], function_ids: set[str]) -> set[str]:
 
 
 def greedy_order(cov: dict[str, list[str]]) -> list[tuple[str, int]]:
-    """Fail-fast test order: repeatedly pick the test that adds the most *new* function coverage,
-    then append the rest (which add nothing new) in stable order. Returns `(test_id, new_functions)`
-    for every test — the prefix up to the first 0 is a minimal cover."""
+    """Fail-fast test order: repeatedly pick the test that adds the most *new* function coverage
+    (ties broken by test id), then append the rest (which add nothing new). Returns
+    `(test_id, new_functions)` for every test — the prefix up to the first 0 is a minimal cover."""
     norm = normalize(cov)
     remaining = sorted(norm)
     covered: set[str] = set()

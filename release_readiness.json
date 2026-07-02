@@ -3313,6 +3313,16 @@
       ],
       "findings": {},
       "theme": "FIRST v3.23.0 panel (POD toolkit completion: 8 new ops \u2014 find_gaps, test_order, redundant_tests, find_core, feature_map, find_outlier_tests, runtime_risk, coverage_drift + select_tests changeset). opus falsification: CLEAN \u2014 0 raises across the full adversarial-artifact matrix x all op entrypoints (missing/bad-JSON/wrong-shape/empty/<4/dup-funcs/NaN-Inf/giant-5000-fn/non-str args), no numpy scalar/ndarray JSON leaks, _pod mirrors decompose guards + LinAlgError + _DENSE_CAP, residual in [0,1] incl zero-variance, kind subset {typical,unique,smoke}, find_gaps partition disjoint + sums, test_order once+cover, redundant >=2 + caveat, runtime_risk refuses non-git/empty, coverage_drift symmetric, select_tests changeset union + unresolved noted + ambiguous refuse, all 4 cardinal rules verified (no eager import; find_stale byte-identical after all 8). haiku docs: CLEAN \u2014 version/30-op count/CLI names/numpy split/payload fields all consistent."
+    },
+    {
+      "id": "R284",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND clean confirmation on frozen tip e157105 (readiness streak). opus independent re-attack with EXACT hand computation: find_core ranking/fractions exact, greedy_order pick order + minimal-prefix-is-true-cover + each test once, redundant_groups exact, coverage_drift gained/lost vs hand sets + symmetric under swap, find_gaps partition disjoint + tested+live+dead==total, select_tests changeset union + unresolved+needs_review + single-symbol ambiguous refuse with alternatives, feature_map full ids/files/tests deterministic, find_outlier_tests residual in [0,1] + all three kinds + deterministic, runtime_risk churn*centrality math + refuses non-git/empty/bad-type + namespace reason. All 4 cardinal rules re-verified (subprocess lazy-import; find_stale byte-identical + node_count after all 8 ops; 16-case never-raise; no exec). numpy-absent path refuses cleanly. 34 tests pass. One docstring-wording nuance (greedy_order zero-gain tail order) \u2014 fixed, no behaviour change."
     }
   ]
 }
