@@ -3092,6 +3092,16 @@
         "NIT": 1
       },
       "theme": "FIRST find_chokepoints panel (v3.19.0, \u00a76 win 1 \u2014 articulation-point criticality promoted from research/06-spectral into the package). opus brute-force falsification (6000 random graphs vs an independent 'removal increases component count' reference) confirmed the AP-SET detection is correct (0/6000 mismatches), determinism, robustness (20000-node chain no RecursionError \u2014 genuinely iterative DFS), and the cardinal rule (find_stale byte-identical; reach.py no module-scope structure/similar/graphdiff), BUT found ONE real HIGH: the non-root blast radius was sum(separating child subtrees), wrongly assuming the parent side is always the 'main body' \u2014 inverted the ranking on a chain (near-leaf reported as top chokepoint) and inflated counts up to N-2. Fixed to the uniform (comp_total-1)-max(pieces) definition (parent-side blob included), matching the root case + docstring; re-verified by main against brute force over 4000 random graphs (0 AP-set + 0 blast mismatches), chain blast now peaks symmetrically at centre; added a chain-symmetry regression test (the two original tests had encoded the buggy values). haiku found 1 NIT: README ops-table said 'functions' vs the actual functions/methods/classes \u2014 fixed. sonnet gate was reviewing the pre-fix tip and was stopped (superseded by the fix). Dirty (1 HIGH + 1 NIT, both fixed)."
+    },
+    {
+      "id": "R264",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on the post-fix tip (find_chokepoints blast-radius fix) \u2192 streak 1. opus INDEPENDENT re-cert with two brute-force references (component-count AP definition + total-minus-largest blast) over 47,250 random graphs across 14 families \u2014 0 AP-set mismatches, 0 blast mismatches, 0 code-vs-independent-AP mismatches; chain now symmetric (peaks at centre, R263 inversion gone); determinism stable across PYTHONHASHSEED (SHA-256 identical); 20000-node chain 19998 APs in ~0.13s no RecursionError; cardinal find_stale byte-identical before/after + across all feature commits, reach.py has zero structure/similar/graphdiff reference; operation contract (EXTRACTED, Module/pseudo excluded, limit honored, bad limits safe, ranked desc) all correct. Non-blocking nit noted (limit=True\u21921 since bool<:int, unlike find_similar; contract-safe, not a defect \u2014 left as-is to preserve the frozen tip). sonnet gates 2-6 clean; full suite 2284 passed / 24 skipped (re-run by main). haiku docs: all 7 surfaces consistent, no stale old-semantics wording, the R263 fix documented."
     }
   ]
 }
