@@ -147,14 +147,15 @@ def decompose(store: Store, coverage_path: str, k: int | None = None
     # all-zero (every singular value 0), so there is *no* behavioural variance. Report intrinsic
     # dimensionality 0 rather than letting searchsorted(all-zeros, 0.90) return len(cum)+1 — which
     # would (wrongly) exceed the number of modes actually computed (panel R272).
+    nmodes = kk if k is None else min(k, kk)
     frac = energy / tot if tot > 0 else np.zeros_like(energy)
     cum = np.cumsum(frac)
     if tot <= 0 or not len(cum):
         k90 = 0
     else:
-        k90 = min(int(np.searchsorted(cum, 0.90)) + 1, len(cum))
-
-    nmodes = kk if k is None else min(k, kk)
+        # clamp to the number of modes actually reported (defense-in-depth: even a direct
+        # decompose(k=1) call — unreachable via the public API — keeps k90 <= nmodes; panel R273)
+        k90 = min(int(np.searchsorted(cum, 0.90)) + 1, nmodes)
     modes: list[dict[str, Any]] = []
     for m in range(nmodes):
         load = Vt[m]

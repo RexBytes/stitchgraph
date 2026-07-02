@@ -94,6 +94,11 @@ def test_intrinsic_dimensionality_never_exceeds_modes(tmp_path):
     # and the invariant holds on the planted-behaviour artifact too
     r2 = sg.find_modes(sg.Store(":memory:"), _artifact(tmp_path))
     assert r2.result["intrinsic_dimensionality"] <= len(r2.result["modes"])
+    # defense-in-depth: even a direct decompose(k=1) (unreachable via the public API) keeps
+    # intrinsic_dimensionality <= number of modes (panel R273)
+    from stitchgraph.core import modes as _m
+    payload, _ = _m.decompose(sg.Store(":memory:"), _artifact(tmp_path), k=1)
+    assert payload["intrinsic_dimensionality"] <= len(payload["modes"])
 
 
 def test_minimal_test_set_is_a_full_cover_even_when_large(tmp_path):
