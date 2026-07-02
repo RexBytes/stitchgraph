@@ -146,9 +146,12 @@ def articulation_points(store: Store,
     (sorted adjacency), recursion-limit raised for deep graphs and restored in a `finally` (mirrors
     `_scc.tarjan_scc`). Advisory only — like SCC / PageRank it never feeds liveness.
 
-    For a non-root node u the separated mass is the sum of its child subtrees v with
-    `low[v] >= disc[u]` (each such subtree is cut off from u's parent side); for the DFS root it is
-    the total of its child subtrees minus the largest (the largest stays as the 'main' component)."""
+    Blast radius is defined uniformly for the root and non-root case: when u is removed its component
+    (of `comp_total` nodes) splits into pieces — each separating child subtree (a child v with
+    `low[v] >= disc[u]`) plus, for a non-root u, the parent-side blob (everything else, size
+    `comp_total - 1 - sum(child subtrees)`). The largest surviving piece is the 'main body'; the
+    blast radius is what is cut off from it, `(comp_total - 1) - max(piece sizes)`. (For the root the
+    parent side is empty, so this reduces to sum-of-children minus the largest child.)"""
     directed = _adjacency(store, relations)
     undirected: dict[str, set[str]] = defaultdict(set)
     for u, vs in directed.items():
@@ -198,14 +201,21 @@ def articulation_points(store: Store,
                 # `sep[root]` collects all the root's child-subtree sizes (handled specially below).
                 if low[u] >= disc[parent]:
                     sep[parent].append(size[u])
+        comp_total = size[root]  # nodes in this connected component (the whole DFS tree)
         for u, sizes in sep.items():
             if u == root:
-                # the root is an articulation point iff it has >1 DFS child; the largest child
-                # subtree stays as the 'main' component, the rest are cut off.
+                # the root is an articulation point iff it has >1 DFS child; on removal the pieces
+                # are exactly its child subtrees, and the largest stays as the 'main' body.
                 if len(sizes) > 1:
-                    guarded[root] = sum(sizes) - max(sizes)
+                    guarded[root] = (comp_total - 1) - max(sizes)
             else:
-                guarded[u] = sum(sizes)
+                # non-root: pieces on removal are the separating child subtrees + the parent-side
+                # blob (everything else). Blast = total-remaining minus the largest surviving piece
+                # — the same 'cut off from the main body' definition as the root case (R263 fix: the
+                # old `sum(sizes)` wrongly assumed the parent side is always the main body, which
+                # inverted the ranking whenever a child subtree was larger than the parent side).
+                parent_side = comp_total - 1 - sum(sizes)
+                guarded[u] = (comp_total - 1) - max([*sizes, parent_side])
 
     try:
         for start in sorted(undirected):
