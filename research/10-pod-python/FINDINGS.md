@@ -55,23 +55,47 @@ source, at any context size. You cannot "read your way" to "these 57 tests cover
 suite has 14 behavioural modes concentrated in these modules." **This is the first capability in the
 thread that is genuinely LLM-complementary rather than LLM-redundant.**
 
-## Self-dogfood: POD on stitchgraph itself (via the shipped `find_modes` op)
+## Self-dogfood: FULL POD on stitchgraph itself (entire suite, via the shipped `find_modes` op)
 
-Ran stitchgraph's own tests under the **shipped** capture recipe (`pytest --cov-context=test`) →
-shipped `to_canonical.py` → `find_modes` (representative 7-test-file subset; the full ~2,300-test run
-under per-test contexts was too slow to block on):
+Ran stitchgraph's **entire** test suite under the shipped capture recipe (`pytest --cov=src/stitchgraph
+--cov-context=test`, 2305 passed / 28 skipped, 90% line coverage) → shipped `to_canonical.py` (fixed in
+v3.21.0 to emit *qualified* ids `path::Class.method`, panel R274) → `find_modes`:
 
 ```
-81 tests × 622 functions,  density 0.126
-intrinsic dimensionality:  8 modes (90% energy)
-minimal covering set:      33 / 81 tests cover all 622 executed functions
+2315 tests × 764 functions,  density 0.063,  solver numpy-dense
+intrinsic dimensionality:  10 modes (90% energy)
+minimal covering set:      62 / 2315 tests cover all 764 executed functions  (97.3% redundant for coverage)
+redundant identical-profile test pairs:  28,700
 ```
-The modes recovered stitchgraph's own subsystems: (1) extraction+store [46%], (2) tree-sitter polyglot
-extraction [21%], (3) similarity / body-matrix, (4) graph algebra, (5) operations/get_matrix,
-(7) spectral decomposition. i.e. POD run on its own author factors it into extraction → tree-sitter →
-body-matrix → algebra → operations → spectral — the real architecture — and flags ~40% of these tests
-as redundant for function coverage. Confirms the op reproduces the research spike (Flask: 831→57) on a
-second, independent codebase (stitchgraph).
+
+**The 10 modes recover stitchgraph's real architecture — and, strikingly, one behavioural mode per
+body-matrix *language*:**
+
+| mode | energy | subsystem (dominant module) |
+|---|---|---|
+| 1 | 45.9% | Python extraction pipeline (`extract/python.py`) — the always-on index path (entrypoint seeding, project extraction) |
+| 2 | 11.9% | tree-sitter polyglot extraction (`extract/treesitter.py`) — import/re-export name collection |
+| 3 | 8.6% | Rust body-matrix walker (`structure_rust.py`) — VFG build |
+| 4 | 5.1% | C++ walker (`structure_cpp.py`) |
+| 5 | 4.7% | C# walker (`structure_csharp.py`) |
+| 6 | 4.4% | Java walker (`structure_java.py`) |
+| 7 | 3.6% | Ruby walker (`structure_ruby.py`) |
+| 8 | 3.0% | shared VFG / similarity / store / algebra core (`structure.py`, `store.py`, `algebra.py`) |
+| 9 | 2.8% | VFG serialization (`_serialize_vfg`, `_VFG.*`) |
+| 10 | 2.1% | Bash walker (`structure_bash.py`) + WL-features / similarity |
+
+POD run on its own author factors stitchgraph into **Python extraction → tree-sitter polyglot layer →
+one mode per body-matrix language (Rust/C++/C#/Java/Ruby/Bash) → shared VFG/similarity/algebra core** —
+exactly the §5b sweep architecture, recovered purely from what executes together. Each per-language
+walker forms its *own* behavioural axis because each language's tests exercise only that walker. It flags
+**97.3% of tests as redundant for pure function coverage** (62 of 2315 suffice) — a concrete test-suite
+map, not that those tests are worthless (they pin behaviour/regressions the coverage matrix can't see).
+Confirms the op reproduces the research spike (Flask: 831→57) on a second, independent codebase at full
+scale (stitchgraph: 2315→62). Raw output: `full_stitchgraph_pod.txt`.
+
+> The earlier run in this file used a 7-test-file subset (81×622) and a converter that collapsed
+> same-named methods; the full run above (with the R274-fixed qualified-id converter) supersedes it —
+> 764 distinct functions vs 622, and the per-language mode structure only becomes visible at full scale.
 
 ## Honest caveats
 
