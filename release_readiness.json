@@ -3144,6 +3144,26 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD c420361 \u2192 streak 2 \u2192 RELEASABLE. find_subsystems (\u00a76 win 2) closed. opus INDEPENDENT final sign-off: 3-block SBMs NMI=1.000 all seeds (auto-k=3); a genuine 3000-node SBM + 3000-node cycle (2-regular, massively degenerate) + 3000-node torus on the REAL ARPACK path byte-identical across PYTHONHASHSEED {0,1,42,777,12345,999} \u00d7 OMP_NUM_THREADS {1,4}; 120 near-detectability-threshold SBMs \u2014 dense and sparse partitions + auto-k agree in every case (1e-6 ramp far below any gap a real decomposition turns on); 1000 fuzz runs 0 non-determinism + 0 raises (ArpackError/NoConvergence are RuntimeError subclasses \u2192 caught \u2192 clean refuse); contract over 400+ graphs (count==len(clusters), clustered==giant==sum(sizes), solver matches path, exemplars non-empty); cardinal find_stale byte-identical, reach.py untouched, no eager spectral/scipy/numpy import. Three non-defect NITs noted (structureless K8 auto-k=7 bounded+deterministic+advisory; tokenizer drops lone digits \u2014 advisory labels; dense-path np.linalg.LinAlgError is a ValueError not caught by except RuntimeError but UNREACHABLE since the 0/1 adjacency Laplacian with degree\u22651 is always finite) \u2014 no action. sonnet gates satisfied by main's authoritative run on the same frozen tip (ruff/mypy clean, surfaces, byte-identical isolation, full suite 2298 passed / 24 skipped). haiku docs clean. \u00a76 win 2 shipped; the R266 HIGH (ARPACK degenerate-spectrum nondeterminism) caught by opus and fixed. Tag left to the maintainer."
+    },
+    {
+      "id": "R269",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "FIRST v3.20.1 panel (PATCH: get_callers/get_callees precise name-resolution refusals, surfaced by research/07-dogfood-build round 2). The ops used to refuse with '\"X\" is not a unique symbol' for BOTH unknown (0 matches) and ambiguous (>1) names, and never listed candidates; a new _resolve_or_explain distinguishes them \u2014 unknown -> 'no symbol named X' (matching find_symbol), ambiguous -> lists sorted candidate ids (cap 8 + '(+K more)') + 'pass a qualified id'. Clean full-diversity panel on frozen tip 71d450d -> streak 1. opus INDEPENDENT falsification: 0/1/2/10-def stores (message + count N + sorted deterministic listing + 8-id cap all correct); qualified Type.method and full path::qual ids still resolve (no regression; _resolve_one/_resolve_target byte-unchanged, trace_path unaffected); never raises on None/non-str/empty/whitespace/unicode/dotted/'::'-nonexistent; cardinal find_stale byte-identical, import loads no CLI/MCP, reach.py untouched; test_regressions 440 passed. haiku docs: pyproject 3.20.1, CHANGELOG [3.20.1] accurate (message/usability only, not a crash fix / not a feature), docstrings + message strings match, no stale claims in README/OVERVIEW/STATUS/AGENTS. sonnet gate closed by main: full suite 2295 passed / 28 skipped (0 failures), ruff clean, mypy clean. Non-defect noted: impact_of keeps its own pre-existing ambiguous phrasing (cross-op parity is a future nicety, not a regression)."
+    },
+    {
+      "id": "R270",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen tip 71d450d -> streak 2 -> RELEASABLE. v3.20.1 get_callers/get_callees resolution fix closed. opus INDEPENDENT re-cert: correctness across 0/1/2/3/many homonyms + deterministic sorted listing + 8-id cap off-by-one boundary; qualified/full ids resolve; NEVER raises on adversarial inputs incl. regex metachars ('.*'), SQL injection (\"'; DROP TABLE nodes;--\"), a 5000-char name, whitespace-only, unicode, dotted bare names; 'valid full id AND bare homonym' shown structurally impossible ('::' branch separates them); cardinal find_stale byte-identical after hammering get_callers/get_callees/impact_of/find_symbol with all adversarial inputs, import loads zero CLI/MCP, reach.py empty diff; test_regressions 440 passed. haiku docs: all surfaces consistent, message strings match code, no overclaim. sonnet gate closed by main (full suite 2295 passed / 28 skipped / 0 failures, ruff + mypy clean). Message/usability-only PATCH; no API change. Tag left to the maintainer."
     }
   ]
 }

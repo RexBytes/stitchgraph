@@ -2203,6 +2203,28 @@ exposed — fixed in both builders at once. A useful lesson: building the PDG as
 the VFG is also an audit of the VFG. Remaining sweep: Ruby, PHP, Bash (dynamically-typed — the
 type-position hazard recedes; the pattern/label and method-name hazards remain).
 
+## v3.20.1 — `get_callers`/`get_callees`: precise, actionable name-resolution refusals (dogfood fix)
+
+A PATCH surfaced by the **dogfood build experiment** (`research/07-dogfood-build`, round 2): a fresh
+agent extending an unfamiliar codebase ran `get_callers "nodes"` and got *"'nodes' is not a unique
+symbol"* — the same message the ops emit for a **genuinely ambiguous** name, even though `nodes`
+simply *didn't exist*. Not a crash (the honest-refusal envelope returned a clean `ok=False`), but a
+misleading, unactionable message. Fixed with a new `_resolve_or_explain` helper: unknown → *"no symbol
+named 'X' in the index"* (matching `find_symbol`); ambiguous → lists the sorted candidate ids (cap 8 +
+"(+K more)") and *"pass a qualified id (Type.method or path::qualified.name)"*. `_resolve_target` /
+`_resolve_one` are byte-unchanged, so `trace_path`/`impact_of` are untouched; message/usability only.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R269 | 3 | ✓ | **Clean (streak 1).** opus falsification on 0/1/2/10-def stores: message + count N + sorted deterministic listing + 8-id cap all correct; qualified `Type.method` and full `path::qual` still resolve (no regression); never raises on None/non-str/empty/whitespace/unicode/dotted/'::'-nonexistent; cardinal find_stale byte-identical, import loads no CLI/MCP, reach.py untouched; test_regressions 440 passed. haiku docs consistent (pyproject 3.20.1, CHANGELOG accurate — message-only, not a crash fix). sonnet gate by main: full suite 2295 passed / 28 skipped / 0 failures, ruff + mypy clean. |
+| R270 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus independent re-cert: never raises on adversarial inputs incl. regex metachars, SQL-injection string, 5000-char name, whitespace-only, unicode; "valid full id AND bare homonym" shown structurally impossible; cardinal byte-identical after hammering all four resolving ops; test_regressions 440 passed. haiku docs consistent. Gate re-verified. Non-defect noted both rounds: `impact_of` keeps its own pre-existing ambiguous phrasing (cross-op message parity is a future nicety, not a regression). Tag left to the maintainer. |
+
+Process note: the first defect *found by dogfooding stitchgraph as a build aid rather than by a panel*
+— the round-2 extender agent's own DEVLOG recorded the confusing refusal, which became this fix. A
+reminder that the honest-envelope "refuse clearly" principle is only as good as the clarity of the
+refusal *message*: returning `ok=False` was correct; conflating "unknown" with "ambiguous" and hiding
+the candidates was the real gap.
+
 ## v3.20.0 — `find_subsystems`: spectral subsystem decomposition (§6 spectral research → package)
 
 The second §6 "system-matrix" win graduates into the package. New advisory operation `find_subsystems`
