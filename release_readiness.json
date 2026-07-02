@@ -3283,6 +3283,26 @@
         "NIT": 2
       },
       "theme": "FIRST v3.22.0 panel (select_tests + co_change + find_coupling, new core/coverage_query.py). opus falsification: essentially CLEAN \u2014 all 4 cardinal rules verified (no eager import; find_stale byte-identical; never raises across the full adversarial artifact battery incl. NaN/Inf JSON, giant 5000-fn test; no user-code exec), select_tests partition exact (both/runtime_only/static_only/run_these), scores in [0,1], self-pair excluded, find_coupling excludes any-relation/either-direction edges + handles unresolved dst_id, _COOC_FUNC_CAP=400 bounds OOM, limit/min_shared clamp. One NIT: base_test_id split on '|' before stripping [param] \u2192 a param containing '|' or nested brackets mis-normalised (advisory under-merge, never raises) \u2014 fixed (11e18b5). haiku: one NIT \u2014 OVERVIEW select_tests row used hyphenated runtime-only/static-only vs underscored fields \u2014 fixed (7424757). All other docs consistent (version, 22-op count, CLI names, framing)."
+    },
+    {
+      "id": "R281",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "FIRST clean confirmation on the base_test_id-fixed tip 11e18b5. opus: CLEAN \u2014 verified the fix (phase stripped before greedy end-anchored [param]; test[a|b]|run, nested test[a[b]], param-containing-'run' all collapse correctly; 2-part file::func ids intentionally not class-rewritten). Re-attack: adversarial artifacts refuse cleanly, select_tests partition exact + homonym refuse, co_change cosine in [0,1] deterministic across PYTHONHASHSEED, find_coupling edge-exclusion any-relation/either-direction + unresolved dst_id + _COOC_FUNC_CAP OOM guard + clamps, all 4 cardinal rules re-verified (no eager import, find_stale byte-identical, never raises)."
+    },
+    {
+      "id": "R282",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND clean confirmation. opus independent re-attack with hand-computed numerics: select_tests both/runtime_only/static_only exact; co_change cosine matches (0.8165, 0.5774); find_coupling score 4/sqrt(16)=1.0 + shared exact, edge-excluded both directions, normalize collapses param rows; JSON-serializable + deterministic; 72-case adversarial battery zero raises; all 4 cardinal rules. One INFO non-defect: _COOC_FUNC_CAP skips a >400-fn test from the pair numerator but not the sizes denominator, so a pair co-running only in such a near-global test under-reports its cosine (bounded, conservative \u2014 only ever under-reports; matches documented near-global-noise suppression). No action required."
     }
   ]
 }
