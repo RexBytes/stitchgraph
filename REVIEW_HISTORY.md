@@ -2203,6 +2203,44 @@ exposed — fixed in both builders at once. A useful lesson: building the PDG as
 the VFG is also an audit of the VFG. Remaining sweep: Ruby, PHP, Bash (dynamically-typed — the
 type-position hazard recedes; the pattern/label and method-name hazards remain).
 
+## v3.20.0 — `find_subsystems`: spectral subsystem decomposition (§6 spectral research → package)
+
+The second §6 "system-matrix" win graduates into the package. New advisory operation `find_subsystems`
+partitions the call/reference graph into its **natural subsystems** by spectral clustering of the graph
+Laplacian, and auto-labels each cluster with the identifier tokens that most distinguish it (a
+"spectral-summarize"). It is the *structural* complement to the semantic `find_similar` /
+`summarize_subsystem`: it **discovers** the module boundaries rather than describing a scope you name.
+Cluster count auto-selected from the spectral eigengap (or set via `k`). Backed by a new
+`core/spectral.py` (normalised-Laplacian embedding + deterministic k-means++ + distinctive-token
+labels); numpy-only out of the box (dense, capped at 2500 giant-component nodes), with an optional
+`[spectral]` extra (scipy) that adds a sparse ARPACK solver for larger graphs. Advisory only, never
+feeds `find_stale`.
+
+The panel earned its keep again: opus's independent falsification caught a real HIGH that the
+hand-written tests had not exercised — `find_subsystems` was **nondeterministic on the scipy/`eigsh`
+path** for graphs with degenerate top Laplacian eigenvalues (regular graphs, hubs, rings): repeated
+calls on the same store returned different partitions, and the sparse path disagreed with the
+deterministic dense path. ARPACK injects random restart vectors on Lanczos breakdown (a fixed all-ones
+`v0` is exactly the Perron eigenvector of a regular graph) and returns an arbitrary basis of a
+degenerate eigenspace. Fixed by preferring the deterministic dense LAPACK solver for every giant
+within the cap (even when scipy is installed) and reserving sparse `eigsh` for above-cap graphs, where
+it now uses a fixed-seed generic start vector plus a tiny deterministic symmetry-breaking term — then
+re-verified deterministic across processes and thread counts on genuine >2500-node graphs.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R266 | 3 | ✗ | First panel. opus falsification found ONE HIGH: nondeterministic clustering on the scipy/`eigsh` path for degenerate top eigenvalues (hub+15 → 10 distinct partitions / 10 calls; sparse≠dense) — ARPACK random restart on an exact-Perron `v0` + arbitrary degenerate-eigenspace basis. Reachable on ordinary hub/ring motifs. Fixed (c420361): dense LAPACK preferred ≤ cap even with scipy; sparse only > cap, with a fixed-seed generic `v0` + 1e-6·(i/n) diagonal symmetry-breaking. haiku docs clean; sonnet superseded by the fix. Dirty (1 HIGH, fixed). |
+| R267 | 3 | ✓ | **Clean (streak 1).** opus re-cert on the fixed tip: 8 degenerate motifs ×10 calls deterministic on default + forced-sparse; a genuine 3000-node >cap SBM on the real sparse path deterministic across PYTHONHASHSEED (NMI=1.0, k=3); dense==sparse on 40 SBM + 32 weakening-coupling + tiny-eigengap (λ2~1e-3) graphs; robustness never raises; cardinal byte-identical, no eager spectral/scipy import. sonnet gates re-verified by main; full suite 2298 passed / 24 skipped. haiku docs consistent. |
+| R268 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus from-scratch: SBM NMI=1.000 all seeds; 3000-node SBM + 2-regular cycle + torus on the real ARPACK path byte-identical across PYTHONHASHSEED {0,1,42,777,12345,999} × OMP_NUM_THREADS {1,4}; 120 near-threshold SBMs dense==sparse (1e-6 ramp never flips real structure); 1000 fuzz runs 0 nondeterminism / 0 raises; contract over 400+ graphs; cardinal byte-identical, reach.py untouched. 3 non-defect NITs noted (structureless-K8 auto-k, tokenizer lone-digits, unreachable dense LinAlgError). Gates re-verified; full suite 2298 passed / 24 skipped. haiku docs. Tag left to the maintainer. |
+
+Process note: the §6 pattern from `find_chokepoints` repeated exactly — a numerically subtle new
+operation whose author-written tests all passed, but an INDEPENDENT adversarial pass (opus) found a
+real defect the tests never provoked. R263's lesson was "tests can encode the bug"; R266's is its
+sibling: **tests can fail to exercise the failure mode at all** — the determinism tests used only the
+non-degenerate planted-community graph, so the ARPACK-on-degenerate-spectrum nondeterminism went
+unseen until opus threw regular graphs / hubs / rings at it. Both wins closed in 3 panels / 1 HIGH
+each. §6 win 3 (POD over runtime coverage, Python-first) remains — explicitly saved for last.
+
 ## v3.19.0 — `find_chokepoints`: articulation-point criticality (§6 spectral research → package)
 
 The first result of the §6 "system-matrix" research thread graduates into the shipped package. New

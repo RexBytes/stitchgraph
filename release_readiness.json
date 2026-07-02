@@ -3112,6 +3112,38 @@
       ],
       "findings": {},
       "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 8b59280 \u2192 streak 2 \u2192 RELEASABLE. find_chokepoints (\u00a76 win 1) closed. opus INDEPENDENT final sign-off with fresh seeds + from-scratch brute force: 14,000 graphs across 14 families (+ self-loops, duplicate/reversed/dangling-dst edges, Module/pseudo nodes, non-liveness noise edges), ~56,480 articulation points verified \u2014 0 AP-set + 0 blast-radius mismatches; chain a symmetric tent peaking at centre; determinism (md5) stable across PYTHONHASHSEED 0/1/42/12345/999; 20000-node chain no RecursionError with recursion limit restored; cardinal find_stale byte-identical before/after, reach.py no structure/similar/graphdiff reference; contract (EXTRACTED, ranked desc, limit honored, bad limits incl. bool safe, Module excluded) all pass. gates re-verified by main: ruff/mypy/cardinal clean, byte-identical isolation, chokepoints 8 passed, full suite 2284 passed / 24 skipped. haiku docs: all 7 surfaces consistent, corrected blast-radius semantics reflected everywhere. First \u00a76-research win shipped; the R263 HIGH (blast-radius ranking inversion) caught by opus brute force and fixed. Tag left to the maintainer."
+    },
+    {
+      "id": "R266",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {
+        "HIGH": 1
+      },
+      "theme": "FIRST find_subsystems panel (v3.20.0, \u00a76 win 2 \u2014 spectral subsystem decomposition / 'spectral-summarize' promoted from research/06-spectral into core/spectral.py). opus INDEPENDENT falsification found ONE real HIGH: find_subsystems was NONDETERMINISTIC on the scipy/eigsh path for graphs with degenerate top Laplacian eigenvalues (regular graphs, hubs, rings) \u2014 repeated calls on the SAME store returned different partitions (hub+15: 10 distinct partitions / 10 calls), and the sparse path disagreed with the deterministic dense path. Root cause: ARPACK injects random restart vectors on Lanczos breakdown (the fixed all-ones v0 IS the Perron eigenvector of a regular graph) and returns an arbitrary, run-varying basis of a degenerate eigenspace; row-normalisation + k-means then amplify it into different clusterings. Reachable on ordinary hub-and-spoke / ring motifs, not just synthetic pathology. haiku docs clean; sonnet stalled on its own background suite (superseded by the fix). Dirty (1 HIGH, fixed in c420361)."
+    },
+    {
+      "id": "R267",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "Clean full-diversity panel on the post-fix tip c420361 \u2192 streak 1. Fix: prefer the deterministic dense LAPACK solver for every giant component within _DENSE_CAP (2500) even when scipy is installed; reserve sparse eigsh for above-cap graphs, where it now starts from a fixed-seed GENERIC vector (np.random.default_rng(0).standard_normal, not all-ones) plus a tiny node-indexed diagonal symmetry-breaking ramp (1e-6\u00b7i/n) so it is reproducible even on degenerate spectra; solver meta reports the path actually taken. opus INDEPENDENT re-cert: 8 degenerate/near-degenerate motifs \u00d710 calls deterministic on default AND forced-sparse paths; a GENUINE 3000-node >cap SBM took the real sparse path by default \u2014 deterministic across 4 PYTHONHASHSEED values (identical md5), NMI=1.0, auto-k=3; dense==sparse partition on 40 SBM + 32 weakening-coupling + tiny-eigengap (Fiedler ~1e-3) graphs (the 1e-6 perturbation never flipped real structure); robustness (bad k incl. bool/float/huge, empty/tiny/forest/dangling) never raises; cardinal find_stale byte-identical, import stitchgraph loads no spectral/scipy/numpy. sonnet gates re-verified by main (ruff/mypy clean, CLI find-subsystems auto-exposed, __all__, byte-identical isolation, pyproject spectral extra); full suite 2298 passed / 24 skipped. haiku docs: all 7 surfaces consistent, determinism paragraph matches code, no stale 'fixed ARPACK start vector' framing."
+    },
+    {
+      "id": "R268",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD c420361 \u2192 streak 2 \u2192 RELEASABLE. find_subsystems (\u00a76 win 2) closed. opus INDEPENDENT final sign-off: 3-block SBMs NMI=1.000 all seeds (auto-k=3); a genuine 3000-node SBM + 3000-node cycle (2-regular, massively degenerate) + 3000-node torus on the REAL ARPACK path byte-identical across PYTHONHASHSEED {0,1,42,777,12345,999} \u00d7 OMP_NUM_THREADS {1,4}; 120 near-detectability-threshold SBMs \u2014 dense and sparse partitions + auto-k agree in every case (1e-6 ramp far below any gap a real decomposition turns on); 1000 fuzz runs 0 non-determinism + 0 raises (ArpackError/NoConvergence are RuntimeError subclasses \u2192 caught \u2192 clean refuse); contract over 400+ graphs (count==len(clusters), clustered==giant==sum(sizes), solver matches path, exemplars non-empty); cardinal find_stale byte-identical, reach.py untouched, no eager spectral/scipy/numpy import. Three non-defect NITs noted (structureless K8 auto-k=7 bounded+deterministic+advisory; tokenizer drops lone digits \u2014 advisory labels; dense-path np.linalg.LinAlgError is a ValueError not caught by except RuntimeError but UNREACHABLE since the 0/1 adjacency Laplacian with degree\u22651 is always finite) \u2014 no action. sonnet gates satisfied by main's authoritative run on the same frozen tip (ruff/mypy clean, surfaces, byte-identical isolation, full suite 2298 passed / 24 skipped). haiku docs clean. \u00a76 win 2 shipped; the R266 HIGH (ARPACK degenerate-spectrum nondeterminism) caught by opus and fixed. Tag left to the maintainer."
     }
   ]
 }
