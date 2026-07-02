@@ -4,6 +4,26 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.24.0] — 2026-07-02
+
+**Release marker — the POD-toolkit line merges to `main`.** No new code beyond v3.23.1 (the tip is
+byte-identical); this is the consolidated release that brings `main` (last at v3.1.0) up through the
+full runtime-analysis toolkit. Everything below already shipped and was gated per-version — see
+`docs/RELEASE_NOTES_v3.24.0.md` for the roll-up. Highlights since v3.1.0:
+
+- **§5b/§5c — the layered code-property graph** (v3.2.0–v3.12.0): the intra-procedural body matrix
+  across all 12 languages + the call ↔ statement ↔ expression layers, drill-down via `get_matrix`.
+- **§6 spectral analysis** (v3.19.0–v3.20.1): `find_chokepoints`, `find_subsystems`.
+- **§6 POD toolkit — behavioural analysis from runtime coverage** (v3.21.0–v3.23.0): `find_modes` +
+  `scaffold_coverage`, then the forward-looking query layer `select_tests`, `co_change`,
+  `find_coupling`, `find_gaps`, `test_order`, `redundant_tests`, `find_core`, `feature_map`,
+  `find_outlier_tests`, `runtime_risk`, `coverage_drift`. **30 operations + admin `reindex`.**
+- **Self-audit** (v3.23.1): stitchgraph turned on itself (`research/12`) found and fixed a `scan`
+  `live_stub` false-positive on decorator-registered callbacks.
+
+All advisory, read-only, cardinal-safe; every version reached two consecutive clean full-diversity
+adversarial panels on a frozen post-fix HEAD (`release_readiness.json`, `REVIEW_HISTORY.md`).
+
 ## [3.23.1] — 2026-07-02
 
 **Precision fix from the v3.23.0 self-analysis dogfood (`research/12`).** Turning the full toolset on
