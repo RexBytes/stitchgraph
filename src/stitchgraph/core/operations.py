@@ -594,6 +594,36 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     return res
 
 
+@operation("Structural chokepoints: nodes whose removal fragments the graph (criticality).")
+def find_chokepoints(store: Store, limit: int = 20) -> Result:
+    """Articulation points (cut vertices) of the call/reference graph — advisory structural
+    *criticality* (design §6). A chokepoint is a node whose removal disconnects the graph; each is
+    ranked by its **blast radius** — how many nodes get cut off from the main body if it fails
+    (a robustness/"dangerous to touch" signal distinct from the `orient` hub ranking, which measures
+    centrality, not cut-vertex-ness). Structural and advisory ONLY: like hubs, cycles and god
+    objects it never feeds `find_stale` — the cardinal rule is a liveness property. Code entities
+    only (Module / pseudo nodes are excluded, as in `orient`/`scan`). Returns [] on an empty graph;
+    never raises."""
+    from .reach import articulation_points
+
+    lim = limit if isinstance(limit, int) and limit > 0 else 20
+    aps = articulation_points(store)
+    items: list[dict] = []
+    for nid, blast in sorted(aps.items(), key=lambda kv: (-kv[1], kv[0])):
+        node = store.get_node(nid)
+        if node is None or node.kind not in _CODE_KINDS:
+            continue  # a chokepoint label is a code-entity smell; skip Module/pseudo (panel R14A parity)
+        items.append({
+            "id": nid, "name": node.name, "location": node.location,
+            "blast_radius": blast,
+            "reason": f"removing this isolates {blast} node(s) from the rest of the graph",
+        })
+        if len(items) >= lim:
+            break
+    return ok(items, provenance=Provenance.EXTRACTED, count=len(items),
+              chokepoints=len(aps))
+
+
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:

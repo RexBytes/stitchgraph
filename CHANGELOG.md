@@ -4,6 +4,22 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.19.0] — 2026-07-02
+
+**New advisory operation: `find_chokepoints` — structural criticality (§6 spectral research,
+promoted).** The first result from the §6 "system-matrix" research thread graduates into the package.
+`find_chokepoints` returns the **articulation points** (cut vertices) of the call/reference graph —
+nodes whose removal disconnects the graph — each ranked by its **blast radius**, i.e. how many nodes
+get cut off from the main body if it fails. This is a robustness / "dangerous to touch" signal
+*distinct* from `orient`'s hub ranking (which measures centrality, not cut-vertex-ness): a chokepoint
+can have modest fan-in/out yet still be the sole bridge between two subsystems. Backed by a new
+`reach.articulation_points` (one Tarjan DFS pass, subtree sizes computed inline, O(V+E),
+deterministic; recursion-limit guarded like the shared SCC core). Code entities only (Module / pseudo
+nodes excluded, as in `orient`/`scan`). Auto-exposed on the library API, CLI, and MCP server from the
+operation registry. **Advisory and structural only — like hubs, cycles and god objects it never feeds
+`find_stale`** (the cardinal rule is a liveness property; re-verified byte-identical). No new
+dependency. Backward-compatible → MINOR.
+
 ## [3.18.0] — 2026-07-02
 
 **The STATEMENT layer learns Bash — the §5c sweep is COMPLETE (language 10, all body-matrix

@@ -29,6 +29,7 @@ from .core import (
     registry,
 )
 from .core.operations import (
+    find_chokepoints,
     find_holes,
     find_similar,
     find_stale,
@@ -63,4 +64,5 @@ __all__ = [
     "find_symbol", "get_callers", "get_callees", "find_holes", "find_stale",
     "orient", "impact_of", "trace_path", "scan", "reindex", "get_matrix", "risk",
     "ingest_trace", "find_similar", "summarize_subsystem", "graph_diff",
+    "find_chokepoints",
 ]

@@ -11,8 +11,9 @@ under (max, x) with weights <= 1 products only shrink, so SCCs do not blow up.
 
 from __future__ import annotations
 
+import sys
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 from ._scc import tarjan_scc
 from .model import Edge, Relation
@@ -133,6 +134,86 @@ def strongly_connected_components(
     self_loops = {src for src, rel, dst, _w in store.iter_resolved()
                   if dst == src and rel in _rels}
     return [c for c in out if len(c) > 1 or (c and c[0] in self_loops)]
+
+
+def articulation_points(store: Store,
+                        relations: Iterable[Relation] = LIVENESS_RELATIONS,
+                        ) -> dict[str, int]:
+    """Cut vertices of the UNDIRECTED projection of the graph over `relations` — advisory
+    structural criticality (design §6). A node is a *chokepoint* if removing it disconnects the
+    graph; its value is the **blast radius**: how many nodes get cut off from the main body when it
+    is removed. One Tarjan DFS pass (subtree sizes computed inline), O(V+E), deterministic
+    (sorted adjacency), recursion-limit raised for deep graphs and restored in a `finally` (mirrors
+    `_scc.tarjan_scc`). Advisory only — like SCC / PageRank it never feeds liveness.
+
+    For a non-root node u the separated mass is the sum of its child subtrees v with
+    `low[v] >= disc[u]` (each such subtree is cut off from u's parent side); for the DFS root it is
+    the total of its child subtrees minus the largest (the largest stays as the 'main' component)."""
+    directed = _adjacency(store, relations)
+    undirected: dict[str, set[str]] = defaultdict(set)
+    for u, vs in directed.items():
+        for v in vs:
+            if u != v:
+                undirected[u].add(v)
+                undirected[v].add(u)
+    disc: dict[str, int] = {}
+    low: dict[str, int] = {}
+    timer = [0]
+    guarded: dict[str, int] = {}
+
+    _old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(10000, len(undirected) * 4 + 1000))
+
+    def dfs(root: str) -> None:
+        # Iterative post-order DFS carrying (node, parent, child-iterator); subtree sizes and the
+        # articulation test are resolved when a node's children are exhausted. Iterative (not
+        # recursive) so a deep call graph can't overflow the stack even with the raised limit.
+        disc[root] = low[root] = timer[0]
+        timer[0] += 1
+        size = {root: 1}
+        sep: dict[str, list[int]] = defaultdict(list)  # node -> separated child-subtree sizes
+        stack: list[tuple[str, str | None, Iterator[str]]] = [
+            (root, None, iter(sorted(undirected[root])))]
+        while stack:
+            u, parent, it = stack[-1]
+            advanced = False
+            for v in it:
+                if v not in disc:
+                    disc[v] = low[v] = timer[0]
+                    timer[0] += 1
+                    size[v] = 1
+                    stack.append((v, u, iter(sorted(undirected[v]))))
+                    advanced = True
+                    break
+                elif v != parent:
+                    low[u] = min(low[u], disc[v])
+            if advanced:
+                continue
+            stack.pop()
+            if parent is not None:
+                low[parent] = min(low[parent], low[u])
+                size[parent] += size[u]
+                # u's parent-side is cut off from u's subtree iff u can't climb above parent. At the
+                # DFS root disc[parent] is the global minimum, so EVERY root child qualifies — hence
+                # `sep[root]` collects all the root's child-subtree sizes (handled specially below).
+                if low[u] >= disc[parent]:
+                    sep[parent].append(size[u])
+        for u, sizes in sep.items():
+            if u == root:
+                # the root is an articulation point iff it has >1 DFS child; the largest child
+                # subtree stays as the 'main' component, the rest are cut off.
+                if len(sizes) > 1:
+                    guarded[root] = sum(sizes) - max(sizes)
+            else:
+                guarded[u] = sum(sizes)
+
+    try:
+        for start in sorted(undirected):
+            if start not in disc:
+                dfs(start)
+    finally:
+        sys.setrecursionlimit(_old_limit)
+    return {u: g for u, g in guarded.items() if g > 0}
 
 
 def best_path(store: Store, source: str, sink: str,
