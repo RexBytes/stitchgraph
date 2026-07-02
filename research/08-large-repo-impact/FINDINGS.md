@@ -59,11 +59,51 @@ nearly the whole framework** — any test that touches request handling is "impa
 - Flask has **no same-named-method decoys**, so the grep-overmatch failure mode (round-2 conclusion's
   other lever) could not be exercised here.
 
-## Not run (pending maintainer go-ahead): the agent A/B race
+## The agent A/B race — RESULT: a dead tie (stitchgraph gave no measurable edge)
 
-The originally-planned head-to-head — a fresh agent-with-stitchgraph vs agent-with-grep, both asked to
-statically list the affected tests, graded against the 13 — is *set up* but **not executed** (it is
-several expensive large-context agent runs). Given this tool-level result already answers the core
-question with a clear, honest boundary, the agent race is offered as an explicit, costed next step
-rather than run automatically. Its remaining value would be measuring whether an agent's *judgment on
-top of* `impact_of` (a broad safety net) or grep (manual tracing) lands closer to the true 13.
+Six fresh Sonnet agents (n=3 per arm) on identical Flask copies, same task: *statically* list the
+tests that exercise `_split_blueprint_path` (running the suite / coverage forbidden). Arm A had
+stitchgraph; arm B was grep + read only. Graded on precision/recall/F1 vs the 13-test truth
+(param-ids normalised).
+
+| Arm | listed | found (of 13) | precision | recall | F1 |
+|---|---|---|---|---|---|
+| **A — stitchgraph** (mean of 3) | 26.0 | 12 | **0.46** | **0.92** | **0.62** |
+| **B — control** (mean of 3) | 25.7 | 12 | **0.47** | **0.92** | **0.62** |
+
+Statistically indistinguishable. All six agents caught the **same 12**, missed the **same 1**
+(`test_build_error_handler_reraise` — reaches the function only via a subtle error-reraise path all
+six judged out), and over-listed to ~26 (≈14 false positives each).
+
+**Why no edge — the decisive observation:** all three stitchgraph agents **tried `impact_of` and
+discarded it**, independently, for the same reason — it returned a 0.51-confidence "ambiguous" blast
+radius of ~280–379 tests (nearly the whole app; see the tool-level result above). They fell back to
+exactly what the control did: `get-callers` → the **2 direct callers**, then **hand-trace** the
+`"." in endpoint` runtime gate out to the tests. And `get-callers` on a *uniquely-named* function is
+trivially replicated by one `grep` — which is how the control found the same 2 callers. So the one
+stitchgraph query that helped added nothing grep didn't, and its headline feature for this exact
+question (`impact_of` → "tests_to_run") was too imprecise to use.
+
+**The real bottleneck was shared and semantic, not structural:** both arms over-approximated ~2×
+because the true set depends on whether each blueprint test *dynamically dispatches through a dotted
+endpoint* — a runtime-gating judgment neither a call graph nor grep resolves. The 14 false positives
+are tests that statically reach the gated path but don't execute the lines; the 1 false negative is a
+path all six mis-judged. Neither tool moves that needle.
+
+## Overall conclusion of the dogfood thread (rounds 1–3 + this race)
+
+Across **three regimes** — greenfield build (round 1), multi-session extend of an unfamiliar codebase
+(round 2), and precise impact-discovery on a large real framework (round 3 + this race) — **stitchgraph
+produced no measurable win for a capable LLM agent**, and in the timed rounds the control was slightly
+faster (tool overhead). Its genuine, repeatedly-observed contributions were narrow and real:
+`find-stale` caught actual dead code a reader would keep (round 1); `orient`/`get-callers` gave
+fast, correct orientation; `impact_of` is a **sound but broad** safety net. None of these changed task
+*outcomes* here.
+
+**This does not prove the tool worthless — it maps its boundary honestly.** The regimes it should still
+win (untested here, because this sandbox can't cleanly produce them): codebases too large for grep-BFS
+to be tractable at all; **decoy-heavy** names where grep over-matches and structural resolution wins
+(Flask had none); workflows that value a *cheap, deterministic, sound* over-set (CI gates, "don't miss
+a dependency") over precision; and human (non-LLM) users of the CLI/report. For a strong LLM agent on
+clean, well-named, in-context-tractable code — which is most of what we tested — **an LLM does the same
+work without stitchgraph.** That is the honest answer.
