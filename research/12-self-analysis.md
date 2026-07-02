@@ -62,3 +62,20 @@ confirming the codebase is structurally healthy and the v3.22/3.23 additions are
 regression-free. Net: the POD toolkit, pointed at its own author, produced findings a careful reader
 would have missed (the coupling, the drift, the minimal cover) — exactly the LLM-complementary value the
 research thread predicted.
+
+## Outcome — findings acted on (v3.23.1)
+
+The loop closed the same day: both actionable findings were fixed and re-gated.
+- **Finding #1 (scan live_stub FP)** → fixed in `_is_stub` (`extract/python.py`): an empty
+  (`pass`/`…`/docstring-only) body under a **call/attribute decorator** (`@app.callback()`,
+  `@app.route()`, `@foo.register`) is no longer a stub — the decorator carries the behaviour. Bare
+  `pass`/`@property pass` and `raise NotImplementedError` (even decorated) stay stubs. Whole-repo
+  differential: **exactly one** verdict changed (`cli.py::build_app._root`, the intended target),
+  zero collateral; `scan` now reports **0 RED live_stubs** on stitchgraph.
+- **Finding #2 (coverage gaps)** → tests added for `Edge.to_dict` / `Edge.resolved`
+  (`tests/test_selfaudit.py`). (`EntryPointDetector.detect` = Protocol `…` stub and the `@operation`
+  decorator = import-time artifact — not real gaps, documented as `find_gaps` caveats, not "fixed".)
+
+Shipped as **v3.23.1** through the same discipline as every other change (full suite + ruff/mypy + two
+clean adversarial panels). That is the point of the exercise: stitchgraph found a real bug in
+stitchgraph, and the fix went back through stitchgraph's own gate.
