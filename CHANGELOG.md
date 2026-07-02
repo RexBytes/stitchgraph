@@ -4,7 +4,7 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
-## [3.18.0] — 2026-07-01
+## [3.18.0] — 2026-07-02
 
 **The STATEMENT layer learns Bash — the §5c sweep is COMPLETE (language 10, all body-matrix
 languages).** After Python (v3.9.0), the JS family (v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++

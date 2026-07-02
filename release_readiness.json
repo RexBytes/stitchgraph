@@ -3069,6 +3069,16 @@
       ],
       "findings": {},
       "theme": "Clean full-diversity panel on frozen post-fix HEAD 92e9d4c (code byte-identical since 3b93dfd; the R260 LOW was a README-only fix) \u2192 streak 1. opus INDEPENDENT re-cert with fresh generators/seeds: ~24,000 distinct valid bodies (systematic reads\u00d7wrappers + recursive-grammar random + deep random/exotics), ~15,400 genuine VFG-reads \u2014 0 invariant violations, 0 raises, 0 ill-formed graphs, key parity + cross-process determinism (PYTHONHASHSEED 0/12345/999) all hold. Identified three SYMMETRIC imprecisions that under-read in BOTH builders identically (so no VFG/PDG divergence): ${#v} string-length (the `#` sigil isn't stripped by the shared _varname helper), `v+=x` append (tree-sitter drops +=, losing the implicit old-v read), and @($v) extglob / single-quoted trap (documented opaque-token blind spots) \u2014 shared soundness limits, not faithfulness defects. Reverse-direction PDG\u2265VFG over-reads (subshell/group dead bindings, prefix assignments, assoc-array index) all allowed. sonnet gates re-verified by main: ruff/mypy/cardinal clean, byte-identical isolation, Bash oracle 61; full suite 2276 passed / 24 skipped stands. haiku docs: all 8 surfaces consistent, the README status-header fix verified, no stale version markers remain."
+    },
+    {
+      "id": "R262",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD a9ac0e9 \u2192 streak 2 \u2192 RELEASABLE. Bash (the FINAL \u00a75c language) closed; the STATEMENT/PDG sweep now covers EVERY body-matrix language. opus INDEPENDENT final sign-off: 21,888 cases across 6 seeds + a 5,040 first pass + ~30 hand-targeted boundaries, 19,232 genuine VFG-reads (non-vacuous, both directions exercised) \u2014 0 invariant violations, 0 crashes, 0 well-formedness/key-parity/determinism failures; seed mechanics verified directly (VFG node 0 = SEED's FREE node bound to env['v']; PDG node 1 = the v=$SEED Assign seeding last_def). Coverage incl. all expansion forms (${v@Q}/${v^^}/slices/${!v}), let/++/coproc/time/mapfile/printf -v, select, assoc arrays, fd redirects. Reverse-direction PDG\u2265VFG over-reads (FOO=$v cmd, readonly x=$v, arr[$v]=1) confirmed allowed; the three symmetric under-reads (${#v}, v+=x, single-quoted deferred) miss in BOTH builders (not divergences). sonnet gates re-verified by main: ruff/mypy/cardinal clean, byte-identical isolation, Bash oracle 61; full suite 2276 passed / 24 skipped stands. haiku docs: all surfaces consistent, no stale markers. Bash closed in 2 clean panels / 1 doc LOW / 0 code defects \u2014 the front-loaded VFG-mirror + seeded differential oracle held from panel 1 even for the command-oriented, parameter-less outlier. \u00a75c STATEMENT-LAYER SWEEP COMPLETE (all 10 sweep-languages / 12 body-matrix languages). Tag left to the maintainer."
     }
   ]
 }
