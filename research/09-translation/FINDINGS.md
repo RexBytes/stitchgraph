@@ -35,7 +35,42 @@ Also: cross-language diff is **name-based**, so it self-reports `confidence 0.60
   the adaptation false-positives). This is the same **scale / low-context** regime flagged as the one
   untested favorable case in `research/08`. On a small port an LLM holds entirely, it's redundant.
 
-## Decision: agent port-race not run
+## Experiment 0 — a real port: `semver` (Python → JavaScript), A/B
+
+A largish real library — **`semver` 3.0.4** (1838 LOC, 4 core files, 63 symbols), pip-downloaded —
+ported to JS by two Sonnet agents, work-arounds allowed. **Arm A** drove it with the stitchgraph
+process (graph → checklist, `graph_diff` completeness gate); **Arm B** ad-hoc. Graded on a **hidden
+58-op behavioral oracle** (parse / is_valid / compare / bump_* / finalize, expected outputs computed
+by the real Python lib) + cost.
+
+| Arm | behavioral parity (hidden 58) | tokens | tool calls | wall-clock |
+|---|---|---|---|---|
+| **A — stitchgraph process** | **58/58 = 100%** | 102,014 | 46 | 505 s |
+| **B — ad-hoc** | **58/58 = 100%** | 75,344 | 30 | 384 s |
+
+**Both produced complete, faithful ports.** stitchgraph cost **+35% tokens / +53% tool calls /
++31% wall-clock** for the *same* result.
+
+**The decisive technique was the same in both arms, and it isn't stitchgraph:** each agent
+independently built a **differential test harness** — run the *same* ops through the real Python lib
+and the JS port, diff exactly (A: ~500 ops; B: 567 ops) — and each caught a *real behavioural* bug
+that way (B: `Number` precision loss on huge version components → fixed with `BigInt`). Differential
+testing against the runnable source is what guarantees translation fidelity, and it's tool-agnostic.
+
+**stitchgraph's real but marginal contribution:** `graph_diff` (A) caught **2 genuine un-ported
+symbols** — `Version.__hash__` and the `_comparator` `NotImplemented` eq/ne semantics — which A then
+fixed. That's a concrete completeness catch (better than round 3's null). **But**: (1) both were
+*peripheral* — neither is exercised by the oracle, so they didn't change the 100% score; (2) they came
+buried in **~50+ name-based false positives** (idiomatic `bump_major`→`bumpMajor`, `_deprecated.py`→
+`semver.js`, `__init__`→`constructor`) the agent had to hand-triage — the SNR problem, exactly as
+predicted. The completeness signal is real but noisy and non-decisive.
+
+**Verdict:** a translation succeeds equally well with or without stitchgraph; the tool adds a
+real-but-noisy completeness *reminder* at ~+35% cost, while the mechanism that actually ensures
+fidelity (differential testing) is independent of it. Consistent with rounds 1–3: assurance aid, not
+outcome multiplier. (Rust as a second target was left to a follow-up — the JS result is decisive.)
+
+## Decision: exploratory port-race (small dcsim) not run
 
 A fresh source (`scratchpad/xport/py_src`, a pure-Python numpy-free DC circuit simulator, 11 symbols)
 and a graph-derived **port checklist** (every symbol + its call deps, leaf-first order) and a JS
