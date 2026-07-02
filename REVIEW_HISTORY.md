@@ -2203,6 +2203,35 @@ exposed — fixed in both builders at once. A useful lesson: building the PDG as
 the VFG is also an audit of the VFG. Remaining sweep: Ruby, PHP, Bash (dynamically-typed — the
 type-position hazard recedes; the pattern/label and method-name hazards remain).
 
+## v3.19.0 — `find_chokepoints`: articulation-point criticality (§6 spectral research → package)
+
+The first result of the §6 "system-matrix" research thread graduates into the shipped package. New
+advisory operation `find_chokepoints` returns the **articulation points** (cut vertices) of the
+call/reference graph — nodes whose removal disconnects the graph — each ranked by its **blast
+radius** (how many nodes get cut off from the main body if it fails). A robustness / "dangerous to
+touch" signal distinct from `orient`'s hub centrality: a chokepoint can have modest fan-in/out yet be
+the sole bridge between two subsystems. Backed by `reach.articulation_points` (one iterative Tarjan
+DFS pass, subtree sizes inline, O(V+E), deterministic, recursion-limit-guarded like the SCC core);
+advisory only, never feeds `find_stale`; no new dependency.
+
+The panel earned its keep: opus's brute-force falsification caught a real HIGH the hand-written tests
+had *masked* (they encoded the buggy values) — the non-root blast radius used `sum(child subtrees)`,
+which inverted the ranking on a chain (a near-leaf reported as top chokepoint). Fixed to the uniform
+`(comp_total-1) - max(pieces)` definition and re-verified against brute force.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R263 | 3 | ✗ | First panel. opus brute force (6000 graphs) confirmed AP-set detection correct (0 mismatches), determinism, robustness (20000-node chain, no RecursionError), cardinal — but found ONE HIGH: non-root blast radius = `sum(child subtrees)` wrongly assumed the parent side is always the main body → ranking inversion + inflated counts (up to N-2). Fixed to `(comp_total-1)-max(pieces)`; re-verified 0/4000 vs brute force; added a chain-symmetry regression (the two original tests had encoded the buggy values). haiku 1 NIT (README "functions" → "code entities"). Both fixed. |
+| R264 | 3 | ✓ | **Clean (streak 1).** opus fresh re-cert: 47,250 random graphs across 14 families, 0 AP-set + 0 blast mismatches; chain symmetric (inversion gone); determinism, robustness, cardinal, contract all pass. sonnet gates + full suite 2284 passed / 24 skipped. haiku docs clean. |
+| R265 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 14,000-graph from-scratch brute force (+self-loops/dup/dangling-dst/pseudo/non-liveness perturbations), ~56,480 APs, 0 mismatches; chain a symmetric tent; determinism across PYTHONHASHSEED; cardinal byte-identical; contract (incl. bad/bool limits) safe. Gates re-verified; full suite 2284 passed. haiku docs. Tag left to the maintainer. |
+
+Process note: this is the first §6-spectral-research win promoted to product, and the first *new
+operation* since the §5c layer work. The lesson reinforced: **tests written by the author of a subtle
+algorithm can encode the bug** — R263's blast-radius defect passed the initial suite because the tests
+asserted the buggy output. An INDEPENDENT brute-force reference (opus's, and then main's 4000-graph
+re-check) is what caught and pinned it. §6 wins 2 (spectral-summarize → `summarize_subsystem`) and 3
+(POD over runtime coverage, Python-first) remain.
+
 ## v3.18.0 — the STATEMENT layer learns Bash — the §5c sweep is COMPLETE (language 10)
 
 The tenth and FINAL language of the STATEMENT/PDG sweep. With Bash, the statement layer now covers

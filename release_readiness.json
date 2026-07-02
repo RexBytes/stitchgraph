@@ -3102,6 +3102,16 @@
       ],
       "findings": {},
       "theme": "Clean full-diversity panel on the post-fix tip (find_chokepoints blast-radius fix) \u2192 streak 1. opus INDEPENDENT re-cert with two brute-force references (component-count AP definition + total-minus-largest blast) over 47,250 random graphs across 14 families \u2014 0 AP-set mismatches, 0 blast mismatches, 0 code-vs-independent-AP mismatches; chain now symmetric (peaks at centre, R263 inversion gone); determinism stable across PYTHONHASHSEED (SHA-256 identical); 20000-node chain 19998 APs in ~0.13s no RecursionError; cardinal find_stale byte-identical before/after + across all feature commits, reach.py has zero structure/similar/graphdiff reference; operation contract (EXTRACTED, Module/pseudo excluded, limit honored, bad limits safe, ranked desc) all correct. Non-blocking nit noted (limit=True\u21921 since bool<:int, unlike find_similar; contract-safe, not a defect \u2014 left as-is to preserve the frozen tip). sonnet gates 2-6 clean; full suite 2284 passed / 24 skipped (re-run by main). haiku docs: all 7 surfaces consistent, no stale old-semantics wording, the R263 fix documented."
+    },
+    {
+      "id": "R265",
+      "models": [
+        "opus",
+        "sonnet",
+        "haiku"
+      ],
+      "findings": {},
+      "theme": "SECOND consecutive clean full-diversity panel on frozen HEAD 8b59280 \u2192 streak 2 \u2192 RELEASABLE. find_chokepoints (\u00a76 win 1) closed. opus INDEPENDENT final sign-off with fresh seeds + from-scratch brute force: 14,000 graphs across 14 families (+ self-loops, duplicate/reversed/dangling-dst edges, Module/pseudo nodes, non-liveness noise edges), ~56,480 articulation points verified \u2014 0 AP-set + 0 blast-radius mismatches; chain a symmetric tent peaking at centre; determinism (md5) stable across PYTHONHASHSEED 0/1/42/12345/999; 20000-node chain no RecursionError with recursion limit restored; cardinal find_stale byte-identical before/after, reach.py no structure/similar/graphdiff reference; contract (EXTRACTED, ranked desc, limit honored, bad limits incl. bool safe, Module excluded) all pass. gates re-verified by main: ruff/mypy/cardinal clean, byte-identical isolation, chokepoints 8 passed, full suite 2284 passed / 24 skipped. haiku docs: all 7 surfaces consistent, corrected blast-radius semantics reflected everywhere. First \u00a76-research win shipped; the R263 HIGH (blast-radius ranking inversion) caught by opus brute force and fixed. Tag left to the maintainer."
     }
   ]
 }
