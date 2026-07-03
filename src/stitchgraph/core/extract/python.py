@@ -41,6 +41,12 @@ class _Project:
     root: Path
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
+    # INHERITS edges, retained separately: the post-edge passes (_apply_callback_roles,
+    # _seed_test_classes, _seed_exported_inherited_methods) need ONLY this relation, and in
+    # streaming mode `edges` is drained to the sink per file — this small tee (O(classes))
+    # is what survives. Populated by extract_project in both modes so the passes read one
+    # uniform source (the HA constant-memory fix, review 2026-07-03 follow-up).
+    inherits: list[Edge] = field(default_factory=list)
     by_name: dict[str, list[str]] = field(default_factory=dict)
     class_by_name: dict[str, list[str]] = field(default_factory=dict)
     ids: set[str] = field(default_factory=set)
@@ -66,7 +72,8 @@ _PLAIN_BASES = {
 
 def extract_project(root: str | Path,
                     ignore: list[str] | None = None, *,
-                    cache_asts: bool = True) -> tuple[list[Node], list[Edge]]:
+                    cache_asts: bool = True,
+                    edge_sink: object = None) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
@@ -77,6 +84,17 @@ def extract_project(root: str | Path,
     parse CPU for a much lower memory peak (no all-ASTs-resident step). The produced
     (nodes, edges) are IDENTICAL either way (same deterministic parse); the only observable
     difference is peak RSS and CPU. Verified by the streaming differential oracle.
+
+    `edge_sink`: when given, edges are pushed to it after EACH file of pass 2 (and the
+    accumulator freed), so the full edge list never materialises — previously only the
+    tree-sitter extractor streamed, and a large pure-Python repo (Home Assistant: ~10k
+    files whose `get`/`async_*` homonym fan-out yields tens of millions of AMBIGUOUS
+    edges) OOM'd at ~7 GB despite streaming=True (field report, 2026-07-03). The INHERITS
+    subset is teed into `proj.inherits` for the post-edge passes; override widening
+    (`_propagate_overrides`), which needs the whole edge set, is SKIPPED in sink mode —
+    the caller must run its store twin (`Store._propagate_overrides`) after nodes land,
+    as `_reindex_streaming` does. Rows are identical either way (sorted-row differential
+    oracle); only insertion order differs.
     """
     proj = _Project(root=Path(root))
     try:
@@ -115,6 +133,20 @@ def extract_project(root: str | Path,
     _apply_entrypoint_roles(proj)
     _apply_script_roles(proj)
     _seed_entrypoint_classes(proj)
+
+    def _drain() -> None:
+        # Streaming: push accumulated edges to the sink and free them, tee-ing the INHERITS
+        # subset (all the post-edge passes need) into proj.inherits. Keeps peak RAM at one
+        # file's fan-out instead of the whole repo's. No-op without a sink.
+        if edge_sink is None:
+            return
+        for e in proj.edges:
+            if e.relation is Relation.INHERITS:
+                proj.inherits.append(e)
+            edge_sink.append(e)  # type: ignore[attr-defined]
+        proj.edges.clear()
+
+    _drain()  # edges emitted between the passes (entry-point / script-role seeds)
     for rel, path in ok_files:
         if parsed is not None:
             tree = parsed[rel]
@@ -126,12 +158,24 @@ def extract_project(root: str | Path,
         try:
             _collect_edges(proj, rel, tree)
         except RecursionError:
+            _drain()
             continue  # same pathological-depth guard for the edge pass (panel OOO)
+        _drain()
+    if edge_sink is None:
+        # In-memory mode: populate the tee by one scan so the post-edge passes read
+        # `proj.inherits` uniformly in both modes (identical contents by construction).
+        proj.inherits = [e for e in proj.edges if e.relation is Relation.INHERITS]
     _apply_callback_roles(proj)
     _seed_test_classes(proj)
     _seed_exported_inherited_methods(proj)
     _seed_protocol_dunders(proj)
-    _propagate_overrides(proj)
+    if edge_sink is None:
+        _propagate_overrides(proj)
+    else:
+        # Override widening needs the full edge set; in sink mode the caller runs the
+        # DB-backed twin (Store._propagate_overrides) once nodes are inserted. Drain the
+        # dunder-seed edges appended above.
+        _drain()
     return proj.nodes, proj.edges
 
 
@@ -153,7 +197,7 @@ def _seed_test_classes(proj: _Project) -> None:
     # (abstract-base + thin-subclass idiom; INHERITS edges are resolved child->base, as
     # _collect_edges ran first). They must co-iterate — a class found by inheritance may
     # itself need its enclosing chain walked, and vice versa (Panel BB finding 1).
-    inh = [(e.src, e.dst_id) for e in proj.edges
+    inh = [(e.src, e.dst_id) for e in proj.inherits
            if e.relation is Relation.INHERITS and e.dst_id]
 
     def add_enclosing(cid: str) -> bool:
@@ -203,7 +247,7 @@ def _apply_callback_roles(proj: _Project) -> None:
     #      invoked the same way, so liveness must propagate down INHERITS.
     framework: set[str] = set(proj.external_base_classes)
     subclasses: dict[str, set[str]] = {}
-    for e in proj.edges:
+    for e in proj.inherits:  # the INHERITS tee — survives streaming's per-file drain
         if e.relation is not Relation.INHERITS or e.src not in class_ids:
             continue
         if e.dst_id and e.dst_id != e.src and e.dst_id in class_ids:
@@ -308,7 +352,7 @@ def _propagate_overrides(proj: _Project) -> None:
         return
     # direct subclass map: base_class_id -> {subclass_id, ...} (project classes only).
     subclasses: dict[str, set[str]] = {}
-    for e in proj.edges:
+    for e in proj.inherits:  # the INHERITS tee (identical to scanning proj.edges here)
         if (e.relation is Relation.INHERITS and e.src in class_ids
                 and e.dst_id in class_ids and e.src != e.dst_id):
             subclasses.setdefault(e.dst_id, set()).add(e.src)
@@ -373,7 +417,7 @@ def _seed_exported_inherited_methods(proj: _Project) -> None:
     class_ids = {cid for ids in proj.class_by_name.values() for cid in ids}
     # child_id -> {base_id, ...}, first-party classes only (dst_id set ⟹ resolved internal).
     bases: dict[str, set[str]] = {}
-    for e in proj.edges:
+    for e in proj.inherits:  # the INHERITS tee — survives streaming's per-file drain
         if (e.relation is Relation.INHERITS and e.src in class_ids
                 and e.dst_id in class_ids and e.src != e.dst_id):
             bases.setdefault(e.src, set()).add(e.dst_id)

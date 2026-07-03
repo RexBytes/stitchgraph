@@ -279,3 +279,45 @@ def test_streaming_orphan_edges_swept_after_extractor_failure(tmp_path, monkeypa
         assert orphans == 0, "phantom edges from the failed extractor must be swept"
         holes = sg.find_holes(store)
         assert holes.result == [], "no phantom holes from the failed extractor"
+
+
+def test_streaming_python_edges_bounded_memory(tmp_path):
+    """Constant-memory is a CORE claim and was never gated (field report 2026-07-03: Home
+    Assistant OOM'd at ~7 GB with streaming=True — the Python extractor materialised its whole
+    edge list before the sink drained it; only tree-sitter ever truly streamed). This pins the
+    fix: index a homonym-heavy pure-Python corpus (bare-name fan-out => O(files^2) edges) in a
+    subprocess under a hard address-space cap far below the materialised-edge footprint. The
+    pre-fix code dies at the cap; the streaming path must fit."""
+    import subprocess
+    import sys
+    import textwrap
+
+    for i in range(400):
+        d = tmp_path / "corpus" / f"pkg{i // 50}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "__init__.py").write_text("")
+        (d / f"m{i}.py").write_text(textwrap.dedent(f"""
+            def work{i}(x):
+                return get(), setup(), run()
+            def get(): return 1
+            def setup(): return 2
+            def run(): return 3
+        """))
+    # 400 files x 3 homonyms x 3 call sites -> ~1.4M resolved edges before dedup: several
+    # hundred MB as Edge objects, comfortably over the cap; streamed, it fits easily.
+    script = textwrap.dedent(f"""
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (700 * 1024 * 1024,) * 2)  # 700 MB hard cap
+        import stitchgraph as sg
+        with sg.Store({str(str(tmp_path / 'i.db'))!r}) as store:
+            r = sg.reindex(store, {str(str(tmp_path / 'corpus'))!r}, streaming=True)
+            assert r.ok and r.result["nodes"] > 1500, r.result
+            n = store.conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+            assert n > 100_000, f"fan-out corpus must actually produce bulk edges, got {{n}}"
+        print("BOUNDED-OK")
+    """)
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                          env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"}, timeout=600)
+    assert "BOUNDED-OK" in proc.stdout, (
+        f"streaming reindex exceeded the memory cap (rc={proc.returncode}):\n"
+        f"{proc.stderr[-800:]}")

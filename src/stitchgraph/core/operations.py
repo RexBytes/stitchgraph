@@ -1941,6 +1941,14 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
             """DELETE FROM edges WHERE
                    src NOT IN (SELECT id FROM nodes)
                 OR (dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes))""")
+    # Override widening: the in-memory path runs the extractor's _propagate_overrides over
+    # the full edge list; the sink path never materialises that list (the HA constant-memory
+    # fix), so re-derive the same AMBIGUOUS subclass-override edges from the store — the DB
+    # twin already pinned equal to the extractor's by the incremental differential oracle.
+    # Runs after nodes land (it reads class kinds + INHERITS rows) and before the global
+    # dedup, exactly where the in-memory path's override edges sit relative to dedup.
+    with store.conn:
+        store._propagate_overrides()
     # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo. The
     # dedup correlates rows by (src, relation, dst_id); a covering index makes its EXISTS
     # subqueries index lookups instead of full scans. Temporary: dropped after, since the
