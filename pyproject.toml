@@ -60,6 +60,7 @@ dev = [
 
 [project.scripts]
 stitchgraph = "stitchgraph.adapters.cli:main"
+stitchgraph-mcp = "stitchgraph.adapters.mcp:main"
 
 [project.urls]
 Homepage = "https://github.com/RexBytes/stitchgraph"

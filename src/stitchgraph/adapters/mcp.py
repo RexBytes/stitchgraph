@@ -8,12 +8,10 @@ lazily so `import stitchgraph` never requires it.
 from __future__ import annotations
 
 import inspect
-import sqlite3
 from typing import Any
 
-from ..core.envelope import refuse
 from ..core.operations import Operation, registry
-from ..core.store import Store
+from ._guard import open_store
 
 
 def _require_mcp():
@@ -39,12 +37,13 @@ def _make_tool(op: Operation, db: str):
     """Wrap an operation as an MCP tool: open the store, call, return the envelope."""
 
     def tool(**kwargs: Any) -> dict:
-        try:
-            store = Store(db)
-        except (sqlite3.Error, OSError) as exc:
-            # A db path that can't back a database must return an envelope, not raise
-            # a raw sqlite traceback through the MCP transport (panel R12).
-            return refuse(f"cannot open index database {db!r}: {exc}").to_dict()
+        # Refuse (rather than silently create) a missing/never-indexed DB, and
+        # return an envelope instead of a raw sqlite traceback on an unopenable
+        # path (panel R12; review 2026-07-03, F2b).
+        store, refusal = open_store(db, op.name)
+        if refusal is not None:
+            return refusal.to_dict()
+        assert store is not None
         with store:
             result = op.func(store, **kwargs)
         return result.to_dict()
@@ -66,7 +65,23 @@ def _make_tool(op: Operation, db: str):
 
 
 def main() -> None:
-    build_server().run()
+    """Entry point (`stitchgraph-mcp`). The DB path is configurable because MCP
+    clients launch servers with an arbitrary cwd — a hardcoded relative default
+    would resolve to the wrong directory and (pre-guard) answer from a fresh
+    empty index (review 2026-07-03, F2a). Precedence: --db > STITCHGRAPH_DB >
+    ./stitchgraph.db."""
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="stitchgraph-mcp",
+        description="stitchgraph MCP server — code-intelligence tools for LLM agents")
+    parser.add_argument(
+        "--db",
+        default=os.environ.get("STITCHGRAPH_DB", "stitchgraph.db"),
+        help="index database path (env: STITCHGRAPH_DB; default: ./stitchgraph.db)")
+    args = parser.parse_args()
+    build_server(db=args.db).run()
 
 
 if __name__ == "__main__":

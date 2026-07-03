@@ -12,9 +12,9 @@ import json as _json
 import sqlite3
 from typing import Any
 
-from ..core.envelope import refuse
 from ..core.operations import Operation, registry
 from ..core.store import Store
+from ._guard import open_store
 from .render import render_text
 
 
@@ -141,14 +141,14 @@ def _make_command(typer, op: Operation):
     def command(**kwargs: Any) -> None:
         db = kwargs.pop("db")
         as_json = kwargs.pop("json")
-        try:
-            store = Store(db)
-        except (sqlite3.Error, OSError) as exc:
-            # A --db that can't back a database (a directory, FIFO, device, or
-            # unwritable location) made sqlite raise an OperationalError that escaped
-            # as a traceback. The CLI contract is a Result, so refuse cleanly (panel R12).
-            result = refuse(f"cannot open index database {db!r}: {exc}")
+        # Refuse (rather than silently create) a missing/never-indexed DB, and
+        # refuse cleanly on an unopenable --db (a directory, FIFO, device) instead
+        # of a raw sqlite traceback (panel R12; review 2026-07-03, F2b).
+        store, refusal = open_store(db, op.name)
+        if refusal is not None:
+            result = refusal
         else:
+            assert store is not None
             with store:
                 result = op.func(store, **kwargs)
         if as_json:
