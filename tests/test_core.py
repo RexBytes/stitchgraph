@@ -102,3 +102,17 @@ def test_provenance_caps_urgency_at_orange():
 def test_registry_lists_operations():
     names = {op.name for op in sg.registry()}
     assert {"find_symbol", "find_stale", "find_holes", "orient", "scan"} <= names
+
+
+def test_file_store_uses_wal_and_busy_timeout(tmp_path):
+    """Review 2026-07-03 F10a: the advertised watch + MCP-on-same-DB workflow needs WAL
+    (readers proceed during a reindex commit) and a busy_timeout (retry instead of an
+    instant 'database is locked'). :memory: stores are unaffected."""
+    import stitchgraph as sg
+    db = tmp_path / "c.db"
+    with sg.Store(str(db)) as store:
+        assert store.conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert store.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10000
+        # a second connection can read while the first holds the db open
+        with sg.Store(str(db)) as second:
+            assert second.conn.execute("SELECT COUNT(*) FROM nodes").fetchone()[0] == 0

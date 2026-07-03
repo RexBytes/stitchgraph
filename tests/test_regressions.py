@@ -3234,7 +3234,10 @@ def test_cli_command_refuses_on_unusable_db_without_traceback(tmp_path):
     bad = tmp_path / "is_a_dir"
     bad.mkdir()
     res = CliRunner().invoke(build_app(), ["find-symbol", "x", "--db", str(bad)])
-    assert res.exit_code == 0          # clean refusal, not a crash
+    # clean refusal, not a crash — and since review 2026-07-03 (F10c) an operational
+    # refusal exits 2 (distinct from 0 = clean result and 1 = RED findings), so
+    # `stitchgraph scan --db broken.db && deploy` can no longer deploy on a broken db.
+    assert res.exit_code == 2
     assert "cannot open index database" in res.stdout
 
 

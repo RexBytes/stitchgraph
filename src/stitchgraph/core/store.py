@@ -122,6 +122,18 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        if self.path != ":memory:":
+            # Concurrency pragmas for the advertised multi-process workflow (`watch` writing
+            # while the MCP server / CLI reads the same DB): WAL lets readers proceed during a
+            # multi-second reindex commit, and busy_timeout retries instead of failing with
+            # 'database is locked' the moment two openers overlap (review 2026-07-03, F10a).
+            # WAL is a persistent DB property and is a no-op if already set; :memory: has no
+            # journal. Failure is non-fatal (e.g. a read-only filesystem) — behave as before.
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA busy_timeout=10000")
+            except sqlite3.Error:
+                pass
         # Per-language name resolution: keeps the incremental resolver from binding a bare
         # name across languages (Rust helper -> Go helper), matching full reindex (panel R34A).
         self.conn.create_function("same_lang", 2, _same_lang, deterministic=True)

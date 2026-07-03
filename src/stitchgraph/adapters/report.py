@@ -52,6 +52,8 @@ def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
                f"(confidence {stale.confidence:.2f}, verify before removing)")
     for c in stale_list[:20]:
         out.append(f"  - {c['id']}")
+    if len(stale_list) > 20:
+        out.append(f"  - … {len(stale_list) - 20} more (run `stitchgraph find-stale --json`)")
     _emit_issues(out, by_urgency["green"])
 
     out += ["", "## Risk (git × structure)", ""]
@@ -82,6 +84,8 @@ def _emit_issues(out: list[str], issues: list[dict]) -> None:
     for i in issues[:25]:
         node = i.get("node", "").split("::")[-1]
         out.append(f"- **{i['kind']}** `{node}` — {i.get('reason', '')}")
+    if len(issues) > 25:
+        out.append(f"- … {len(issues) - 25} more (run `stitchgraph scan --json`)")
 
 
 def main() -> None:

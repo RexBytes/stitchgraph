@@ -154,7 +154,10 @@ def _make_command(typer, op: Operation):
             typer.echo(_json.dumps(result.to_dict(), indent=2))
         else:
             typer.echo(render_text(op.name, result))
-        raise typer.Exit(_exit_code(result))
+        # An OPERATIONAL failure (missing/unopenable db) exits 2 so scripts can't mistake
+        # it for a clean result (review 2026-07-03, F10c); an op-level advisory refusal
+        # (e.g. get_matrix's too-broad-scope) keeps the envelope exit codes (RED=1, else 0).
+        raise typer.Exit(2 if refusal is not None else _exit_code(result))
 
     # Give the wrapper a signature Typer can introspect: the op's params + --db/--json.
     # Preserve each param's real type so Typer parses/validates it — rebuilding every
@@ -199,7 +202,9 @@ def _anno_type(annotation: Any) -> type:
 
 
 def _exit_code(result) -> int:
-    """scan-style exit codes (design §13.3): non-zero when red issues exist."""
+    """scan-style exit codes (design §13.3): non-zero when red issues exist. Operational
+    failures (missing/unopenable --db) exit 2 at the command level (review 2026-07-03,
+    F10c); an op-level advisory refusal deliberately stays 0 — it IS a clean answer."""
     from ..core.envelope import Urgency
     if result.urgency is Urgency.RED:
         return 1

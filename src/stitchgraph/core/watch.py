@@ -11,18 +11,21 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .extract.python import SKIP_DIRS
 from .extract.treesitter import EXT_LANG
 
 SOURCE_EXTS = {".py", *EXT_LANG}
-_SKIP = {".venv", "venv", "build", "dist", "__pycache__", ".git", "node_modules", "target"}
 
 
 def snapshot(root: str | Path) -> dict[str, float]:
-    """Map of source file -> mtime under root."""
+    """Map of source file -> mtime under root. Prunes the extractors' shared SKIP_DIRS —
+    a private 8-entry copy had drifted from it (no .tox/.mypy_cache/vendor/…), so tox or
+    `composer install` churn triggered full reindexes of files the indexer would never
+    read (review 2026-07-03, F10b)."""
     root = Path(root)
     out: dict[str, float] = {}
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for f in filenames:
             if Path(f).suffix in SOURCE_EXTS:
                 p = os.path.join(dirpath, f)
