@@ -283,10 +283,18 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return None
         if t == "if_statement":
             b = g.add("BRANCH")
-            g.link(ev(node.child_by_field_name("condition"), ctrl), b, _DATA)
+            # `condition` is a REPEATED field (`if cmd1; cmd2; then`): child_by_field_name
+            # returns only the first, and the body loop skipped every condition child, so
+            # the 2nd..nth guard command vanished — a function with an extra guard
+            # fingerprinted IDENTICAL to one without (review 2026-07-03, F5b; the same
+            # repeated-field hazard closed for Java in R197).
+            for i, c in enumerate(node.named_children):
+                if node.field_name_for_named_child(i) == "condition":
+                    v = _do(c, ctrl) if c.type in _STMT_TYPES else ev(c, ctrl)
+                    g.link(v, b, _DATA)
             g.link(ctrl, b, _CTRL)
-            for c in node.named_children:
-                fld = node.field_name_for_named_child(node.named_children.index(c))
+            for i, c in enumerate(node.named_children):
+                fld = node.field_name_for_named_child(i)
                 if fld == "condition":
                     continue
                 if c.type in ("elif_clause", "else_clause"):
@@ -545,7 +553,12 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         if t == "if_statement":
             sid = new_id("If")
             edges.append((parent, sid, "C"))
-            data_edges(node.child_by_field_name("condition"), sid)
+            # `condition` is a REPEATED field (`if cmd1; cmd2; then`) — read every
+            # condition child, not just the first (review 2026-07-03, F5b; mirrors the
+            # VFG fix so the two builders stay in lock-step).
+            for i, c in enumerate(node.named_children):
+                if node.field_name_for_named_child(i) == "condition":
+                    data_edges(c, sid)
             for i, c in enumerate(node.named_children):
                 if node.field_name_for_named_child(i) == "condition":
                     continue

@@ -210,3 +210,72 @@ def test_streaming_equals_full_ondisk(tmp_path):
     # The reported file/node/hole counts must match too (pins the streaming result meta,
     # e.g. the `files` set comprehension in _reindex_streaming).
     assert rf.meta == rs.meta
+
+
+# -- Review 2026-07-03 / F8: the AUTO-stream probe must count only extractable files ----
+def test_auto_stream_ignores_skip_dirs(tmp_path):
+    """The probe used a bare rglob('*') with no SKIP_DIRS/extension filter, so any repo
+    with a populated .venv was forced onto the streaming path (slower, and non-crash-
+    atomic) even when the actual project was tiny (review 2026-07-03, F8)."""
+    from stitchgraph.core.operations import _STREAM_AUTO_FILES, _auto_stream
+
+    # a tiny real project...
+    (tmp_path / "app.py").write_text("def f():\n    return 1\n")
+    # ...next to a big vendored tree the extractor will never read
+    dep = tmp_path / ".venv" / "lib" / "site-packages" / "dep"
+    dep.mkdir(parents=True)
+    for i in range(_STREAM_AUTO_FILES + 10):
+        (dep / f"m{i}.py").write_text("x = 1\n")
+
+    class _Disk:  # duck-typed: _auto_stream only reads .path
+        path = str(tmp_path / "index.db")
+
+    assert _auto_stream(str(tmp_path), _Disk()) is False, (
+        "vendored .venv files must not push a tiny project onto the streaming path")
+    # and a genuinely large first-party tree still streams
+    big = tmp_path / "src"
+    big.mkdir()
+    for i in range(_STREAM_AUTO_FILES + 10):
+        (big / f"m{i}.py").write_text("x = 1\n")
+    assert _auto_stream(str(tmp_path), _Disk()) is True
+
+
+def test_streaming_orphan_edges_swept_after_extractor_failure(tmp_path, monkeypatch):
+    """Review 2026-07-03 F9: a swallowed tree-sitter failure mid-extract leaves committed
+    edge batches whose nodes were never inserted — phantom resolved edges that flood
+    find_holes/scan. The streaming path now sweeps edges whose src/dst has no node."""
+    import warnings
+
+    import stitchgraph as sg
+    from stitchgraph.core.extract import treesitter
+    from stitchgraph.core.model import Edge, Provenance, Relation
+
+    (tmp_path / "app.py").write_text("def real():\n    return 1\n\nreal()\n")
+
+    def exploding_extract(root, ignore=None, *, cache_trees=True, edge_sink=None):
+        # simulate: some batches already committed, then the grammar dies
+        if edge_sink is not None:
+            for i in range(3):
+                edge_sink.append(Edge(
+                    src=f"ghost.rb::caller{i}", relation=Relation.CALLS,
+                    dst_symbol="phantom", dst_id="ghost.rb::phantom", weight=1.0,
+                    provenance=Provenance.EXTRACTED, location="ghost.rb:1:0",
+                    source="tree-sitter"))
+            edge_sink.flush()
+        raise RuntimeError("simulated grammar segfault-class failure")
+
+    monkeypatch.setattr(treesitter, "HAS_TREE_SITTER", True, raising=False)
+    monkeypatch.setattr(treesitter, "extract", exploding_extract)
+
+    db = tmp_path / "idx.db"
+    with sg.Store(str(db)) as store:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            res = sg.reindex(store, str(tmp_path), streaming=True)
+        assert res.ok
+        orphans = store.conn.execute(
+            "SELECT COUNT(*) c FROM edges WHERE src LIKE 'ghost%' OR dst_id LIKE 'ghost%'"
+        ).fetchone()["c"]
+        assert orphans == 0, "phantom edges from the failed extractor must be swept"
+        holes = sg.find_holes(store)
+        assert holes.result == [], "no phantom holes from the failed extractor"

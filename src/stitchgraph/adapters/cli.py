@@ -12,9 +12,9 @@ import json as _json
 import sqlite3
 from typing import Any
 
-from ..core.envelope import refuse
 from ..core.operations import Operation, registry
 from ..core.store import Store
+from ._guard import open_store
 from .render import render_text
 
 
@@ -76,7 +76,6 @@ def build_app():
         import time
 
         from ..core import operations as ops
-        from ..core.store import Store
         from ..core.watch import changed, snapshot
 
         try:
@@ -141,21 +140,24 @@ def _make_command(typer, op: Operation):
     def command(**kwargs: Any) -> None:
         db = kwargs.pop("db")
         as_json = kwargs.pop("json")
-        try:
-            store = Store(db)
-        except (sqlite3.Error, OSError) as exc:
-            # A --db that can't back a database (a directory, FIFO, device, or
-            # unwritable location) made sqlite raise an OperationalError that escaped
-            # as a traceback. The CLI contract is a Result, so refuse cleanly (panel R12).
-            result = refuse(f"cannot open index database {db!r}: {exc}")
+        # Refuse (rather than silently create) a missing/never-indexed DB, and
+        # refuse cleanly on an unopenable --db (a directory, FIFO, device) instead
+        # of a raw sqlite traceback (panel R12; review 2026-07-03, F2b).
+        store, refusal = open_store(db, op.name)
+        if refusal is not None:
+            result = refusal
         else:
+            assert store is not None
             with store:
                 result = op.func(store, **kwargs)
         if as_json:
             typer.echo(_json.dumps(result.to_dict(), indent=2))
         else:
             typer.echo(render_text(op.name, result))
-        raise typer.Exit(_exit_code(result))
+        # An OPERATIONAL failure (missing/unopenable db) exits 2 so scripts can't mistake
+        # it for a clean result (review 2026-07-03, F10c); an op-level advisory refusal
+        # (e.g. get_matrix's too-broad-scope) keeps the envelope exit codes (RED=1, else 0).
+        raise typer.Exit(2 if refusal is not None else _exit_code(result))
 
     # Give the wrapper a signature Typer can introspect: the op's params + --db/--json.
     # Preserve each param's real type so Typer parses/validates it — rebuilding every
@@ -200,7 +202,9 @@ def _anno_type(annotation: Any) -> type:
 
 
 def _exit_code(result) -> int:
-    """scan-style exit codes (design §13.3): non-zero when red issues exist."""
+    """scan-style exit codes (design §13.3): non-zero when red issues exist. Operational
+    failures (missing/unopenable --db) exit 2 at the command level (review 2026-07-03,
+    F10c); an op-level advisory refusal deliberately stays 0 — it IS a clean answer."""
     from ..core.envelope import Urgency
     if result.urgency is Urgency.RED:
         return 1

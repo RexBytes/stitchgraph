@@ -28,15 +28,15 @@ def find_data_loops(store: Store) -> list[list[str]]:
         return []
 
     adj: dict[str, list[str]] = defaultdict(list)
-    for e in store.resolved_edges():
-        if e.dst_id is None:
-            continue
-        if e.relation == Relation.CALLS:
-            adj[e.src].append(e.dst_id)
-        elif e.relation == Relation.WRITES and e.dst_id in var_ids:
-            adj[e.src].append(e.dst_id)          # writer -> state
-        elif e.relation == Relation.READS and e.dst_id in var_ids:
-            adj[e.dst_id].append(e.src)          # state -> reader (reversed)
+    calls, writes, reads = Relation.CALLS.value, Relation.WRITES.value, Relation.READS.value
+    # streamed tuples, not materialized Edge objects (review 2026-07-03, F11a)
+    for src, rel, dst_id, _w in store.iter_resolved():
+        if rel == calls:
+            adj[src].append(dst_id)
+        elif rel == writes and dst_id in var_ids:
+            adj[src].append(dst_id)              # writer -> state
+        elif rel == reads and dst_id in var_ids:
+            adj[dst_id].append(src)              # state -> reader (reversed)
 
     return [comp for comp in _tarjan(adj)
             if len(comp) > 1 and any(n in var_ids for n in comp)]

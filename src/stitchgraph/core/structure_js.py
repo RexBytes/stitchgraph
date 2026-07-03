@@ -367,7 +367,18 @@ def _build_vfg(fn, data: bytes) -> _VFG:
                 it = g.add("ITERVAR")
                 g.link(ev(right, loop), it, _DATA)
                 bind(left, it)
-            for fld in ("condition", "initializer", "increment"):
+            # Classic-for clauses in EXECUTION order: the initializer runs first and, when it
+            # is a declaration (`for (let i = 0; …)`), must go through do() so the binding
+            # enters env — ev() has no declaration case, so the loop variable read FREE in the
+            # whole body and the documented temp-factoring invariance broke for the most common
+            # JS loop form (review 2026-07-03, F5a; the same shape Java already handles).
+            init = node.child_by_field_name("initializer")
+            if init is not None:
+                if init.type in ("variable_declaration", "lexical_declaration"):
+                    do(init, loop)
+                else:
+                    ev(_strip(init), loop)
+            for fld in ("condition", "increment"):
                 sub = node.child_by_field_name(fld)
                 if sub is not None:
                     ev(_strip(sub), loop)

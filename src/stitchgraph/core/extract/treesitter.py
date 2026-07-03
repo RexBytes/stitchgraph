@@ -638,11 +638,26 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
 
     # Resolve names *within a language* — a JS call must not bind to a Rust fn. C and C++
     # share one bucket (`_canon_lang`) so a header symbol resolves across the .h/.c/.cpp split.
+    # MODULE nodes are kept in a SEPARATE bucket, offered only to IMPORTS resolution: binding a
+    # call/reference to a module node violates the `_ref_edges` invariant the Python extractor
+    # and the store enforce (panels R13B/R31A) — `helper()` bound to `helper.rb`'s module node,
+    # inflating module fan_in, diluting real candidates' 1/n weights, and diverging from the
+    # store's module-excluded `_rewiden_resolved` on incremental updates (review 2026-07-03, F6).
     by_lang: dict[str, dict[str, list[str]]] = {}
+    mods_by_lang: dict[str, dict[str, list[str]]] = {}
     for n in nodes:
         _fl = file_lang.get(n.id.split("::", 1)[0])
         if _fl:
-            by_lang.setdefault(_canon_lang(_fl), {}).setdefault(n.name, []).append(n.id)
+            target = mods_by_lang if n.kind is NodeKind.MODULE else by_lang
+            target.setdefault(_canon_lang(_fl), {}).setdefault(n.name, []).append(n.id)
+
+    def _with_modules(lang: str) -> dict[str, list[str]]:
+        """Candidate map for IMPORTS: definitions plus module nodes (an import legitimately
+        binds to a module)."""
+        merged = {name: list(ids) for name, ids in by_lang.get(lang, {}).items()}
+        for name, ids in mods_by_lang.get(lang, {}).items():
+            merged.setdefault(name, []).extend(ids)
+        return merged
 
     # Write-only accumulator: a real list, or the streaming sink (same append API).
     edges: Any = [] if edge_sink is None else edge_sink
@@ -719,7 +734,7 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
         _ref(edges, class_id, base, by_lang.get(_canon_lang(lang), {}),
              class_id.split("::", 1)[0], 0, relation=Relation.INHERITS)
     for mod_id, name, lang in imports:
-        _ref(edges, mod_id, name, by_lang.get(_canon_lang(lang), {}),
+        _ref(edges, mod_id, name, _with_modules(_canon_lang(lang)),
              mod_id.split("::", 1)[0], 0, relation=Relation.IMPORTS)
     _seed_constructors(nodes, edges, file_lang)
     # A module node shares the id-space with same-named symbols: `run.sh::run` for a bash

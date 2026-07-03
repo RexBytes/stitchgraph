@@ -39,7 +39,12 @@ def _render_payload(payload: object, indent: str = "  ") -> str:
     if isinstance(payload, list):
         if not payload:
             return f"{indent}(empty)"
-        return "\n".join(f"{indent}- {_one(item)}" for item in payload[:50])
+        out = "\n".join(f"{indent}- {_one(item)}" for item in payload[:50])
+        if len(payload) > 50:
+            # Say the output was cut — silent truncation reads as "that's everything"
+            # (review 2026-07-03, F10e). --json always carries the full payload.
+            out += f"\n{indent}… {len(payload) - 50} more (use --json for the full list)"
+        return out
     if isinstance(payload, dict):
         return "\n".join(f"{indent}{k}: {_one(v)}" for k, v in payload.items())
     return f"{indent}{payload}"

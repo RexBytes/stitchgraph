@@ -122,6 +122,18 @@ class Store:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
+        if self.path != ":memory:":
+            # Concurrency pragmas for the advertised multi-process workflow (`watch` writing
+            # while the MCP server / CLI reads the same DB): WAL lets readers proceed during a
+            # multi-second reindex commit, and busy_timeout retries instead of failing with
+            # 'database is locked' the moment two openers overlap (review 2026-07-03, F10a).
+            # WAL is a persistent DB property and is a no-op if already set; :memory: has no
+            # journal. Failure is non-fatal (e.g. a read-only filesystem) — behave as before.
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA busy_timeout=10000")
+            except sqlite3.Error:
+                pass
         # Per-language name resolution: keeps the incremental resolver from binding a bare
         # name across languages (Rust helper -> Go helper), matching full reindex (panel R34A).
         self.conn.create_function("same_lang", 2, _same_lang, deterministic=True)
@@ -758,10 +770,16 @@ class Store:
                 rel = r["relation"]
                 if rel not in valid:
                     continue
+                src, dst = r["src"], r["dst_id"]
+                if not isinstance(src, str) or not isinstance(dst, str):
+                    # non-str src/dst (BLOB corruption) can't be a real resolved edge —
+                    # skip, mirroring _row_to_edge (R31B). Previously only consumers that
+                    # went through Edge materialization were protected (review 2026-07-03).
+                    continue
                 w = r["weight"]
                 if not isinstance(w, (int, float)) or not math.isfinite(w):
                     w = 1.0
-                yield r["src"], rel, r["dst_id"], w
+                yield src, rel, dst, w
 
     def node_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"]

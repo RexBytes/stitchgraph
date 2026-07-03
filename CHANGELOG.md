@@ -4,6 +4,51 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.25.0] — 2026-07-03
+
+**The external-review hardening release** — a full-repo external review
+(`docs/REVIEW_FINDINGS_2026-07-03.md`, every finding recorded with status) fixed 1 CRITICAL,
+6 HIGH, 8 MEDIUM, 9 LOW. Full notes: `docs/RELEASE_NOTES_v3.25.0.md`. No schema change.
+
+### Fixed
+- **`reindex` on an invalid root refuses instead of wiping the existing index** (was: a typo'd
+  path executed `DELETE FROM nodes/edges` and returned ok/1.0).
+- **Adapters refuse a missing/never-indexed DB** instead of silently creating an empty one and
+  answering queries at full confidence (CLI + MCP + report; only `reindex` may create).
+- **`find_modes.intrinsic_dimensionality` uses the full spectrum** (was: truncated to the top-16
+  energy, silently saturating at 16); sparse path reports a flagged lower bound when applicable;
+  `feature_map` energy fractions share the true denominator.
+- **POD ops normalize test ids** (`|run`/`|setup` phases, `[param]` rows) — no more inflated test
+  counts, spurious redundant pairs, or non-runnable ids in `minimal_test_set`.
+- **Body matrix:** JS `for (let i = 0; …)` binds its loop variable; Bash multi-command `if`
+  conditions are no longer truncated (VFG + PDG); Python walrus binds; PHP `foreach` key/value
+  pair binds both names (VFG + PDG); the Python PDG no longer reads through lambda bodies.
+- **tree-sitter references no longer bind to MODULE nodes** (the `_ref_edges` invariant; imports
+  keep module resolution) — restores incremental == full convergence for tree-sitter languages.
+- **Streaming:** the AUTO-stream probe prunes `SKIP_DIRS` (a `.venv` no longer forces streaming);
+  a failed extractor mid-stream can no longer leave phantom edges (orphan sweep).
+- `watch` shares the extractors' `SKIP_DIRS`; `iter_resolved` skips BLOB-corrupt rows; greedy
+  minimal-cover loops prune exhausted rows; WL fingerprint hashes widen to 64-bit.
+
+### Added
+- **`stitchgraph-mcp` console script** with `--db` / `STITCHGRAPH_DB` (the MCP server was
+  previously unpointable at a database).
+- File-backed stores open in **WAL + busy_timeout(10s)** (watch + MCP on one DB no longer hits
+  `database is locked`).
+- `docs/REVIEW_FINDINGS_2026-07-03.md` — the review record; deferred items D1–D5 documented.
+- Truncation markers ("… N more") in text render and report output.
+- An end-to-end FastMCP `call_tool` test; the MCP build test can fail (no longer skip-on-any-error);
+  the `dev` extra includes `mcp`.
+
+### Changed (behavioural — see the release notes' ⚠️ section)
+- `intrinsic_dimensionality` can exceed the reported mode count (the R273 clamp enforced the
+  saturation bug and is removed; R272's zero-variance guard stays).
+- `find_outlier_tests`: smoke detection keys on row **breadth** (solver-independent); payload field
+  `mode1_load` → `breadth`.
+- CLI exits **2** on operational failures (missing/unopenable `--db`); advisory refusals stay 0.
+- POD `meta["tests"]` counts logical (normalized) tests.
+- `test_order`/`greedy_order` gain ties pick the lowest test id (matching `find_modes`).
+
 ## [3.24.0] — 2026-07-02
 
 **Release marker — the POD-toolkit line merges to `main`.** No new code beyond v3.23.1 (the tip is

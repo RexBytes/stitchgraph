@@ -158,6 +158,9 @@ def _build_vfg(fn, data: bytes) -> _VFG:
         elif t == "list_literal":  # `[$a, $b] = ...` destructuring
             for c in target.named_children:
                 bind(c, val)
+        elif t == "pair":  # `foreach ($m as $k => $v)`: bind BOTH key and value — the pair
+            for c in target.named_children:   # previously bound nothing, so $k/$v read FREE in
+                bind(c, val)                  # the whole body (review 2026-07-03, F5d)
 
     def ev(node, ctrl: int | None) -> int | None:
         if node is None:
@@ -477,8 +480,8 @@ def pdg_source(source: str, lang: str = "php") -> dict[str, tuple[list[str], lis
     Accepted layer-level under-approximations (cross-language consistent, mirror the Python
     reference and the sibling PDGs), all *symmetric* — shared by BOTH the PDG and the VFG so they
     create no VFG/PDG divergence: closure/arrow-function bodies are opaque (a param used only inside
-    one is read by neither builder); a `foreach ($x as $k => $v)` key/value `pair` is not modelled
-    as a binding by either builder; `Foo::$x` / `Foo::CONST` are opaque freevars in both."""
+    one is read by neither builder); `Foo::$x` / `Foo::CONST` are opaque freevars in both. (The
+    `foreach` key/value `pair` binds both names in both builders since review 2026-07-03, F5d.)"""
     return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
 
 
@@ -491,7 +494,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     approximation (no SSA/alias analysis), advisory only — never feeds liveness. Its read/write
     projection (`collect`/`bind_place`) reads ONLY genuine value operands and records ONLY genuine
     bindings, matching the VFG's `ev`/`bind` node-for-node: a member/property NAME, a call's method
-    NAME, a `Foo::$x` scoped access, and a `foreach` `pair` are never read/bound as values here."""
+    NAME and a `Foo::$x` scoped access are never read/bound as values here."""
     nodes: dict[int, str] = {}
     edges: list[tuple[int, int, str]] = []
     counter = 0
@@ -518,8 +521,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     def bind_place(target, loads: set, stores: set) -> None:
         """An assignment target, mirroring the VFG's `bind`: a plain `$x` defines a name (a STORE);
         a member/subscript place defines no name — its object/index operands are READS; `[$a,$b]`
-        destructures. A `pair` (foreach key => value) binds NOTHING — the VFG's `bind` has no `pair`
-        case, so mirroring keeps the two builders in lock-step."""
+        destructures; a `pair` (foreach key => value) binds BOTH names, mirroring the VFG's `pair`
+        case (review 2026-07-03, F5d) so the two builders stay in lock-step."""
         if target is None:
             return
         t = target.type
@@ -531,6 +534,9 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             for c in target.named_children:
                 collect(c, loads, stores)
         elif t == "list_literal":
+            for c in target.named_children:
+                bind_place(c, loads, stores)
+        elif t == "pair":  # foreach ($m as $k => $v): both names bind (F5d)
             for c in target.named_children:
                 bind_place(c, loads, stores)
 
@@ -732,7 +738,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
                     collect(c, loads, stores)  # the collection being iterated
                     seen_collection = True
                 else:
-                    bind_place(c, loads, stores)  # the loop variable(s) (a `pair` binds nothing)
+                    bind_place(c, loads, stores)  # the loop variable(s); a `pair` binds both (F5d)
             data_from(loads, stores, sid)
             block(body, sid)
         elif t in ("while_statement", "do_statement"):

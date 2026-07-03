@@ -6,19 +6,17 @@ urgency tiers (Fix now / Look closer / Cleanup). Stdlib-only.
 
 from __future__ import annotations
 
-import sqlite3
-
 from ..core import operations as ops
-from ..core.store import Store
+from ._guard import open_store
 
 
 def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
-    try:
-        store = Store(db)
-    except (sqlite3.Error, OSError) as exc:
-        # A db path that can't back a database yields a one-line report, not a raw
-        # sqlite traceback (panel R12).
-        return f"# stitchgraph report\n\ncannot open index database {db!r}: {exc}\n"
+    # A missing/never-indexed or unopenable db yields a one-line report, not a raw
+    # sqlite traceback or a confidently-empty report (panel R12; review 2026-07-03 F2b).
+    store, refusal = open_store(db, "report")
+    if refusal is not None:
+        return f"# stitchgraph report\n\n{'; '.join(refusal.review_reasons)}\n"
+    assert store is not None
     with store:
         orient = ops.orient(store)
         scan = ops.scan(store)
@@ -54,6 +52,8 @@ def build_report(db: str = "stitchgraph.db", repo: str | None = None) -> str:
                f"(confidence {stale.confidence:.2f}, verify before removing)")
     for c in stale_list[:20]:
         out.append(f"  - {c['id']}")
+    if len(stale_list) > 20:
+        out.append(f"  - … {len(stale_list) - 20} more (run `stitchgraph find-stale --json`)")
     _emit_issues(out, by_urgency["green"])
 
     out += ["", "## Risk (git × structure)", ""]
@@ -84,6 +84,8 @@ def _emit_issues(out: list[str], issues: list[dict]) -> None:
     for i in issues[:25]:
         node = i.get("node", "").split("::")[-1]
         out.append(f"- **{i['kind']}** `{node}` — {i.get('reason', '')}")
+    if len(issues) > 25:
+        out.append(f"- … {len(issues) - 25} more (run `stitchgraph scan --json`)")
 
 
 def main() -> None:

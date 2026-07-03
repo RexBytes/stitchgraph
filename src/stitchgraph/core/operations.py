@@ -355,16 +355,27 @@ def impact_of(store: Store, name: str) -> Result:
     # (homonym name-binds) as certain (panel R33A). The backing edges are the liveness
     # edges induced on the blast radius (every dependent reaches the target through them).
     radius = dependents | {target.id}
-    liveness = set(LIVENESS_RELATIONS)
-    backing = [e for e in store.resolved_edges()
-               if e.relation in liveness and e.src in dependents and e.dst_id in radius]
-    if not backing or all(e.provenance is Provenance.EXTRACTED for e in backing):
+    liveness = {r.value for r in LIVENESS_RELATIONS}
+    # Streamed (cursor) provenance tally: impact_of runs on EVERY query, and
+    # `resolved_edges()` fetchall+Edge-materializes the whole table — the documented
+    # 16M-edge OOM class `iter_resolved` exists to avoid (review 2026-07-03, F11a).
+    # Only three aggregates are needed, so nothing is materialized.
+    n_backing = n_conf = 0
+    any_ambiguous = False
+    cur = store.conn.execute(
+        "SELECT src, relation, dst_id, provenance FROM edges WHERE dst_id IS NOT NULL")
+    for src, rel, dst_id, prov_s in cur:
+        if rel in liveness and src in dependents and dst_id in radius:
+            n_backing += 1
+            if prov_s == Provenance.EXTRACTED.value:
+                n_conf += 1
+            elif prov_s == Provenance.AMBIGUOUS.value:
+                any_ambiguous = True
+    if not n_backing or n_conf == n_backing:
         return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
                   count=len(dependents), tests=len(tests))
-    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in backing)
-            else Provenance.INFERRED)
-    n_conf = sum(1 for e in backing if e.provenance is Provenance.EXTRACTED)
-    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(backing)), 2),
+    prov = Provenance.AMBIGUOUS if any_ambiguous else Provenance.INFERRED
+    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / n_backing), 2),
              provenance=prov, count=len(dependents), tests=len(tests))
     res.needs_review = True
     res.add_reason("some dependents are reached only through name-based "
@@ -674,8 +685,18 @@ def find_modes(store: Store, coverage: str = "coverage_modes.json",
     except (RuntimeError, MemoryError) as exc:  # matrix too big for dense path / OOM on a huge artifact
         return refuse(f"coverage matrix too large to decompose in memory ({exc}); "
                       "install the 'spectral' extra or reduce the suite", confidence=0.0)
-    return ok(payload, provenance=Provenance.EXTRACTED,
-              count=len(payload["modes"]), **meta)
+    res = ok(payload, provenance=Provenance.EXTRACTED,
+             count=len(payload["modes"]), **meta)
+    # The sparse solver decomposes the UNCENTRED matrix (mode 1 ≈ the mean profile), so mode
+    # rankings differ qualitatively from the dense mean-centred path — say so instead of hiding
+    # it in meta["solver"] (review 2026-07-03, F7).
+    if meta.get("solver") == "scipy":
+        res.add_reason("modes computed on the uncentred matrix (sparse solver): mode 1 "
+                       "approximates the mean coverage profile, unlike the dense mean-centred path")
+    if meta.get("intrinsic_dimensionality_is_lower_bound"):
+        res.add_reason("intrinsic_dimensionality is a lower bound — only the top modes were "
+                       "computed and they capture <90% of total energy")
+    return res
 
 
 @operation("Generate a sandboxed per-test-coverage capture kit (Docker / shell / CI) for find_modes.")
@@ -889,9 +910,9 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
     ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
         min_shared > 0 else 3
-    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those
-    connected = {frozenset((e.src, e.dst_id)) for e in store.resolved_edges()
-                 if e.dst_id is not None}
+    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those.
+    # Streamed tuples, not materialized Edge objects (review 2026-07-03, F11a).
+    connected = {frozenset((src, dst_id)) for src, _rel, dst_id, _w in store.iter_resolved()}
     try:
         pairs = coverage_query.hidden_coupling(cov, connected, min_shared=ms, limit=lim)
     except MemoryError:
@@ -1388,13 +1409,12 @@ def summarize_subsystem(store: Store, path: str) -> Result:
 
     inbound: dict[str, int] = {}   # external -> member (public surface)
     outbound: set[str] = set()     # member -> external (dependencies)
-    for e in store.resolved_edges():
-        if e.dst_id is None:
-            continue
-        if e.dst_id in mids and e.src not in mids:
-            inbound[e.dst_id] = inbound.get(e.dst_id, 0) + 1
-        elif e.src in mids and e.dst_id not in mids:
-            outbound.add(e.dst_id.split("::", 1)[0])
+    # streamed tuples, not materialized Edge objects (review 2026-07-03, F11a)
+    for src, _rel, dst_id, _w in store.iter_resolved():
+        if dst_id in mids and src not in mids:
+            inbound[dst_id] = inbound.get(dst_id, 0) + 1
+        elif src in mids and dst_id not in mids:
+            outbound.add(dst_id.split("::", 1)[0])
 
     fi = fan_in(store)
     hubs = sorted((n.id for n in members), key=lambda i: fi.get(i, 0), reverse=True)
@@ -1685,6 +1705,16 @@ def reindex(store: Store, path: str, precise: bool = False,
         # AttributeError the probe wouldn't otherwise catch.
         usable, abs_root = False, ""
     if not usable:
+        # An invalid root must NEVER destroy an existing index: a one-character typo
+        # (`reindex srcc`), a wrong cwd, or a deleted directory would otherwise wipe a
+        # multi-minute index and report success (review 2026-07-03, F1). With content
+        # present, refuse and leave the store untouched. Only a store with nothing to
+        # lose keeps the historical degrade-to-empty contract (panels R17A/YYY/ZZZ:
+        # hostile/missing roots must not raise).
+        if store.node_count() > 0:
+            return refuse(
+                f"root {path!r} is not a readable directory — the existing index "
+                "was left untouched; pass a valid project root to rebuild it")
         with store.conn:
             store.conn.execute("DELETE FROM nodes")
             store.conn.execute("DELETE FROM edges")
@@ -1744,10 +1774,17 @@ def _auto_stream(path: str, store: Store) -> bool:
     """Decide whether AUTO mode (`streaming=None`) should stream. Streams only for an on-disk
     store (a `:memory:` DB keeps rows in RAM, so streaming saves nothing there) with a large
     source tree. The count short-circuits at the threshold, so this is O(threshold), not
-    O(repo) — a cheap probe, never a second full walk on a big monorepo."""
+    O(repo) — a cheap probe, never a second full walk on a big monorepo.
+
+    Counts only files EXTRACTION will actually read: the old bare rglob("*") counted
+    everything — a populated .venv alone exceeds the threshold, forcing a 50-file project
+    onto the ~40% slower, non-crash-atomic streaming path (review 2026-07-03, F8). Prunes
+    the shared SKIP_DIRS exactly like `_wanted` in both extractors."""
     if getattr(store, "path", ":memory:") == ":memory:":
         return False
-    from pathlib import Path
+    import os
+
+    from .extract.python import SKIP_DIRS
     suffixes = {".py"}  # the Python extractor's fixed extension
     try:
         from .extract import treesitter
@@ -1756,11 +1793,13 @@ def _auto_stream(path: str, store: Store) -> bool:
         pass
     n = 0
     try:
-        for p in Path(path).rglob("*"):
-            if p.suffix in suffixes and p.is_file():
-                n += 1
-                if n >= _STREAM_AUTO_FILES:
-                    return True
+        for _root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for f in files:
+                if os.path.splitext(f)[1] in suffixes:
+                    n += 1
+                    if n >= _STREAM_AUTO_FILES:
+                        return True
     except OSError:
         return False
     return False
@@ -1887,6 +1926,17 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     with store.conn:
         for n in nodes:
             store.add_node(n)
+        # Orphan sweep (review 2026-07-03, F9): a swallowed tree-sitter failure mid-extract
+        # (see extract_project's warn-and-continue) leaves already-COMMITTED edge batches whose
+        # defining nodes were never returned — resolved edges into/out of phantom ids that
+        # would flood find_holes/scan with findings indistinguishable from real broken
+        # references. Drop any edge whose src or resolved dst has no node. On a clean run this
+        # deletes nothing (every extractor edge resolves against the full symbol table), so the
+        # streamed index stays byte-identical to the in-memory path.
+        store.conn.execute(
+            """DELETE FROM edges WHERE
+                   src NOT IN (SELECT id FROM nodes)
+                OR (dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes))""")
     # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo. The
     # dedup correlates rows by (src, relation, dst_id); a covering index makes its EXISTS
     # subqueries index lookups instead of full scans. Temporary: dropped after, since the
