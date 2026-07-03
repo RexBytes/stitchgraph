@@ -557,8 +557,8 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   itself O(edges) in Python (a fetchall of every resolved CALLS/REFERENCES row) and re-OOM'd
   Home Assistant in the endgame — now symbol-scale Python with the scan/insert inside SQLite,
   and the gate corpus contains inheritance so the widening path stays exercised. End-to-end
-  on HA 2024.3.3 (6,739 files, 16.2M edges): completes under a 4 GB address-space ulimit at
-  ~113 MB peak RSS.
+  on HA 2024.3.3 (6,728 files, 16.0M edges): completes under a 4 GB address-space ulimit at
+  158 MB peak RSS in ~34 min.
 - **Querying at that scale (v2.1.0):** the reachability sweeps (`find_stale`, `impact_of`,
   `fan_in`) now stream their adjacency from `Store.iter_resolved()` rather than materialising
   every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM. The

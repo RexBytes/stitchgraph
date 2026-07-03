@@ -28,6 +28,11 @@ PHP repos twice its size validated at 269 MB. Notes: `docs/RELEASE_NOTES_v3.28.0
   a subprocess under a 130 MB `RLIMIT_AS` cap, falsified in both directions against the
   pre-fix code. Constant-memory is now a tested invariant, not a claim.
 
+### Validated
+- Home Assistant 2024.3.3 (6,728 files, 58,998 nodes, 16.0M edges) — the repo from the field
+  report — completes a clean end-to-end streaming reindex under a 4 GB address-space ulimit:
+  **34 min, 158 MB peak RSS**.
+
 ## [3.27.1] — 2026-07-03
 
 **The second dogfood patch** — v3.27.0 run on itself (`research/15-dogfood-v3.27.md`), the

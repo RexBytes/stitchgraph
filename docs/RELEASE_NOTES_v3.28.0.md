@@ -45,10 +45,12 @@ root cause, both fixed, and constant-memory is now a *CI-tested invariant* inste
 
 ## Validation
 
-- **Home Assistant 2024.3.3** (6,739 `.py` files, 59,900 nodes, 16.15M raw edges): the full
-  streaming reindex previously OOM'd; it now completes end-to-end under a **4 GB address-space
-  ulimit** — extraction streams at a flat ~113 MB RSS and the endgame (index + widening +
-  global dedup) peaks at ~113 MB. <!-- FINAL_HA_NUMBERS -->
+- **Home Assistant 2024.3.3** (6,728 files, 58,998 nodes, **16.0M edges**): the repo that
+  OOM'd at ~7 GB now completes a clean end-to-end streaming reindex under a **4 GB
+  address-space ulimit** in **34 min at 158 MB peak RSS** — extraction streams at a flat
+  ~115 MB, and the endgame (covering index + override widening + global dedup, run
+  separately on the 16.15M-edge graph the failed run left behind) takes ~5 min at 113 MB
+  peak where the old code died with MemoryError.
 - Streaming differential oracle (streaming == full, byte-identical), including a new
   HA-shaped fixture (homonym methods × inheritance × override fan-out): green.
 - Full suite green.
