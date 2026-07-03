@@ -10,7 +10,7 @@ venv/
 *.db
 stitchgraph.db
 .DS_Store
-.coverage
+.coverage*
 .readiness_cov.json
 .claude/worktrees/
 research/_corpus/
