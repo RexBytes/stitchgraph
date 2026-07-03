@@ -11,6 +11,15 @@
 > store twin), measured at **8.6M edges / 50 MB peak**, and adds a hard-RLIMIT CI gate so
 > constant-memory is a *tested invariant*, not a claim — the pre-fix code demonstrably
 > dies at the gate's cap at the exact `_ref_edges` append the diagnosis named.
+>
+> **Second defect, same day:** the store twin's first cut (`Store._propagate_overrides`)
+> `fetchall()`'d every resolved CALLS/REFERENCES row — O(edges) Python memory in the
+> *endgame*, after the whole index had streamed at a flat ~113 MB; real Home Assistant
+> (16.15M edges) still died there under a 4 GB cap while the gate passed, because the gate
+> corpus had no inheritance and the widening early-returned. Now: symbol-scale Python +
+> SQL-side scan/insert (byte-identical, oracle-pinned), HA endgame ~160 s at 113 MB peak;
+> the gate corpus gained class hierarchies and a widened-edge assertion so the early-return
+> blind spot is itself gated.
 
 Goal: index a tens-of-thousands-of-file monorepo (Magento: 24k files) without holding the
 whole graph in RAM. Today `reindex` builds **all ASTs + all nodes + all edges** in memory,

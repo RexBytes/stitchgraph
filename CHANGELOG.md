@@ -4,6 +4,30 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.28.0] — 2026-07-03
+
+**The constant-memory release.** A field report falsified the core scale claim: Home
+Assistant (pure Python, heavy homonym fan-out) OOM'd at ~7 GB with `streaming=True` while
+PHP repos twice its size validated at 269 MB. Notes: `docs/RELEASE_NOTES_v3.28.0.md`.
+
+### Fixed
+- **The Python extractor never streamed**: its edge list was drained to the sink only after
+  being fully materialised. It now drains per pass-2 file (INHERITS teed for the post-passes,
+  override widening delegated to the store twin). A/B at 610 files: 412 MB linear → 43 MB
+  flat; 8.64M edges peak at 50 MB.
+- **`Store._propagate_overrides` was O(edges) in Python** (fetchall of every resolved
+  CALLS/REFERENCES row + a seen-set) and re-OOM'd Home Assistant in the endgame after the
+  index had streamed at a flat ~113 MB. Now symbol-scale Python + SQL-side scan/insert,
+  byte-identical (streaming + incremental oracles). On HA's 16.15M-edge graph: ~160 s,
+  113 MB peak.
+- The streaming path's final holes tally used `len(unresolved_edges())` — an Edge object per
+  hole; now `Store.unresolved_count()` (COUNT twin).
+
+### Added
+- A hard memory-regression gate: 450-file homonym+inheritance corpus (~1.2M edges) indexed in
+  a subprocess under a 130 MB `RLIMIT_AS` cap, falsified in both directions against the
+  pre-fix code. Constant-memory is now a tested invariant, not a claim.
+
 ## [3.27.1] — 2026-07-03
 
 **The second dogfood patch** — v3.27.0 run on itself (`research/15-dogfood-v3.27.md`), the

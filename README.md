@@ -239,6 +239,9 @@ oracle. Measured:
 - A homonym-fanout Python corpus producing **8.6M edges: 50 MB** peak (the pre-v3.28.0
   Python path materialized its edge list first — a field report of Home Assistant
   OOMing at 7 GB exposed it; fixed and now **gated in CI** by a hard-memory-cap test).
+- Home Assistant 2024.3.3 (6,739 Python files, 59,900 nodes, 16.2M edges): the full
+  streaming reindex — the repo that OOM'd — completes end-to-end under a **4 GB
+  address-space ulimit at ~113 MB peak RSS**.
 - Query sweeps stream their adjacency too — a 16M-edge graph is queried in ~2 GB.
 
 Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
