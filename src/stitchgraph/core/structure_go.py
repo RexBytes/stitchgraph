@@ -25,6 +25,16 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
+from .structure_common import (
+    first,
+    last,
+    make_parser,
+    nc,
+    node_text,
+    op_text,
+    pdg_state,
+    vfg_state,
+)
 
 _EXTS = {".go": "go"}
 
@@ -43,14 +53,7 @@ _CONST = frozenset({
 
 
 def _parser(lang: str = "go"):
-    """A tree-sitter Go parser, or None if the extra isn't installed (advisory degrade)."""
-    try:
-        from tree_sitter import Parser
-
-        from .extract.treesitter import _load_grammar
-        return Parser(_load_grammar("go"))
-    except Exception:  # noqa: BLE001 — no extra / no grammar -> the body layer adds nothing
-        return None
+    return make_parser(lang)
 
 
 def _lang_for_ext(ext: str) -> str | None:
@@ -120,17 +123,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one Go function/method node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds (receiver + params + named results), copy
     propagation through locals, operations and control points as nodes, data/control edges."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     # seed the receiver (`func (r *T) M()` — r is like self), the parameters, and any named results
     # (`func f() (n int)` — n is an in-scope zero-valued local).
@@ -452,31 +446,19 @@ def _param_names(node, text) -> list[str]:
 
 
 def _nc(node):
-    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
-    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
-    by a leading/trailing comment — filter them out before selecting a child by position."""
-    return [c for c in node.named_children if c.type != "comment"]
+    return nc(node)
 
 
 def _first(node):
-    k = _nc(node)
-    return k[0] if k else None
+    return first(node)
 
 
 def _last(node):
-    k = _nc(node)
-    return k[-1] if k else None
+    return last(node)
 
 
 def _op_text(node, text) -> str:
-    op = node.child_by_field_name("operator")
-    if op is not None:
-        return op.text.decode("utf-8", "replace")
-    # operator isn't a named field on every grammar version — scan anonymous children.
-    for c in node.children:
-        if not c.is_named and c.text:
-            return c.text.decode("utf-8", "replace")
-    return "?"
+    return op_text(node)
 
 
 # --- STATEMENT layer (PDG) — design §5c sweep, Go ------------------------------------------------
@@ -507,20 +489,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     ENTRY carrying the parameters (and receiver), control ('C') / data ('D', sequential reaching-def)
     edges. Nested functions (`func_literal`) are opaque NESTED leaves; reorder-invariant. A structural
     approximation (no SSA/alias analysis), advisory only — never feeds liveness."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")
     for fld in ("receiver", "parameters"):
@@ -600,13 +570,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         loads: set = set()
         stores: set = set()
         collect(hdr, loads, stores)
-        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
-        # list (and get_matrix cells) non-reproducible across processes (R205).
-        for nm in sorted(loads):
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
+        data_from(loads, stores, sid)
 
     def bind_target(node, sid: int) -> None:
         # a `range` binding (`for k, v := range m`) STORES its loop vars.

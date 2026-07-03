@@ -15,6 +15,7 @@ import math
 import re
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
+from functools import partial
 from pathlib import Path
 
 from . import (
@@ -192,11 +193,15 @@ def _python_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
                 yield node_id, fp
 
 
-def _js_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored JS/TS/TSX function/method, the
-    JS-family analogue of `_python_fn_fingerprints`. The grammar is chosen per file extension, so
-    a .ts file is fingerprinted with the TypeScript grammar and a .tsx with TSX. Requires the
-    tree-sitter extra; without it `structure_js.fingerprint_source` returns {} and nothing yields."""
+def _ts_fn_fingerprints(store: Store, mod) -> Iterator[tuple[str, Counter[str]]]:
+    """Yield (node_id, structural fingerprint) for every stored function/method whose file
+    extension belongs to `mod` (a tree-sitter structure_* frontend) — the shared body of the
+    nine per-language iterators this replaced (review 2026-07-03, D2 stage 4). The grammar is
+    chosen per file extension (the JS family needs this — a .ts file fingerprints with the
+    TypeScript grammar; single-grammar languages ignore it). Node ids are `path::qualname`
+    with files relative to the indexed root, so each file is read once and mapped back by
+    qualname. Requires the tree-sitter extra; without it `mod.fingerprint_source` returns {}
+    and nothing yields (advisory, never raises)."""
     root = store.get_meta("root") or "."
     by_path: dict[tuple[str, str], list[tuple[str, str]]] = {}
     for n in store.all_nodes_full():
@@ -205,7 +210,7 @@ def _js_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
         path, sep, qual = n.id.partition("::")
         if not sep:
             continue
-        lang = structure_js._lang_for_ext(Path(path).suffix)
+        lang = mod._lang_for_ext(Path(path).suffix)
         if lang is None:
             continue
         by_path.setdefault((path, lang), []).append((n.id, qual.split("#", 1)[0]))
@@ -214,217 +219,22 @@ def _js_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
             src = Path(root, path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        fps = structure_js.fingerprint_source(src, lang=lang)
+        fps = mod.fingerprint_source(src, lang=lang)
         for node_id, qual in items:
             fp = fps.get(qual)
             if fp is not None:
                 yield node_id, fp
 
 
-def _go_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored Go function/method, the Go analogue
-    of `_python_fn_fingerprints`. Keyed by bare name (the Go extractor's scheme). Requires the
-    tree-sitter extra; without it `structure_go.fingerprint_source` returns {} and nothing yields."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_go._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_go.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _rust_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored Rust function/method, the Rust
-    analogue of `_python_fn_fingerprints`. Keyed by the extractor's scheme (bare `free_fn`,
-    `Type.method` for impl methods). Requires the tree-sitter extra; without it
-    `structure_rust.fingerprint_source` returns {} and nothing yields."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_rust._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_rust.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _cpp_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored C/C++ function/method, the C/C++
-    analogue of `_python_fn_fingerprints`. Keyed by the extractor's scheme (bare `free_fn`,
-    `Class.method` inline, bare last-component for out-of-line `Foo::m`). Requires the tree-sitter
-    extra; without it `structure_cpp.fingerprint_source` returns {} and nothing yields."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_cpp._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_cpp.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _java_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored Java method/constructor, the Java
-    analogue of `_python_fn_fingerprints`. Keyed by the extractor's scheme (`Outer.compute`, nested
-    `Outer.Inner.m`, constructor `C.C`). Requires the tree-sitter extra; without it
-    `structure_java.fingerprint_source` returns {} and nothing yields."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_java._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_java.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _csharp_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored C# method/constructor/local-function,
-    the C# analogue of `_python_fn_fingerprints`. Keyed by the extractor's scheme (`Calc.Compute`,
-    constructor `Calc.Calc`, local function `Calc.Local.Inner`; the namespace is not part of the key).
-    Requires the tree-sitter extra; without it `structure_csharp.fingerprint_source` returns {}."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_csharp._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_csharp.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _ruby_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored Ruby method, the Ruby analogue of
-    `_python_fn_fingerprints`. Keyed by the extractor's scheme (dotted module/class chain
-    `M.C.method`, singleton `M.top`, bare top-level `free_fn`). Requires the tree-sitter extra;
-    without it `structure_ruby.fingerprint_source` returns {} and nothing yields."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_ruby._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_ruby.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _php_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored PHP function/method, the PHP analogue
-    of `_python_fn_fingerprints`. Keyed by the extractor's scheme (class chain `Calc.compute`,
-    constructor `C.__construct`, bare top-level `free_fn`; the namespace is not part of the key).
-    Requires the tree-sitter extra; without it `structure_php.fingerprint_source` returns {}."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_php._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_php.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
-
-
-def _bash_fn_fingerprints(store: Store) -> Iterator[tuple[str, Counter[str]]]:
-    """Yield (node_id, structural fingerprint) for every stored Bash/shell function, the Bash
-    analogue of `_python_fn_fingerprints`. Keyed by the bare function name (shell functions are flat).
-    Requires the tree-sitter extra; without it `structure_bash.fingerprint_source` returns {}."""
-    root = store.get_meta("root") or "."
-    by_path: dict[str, list[tuple[str, str]]] = {}
-    for n in store.all_nodes_full():
-        if n.kind not in (NodeKind.FUNCTION, NodeKind.METHOD):
-            continue
-        path, sep, qual = n.id.partition("::")
-        if not sep or structure_bash._lang_for_ext(Path(path).suffix) is None:
-            continue
-        by_path.setdefault(path, []).append((n.id, qual.split("#", 1)[0]))
-    for path, items in by_path.items():
-        try:
-            src = Path(root, path).read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        fps = structure_bash.fingerprint_source(src)
-        for node_id, qual in items:
-            fp = fps.get(qual)
-            if fp is not None:
-                yield node_id, fp
+_js_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_js)
+_go_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_go)
+_rust_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_rust)
+_cpp_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_cpp)
+_java_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_java)
+_csharp_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_csharp)
+_ruby_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_ruby)
+_php_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_php)
+_bash_fn_fingerprints = partial(_ts_fn_fingerprints, mod=structure_bash)
 
 
 def find_similar_structure(store: Store, snippet: str,

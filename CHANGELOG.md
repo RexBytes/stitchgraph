@@ -4,6 +4,31 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.26.0] — 2026-07-03
+
+**D2 dedup** (review 2026-07-03 finding D2; `research/14` showed the nine tree-sitter
+body-matrix frontends as their own 329-node subsystem, and F5a/F5b proved the hand-sync
+leaks fixes). Behaviour-preserving; follows v3.25.1 (the dogfood patch).
+
+### Changed
+- **Stage 1 — shared leaf helpers** (`core/structure_common.py`): the parser factory, the
+  comment-safe child selectors (`_nc`/`_first`/`_last`), and the operator-token reader
+  (`_op_text`), previously duplicated across all nine `structure_*.py` frontends. Frontends keep
+  thin delegations; Java and Rust pass their grammars' split comment-type tuples.
+- **Stage 2 — shared builder scaffolding**: every `_build_vfg`'s opening block (graph/env/free/
+  `freevar`) and every `_build_pdg`'s (nodes/edges/counter/`new_id`) now come from
+  `vfg_state()`/`pdg_state()` factories, plus `node_text` and the `parse_tree` walk guard; the
+  R205-hardened sorted data-edge emission (previously nine copies, comment and all) is the single
+  shared `data_from`. Call sites unchanged.
+- **Stage 4 — one corpus iterator**: `similar.py`'s nine near-identical per-language
+  `_*_fn_fingerprints` iterators are one generic `_ts_fn_fingerprints(store, mod)` + partials.
+- Net **−387 lines**. Stage 3 (unifying the per-language `process` statement dispatchers) is
+  deliberately NOT done — that code is semantic per-grammar knowledge; a config-object DSL would
+  be worse than the duplication. The per-language `ev`/`do` expression mappings are untouched.
+- Gates: byte-identical fingerprint/VFG/PDG outputs over a 9-language corpus (which caught a
+  first-draft error in Rust's comment tuple — working as designed) + the full 1,618-test oracle
+  battery + ruff/mypy.
+
 ## [3.25.1] — 2026-07-03
 
 **The dogfood patch** — v3.25.0 run on its own source (`research/14-dogfood-v3.25.md`) validated
@@ -13,6 +38,7 @@ the review fixes live and caught one defect. Notes: `docs/RELEASE_NOTES_v3.25.1.
 - `runtime_risk` silently returned zero hotspots on src-layout repos: coverage fids are
   indexed-root-relative while git churn paths are repo-relative; the join now translates through
   the same `_git_path_mapper` as `risk`.
+
 
 ## [3.25.0] — 2026-07-03
 

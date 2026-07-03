@@ -29,6 +29,16 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
+from .structure_common import (
+    first,
+    last,
+    make_parser,
+    nc,
+    node_text,
+    op_text,
+    pdg_state,
+    vfg_state,
+)
 
 _EXTS = {".rs": "rust"}
 
@@ -51,14 +61,7 @@ _ITEM_NODES = frozenset({
 
 
 def _parser(lang: str = "rust"):
-    """A tree-sitter Rust parser, or None if the extra isn't installed (advisory degrade)."""
-    try:
-        from tree_sitter import Parser
-
-        from .extract.treesitter import _load_grammar
-        return Parser(_load_grammar("rust"))
-    except Exception:  # noqa: BLE001 — no extra / no grammar -> the body layer adds nothing
-        return None
+    return make_parser(lang)
 
 
 def _lang_for_ext(ext: str) -> str | None:
@@ -144,17 +147,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     `structure._build_vfg` for Python: PARAM seeds (incl. `self`), copy propagation through `let`
     bindings, operations and control points as nodes, data/control edges. Rust blocks return their
     trailing expression."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     # seed parameters (and `self`).
     params = fn.child_by_field_name("parameters")
@@ -495,31 +489,23 @@ def _pattern_names(node, text) -> list[str]:
     return []
 
 
+_COMMENT_TYPES = ("line_comment", "block_comment")  # this grammar splits comment trivia
+
+
 def _nc(node):
-    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
-    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
-    by a leading/trailing comment — filter them out before selecting a child by position."""
-    return [c for c in node.named_children if c.type not in ("line_comment", "block_comment")]
+    return nc(node, _COMMENT_TYPES)
 
 
 def _first(node):
-    k = _nc(node)
-    return k[0] if k else None
+    return first(node, _COMMENT_TYPES)
 
 
 def _last(node):
-    k = _nc(node)
-    return k[-1] if k else None
+    return last(node, _COMMENT_TYPES)
 
 
 def _op_text(node, text) -> str:
-    op = node.child_by_field_name("operator")
-    if op is not None:
-        return op.text.decode("utf-8", "replace")
-    for c in node.children:
-        if not c.is_named and c.text:
-            return c.text.decode("utf-8", "replace")
-    return "?"
+    return op_text(node)
 
 
 # --- STATEMENT layer (PDG) — design §5c sweep, Rust ----------------------------------------------
@@ -546,20 +532,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     expression-oriented, so control-flow *expressions* (if/match/loop/while/for) in statement position
     become control nodes; in value position they are folded into the enclosing statement's reads.
     Nested functions/closures are opaque NESTED leaves. Advisory only — never feeds liveness."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")
     params = fn.child_by_field_name("parameters")
@@ -729,11 +703,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         loads: set = set()
         stores: set = set()
         collect(hdr, loads, stores)
-        for nm in sorted(loads):
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
+        data_from(loads, stores, sid)
 
     def bind_target(node, sid: int) -> None:
         st: set = set()

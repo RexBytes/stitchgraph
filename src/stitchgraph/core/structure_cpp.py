@@ -31,6 +31,16 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
+from .structure_common import (
+    first,
+    last,
+    make_parser,
+    nc,
+    node_text,
+    op_text,
+    pdg_state,
+    vfg_state,
+)
 
 # One grammar (cpp) parses both; map every C/C++ source/header extension to it.
 _EXTS = {ext: "cpp" for ext in
@@ -51,14 +61,7 @@ _DECL_WRAP = frozenset({"pointer_declarator", "reference_declarator", "parenthes
 
 
 def _parser(lang: str = "cpp"):
-    """A tree-sitter C++ parser (parses C too), or None if the extra isn't installed."""
-    try:
-        from tree_sitter import Parser
-
-        from .extract.treesitter import _load_grammar
-        return Parser(_load_grammar("cpp"))
-    except Exception:  # noqa: BLE001 — no extra / no grammar -> the body layer adds nothing
-        return None
+    return make_parser(lang)
 
 
 def _lang_for_ext(ext: str) -> str | None:
@@ -210,17 +213,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one C/C++ function/lambda node into a value-flow graph, mirroring
     `structure._build_vfg`: PARAM seeds, copy propagation through declarations, operations and control
     points as nodes, data/control edges. Statement-oriented (explicit returns)."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     # seed parameters from the function_declarator's parameter_list.
     fdecl = _func_declarator(fn.child_by_field_name("declarator")) if fn.type == "function_definition" else None
@@ -602,30 +596,19 @@ def _build_vfg(fn, data: bytes) -> _VFG:
 
 
 def _nc(node):
-    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
-    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
-    by a leading/trailing comment — filter them out before selecting a child by position."""
-    return [c for c in node.named_children if c.type != "comment"]
+    return nc(node)
 
 
 def _first(node):
-    k = _nc(node)
-    return k[0] if k else None
+    return first(node)
 
 
 def _last(node):
-    k = _nc(node)
-    return k[-1] if k else None
+    return last(node)
 
 
 def _op_text(node, text) -> str:
-    op = node.child_by_field_name("operator")
-    if op is not None:
-        return op.text.decode("utf-8", "replace")
-    for c in node.children:
-        if not c.is_named and c.text:
-            return c.text.decode("utf-8", "replace")
-    return "?"
+    return op_text(node)
 
 
 # --- STATEMENT layer (PDG) — design §5c sweep, C/C++ ---------------------------------------------
@@ -660,20 +643,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     feeds liveness. Its read/write projection (`collect`/`bind_target`) reads ONLY genuine value
     operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind`: TYPE positions,
     statement/goto LABELs, and field/member names are never read as values."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")
     fdecl = _func_declarator(fn.child_by_field_name("declarator")) \
@@ -813,13 +784,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         loads: set = set()
         stores: set = set()
         collect(hdr, loads, stores)
-        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
-        # list (and get_matrix cells) non-reproducible across processes (R205).
-        for nm in sorted(loads):
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
+        data_from(loads, stores, sid)
 
     def bind_target(decl, sid: int) -> None:
         """Bind a declarator (a for-range loop var / an exception parameter) as a STORE at sid."""
