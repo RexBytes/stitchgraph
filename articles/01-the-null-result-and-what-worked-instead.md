@@ -1,3 +1,56 @@
+<!-- ============================================================================
+EDITOR'S NOTES — delete this whole block before publishing
+=============================================================================
+
+STATUS: Draft 1 (2026-07-03). Written in the maintainer's first-person voice —
+read it aloud and rewrite anything that doesn't sound like you.
+
+BEFORE PUBLISHING, DO:
+
+1. VOICE PASS — especially the opening two paragraphs and the closing section;
+   those carry your personality or they carry nothing.
+
+2. BENCHMARK SPECIFICS (the "null result" section currently says only "agent
+   with the tool versus agent without, on real tasks"). Add whatever you're
+   comfortable sharing: which model(s), what task types, roughly how many runs,
+   how you scored them. Even rough numbers preempt the inevitable "citation
+   needed" comment — the null result is the load-bearing claim of the piece.
+
+3. URLS TO INSERT / VERIFY:
+   - PyPI:        https://pypi.org/project/stitchgraph/            (in the standfirst — verify renders)
+   - GitHub:      https://github.com/RexBytes/stitchgraph          (standfirst + closing)
+   - Issues:      https://github.com/RexBytes/stitchgraph/issues   (closing)
+   - Dogfood evidence (link these where research/14 and research/15 are mentioned):
+     https://github.com/RexBytes/stitchgraph/blob/main/research/14-dogfood-v3.25.md
+     https://github.com/RexBytes/stitchgraph/blob/main/research/15-dogfood-v3.27.md
+   - Process record (optional, in the "development-process record" bullet):
+     https://github.com/RexBytes/stitchgraph/blob/main/REVIEW_HISTORY.md
+     https://github.com/RexBytes/stitchgraph/blob/main/docs/REVIEW_FINDINGS_2026-07-03.md
+   - Benchmark experiment logs if you want receipts for the null result:
+     https://github.com/RexBytes/stitchgraph/tree/main/research/08-large-repo-impact
+     https://github.com/RexBytes/stitchgraph/tree/main/research/07-dogfood-build
+   - Academic references in "What I accidentally reinvented" — link on first
+     mention if you want an outbound-reference style:
+     CPG/Joern: https://ieeexplore.ieee.org/document/6956589  ·  https://joern.io
+     WL kernels: https://www.jmlr.org/papers/v12/shervashidze11a.html
+     Ekstazi: https://ekstazi.org
+
+4. DECIDE: whether to name the LLM angle explicitly — the repo history shows the
+   tool was substantially LLM-built and this week's review/release cycle was
+   LLM-driven. It's already public in the commit log; saying it in the post is
+   more interesting than letting readers discover it.
+
+5. AFTER PUBLISHING:
+   - Add the post URL to the repo README (Develop/links section).
+   - Add the "mcp" topic tag to the GitHub repo; submit to MCP server directories.
+   - Consider an arXiv preprint of the POD/intrinsic-dimensionality section
+     later — the blog post date-stamps the framing either way.
+   - Where to share: HN (the honest null-result framing does well there),
+     r/ExperiencedDevs, lobste.rs. The POD numbers (27 behaviours / 64 of 2,350
+     tests) are the strongest single hook for social posts.
+
+============================================================================= -->
+
 # I built a code-analysis tool to make LLMs better at programming. It didn't work — and what I found instead was better.
 
 *stitchgraph is a local-first code-intelligence engine: point it at a codebase and it answers
