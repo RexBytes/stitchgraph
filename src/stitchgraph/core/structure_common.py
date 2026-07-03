@@ -47,6 +47,66 @@ def last(node, comment_types: tuple[str, ...] = _DEFAULT_COMMENT_TYPES):
     return k[-1] if k else None
 
 
+def node_text(n) -> str:
+    """A node's source text, decoded tolerantly — the `text` helper every builder redefined."""
+    return n.text.decode("utf-8", "replace")
+
+
+def parse_tree(parser, source: str):
+    """The shared `_walk` entry guard: `(tree, data)` or None on a missing extra / unparseable
+    or too-deep source (advisory degrade — the body layer then adds nothing)."""
+    if parser is None:
+        return None
+    try:
+        data = source.encode("utf-8", "replace")
+        return parser.parse(data), data
+    except (ValueError, RecursionError):
+        return None
+
+
+def vfg_state():
+    """The shared value-flow-graph builder state: `(g, env, free, freevar)`. Every frontend's
+    `_build_vfg` opened with this exact block; the per-language `ev`/`do`/`bind` logic stays local."""
+    from .structure import _VFG
+    g = _VFG()
+    env: dict[str, int] = {}
+    free: dict[str, int] = {}
+
+    def freevar(name: str) -> int:
+        if name not in free:
+            free[name] = g.add("FREE")
+        return free[name]
+
+    return g, env, free, freevar
+
+
+def pdg_state():
+    """The shared program-dependence-graph builder state:
+    `(nodes, edges, last_def, new_id, data_from)`. `data_from` is the R205-hardened data-edge
+    emission: name sets iterate SORTED, because a string set iterates in PYTHONHASHSEED order,
+    which would make the edge list (and get_matrix cells) non-reproducible across processes —
+    previously duplicated (comment and all) in every frontend."""
+    nodes: dict[int, str] = {}
+    edges: list[tuple[int, int, str]] = []
+    counter = [0]
+    last_def: dict[str, int] = {}
+
+    def new_id(label: str) -> int:
+        i = counter[0]
+        counter[0] += 1
+        nodes[i] = label
+        return i
+
+    def data_from(loads: set, stores: set, sid: int) -> None:
+        for nm in sorted(loads):
+            if nm in last_def and last_def[nm] != sid:
+                edges.append((last_def[nm], sid, "D"))
+        for nm in sorted(stores):
+            last_def[nm] = sid
+
+    return nodes, edges, last_def, new_id, data_from
+
+
 def op_text(node) -> str:
     """The operator token of a binary/unary/assignment node: the `operator` field when the
     grammar names one, else the first anonymous child (operator isn't a named field on every

@@ -28,7 +28,7 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
-from .structure_common import make_parser, op_text
+from .structure_common import make_parser, node_text, op_text, pdg_state, vfg_state
 
 _EXTS = {".sh": "bash", ".bash": "bash"}
 
@@ -105,17 +105,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one Bash function node into a value-flow graph, mirroring
     `structure._build_vfg`: operations + control points as nodes, data/control edges, copy
     propagation through assignments. Command-oriented (a command is a CALL)."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     def _varname(node) -> str:
         # `$x` (simple_expansion) / `${x}` (expansion) -> the bare variable name `x`.
@@ -417,20 +408,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     never feeds liveness. Its read/write projection (`collect`/`bind_place`) reads ONLY genuine value
     operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind` node-for-node: a
     LITERAL command name and a `local x` bare declaration are never read as values."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")  # empty seed — shell functions have no declared parameters
 
@@ -500,15 +479,6 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
             return
         for c in n.named_children:  # generic recursion — parity with the VFG's `ev` fallback
             collect(c, loads, stores)
-
-    def data_from(loads: set, stores: set, sid: int) -> None:
-        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
-        # list (and get_matrix cells) non-reproducible across processes (R205).
-        for nm in sorted(loads):
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
 
     def data_edges(hdr, sid: int) -> None:
         if hdr is None:

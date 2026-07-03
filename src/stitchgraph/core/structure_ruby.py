@@ -22,7 +22,16 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
-from .structure_common import first, last, make_parser, nc, op_text
+from .structure_common import (
+    first,
+    last,
+    make_parser,
+    nc,
+    node_text,
+    op_text,
+    pdg_state,
+    vfg_state,
+)
 
 _EXTS = {".rb": "ruby"}
 
@@ -107,17 +116,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one Ruby method/block node into a value-flow graph, mirroring
     `structure._build_vfg`: PARAM seeds, copy propagation, operations + control points as nodes,
     data/control edges. Expression-oriented — a body's trailing expression is its return value."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     # seed parameters.
     params = fn.child_by_field_name("parameters")
@@ -430,20 +430,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     approximation (no SSA/alias analysis), advisory only — never feeds liveness. The projection reads
     ONLY genuine value operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind`: a
     call's method NAME, `self`/`@ivar`, and rescue/for pattern names are never read as values."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")
     params = fn.child_by_field_name("parameters")
@@ -582,11 +570,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         loads: set = set()
         stores: set = set()
         collect(hdr, loads, stores)
-        for nm in sorted(loads):  # sorted: PYTHONHASHSEED-independent edge order (R205)
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
+        data_from(loads, stores, sid)
 
     def bind_target(target, sid: int) -> None:
         st: set = set()

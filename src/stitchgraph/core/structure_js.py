@@ -20,7 +20,16 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
-from .structure_common import first, last, make_parser, nc, op_text
+from .structure_common import (
+    first,
+    last,
+    make_parser,
+    nc,
+    node_text,
+    op_text,
+    pdg_state,
+    vfg_state,
+)
 
 # JS-family grammars share one tree-sitter family; one walker covers all three.
 _LANGS = ("javascript", "typescript", "tsx")
@@ -153,17 +162,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one function node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds, copy propagation through locals, operations and
     control points as nodes, data/control edges. `fn` is a tree-sitter function-like node."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     # seed parameters
     params = fn.child_by_field_name("parameters")
@@ -525,20 +525,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     control ('C', nested-under-a-header) and data ('D', a sequential reaching-def) edges. Nested
     functions are opaque NESTED leaves; reorder-invariant once WL-fingerprinted. A structural
     approximation (copy-free, no SSA/alias analysis), advisory only — never feeds liveness."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")
     params = fn.child_by_field_name("parameters")
@@ -624,13 +612,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         loads: set = set()
         stores: set = set()
         collect(hdr, loads, stores)
-        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
-        # list (and get_matrix cells) non-reproducible across processes (R205).
-        for nm in sorted(loads):
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
+        data_from(loads, stores, sid)
 
     def bind_target(node, sid: int) -> None:
         # a for-of/for-in binding without a declaration (`for (x of xs)`) STORES x.

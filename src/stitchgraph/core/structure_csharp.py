@@ -22,7 +22,16 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
-from .structure_common import first, last, make_parser, nc, op_text
+from .structure_common import (
+    first,
+    last,
+    make_parser,
+    nc,
+    node_text,
+    op_text,
+    pdg_state,
+    vfg_state,
+)
 
 _EXTS = {".cs": "csharp"}
 
@@ -144,17 +153,8 @@ def _build_vfg(fn, data: bytes) -> _VFG:
     """Symbolically evaluate one C# method/constructor/local-function/lambda node into a value-flow
     graph, mirroring `structure._build_vfg`: PARAM seeds, copy propagation through declarations,
     operations and control points as nodes, data/control edges. Statement-oriented (explicit returns)."""
-    g = _VFG()
-    env: dict[str, int] = {}
-    free: dict[str, int] = {}
-
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
-
-    def freevar(name: str) -> int:
-        if name not in free:
-            free[name] = g.add("FREE")
-        return free[name]
+    g, env, free, freevar = vfg_state()
+    text = node_text
 
     # seed parameters from the parameter_list.
     params = fn.child_by_field_name("parameters")
@@ -601,20 +601,8 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     analysis), advisory only — never feeds liveness. Its read/write projection (`collect`/`bind_place`)
     reads ONLY genuine value operands and records ONLY genuine bindings, matching the VFG's `ev`/`bind`:
     TYPE positions, the member NAME in a `.` access, and pattern/label names are never read as values."""
-    nodes: dict[int, str] = {}
-    edges: list[tuple[int, int, str]] = []
-    counter = 0
-    last_def: dict[str, int] = {}
-
-    def text(n) -> str:
-        return n.text.decode("utf-8", "replace")
-
-    def new_id(label: str) -> int:
-        nonlocal counter
-        i = counter
-        counter += 1
-        nodes[i] = label
-        return i
+    nodes, edges, last_def, new_id, data_from = pdg_state()
+    text = node_text
 
     entry = new_id("ENTRY")
     params = fn.child_by_field_name("parameters")
@@ -797,13 +785,7 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
         loads: set = set()
         stores: set = set()
         collect(hdr, loads, stores)
-        # sorted iteration: a string set iterates in PYTHONHASHSEED order, which would make the edge
-        # list (and get_matrix cells) non-reproducible across processes (R205).
-        for nm in sorted(loads):
-            if nm in last_def and last_def[nm] != sid:
-                edges.append((last_def[nm], sid, "D"))
-        for nm in sorted(stores):
-            last_def[nm] = sid
+        data_from(loads, stores, sid)
 
     def block(blk, parent: int) -> None:
         if blk is None or blk.type == "comment":
