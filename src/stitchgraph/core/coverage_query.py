@@ -13,9 +13,10 @@ Two questions they answer:
 from __future__ import annotations
 
 import collections
-import re
 
-from .modes import load_coverage
+# base_test_id/normalize live in modes.py (imports must point that way — modes can't import
+# this module back) so the POD ops normalize with the SAME logic (review 2026-07-03, F4).
+from .modes import base_test_id, load_coverage, normalize
 
 __all__ = ["load_coverage", "base_test_id", "normalize", "invert", "tests_for", "co_functions",
            "coactivation_pairs", "hidden_coupling", "untested", "greedy_order", "redundant_groups",
@@ -25,36 +26,6 @@ __all__ = ["load_coverage", "base_test_id", "normalize", "invert", "tests_for", 
 # such near-global tests (a smoke/end-to-end that runs everything) add noise, not signal, so their
 # pairwise contribution is skipped — this also bounds memory on huge suites (cardinal: never OOM).
 _COOC_FUNC_CAP = 400
-
-# coverage.py --cov-context=test appends exactly one of these phases after the full pytest id.
-_PHASE = re.compile(r"\|(?:run|setup|teardown)$")
-# pytest parametrization is the trailing bracket group; greedy + end-anchored so it also strips a
-# param that itself contains '|' or nested brackets (e.g. `test[a|b]`, `test[a[b]]`).
-_PARAM = re.compile(r"\[.*\]$")
-
-
-def base_test_id(tid: str) -> str:
-    """Normalise a coverage test-id key to stitchgraph's test node-id convention:
-    drop coverage.py's `|phase` suffix and pytest `[param]` ids, and rewrite the pytest
-    `file::Class::method` separator to `file::Class.method` so class-based test ids line up with
-    the graph's `path::qualified.name` nodes. The phase suffix is stripped *before* the param group
-    (and only when it is a real run/setup/teardown phase) so a param containing `|` is not truncated."""
-    tid = _PHASE.sub("", tid)            # coverage.py --cov-context=test phase (run/setup/teardown)
-    tid = _PARAM.sub("", tid)            # pytest parametrization (greedy → nested brackets / '|' safe)
-    parts = tid.split("::")
-    if len(parts) <= 2:
-        return tid
-    return parts[0] + "::" + ".".join(parts[1:])   # file::Class::method -> file::Class.method
-
-
-def normalize(cov: dict[str, list[str]]) -> dict[str, set[str]]:
-    """Collapse coverage rows by normalised test id — a parametrized test's `[param]`/`|phase` rows
-    merge into one behavioural row (its union of executed functions), so co-activation counts a test
-    once rather than once per parameter."""
-    out: dict[str, set[str]] = {}
-    for tid, funcs in cov.items():
-        out.setdefault(base_test_id(tid), set()).update(funcs)
-    return out
 
 
 def invert(cov: dict[str, list[str]]) -> dict[str, set[str]]:

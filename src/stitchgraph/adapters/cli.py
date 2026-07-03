@@ -76,7 +76,6 @@ def build_app():
         import time
 
         from ..core import operations as ops
-        from ..core.store import Store
         from ..core.watch import changed, snapshot
 
         try:

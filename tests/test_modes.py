@@ -80,25 +80,58 @@ def test_large_suite_few_functions_never_ooms(tmp_path):
     assert r.result["redundant_test_pairs"] == 6000 * 5999 // 2   # all identical profiles
 
 
-def test_intrinsic_dimensionality_never_exceeds_modes(tmp_path):
-    """Panel R272 MEDIUM: with zero behavioural variance (every test hits the same functions) the
-    mean-centred matrix is all-zero, so intrinsic dimensionality must be 0 — and in general it must
-    never exceed the number of modes actually computed."""
+def test_intrinsic_dimensionality_zero_variance_and_k_independence(tmp_path):
+    """Panel R272 MEDIUM (kept): with zero behavioural variance (every test hits the same
+    functions) the mean-centred matrix is all-zero → intrinsic dimensionality 0, and
+    searchsorted must not overrun. R273's `k90 <= len(modes)` clamp is GONE by design
+    (review 2026-07-03, F3): k90 is now computed from the FULL spectrum, so it is a property
+    of the suite, independent of how many modes the caller asked to see — a long-tailed
+    suite's true dimensionality can legitimately exceed the reported mode count."""
     tests = {f"t.py::test_{i}": ["m.py::a", "m.py::b", "m.py::c", "m.py::d"] for i in range(6)}
     p = tmp_path / "flat.json"
     p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))
     r = sg.find_modes(sg.Store(":memory:"), str(p))
     assert r.ok
     assert r.result["intrinsic_dimensionality"] == 0            # no behavioural variance
-    assert r.result["intrinsic_dimensionality"] <= len(r.result["modes"])
-    # and the invariant holds on the planted-behaviour artifact too
-    r2 = sg.find_modes(sg.Store(":memory:"), _artifact(tmp_path))
-    assert r2.result["intrinsic_dimensionality"] <= len(r2.result["modes"])
-    # defense-in-depth: even a direct decompose(k=1) (unreachable via the public API) keeps
-    # intrinsic_dimensionality <= number of modes (panel R273)
+    # k-independence: truncating the *reported* modes must not change the metric (F3)
     from stitchgraph.core import modes as _m
-    payload, _ = _m.decompose(sg.Store(":memory:"), _artifact(tmp_path), k=1)
-    assert payload["intrinsic_dimensionality"] <= len(payload["modes"])
+    full, _ = _m.decompose(sg.Store(":memory:"), _artifact(tmp_path))
+    k1, _ = _m.decompose(sg.Store(":memory:"), _artifact(tmp_path), k=1)
+    assert k1["intrinsic_dimensionality"] == full["intrinsic_dimensionality"]
+
+
+def test_intrinsic_dimensionality_not_saturated_at_16(tmp_path):
+    """Review 2026-07-03 F3: the energy denominator was truncated to the top-16 singular values,
+    so k90 measured '90% of the top-16 energy' and silently saturated at 16. A suite of 30
+    orthogonal behaviours (each test covers its own function — a flat spectrum) has true
+    90%-energy dimensionality well above 16; the old code reported <= 16."""
+    tests = {f"t.py::test_{i:02d}": [f"m.py::f{i:02d}", "m.py::shared"] for i in range(30)}
+    p = tmp_path / "flatspec.json"
+    p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))
+    r = sg.find_modes(sg.Store(":memory:"), str(p))
+    assert r.ok
+    assert r.result["intrinsic_dimensionality"] > 16, (
+        "a 30-orthogonal-behaviour suite must not report dimensionality capped at 16")
+
+
+def test_phase_suffixed_test_ids_are_normalized(tmp_path):
+    """Review 2026-07-03 F4: the turnkey converter emits coverage.py context keys verbatim
+    (`test|run`, `test|setup`), and decompose used raw keys — doubling the test count,
+    manufacturing 'redundant pairs' out of identical setup rows, and putting non-runnable
+    ids like `…::test_0|setup` in minimal_test_set."""
+    tests = {}
+    for i in range(6):
+        tests[f"tests/t.py::test_{i}|setup"] = [f"m.py::fixture"]
+        tests[f"tests/t.py::test_{i}|run"] = [f"m.py::f{i}", "m.py::fixture"]
+    p = tmp_path / "phased.json"
+    p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))
+    r = sg.find_modes(sg.Store(":memory:"), str(p))
+    assert r.ok
+    assert r.meta["tests"] == 6, "6 logical tests, not 12 phase rows"
+    assert all("|" not in t for t in r.result["minimal_test_set"]), (
+        "minimal_test_set must contain runnable test ids, not phase rows")
+    assert r.result["redundant_test_pairs"] == 0, (
+        "identical setup rows must not read as redundant tests")
 
 
 def test_minimal_test_set_is_a_full_cover_even_when_large(tmp_path):

@@ -674,8 +674,18 @@ def find_modes(store: Store, coverage: str = "coverage_modes.json",
     except (RuntimeError, MemoryError) as exc:  # matrix too big for dense path / OOM on a huge artifact
         return refuse(f"coverage matrix too large to decompose in memory ({exc}); "
                       "install the 'spectral' extra or reduce the suite", confidence=0.0)
-    return ok(payload, provenance=Provenance.EXTRACTED,
-              count=len(payload["modes"]), **meta)
+    res = ok(payload, provenance=Provenance.EXTRACTED,
+             count=len(payload["modes"]), **meta)
+    # The sparse solver decomposes the UNCENTRED matrix (mode 1 ≈ the mean profile), so mode
+    # rankings differ qualitatively from the dense mean-centred path — say so instead of hiding
+    # it in meta["solver"] (review 2026-07-03, F7).
+    if meta.get("solver") == "scipy":
+        res.add_reason("modes computed on the uncentred matrix (sparse solver): mode 1 "
+                       "approximates the mean coverage profile, unlike the dense mean-centred path")
+    if meta.get("intrinsic_dimensionality_is_lower_bound"):
+        res.add_reason("intrinsic_dimensionality is a lower bound — only the top modes were "
+                       "computed and they capture <90% of total energy")
+    return res
 
 
 @operation("Generate a sandboxed per-test-coverage capture kit (Docker / shell / CI) for find_modes.")
