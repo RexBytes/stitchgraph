@@ -1685,6 +1685,16 @@ def reindex(store: Store, path: str, precise: bool = False,
         # AttributeError the probe wouldn't otherwise catch.
         usable, abs_root = False, ""
     if not usable:
+        # An invalid root must NEVER destroy an existing index: a one-character typo
+        # (`reindex srcc`), a wrong cwd, or a deleted directory would otherwise wipe a
+        # multi-minute index and report success (review 2026-07-03, F1). With content
+        # present, refuse and leave the store untouched. Only a store with nothing to
+        # lose keeps the historical degrade-to-empty contract (panels R17A/YYY/ZZZ:
+        # hostile/missing roots must not raise).
+        if store.node_count() > 0:
+            return refuse(
+                f"root {path!r} is not a readable directory — the existing index "
+                "was left untouched; pass a valid project root to rebuild it")
         with store.conn:
             store.conn.execute("DELETE FROM nodes")
             store.conn.execute("DELETE FROM edges")

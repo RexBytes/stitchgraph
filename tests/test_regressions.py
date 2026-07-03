@@ -9112,3 +9112,25 @@ def test_bash_prompt_command_multi_and_precision(tmp_path):
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "track_one" not in stale and "track_two" not in stale
         assert "some_fn" in stale, "a non-PROMPT_COMMAND var assignment must not root the function"
+
+
+# -- Review 2026-07-03 / F1 (CRITICAL): reindex must not wipe an index on a bad root ----
+def test_reindex_invalid_root_does_not_wipe_existing_index(tmp_path):
+    """A typo'd/missing root passed to reindex executed DELETE FROM nodes/edges and
+    returned ok — a one-keystroke destruction of an existing index with a success
+    envelope (review 2026-07-03, F1). With content present it now refuses and leaves
+    the store untouched; a store with nothing to lose keeps the historical
+    degrade-to-empty contract (panels R17A/YYY/ZZZ)."""
+    _mk(tmp_path, {"m.py": "def f():\n    return 1\n"})
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        before = store.node_count()
+        assert before > 0
+        res = sg.reindex(store, str(tmp_path / "does-not-exist"))
+        assert not res.ok and res.needs_review and res.review_reasons
+        assert store.node_count() == before, "existing index must survive a bad root"
+        assert store.get_meta("root") == str(tmp_path.resolve()), "root meta untouched"
+        # an EMPTY store still degrades to an empty index rather than raising
+        with sg.Store(":memory:") as fresh:
+            r2 = sg.reindex(fresh, str(tmp_path / "also-missing"))
+            assert r2.ok and r2.result["nodes"] == 0
