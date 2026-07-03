@@ -269,3 +269,33 @@ def test_cardinal_query_ops_lazy_and_liveness_untouched(tmp_path):
     sg.find_core(store, cov)
     sg.coverage_drift(store, cov, cov)
     assert sg.find_stale(store).result == before
+
+
+def test_runtime_risk_joins_churn_on_src_layout(tmp_path):
+    """Dogfood v3.25.0 on itself: coverage fids are relative to the INDEXED root while git
+    churn paths are repo-relative, so on a src-layout project runtime_risk's join matched
+    nothing and returned ok with zero hotspots silently. It must translate through the same
+    _git_path_mapper as `risk`."""
+    import json
+    import subprocess
+
+    import stitchgraph as sg
+
+    src = tmp_path / "src" / "pkg"
+    src.mkdir(parents=True)
+    (src / "m.py").write_text("def f():\n    return 1\n\nf()\n")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "add", "."],
+                   cwd=tmp_path, check=True)
+    subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x"],
+                   cwd=tmp_path, check=True)
+    cov = tmp_path / "cov.json"
+    cov.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": {
+        f"tests/t.py::test_{i}": ["pkg/m.py::f"] for i in range(4)}}))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path / "src"))       # indexed root = src/ (src layout)
+        r = sg.runtime_risk(store, str(cov), str(tmp_path))
+        assert r.ok
+        hotspots = (r.result or {}).get("hotspots", [])
+        assert hotspots, "src-layout churn must join with coverage behavioural centrality"
+        assert hotspots[0]["file"] == "src/pkg/m.py"

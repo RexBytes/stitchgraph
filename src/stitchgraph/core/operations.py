@@ -1079,11 +1079,15 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
     if not churn:
         return refuse("no git history found for indexed source files", confidence=0.0)
     lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 15
-    # behavioural centrality per file = total activation frequency of the functions it defines
+    # behavioural centrality per file = total activation frequency of the functions it defines.
+    # Coverage fids are relative to the INDEXED root; git churn paths to the REPO root — on a
+    # src-layout project the raw join matched nothing and returned ok/0 hotspots silently
+    # (found dogfooding v3.25.0 on itself). Translate exactly as `risk` does.
+    to_git = _git_path_mapper(store, path)
     fmap = coverage_query.invert(cov)
     file_beh: dict[str, float] = {}
     for fid, tset in fmap.items():
-        f = fid.split("::", 1)[0]
+        f = to_git(fid.split("::", 1)[0])
         file_beh[f] = file_beh.get(f, 0.0) + len(tset)
     hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():

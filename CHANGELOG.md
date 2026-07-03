@@ -4,6 +4,16 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.25.1] — 2026-07-03
+
+**The dogfood patch** — v3.25.0 run on its own source (`research/14-dogfood-v3.25.md`) validated
+the review fixes live and caught one defect. Notes: `docs/RELEASE_NOTES_v3.25.1.md`.
+
+### Fixed
+- `runtime_risk` silently returned zero hotspots on src-layout repos: coverage fids are
+  indexed-root-relative while git churn paths are repo-relative; the join now translates through
+  the same `_git_path_mapper` as `risk`.
+
 ## [3.25.0] — 2026-07-03
 
 **The external-review hardening release** — a full-repo external review
