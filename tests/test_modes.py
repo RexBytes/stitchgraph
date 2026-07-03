@@ -121,7 +121,7 @@ def test_phase_suffixed_test_ids_are_normalized(tmp_path):
     ids like `…::test_0|setup` in minimal_test_set."""
     tests = {}
     for i in range(6):
-        tests[f"tests/t.py::test_{i}|setup"] = [f"m.py::fixture"]
+        tests[f"tests/t.py::test_{i}|setup"] = ["m.py::fixture"]
         tests[f"tests/t.py::test_{i}|run"] = [f"m.py::f{i}", "m.py::fixture"]
     p = tmp_path / "phased.json"
     p.write_text(json.dumps({"format": "stitchgraph-coverage-v1", "tests": tests}))

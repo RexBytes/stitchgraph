@@ -39,11 +39,13 @@ def test_mcp_server_builds():
     assert server is not None
 
 
-@pytest.mark.anyio
-async def test_mcp_tool_call_end_to_end(tmp_path):
+def test_mcp_tool_call_end_to_end(tmp_path):
     """Drive one real tool call through FastMCP: schema generation, kwargs dispatch,
-    and the envelope JSON must survive the SDK boundary (review 2026-07-03, F10d)."""
+    and the envelope JSON must survive the SDK boundary (review 2026-07-03, F10d).
+    Sync wrapper over asyncio.run so the core-only CI job (no anyio pytest plugin)
+    collects it cleanly — the importorskip then skips it there."""
     pytest.importorskip("mcp")
+    import asyncio
     import json
 
     import stitchgraph as sg
@@ -54,7 +56,7 @@ async def test_mcp_tool_call_end_to_end(tmp_path):
     with sg.Store(str(db)) as store:
         sg.reindex(store, str(tmp_path))
     server = build_server(str(db))
-    result = await server.call_tool("orient", {})
+    result = asyncio.run(server.call_tool("orient", {}))
     # FastMCP returns (content_blocks, structured) or just content blocks depending on
     # version; the text block always carries the serialized envelope.
     blocks = result[0] if isinstance(result, tuple) else result
@@ -62,11 +64,6 @@ async def test_mcp_tool_call_end_to_end(tmp_path):
     assert envelope.get("ok") is True
     assert envelope.get("meta", {}).get("total_nodes", 0) > 0
     assert envelope.get("result", {}).get("node_counts", {}).get("Function", 0) == 1
-
-
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
 
 
 # -- Review 2026-07-03 / F2b: adapters must refuse, not silently create, an index --
