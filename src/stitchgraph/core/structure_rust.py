@@ -36,6 +36,7 @@ from .structure_common import (
     nc,
     node_text,
     op_text,
+    parse_tree,
     pdg_state,
     vfg_state,
 )
@@ -70,18 +71,13 @@ def _lang_for_ext(ext: str) -> str | None:
 
 def _walk(source: str, lang: str = "rust", *, build):
     """Shared traversal applying build(<fn_node>, data) per function."""
-    parser = _parser()
-    if parser is None:
+    parsed = parse_tree(_parser(), source)
+    if parsed is None:
         return {}
-    try:
-        data = source.encode("utf-8", "replace")
-        tree = parser.parse(data)
-    except (ValueError, RecursionError):
-        return {}
+    tree, data = parsed
     out: dict[str, collections.Counter[str]] = {}
 
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
+    text = node_text
 
     def emit(name: str, fn_node) -> None:
         if not name:

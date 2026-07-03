@@ -4,6 +4,26 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.27.1] — 2026-07-03
+
+**The second dogfood patch** — v3.27.0 run on itself (`research/15-dogfood-v3.27.md`), the
+controlled before/after of the D2 dedup. Notes: `docs/RELEASE_NOTES_v3.27.1.md`.
+
+### Fixed
+- `structure_common.parse_tree` shipped in v3.26.0 as dead code: the stage-2 transformation
+  added the shared walk guard but never wired the nine `_walk` functions to call it (and
+  `ruff --fix` removed the unused imports, hiding the slip from the output-equivalence gates —
+  dead code has no outputs). Caught by `find_stale`, corroborated by `find_gaps`. Now guards all
+  nine walk entries as intended; the seven remaining `_walk`-local `text` helpers delegate to
+  the shared `node_text`.
+
+### Verified by the run (no action)
+- POD invariants across the dedup: intrinsic dimensionality **27 → 27**; `coverage_drift`
+  (first real cross-release use) narrates exactly the intended moves — lost: the nine deleted
+  per-language copies; gained: `structure_common.*`.
+- The three `scan` oranges remain the same verified-deliberate constructs; holes 0;
+  `runtime_risk` stable post-fix.
+
 ## [3.27.0] — 2026-07-03
 
 **Docs release: the README becomes a front door.** No code change.

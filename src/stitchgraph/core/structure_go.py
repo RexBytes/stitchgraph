@@ -32,6 +32,7 @@ from .structure_common import (
     nc,
     node_text,
     op_text,
+    parse_tree,
     pdg_state,
     vfg_state,
 )
@@ -62,14 +63,10 @@ def _lang_for_ext(ext: str) -> str | None:
 
 def _walk(source: str, lang: str = "go", build=None):
     """Shared traversal for fingerprint_source / vfg_source: apply build(<fn_node>, data) per function."""
-    parser = _parser()
-    if parser is None:
+    parsed = parse_tree(_parser(), source)
+    if parsed is None:
         return {}
-    try:
-        data = source.encode("utf-8", "replace")
-        tree = parser.parse(data)
-    except (ValueError, RecursionError):
-        return {}
+    tree, data = parsed
     out: dict[str, collections.Counter[str]] = {}
 
     def name_of(node) -> str | None:
