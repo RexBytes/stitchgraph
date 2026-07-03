@@ -28,7 +28,7 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
-from .structure_common import make_parser, node_text, op_text, pdg_state, vfg_state
+from .structure_common import make_parser, node_text, op_text, parse_tree, pdg_state, vfg_state
 
 _EXTS = {".sh": "bash", ".bash": "bash"}
 
@@ -50,18 +50,13 @@ def _lang_for_ext(ext: str) -> str | None:
 def _walk(source: str, lang: str, build):
     """Shared traversal for `fingerprint_source` / `vfg_source`: apply `build(fn_node, data)` to every
     function keyed by its bare name. Returns {} on parse failure / missing extra / too-deep tree."""
-    parser = _parser()
-    if parser is None:
+    parsed = parse_tree(_parser(), source)
+    if parsed is None:
         return {}
-    try:
-        data = source.encode("utf-8", "replace")
-        tree = parser.parse(data)
-    except (ValueError, RecursionError):
-        return {}
+    tree, data = parsed
     out: dict[str, collections.Counter[str]] = {}
 
-    def text(node) -> str:
-        return node.text.decode("utf-8", "replace")
+    text = node_text
 
     def emit(name: str, fn_node) -> None:
         if not name:
