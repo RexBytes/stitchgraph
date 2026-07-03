@@ -770,10 +770,16 @@ class Store:
                 rel = r["relation"]
                 if rel not in valid:
                     continue
+                src, dst = r["src"], r["dst_id"]
+                if not isinstance(src, str) or not isinstance(dst, str):
+                    # non-str src/dst (BLOB corruption) can't be a real resolved edge —
+                    # skip, mirroring _row_to_edge (R31B). Previously only consumers that
+                    # went through Edge materialization were protected (review 2026-07-03).
+                    continue
                 w = r["weight"]
                 if not isinstance(w, (int, float)) or not math.isfinite(w):
                     w = 1.0
-                yield r["src"], rel, r["dst_id"], w
+                yield src, rel, dst, w
 
     def node_count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) AS c FROM nodes").fetchone()["c"]

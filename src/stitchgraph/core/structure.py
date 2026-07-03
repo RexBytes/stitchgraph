@@ -374,7 +374,11 @@ def _wl_features(g: _VFG, iters: int = 3) -> collections.Counter[str]:
         nxt: dict[int, str] = {}
         for n in g.nodes:
             sig = sorted((tag, labels[m]) for tag, m in inc.get(n, []))
-            nxt[n] = hashlib.md5((labels[n] + "|" + repr(sig)).encode()).hexdigest()[:8]
+            # 16 hex chars (64 bits), not 8: the feature namespace is corpus-wide, and at
+            # ~10^5+ distinct labels 32-bit truncation makes birthday collisions expected —
+            # marginally inflating similarity between unrelated bodies (review 2026-07-03,
+            # F11d). 64 bits pushes the collision horizon past any realistic corpus.
+            nxt[n] = hashlib.md5((labels[n] + "|" + repr(sig)).encode()).hexdigest()[:16]
         labels = nxt
         feats.update(f"{it}:{lab}" for lab in labels.values())
     return feats

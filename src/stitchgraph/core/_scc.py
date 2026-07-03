@@ -2,8 +2,8 @@
 
 Extracted in v2.3.0: the SCC algorithm was duplicated verbatim in `reach.py` (call / import
 cycles) and `dataloop.py` (data-feedback loops). The two call sites differ only in how they
-build the adjacency and what they do with the result — the iterative-vs-recursive *core* is
-identical — so it lives here once.
+build the adjacency and what they do with the result — the *core* (a recursive Tarjan under a
+temporarily-raised recursion limit) is identical — so it lives here once.
 
 `tarjan_scc` is behaviour-preserving: same component output, same iteration order (driven by the
 caller-supplied `seeds`), same recursion-limit handling (raised for deep graphs, restored in a

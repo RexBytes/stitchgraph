@@ -355,16 +355,27 @@ def impact_of(store: Store, name: str) -> Result:
     # (homonym name-binds) as certain (panel R33A). The backing edges are the liveness
     # edges induced on the blast radius (every dependent reaches the target through them).
     radius = dependents | {target.id}
-    liveness = set(LIVENESS_RELATIONS)
-    backing = [e for e in store.resolved_edges()
-               if e.relation in liveness and e.src in dependents and e.dst_id in radius]
-    if not backing or all(e.provenance is Provenance.EXTRACTED for e in backing):
+    liveness = {r.value for r in LIVENESS_RELATIONS}
+    # Streamed (cursor) provenance tally: impact_of runs on EVERY query, and
+    # `resolved_edges()` fetchall+Edge-materializes the whole table — the documented
+    # 16M-edge OOM class `iter_resolved` exists to avoid (review 2026-07-03, F11a).
+    # Only three aggregates are needed, so nothing is materialized.
+    n_backing = n_conf = 0
+    any_ambiguous = False
+    cur = store.conn.execute(
+        "SELECT src, relation, dst_id, provenance FROM edges WHERE dst_id IS NOT NULL")
+    for src, rel, dst_id, prov_s in cur:
+        if rel in liveness and src in dependents and dst_id in radius:
+            n_backing += 1
+            if prov_s == Provenance.EXTRACTED.value:
+                n_conf += 1
+            elif prov_s == Provenance.AMBIGUOUS.value:
+                any_ambiguous = True
+    if not n_backing or n_conf == n_backing:
         return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
                   count=len(dependents), tests=len(tests))
-    prov = (Provenance.AMBIGUOUS if any(e.provenance is Provenance.AMBIGUOUS for e in backing)
-            else Provenance.INFERRED)
-    n_conf = sum(1 for e in backing if e.provenance is Provenance.EXTRACTED)
-    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(backing)), 2),
+    prov = Provenance.AMBIGUOUS if any_ambiguous else Provenance.INFERRED
+    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / n_backing), 2),
              provenance=prov, count=len(dependents), tests=len(tests))
     res.needs_review = True
     res.add_reason("some dependents are reached only through name-based "
@@ -899,9 +910,9 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
     ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
         min_shared > 0 else 3
-    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those
-    connected = {frozenset((e.src, e.dst_id)) for e in store.resolved_edges()
-                 if e.dst_id is not None}
+    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those.
+    # Streamed tuples, not materialized Edge objects (review 2026-07-03, F11a).
+    connected = {frozenset((src, dst_id)) for src, _rel, dst_id, _w in store.iter_resolved()}
     try:
         pairs = coverage_query.hidden_coupling(cov, connected, min_shared=ms, limit=lim)
     except MemoryError:
@@ -1398,13 +1409,12 @@ def summarize_subsystem(store: Store, path: str) -> Result:
 
     inbound: dict[str, int] = {}   # external -> member (public surface)
     outbound: set[str] = set()     # member -> external (dependencies)
-    for e in store.resolved_edges():
-        if e.dst_id is None:
-            continue
-        if e.dst_id in mids and e.src not in mids:
-            inbound[e.dst_id] = inbound.get(e.dst_id, 0) + 1
-        elif e.src in mids and e.dst_id not in mids:
-            outbound.add(e.dst_id.split("::", 1)[0])
+    # streamed tuples, not materialized Edge objects (review 2026-07-03, F11a)
+    for src, _rel, dst_id, _w in store.iter_resolved():
+        if dst_id in mids and src not in mids:
+            inbound[dst_id] = inbound.get(dst_id, 0) + 1
+        elif src in mids and dst_id not in mids:
+            outbound.add(dst_id.split("::", 1)[0])
 
     fi = fan_in(store)
     hubs = sorted((n.id for n in members), key=lambda i: fi.get(i, 0), reverse=True)

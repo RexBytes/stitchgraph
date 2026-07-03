@@ -11,7 +11,6 @@ under (max, x) with weights <= 1 products only shrink, so SCCs do not blow up.
 
 from __future__ import annotations
 
-import sys
 from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
 
@@ -163,9 +162,8 @@ def articulation_points(store: Store,
     low: dict[str, int] = {}
     timer = [0]
     guarded: dict[str, int] = {}
-
-    _old_limit = sys.getrecursionlimit()
-    sys.setrecursionlimit(max(10000, len(undirected) * 4 + 1000))
+    # (no recursion-limit raise: the DFS below is iterative — the old raise/restore pair was
+    #  dead code from a recursive predecessor; review 2026-07-03, F11e)
 
     def dfs(root: str) -> None:
         # Iterative post-order DFS carrying (node, parent, child-iterator); subtree sizes and the
@@ -217,12 +215,9 @@ def articulation_points(store: Store,
                 parent_side = comp_total - 1 - sum(sizes)
                 guarded[u] = (comp_total - 1) - max([*sizes, parent_side])
 
-    try:
-        for start in sorted(undirected):
-            if start not in disc:
-                dfs(start)
-    finally:
-        sys.setrecursionlimit(_old_limit)
+    for start in sorted(undirected):
+        if start not in disc:
+            dfs(start)
     return {u: g for u, g in guarded.items() if g > 0}
 
 

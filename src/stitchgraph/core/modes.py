@@ -235,18 +235,27 @@ def decompose(store: Store, coverage_path: str, k: int | None = None
         })
 
     # --- minimal covering test set (greedy set cover) ---
+    # Exhausted rows (zero new coverage) are pruned each round instead of being re-scored
+    # forever: the old max-over-all-remaining + list.remove was O(nT² · row) and effectively
+    # hung on 50k-row suites full of duplicate profiles (review 2026-07-03, F11b).
     target = set(range(nF))
     covered: set[int] = set()
     chosen: list[str] = []
     remaining = list(range(nT))
-    while covered != target:
-        best = max(remaining, key=lambda i: len(rowsets[i] - covered))
-        gain = len(rowsets[best] - covered)
-        if gain == 0:
+    while covered != target and remaining:
+        best, best_gain = -1, 0
+        alive: list[int] = []
+        for i in remaining:
+            gain_i = len(rowsets[i] - covered)
+            if gain_i > 0:
+                alive.append(i)
+                if gain_i > best_gain:      # first-index tie-break (deterministic)
+                    best, best_gain = i, gain_i
+        if best < 0:
             break
         covered |= rowsets[best]
         chosen.append(tests[best])
-        remaining.remove(best)
+        remaining = [i for i in alive if i != best]
 
     # --- redundancy: tests with an identical activation profile. Counted by grouping identical
     # function-sets (O(n_tests)) rather than a dense n×n similarity matrix — the latter is

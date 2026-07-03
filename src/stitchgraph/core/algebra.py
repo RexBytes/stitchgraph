@@ -101,8 +101,9 @@ def transitive_fan_in(store: Store,
     """For each node, how many *distinct* nodes can transitively reach it — the
     'most-depended-on, read these first' ranking (design §6.A).
 
-    Computed as the boolean transitive closure (repeated squaring of the
-    adjacency matrix under the any_pair semiring — frontier-free but still sparse)
+    Computed as the boolean transitive closure (iterated one-step extension —
+    `reach·A` per round, linear in graph diameter rather than the log-rounds of
+    true repeated squaring; any_pair semiring, frontier-free but still sparse)
     then a column count. Bounded by `max_nodes`; above it, callers should fall
     back to direct fan-in (the closure densifies on big graphs)."""
     adj = _Adjacency(store, relations)
