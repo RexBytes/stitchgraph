@@ -489,16 +489,19 @@ def _pattern_names(node, text) -> list[str]:
     return []
 
 
+_COMMENT_TYPES = ("line_comment", "block_comment")  # this grammar splits comment trivia
+
+
 def _nc(node):
-    return nc(node)
+    return nc(node, _COMMENT_TYPES)
 
 
 def _first(node):
-    return first(node)
+    return first(node, _COMMENT_TYPES)
 
 
 def _last(node):
-    return last(node)
+    return last(node, _COMMENT_TYPES)
 
 
 def _op_text(node, text) -> str:
