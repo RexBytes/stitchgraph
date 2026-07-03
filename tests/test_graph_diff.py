@@ -280,6 +280,150 @@ def test_operation_refuses_corrupt_db_without_crashing(tmp_path):
     assert "stitchgraph index" in " ".join(res.review_reasons).lower()
 
 
+def test_js_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
+    # v3.2.0: the body-aware layer now covers JS too. Same calls (heavy x2, combine x1) -> identical
+    # call graph, but score() feeds `a` to both heavy() calls instead of `a` and `b` — a data-flow
+    # bug the call-level diff can't see. Needs the tree-sitter extra.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    plan = {"score.js": (
+        "function heavy(v){ return v * v; }\n"
+        "function combine(x, y){ return x + y; }\n"
+        "function score(a, b){ let x = heavy(a); let y = heavy(b); return combine(x, y); }\n")}
+    buggy = {"score.js": (
+        "function heavy(v){ return v * v; }\n"
+        "function combine(x, y){ return x + y; }\n"
+        "function score(a, b){ let x = heavy(a); let y = heavy(a); return combine(x, y); }\n")}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", buggy)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert not d["nodes_only_a"] and not d["nodes_only_b"]    # call graph identical ...
+    assert not d["edges_only_a"] and not d["edges_only_b"]
+    assert "score" in {c["name"] for c in d["body_changed"]}  # ... body layer flags score()
+    assert not d["equivalent"]
+
+
+def test_js_self_diff_is_equivalent(tmp_path):
+    # determinism / no-phantom-delta guard for the JS body layer: an index diffed against itself is
+    # equivalent (no spurious body_changed from re-fingerprinting JS source).
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    repo = {"m.js": "function f(xs){ let t = 0; for (const x of xs){ t += g(x); } return t; }\n"}
+    a = _index(tmp_path / "a", repo)
+    b = _index(tmp_path / "b", repo)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["equivalent"], d
+    assert d["body_changed"] == []
+
+
+def test_go_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
+    # v3.3.0: the body-aware layer now covers Go too. Same calls (heavy x2, combine x1) -> identical
+    # call graph, but Score() feeds `a` to both heavy() calls instead of `a` and `b` — a data-flow
+    # bug the call-level diff can't see. Needs the tree-sitter extra.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    plan = {"score.go": (
+        "package m\n"
+        "func heavy(v int) int { return v * v }\n"
+        "func combine(x, y int) int { return x + y }\n"
+        "func Score(a, b int) int { x := heavy(a); y := heavy(b); return combine(x, y) }\n")}
+    buggy = {"score.go": (
+        "package m\n"
+        "func heavy(v int) int { return v * v }\n"
+        "func combine(x, y int) int { return x + y }\n"
+        "func Score(a, b int) int { x := heavy(a); y := heavy(a); return combine(x, y) }\n")}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", buggy)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert not d["nodes_only_a"] and not d["nodes_only_b"]    # call graph identical ...
+    assert not d["edges_only_a"] and not d["edges_only_b"]
+    assert "Score" in {c["name"] for c in d["body_changed"]}  # ... body layer flags Score()
+    assert not d["equivalent"]
+
+
+def test_go_self_diff_is_equivalent(tmp_path):
+    # determinism / no-phantom-delta guard for the Go body layer: an index diffed against itself is
+    # equivalent (no spurious body_changed from re-fingerprinting Go source).
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    repo = {"m.go": "package m\nfunc f(xs []int) int { t := 0; for _, x := range xs { t += g(x) }; return t }\n"}
+    a = _index(tmp_path / "a", repo)
+    b = _index(tmp_path / "b", repo)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["equivalent"], d
+    assert d["body_changed"] == []
+
+
+def test_rust_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
+    # v3.4.0: the body-aware layer now covers Rust too. Same calls (heavy x2, combine x1) -> identical
+    # call graph, but score() feeds `a` to both heavy() calls instead of `a` and `b` — a data-flow
+    # bug the call-level diff can't see. Needs the tree-sitter extra.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    plan = {"score.rs": (
+        "fn heavy(v: i32) -> i32 { v * v }\n"
+        "fn combine(x: i32, y: i32) -> i32 { x + y }\n"
+        "fn score(a: i32, b: i32) -> i32 { let x = heavy(a); let y = heavy(b); combine(x, y) }\n")}
+    buggy = {"score.rs": (
+        "fn heavy(v: i32) -> i32 { v * v }\n"
+        "fn combine(x: i32, y: i32) -> i32 { x + y }\n"
+        "fn score(a: i32, b: i32) -> i32 { let x = heavy(a); let y = heavy(a); combine(x, y) }\n")}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", buggy)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert not d["nodes_only_a"] and not d["nodes_only_b"]    # call graph identical ...
+    assert not d["edges_only_a"] and not d["edges_only_b"]
+    assert "score" in {c["name"] for c in d["body_changed"]}  # ... body layer flags score()
+    assert not d["equivalent"]
+
+
+def test_rust_self_diff_is_equivalent(tmp_path):
+    # determinism / no-phantom-delta guard for the Rust body layer: an index diffed against itself is
+    # equivalent (no spurious body_changed from re-fingerprinting Rust source).
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    repo = {"m.rs": "fn f(xs: &[i32]) -> i32 { let mut t = 0; for x in xs { t += g(x) } t }\n"}
+    a = _index(tmp_path / "a", repo)
+    b = _index(tmp_path / "b", repo)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["equivalent"], d
+    assert d["body_changed"] == []
+
+
+def test_cpp_body_diff_catches_dataflow_bug_call_graph_misses(tmp_path):
+    # v3.5.0: the body-aware layer now covers C/C++ too. Same calls (heavy x2, combine x1) ->
+    # identical call graph, but score() feeds `a` to both heavy() calls instead of `a` and `b`.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    plan = {"score.cpp": (
+        "int heavy(int v) { return v * v; }\n"
+        "int combine(int x, int y) { return x + y; }\n"
+        "int score(int a, int b) { int x = heavy(a); int y = heavy(b); return combine(x, y); }\n")}
+    buggy = {"score.cpp": (
+        "int heavy(int v) { return v * v; }\n"
+        "int combine(int x, int y) { return x + y; }\n"
+        "int score(int a, int b) { int x = heavy(a); int y = heavy(a); return combine(x, y); }\n")}
+    a = _index(tmp_path / "a", plan)
+    b = _index(tmp_path / "b", buggy)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert not d["nodes_only_a"] and not d["nodes_only_b"]    # call graph identical ...
+    assert not d["edges_only_a"] and not d["edges_only_b"]
+    assert "score" in {c["name"] for c in d["body_changed"]}  # ... body layer flags score()
+    assert not d["equivalent"]
+
+
+def test_cpp_self_diff_is_equivalent(tmp_path):
+    # determinism / no-phantom-delta guard for the C/C++ body layer.
+    import pytest
+    pytest.importorskip("tree_sitter_language_pack")
+    repo = {"m.cpp": "int f(int* xs, int n) { int t = 0; for (int i = 0; i < n; i++) { t += g(xs[i]); } return t; }\n"}
+    a = _index(tmp_path / "a", repo)
+    b = _index(tmp_path / "b", repo)
+    d = graphdiff.graph_diff(a, b, mode="id", body=True)
+    assert d["equivalent"], d
+    assert d["body_changed"] == []
+
+
 def test_operation_does_not_migrate_older_schema_other_db(tmp_path):
     # R160 (opus HIGH): a VALID but older-schema stitchgraph index passes the read-only probe, but
     # opening it with Store() would run _migrate (ALTER TABLE ADD COLUMN) + commit, mutating the

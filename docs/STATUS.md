@@ -36,10 +36,25 @@ spec and section references.
 | Operations | `trace_path` (best-confidence path) | ✅ Done | full-stack, (max,×) semiring |
 | Operations | `scan` (ranked issues + urgency) | ✅ Done | stubs/holes/cycles/god-objects |
 | Operations | `reindex` | ✅ Done | full rebuild; `--precise`; ignore globs |
-| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope; small dense grid |
+| Operations | `get_matrix` (bounded submatrix) | ✅ Done | refuses broad scope; small dense grid; `layer=call\|statement\|expression` (§5c drill-down into a function's PDG / value-flow graph) |
 | Operations | `summarize_subsystem` | ✅ Done | counts, hubs, public surface, deps |
 | Operations | `ingest_trace` (runtime fusion) | ✅ Done | coverage.py JSON / LCOV / Go coverprofile |
 | Operations | `risk` (git × structure) | ✅ Done | hotspots + hidden coupling |
+| Operations | `find_chokepoints` (criticality) | ✅ Done | articulation points ranked by blast radius (§6); advisory |
+| Operations | `find_subsystems` (decomposition) | ✅ Done | spectral clustering + token labels (§6); numpy-dense, sparse via `[spectral]`; advisory |
+| Operations | `find_modes` (runtime behaviour) | ✅ Done | POD/SVD of per-test coverage (§6); modes + intrinsic dim + minimal test set; language-agnostic; numpy-required, sparse via `[spectral]`; advisory |
+| Operations | `scaffold_coverage` (capture kit) | ✅ Done | generates sandboxed Docker/shell/CI recipe for per-test coverage; tool never executes code |
+| Operations | `select_tests` (change → tests) | ✅ Done | runtime coverage × static blast radius (§6); both/runtime_only/static_only; no numpy; advisory |
+| Operations | `co_change` (outcome → code) | ✅ Done | functions co-activating with a symbol (§6); behavioural neighbourhood; no numpy; advisory |
+| Operations | `find_coupling` (implicit deps) | ✅ Done | pairs that co-run but have no static edge (§6); runtime∖structure; no numpy; advisory |
+| Operations | `find_gaps` (coverage gaps) | ✅ Done | untested functions × reachability → live (gap) vs dead (§6); no numpy; advisory |
+| Operations | `test_order` (fail-fast) | ✅ Done | greedy new-coverage-first ordering; prefix = minimal cover (§6); no numpy; advisory |
+| Operations | `redundant_tests` (clusters) | ✅ Done | identical-profile test groups (§6); review aid, not auto-delete; no numpy; advisory |
+| Operations | `find_core` (always-on core) | ✅ Done | functions by activation frequency (§6); runtime companion to find_chokepoints; no numpy |
+| Operations | `feature_map` (mode → code × tests) | ✅ Done | per-mode functions × files × tests (§6); POD/SVD; numpy-required; advisory |
+| Operations | `find_outlier_tests` (unique vs smoke) | ✅ Done | mode-space reconstruction residual (§6); POD/SVD; numpy-required; advisory |
+| Operations | `runtime_risk` (churn × behaviour) | ✅ Done | git churn × behavioural centrality (§6); runtime companion to risk; no numpy |
+| Operations | `coverage_drift` (snapshots) | ✅ Done | functions gained/lost test exposure between two coverage snapshots (§6); no numpy |
 | Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
@@ -60,12 +75,14 @@ spec and section references.
 
 ## Test coverage
 
-72 tests (`tests/`): envelope, store + incremental + migration, polyglot
+2298 tests (`tests/`): envelope, store + incremental + migration, polyglot
 extraction (Python + 11 tree-sitter languages), operations, config, `get_matrix`,
-cross-language resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/
-SQL/ORM) + full-stack traces, the GraphBLAS algebra (accelerated sweeps agree with
-the pure-Python reference), git-risk fusion, multi-format runtime traces, a
-pluggable-embedder check, file-watching, and a precision/recall eval harness.
+the body-matrix walkers + value-flow/PDG layers (all 12 languages), cross-language
+resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/SQL/ORM) + full-stack
+traces, the GraphBLAS algebra (accelerated sweeps agree with the pure-Python
+reference), spectral subsystem decomposition + articulation-point criticality,
+git-risk fusion, multi-format runtime traces, a pluggable-embedder check,
+file-watching, and a precision/recall eval harness.
 
 ## Roadmap (what's left)
 

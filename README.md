@@ -14,9 +14,11 @@ One core library, three thin surfaces over the same operations:
 > Every result is advisory — it returns ranked options for a human/LLM to act
 > on; it never edits or deletes source.
 
-See [`docs/design.md`](docs/design.md) for the full design & capability map,
-[`docs/STATUS.md`](docs/STATUS.md) for what's built, and [`AGENTS.md`](AGENTS.md)
-for the agent rules that teach an LLM when to call which tool.
+See [`docs/OVERVIEW.md`](docs/OVERVIEW.md) for a one-page stocktake (operations,
+languages, surfaces, use cases), [`docs/design.md`](docs/design.md) for the full
+design & capability map, [`docs/STATUS.md`](docs/STATUS.md) for what's built, and
+[`AGENTS.md`](AGENTS.md) for the agent rules that teach an LLM when to call which
+tool.
 
 ## What it delivers
 
@@ -30,8 +32,8 @@ Point it at a repo and ask plain questions about it. Every answer is ranked and 
   column, *across languages*.
 - **Where's the code that does X?** — `find_similar`: by name/docs (semantic) or, new in v3.0.0, by
   **body shape** (finds renamed / reordered clones a text search misses).
-- **How do two builds differ?** — `graph_diff`: call-level deltas **plus** Python body-shape
-  changes, so a data-flow bug that leaves the call graph identical still shows up.
+- **How do two builds differ?** — `graph_diff`: call-level deltas **plus** body-shape changes
+  (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash), so a data-flow bug that leaves the call graph identical still shows up.
 - **I'm new here — orient me.** — `orient` / `summarize_subsystem` / `risk`: central modules, entry
   points, and the files most dangerous to touch.
 - **What's referenced but missing?** — `find_holes`: dangling references that don't resolve.
@@ -57,53 +59,85 @@ for LLM agents. The full operation list and the question each answers is in the 
 - **Polyglot, in one graph.** Python (deep) + 11 more languages via tree-sitter,
   plus cross-language resolvers, all resolving into a single typed graph — so a
   trace can cross an HTML form → route → handler → ORM → SQL table → column.
-- **Sees inside functions, not just between them.** v3.0.0's **body matrix**
-  (Python) fingerprints each function's value flow order- and name-invariantly, so
-  `find_similar(mode="structure")` catches renamed / reordered clones and
-  `graph_diff` flags a data-flow change that leaves the call graph identical —
-  advisory and read-only, never feeding dead-code detection.
+- **Sees inside functions, not just between them.** The **body matrix**
+  (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash) fingerprints each function's value flow order- and
+  name-invariantly, so `find_similar(mode="structure")` catches renamed / reordered
+  clones and `graph_diff` flags a data-flow change that leaves the call graph
+  identical — advisory and read-only, never feeding dead-code detection.
+- **Layered — one graph, pick the depth (§5c).** `get_matrix(layer="call")` is the
+  inter-procedural relation graph; `layer="statement"` (v3.9.0) drills into a
+  function's program-dependence graph (control/data deps, Python + the JS family + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash — every body-matrix language);
+  `layer="expression"` (v3.8.0) drills into its value-flow graph (all 12 languages).
+  Same primitives, call → statement → expression depth; the deeper layers are advisory
+  and computed on demand.
 - **Scales to monorepos.** The v2 **constant-memory streaming indexer** indexes
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.0.0 — intra-procedural body matrix for Python)
+## Status (v3.24.0 — a complete forward-looking POD toolkit: `select_tests`/`co_change`/`find_coupling`/`find_gaps`/`test_order`/`redundant_tests`/`find_core`/`feature_map`/`find_outlier_tests`/`runtime_risk`/`coverage_drift` atop `find_modes`/`find_subsystems`/`find_chokepoints`, over the layered call ↔ statement ↔ expression code-property graph)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
-and v3.0.0 adds the body matrix on top. See [`docs/STATUS.md`](docs/STATUS.md) for
-the full table + roadmap.
+and the body matrix (v3.0.0) now spans Python, the JS family (v3.2.0), Go (v3.3.0),
+Rust (v3.4.0), C/C++ (v3.5.0), Java + C# (v3.6.0), and Ruby + PHP + Bash (v3.7.0) — all 12 languages.
+**v3.8.0 makes it a layered graph (§5c):** `get_matrix`/`graph_diff` now drill from the
+call layer into a function's value-flow (expression) layer, and the statement (PDG)
+layer spans every one of the 12 body-matrix languages. **v3.19.0–v3.20.0 add the first
+spectral-analysis operations (§6):** `find_chokepoints` (articulation points ranked by
+blast radius) and `find_subsystems` (spectral clustering of the call graph into
+auto-labelled subsystems). **v3.21.0 adds behavioural analysis (§6 win 3):**
+`find_modes` (POD/SVD of a per-test coverage matrix → runtime behavioural modes,
+intrinsic dimensionality, minimal covering test set) and `scaffold_coverage` (generates
+a sandboxed Docker/shell/CI kit so you capture that coverage in your own jail —
+stitchgraph never runs your code, it only reads the inert matrix). **v3.22.0–v3.23.0 turn
+that matrix into a complete forward-looking toolkit (§6):** `select_tests` (which tests to
+run for a change/changeset), `co_change` (what code moves together), `find_coupling`
+(implicit coupling — co-run but no static edge), `find_gaps` (untested functions, live vs
+dead), `test_order` (fail-fast ordering), `redundant_tests` (identical-profile clusters),
+`find_core` (the always-on core), `feature_map` (mode ↔ code ↔ tests), `find_outlier_tests`
+(unique-behaviour vs smoke), `runtime_risk` (churn × behavioural centrality), and
+`coverage_drift` (behavioural changelog across snapshots). All advisory, all read-only;
+the set-math ones need no numpy. See
+[`docs/OVERVIEW.md`](docs/OVERVIEW.md) for the one-page capability map and
+[`docs/STATUS.md`](docs/STATUS.md) for the full table + roadmap.
 
-### Headline (v3.0.0): the intra-procedural body matrix (Python)
+### Headline: the intra-procedural body matrix (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash)
 
 Every prior release modeled code *between* definitions — a graph of functions /
-classes linked by CALLS / REFERENCES / INHERITS / IMPORTS. **v3.0.0 adds the level
-below that:** a per-Python-function **value-flow fingerprint**
-(`core/structure.py`) — operations + control points, data + control edges, copy
-propagation — fingerprinted **order- and name-invariantly** via a Weisfeiler-Lehman
-kernel. Renamed locals, reordered independent statements, and temp-variable
-factoring all read as the *same shape*. It powers two new advisory capabilities:
+classes linked by CALLS / REFERENCES / INHERITS / IMPORTS. **v3.0.0 added the level
+below that**, **v3.2.0 extended it to JavaScript/TypeScript**, **v3.3.0 added Go**,
+**v3.4.0 added Rust, v3.5.0 added C/C++, v3.6.0 added Java and C#**, and **v3.7.0 adds Ruby, PHP and Bash** (all 12 languages): a per-function
+**value-flow fingerprint** (`core/structure.py`
+for Python, `core/structure_js.py` for the JS family, `core/structure_go.py` for Go,
+`core/structure_rust.py` for Rust, `core/structure_cpp.py` for C/C++, `core/structure_java.py` for
+Java, `core/structure_csharp.py` for C#) — operations + control points, data + control
+edges, copy propagation — fingerprinted
+**order- and name-invariantly** via a Weisfeiler-Lehman kernel. Renamed locals,
+reordered independent statements, and temp-variable factoring all read as the *same
+shape* (an arrow rewrite and TS type annotations included). It powers two advisory
+capabilities:
 
-- **`find_similar(mode="structure")`** — rank stored Python functions by **body
-  shape**, finding renamed / reordered / temp-var clones (Type-2/Type-3) a token
-  differ misses.
+- **`find_similar(mode="structure")`** — rank stored functions by **body shape**,
+  finding renamed / reordered / temp-var clones (Type-2/Type-3) a token differ
+  misses. The snippet's language is auto-detected and ranked same-language only.
 - **body-aware `graph_diff`** — structurally diff two built indexes: call-level
-  node/edge deltas *plus*, for Python functions in both, those whose **body shape
+  node/edge deltas *plus*, for functions in both, those whose **body shape
   diverged** — so a data-flow change that leaves the call graph identical (the
   classic translation / plan-vs-actual bug) is still caught.
 
-Both are **advisory and read-only** — they never feed `find_stale`, so the
-cardinal rule is structurally unaffected. Python-only for now (built on the deep
-stdlib `ast`); extending the matrix to the tree-sitter languages is future work
-(`docs/IDEAS.md` §5). It is a structural *approximation*, not sound data flow —
-full scope and limits in
-[`docs/RELEASE_NOTES_v3.0.0.md`](docs/RELEASE_NOTES_v3.0.0.md).
+Both are **advisory and read-only** — they never feed `find_stale`, so the cardinal
+rule is structurally unaffected. **Python is stdlib-only; the JS/TS, Go, Rust,
+C/C++, Java, C#, Ruby, PHP, and Bash layers need the tree-sitter extra.** Cross-language *body* comparison stays
+oracle-only (topology tracks the extractor); the features rank/diff within one
+language. It is a structural *approximation*, not sound data flow — full scope and
+limits in [`docs/RELEASE_NOTES_v3.7.0.md`](docs/RELEASE_NOTES_v3.7.0.md).
 
 ```python
 import stitchgraph as sg
 
 with sg.Store("stitchgraph.db") as store:
     sg.reindex(store, "src")
-    # rank stored Python functions by body shape (renamed/reordered clones)
+    # rank stored functions by body shape (renamed/reordered clones; Python, JS/TS, Go, Rust, C/C++, Java, C#, Ruby, PHP, or Bash)
     print(sg.find_similar(store, open("some_func.py").read(), mode="structure"))
     # body-aware structural diff against another built index
     print(sg.graph_diff(store, "other_index.db"))   # body-aware by default
@@ -153,16 +187,24 @@ millions of edges are ever all resident at once.
   incremental updates and forward-compatible schema migration.
 - **Universal `Result` envelope** — `confidence / provenance / needs_review /
   urgency`; provenance gates the urgency ceiling.
-- **15 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
+- **30 operations**, all real: `find_symbol`, `get_callers`, `get_callees`,
   `orient`, `find_stale`, `find_holes`, `impact_of`, `trace_path`, `scan`,
   `get_matrix`, `summarize_subsystem`, `risk`, `ingest_trace`, `find_similar`,
-  `graph_diff`, plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
+  `graph_diff`, `find_chokepoints`, `find_subsystems`, `find_modes`,
+  `scaffold_coverage`, `select_tests`, `co_change`, `find_coupling`, `find_gaps`,
+  `test_order`, `redundant_tests`, `find_core`, `feature_map`, `find_outlier_tests`,
+  `runtime_risk`, `coverage_drift`, plus admin `reindex`. Generated as **library API + CLI + MCP**, plus a Markdown
   `report`, a `watch` command, and a `doctor` grammar self-check.
-- **Intra-procedural body matrix (Python, v3.0.0)** — a per-function value-flow fingerprint
-  (`core/structure.py`) that sees *inside* a function, not just its call edges. Powers
-  `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered / temp-var
-  clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and read-only
-  (never feeds `find_stale`); Python-only for now.
+- **Intra-procedural body matrix (Python v3.0.0; JS/TS/TSX v3.2.0; Go v3.3.0; Rust v3.4.0; C/C++ v3.5.0;
+  Java + C# v3.6.0, Ruby + PHP + Bash v3.7.0)** — a
+  per-function value-flow fingerprint (`core/structure.py`, `core/structure_js.py`,
+  `core/structure_go.py`, `core/structure_rust.py`, `core/structure_cpp.py`, `core/structure_java.py`,
+  `core/structure_csharp.py`) that sees *inside* a
+  function, not just its call
+  edges. Powers `find_similar(mode="structure")` (rank by body shape — finds renamed / reordered /
+  temp-var clones a token differ misses) and the body-aware layer of `graph_diff`. Advisory and
+  read-only (never feeds `find_stale`); ranks/diffs within one language. The JS/TS, Go, Rust,
+  C/C++, Java, C#, Ruby, PHP, and Bash layers need the tree-sitter extra; Python is stdlib-only.
 - **Cross-language resolver pipeline** — routes (Flask/FastAPI/Django/Express/
   Spring), HTML forms, JS `fetch`, events, SQL, and ORM; ORM and SQL converge on
   the same `db::<table>` node, so `trace_path` crosses HTML/JS → route → handler →
@@ -184,10 +226,14 @@ millions of edges are ever all resident at once.
 | `impact_of` | If I change X, what is reachable / at risk downstream? |
 | `trace_path` | How does a request flow end-to-end (UI → route → handler → DB)? |
 | `risk` | Which files are most dangerous to touch (churn × centrality × coupling)? |
+| `find_chokepoints` | Which code entities (functions/methods/classes) are structural chokepoints — sole bridges whose removal fragments the graph — ranked by blast radius? |
+| `find_subsystems` | What are the codebase's natural subsystems? — spectral clustering of the call graph, each cluster auto-labelled with its distinctive tokens. |
+| `find_modes` | What are the codebase's *runtime* behavioural modes? — POD/SVD of a per-test coverage matrix; also yields the intrinsic dimensionality and a **minimal test set** that covers every executed function. Language-agnostic. |
+| `scaffold_coverage` | Generate a **sandboxed** capture kit (Docker / shell / CI) that produces the per-test coverage artifact `find_modes` needs — stitchgraph never runs your code, you run the kit in your jail. |
 | `scan` | Give me a ranked sweep of issues across the whole repo. |
 | `summarize_subsystem` | What is this package/folder, in one shot? |
-| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python). |
-| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + Python body-shape changes. |
+| `find_similar` | What else looks like this (duplication / refactor targets)? — token (default) or `mode="structure"` body-shape (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash). |
+| `graph_diff` | How do two indexes differ (translation fidelity / plan-vs-actual)? Call-level deltas + body-shape changes (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash). |
 | `ingest_trace` | Fuse runtime coverage so "live" reflects what actually ran. |
 
 > Trust model: every answer carries a confidence and provenance. `find_stale` is

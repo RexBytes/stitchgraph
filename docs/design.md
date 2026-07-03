@@ -502,7 +502,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 
 ---
 
-## 9. Operation surface (~8 task-level)
+## 9. Operation surface (18 operations)
 
 | Operation | Returns | Bucket |
 |---|---|---|
@@ -512,7 +512,14 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 | `impact_of(symbol)` | blast radius + which tests | B/G |
 | `trace_path(src, sink)` | full-stack cross-language path + confidence | B |
 | `scan()` | ranked issue list with `urgency` + confidence + reasons — live stubs, holes, cycles, god objects, data loops | §7, C/F |
-| `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading | ✅ |
+| `get_matrix(scope, relation)` | **bounded** sparse submatrix for deep reading (drills `call`/`statement`/`expression` layers, §5c) | ✅ |
+| `find_similar(snippet)` | code most like a snippet — by name/docs (semantic) or body shape (structure) | §1 |
+| `graph_diff(other)` | call-level deltas **plus** body-shape divergences between two indexes | §5b |
+| `find_chokepoints()` | articulation points (sole bridges) ranked by blast radius — structural criticality (advisory) | §6 |
+| `find_subsystems(k?)` | spectral clustering of the call graph into auto-labelled subsystems (advisory) | §6 |
+| `summarize_subsystem(prefix)` | compact structural summary of a subsystem, for an LLM | A |
+| `risk(path?)` | git-churn × centrality hotspots + hidden coupling | §8 |
+| `ingest_trace(coverage)` | fuse a runtime trace (coverage.json / LCOV / Go coverprofile) into liveness | — |
 | `find_symbol / get_callers / get_callees` | structural primitives | A |
 | `reindex(path)` | incremental update (admin) | — |
 

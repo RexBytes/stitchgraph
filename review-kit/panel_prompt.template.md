@@ -19,7 +19,7 @@ duplicate findings count against you.**
 
 stitchgraph is a local-first, MCP-native code-intelligence graph (CLI + importable
 library + MCP server) that finds stale/dead code, holes, orientation, and impact
-across 11 languages via a Python `ast` extractor plus tree-sitter, with a SQLite
+across 12 languages (Python via a stdlib `ast` extractor plus 11 via tree-sitter), with a SQLite
 adjacency store as source of truth, and a result envelope
 (ok/confidence/provenance(EXTRACTED|INFERRED|AMBIGUOUS)/needs_review/urgency).
 

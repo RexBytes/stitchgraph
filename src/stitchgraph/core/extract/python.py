@@ -1590,20 +1590,33 @@ def _is_pytest_hook(name: str) -> bool:
     return name.startswith("pytest_") and len(name) > len("pytest_")
 
 
+def _has_registration_decorator(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True if a decorator is a call or attribute access (`@app.callback()`, `@app.route("/")`,
+    `@foo.register`) — the idiom that *registers* a function for its side effect and supplies its
+    behaviour externally, so an empty body is intentional, not an unimplemented stub. A bare-name
+    decorator (`@property`, `@staticmethod`) does not qualify."""
+    return any(isinstance(d, (ast.Call, ast.Attribute)) for d in func.decorator_list)
+
+
 def _is_stub(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     body = [s for s in func.body if not _is_docstring(s)]
+    empty = False
     if not body:
-        return True
-    if len(body) == 1:
+        empty = True
+    elif len(body) == 1:
         only = body[0]
-        if isinstance(only, ast.Pass):
-            return True
-        if isinstance(only, ast.Expr) and isinstance(only.value, ast.Constant) \
-                and only.value.value is Ellipsis:
-            return True
+        # An explicit `raise NotImplementedError` is always a stub, even when decorated.
         if isinstance(only, ast.Raise) and _raises_notimplemented(only):
             return True
-    return False
+        empty = isinstance(only, ast.Pass) or (
+            isinstance(only, ast.Expr) and isinstance(only.value, ast.Constant)
+            and only.value.value is Ellipsis)
+    if not empty:
+        return False
+    # A pass/…/docstring-only body under a registration decorator is idiomatic (the decorator
+    # carries the behaviour) — NOT an unimplemented stub. Self-analysis dogfood: a Typer
+    # `@app.callback(...)` group callback with a `pass` body was RED-flagged as a live stub.
+    return not _has_registration_decorator(func)
 
 
 def _is_abstract(func: ast.FunctionDef | ast.AsyncFunctionDef, in_abstract: bool) -> bool:

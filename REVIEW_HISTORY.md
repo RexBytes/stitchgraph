@@ -9,10 +9,10 @@ tradeoffs in `LIMITATIONS.md`; the rubric in `RELEASE_READINESS.md`.
 | Metric | Value |
 |---|---|
 | Multi-model review panels | 2.1.29: R140–R141 on Python abstract/Protocol interface methods (#70/#86). 2.1.30: R142–R143 on C/C++ struct-used-as-a-type (#89). **2.1.31: R144 (2 cardinals found) → R145–R146** (full diversity opus/sonnet/haiku) on Bash function-export recall (#73) — clean in 2 fresh rounds; **closes the #70–#89 follow-up backlog** |
-| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 85 ✅ · no-open-defects ✅ |
-| Tests | 703 passing (full extras) |
+| Hard gates | tests ✅ · ruff ✅ · mypy ✅ · mutation (`structure.py` 15/15 + `graphdiff` 9/9; 3.1.0 added `similar.py` 29/32, 3 justified-equivalent) ✅ · oracles 233 (3.2.0 +51-case JS/TS; 3.3.0 +45-case Go; 3.4.0 +38-case Rust battery) ✅ · no-open-defects ✅ |
+| Tests | 863 passing (full extras) |
 | Coverage | ~93% |
-| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. **3.1.0: mutation-harden `find_similar`'s dense path + clearer README → R166 (test-determinism gap fixed: dense-backend global state isolated) → R167✓ R168✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE, RRS 93.3)** |
+| Convergence | 2.3.0: shared `tarjan_scc` → R149 (NIT) → R150 (✗ MEDIUM) → R151✓ R152✓. 3.0.0: intra-procedural body matrix → R153–R163 (8 fix rounds) → R164✓ R165✓ on a frozen HEAD. 3.1.0: mutation-harden `find_similar`'s dense path → R166 → R167✓ R168✓. 3.2.0: body matrix → JS/TS/TSX (`structure_js.py` + 51-case oracle) → R169–R174 (4 dropped-sub-expr fixes incl. TS `as`/`satisfies`, + 3 stale-scope doc fixes) → R175✓ R176✓ (streak 2, RELEASABLE). 3.3.0: body matrix → Go (`structure_go.py` + 45-case oracle) → R177–R178 (2 doc-scope fixes; zero code defects) → R179✓ R180✓ (streak 2, RELEASABLE). 3.4.0: body matrix → Rust (`structure_rust.py` + 38-case oracle) → R181 (1 real defect: match-arm guards dropped, fixed + oracle-pinned) → R182✓ R183✓ full-diversity on a frozen HEAD (streak 2, gate met, RELEASABLE). 3.5.0: → C/C++ (R184–R192). 3.6.0: → Java + C# (`structure_java.py`/`structure_csharp.py`); C# exposed the float-rounding oracle blind spot latent in all 7 + a repeated-for-field-children class → hardened predicate to exact fingerprint-equality → R193–R197 fixes → R198✓ R199✓ (RELEASABLE). **3.7.0: → Ruby + PHP + Bash — completes all 12 languages; a long unbounded grind closed ≈a dozen esoteric advisory drops mostly latent in already-shipped frontends, each closed matrix-wide + oracle-pinned (comment-trivia positional picks, repeated-field reads, no-flow-arm initializers, exception selectors, decorator args, C# interpolation alignment) → R200✓ R201✓ on frozen HEAD 8d9b95f (streak 2, gate met, RELEASABLE)**. **3.8.0: §5c phase 1 — the layered code-property graph (`model.Layer` + `structure.vfg_source` across all 12 langs + `get_matrix(layer="expression")` drill-down; graph_diff = two-layer diff; on-demand, advisory, no schema change) → R202✓ R203✓ on frozen HEAD 0dae62c (streak 2, gate met, RELEASABLE)**. **3.9.0: §5c phase 2 — the STATEMENT / PDG layer (`structure.pdg_source` + `get_matrix(layer="statement")`, Python-only, advisory) → R204 → R205 (✗ determinism: set-iteration made cells `PYTHONHASHSEED`-dependent; fixed + subprocess test) → R206✓ R207 (✗ cosmetic layer-order) R208✓ R209 (✗ cosmetic layer-order — closed class-wide) R210 (✗ real: `match`/`case` bodies dropped from the PDG; fixed + oracle-pinned) R211 (✗ last cosmetic layer-order + opus's exhaustive compound-completeness hunt proving match was the only gap) → R212✓ R213✓ on frozen HEAD ad7ff46 (streak 2, gate met, RELEASABLE)**. **3.10.0: §5c sweep phase 3 — the STATEMENT layer learns the JS family (`structure_js.pdg_source`, js/ts/tsx; `get_matrix(layer="statement")` dispatches Python + JS) → R214 (✗ real: `with`-body dropped — block-bearing statement not descended; fixed class-wide + a cosmetic docstring nit) R215✓ R216 (✗ LOW: `typeof x` in a TS type position leaked a false data read; fixed + a cosmetic wording nit) → R217✓ R218✓ on frozen HEAD b488617 (streak 2, gate met, RELEASABLE)**. **3.11.0: §5c sweep language 3 — the STATEMENT layer learns Go (`structure_go.pdg_source`) → R219 (✗ LOW: type-switch `case <T>:` types leaked as spurious nodes; fixed class-wide + oracle test) → R220✓ R221✓ on frozen HEAD 37cd045 (streak 2, gate met, RELEASABLE)**. **3.12.0: §5c sweep language 4 — the STATEMENT layer learns Rust (`structure_rust.pdg_source`; expression-oriented value-position folding) → the longest grind of the sweep, R222–R238: 13 real defects, all ONE class (the read/write projection reading a non-value token / pattern binding, or dropping a consumed read, vs the VFG sibling) — self receivers, value-position control/block bodies, let-else, let-chains, macro names, struct-shorthand + if-let/while-let pattern bindings, loop/block labels, const/static, lifetime + type turbofish, closed uniformly in BOTH the PDG and VFG builders. R228 ADDED a white-box VFG-vs-PDG differential oracle (generated depth-2 value-position wrapper corpus; VFG-reads ⟹ PDG-reads + binding-reaches-use + no-spurious-read families) that regresses the whole class at once → R237✓ R238✓ on frozen HEAD 00792d1 (streak 2, gate met, RELEASABLE)**. **3.13.0: §5c sweep language 5 — the STATEMENT layer learns C/C++ (`structure_cpp.pdg_source`; statement-oriented, one walker for both C and C++). The differential oracle + type/label/field guards were **front-loaded with panel 1**, turning Rust's 17-panel grind into **6 real defects across 11 panels (R239–R249)**: parenthesized-RMW store dropped, GNU statement-expression fold, lambda init-capture, then the two that slipped to R245/R246 — a **type-position VFG over-read** (`g<v>()`/`decltype(v)` read by the VFG, dropped by the correct PDG) and a **structured-binding VFG under-read** (`auto [a,b]=v; use(a)`), i.e. the same VFG-vs-PDG divergence in composed positions the corpus hadn't yet generated, both closed by mirroring the PDG into the VFG + widening the oracle → R248✓ R249✓ on frozen HEAD 9575760 (streak 2, gate met, RELEASABLE)**. **3.14.0: §5c sweep language 6 — the STATEMENT layer learns Java (`structure_java.pdg_source`; statement-oriented, methods keyed by the dotted enclosing-type chain). The differential oracle + type/method-name/field/label guards were front-loaded WITH panel 1 and the read-projection mirrors the VFG `ev`/`bind` node-for-node, so Java became the FIRST sweep language to ship with ZERO code defects — 3 panels (R250–R252), the only finding a one-line docstring nit → R251✓ R252✓ on frozen HEAD 35eeb58 (streak 2, gate met, RELEASABLE)**. **3.15.0: §5c sweep language 7 — the STATEMENT layer learns C# (`structure_csharp.pdg_source`; statement-oriented, mirrors the VFG ev/bind node-for-node). Front-loaded like Java → the SECOND consecutive language to ship with ZERO code defects across its panels (R253–R254); the one substantive find was a pre-existing C# VFG bug (`_do_var_declaration` dropped a bare-identifier copy `int r = v;`) surfaced by mirroring and fixed in BOTH builders; opus falsification ran 317,057 fuzz cases with 0 divergences → R253✓ R254✓ on frozen HEAD ee66402 (streak 2, gate met, RELEASABLE)**. **3.16.0: §5c sweep language 8 — the STATEMENT layer learns Ruby (`structure_ruby.pdg_source`; EXPRESSION-oriented like Rust, value-position control folds, mirrors the VFG ev/bind/_do node-for-node). The front-loading template survived the hard tier: 3 panels / 1 real defect (a `case/in` guard field the VFG's generic fallback covered but the PDG hand-enumeration dropped, R255) vs Rust's 17/13 for the same shape pre-oracle; opus re-cert ran 61 curated + 28,000 fuzz cases with 0 divergences → R256✓ R257✓ on frozen HEAD b3bf7a9 (streak 2, gate met, RELEASABLE)**. **3.17.0: §5c sweep language 9 — the STATEMENT layer learns PHP (`structure_php.pdg_source`; statement-oriented, mirrors the VFG ev/bind node-for-node). Preceded by a grammar-reconciliation probe (tree-sitter emits `member_call_expression`/`nullsafe_member_call_expression`, routed through the shared generic fallback in BOTH builders; `scoped_call`/`function_call` hit the explicit CALL handler) so the two builders stay in lock-step incl. the symmetric gaps (`foreach $k=>$v` pair binds nothing, `Foo::$x` opaque freevar, member NAME unread even for dynamic `$o->$v`). Front-loaded like Java/C# → the THIRD consecutive language to ship with ZERO code defects (2 panels R258–R259, 0 findings); opus falsification ran ~86,000 cases (61k first panel + 24.9k re-cert, incl. 4,000 multi-param differential) with 0 VFG⟹PDG divergences → R258✓ R259✓ on frozen HEAD 20732f1 (streak 2, gate met, RELEASABLE)**. **3.18.0: §5c sweep language 10 — the STATEMENT layer learns Bash, the FINAL language → the sweep now covers EVERY body-matrix language (`structure_bash.pdg_source`; command-oriented outlier — shell functions have NO parameter list, so ENTRY carries no params, mirroring the VFG which seeds no PARAM nodes). The differential oracle is SEEDED via a first `v=$SEED` assignment (node 0 = SEED's FREE node in the VFG; node 1 = the seed Assign in the PDG). Grammar-probed the literal-vs-dynamic command-name split (a literal command name is a free callee, never a var read). Front-loaded → 2 clean panels / 0 code defects; the one finding was a doc LOW (stale README status header at v3.16.0, fixed). opus falsification ran ~86,000 cases (39.9k first panel + 24k + 21.9k re-certs) with 0 VFG⟹PDG divergences, node-1 attribution proven sound, three symmetric under-reads (${#v}/v+=x/extglob) confirmed non-divergent → R261✓ R262✓ on frozen HEAD a9ac0e9 (streak 2, gate met, RELEASABLE). §5c STATEMENT-layer sweep COMPLETE across all 10 sweep-languages / 12 body-matrix languages** |
 | Dogfood (self) | find_stale advisory-only (no false-dead) · holes 0 |
 | Verdict | **Consolidated into the v2.2.0 milestone release** (the cardinal sweep across all 10 languages + the #70–#89 follow-up backlog; no API/schema change, `find_stale` strictly more precise). 1.0.0–2.1.26 RELEASED/releasable (maintainer tags); 2.1.26 closed the per-language cardinal sweep. **2.1.27–2.1.31 close the post-sweep cardinal-safe follow-up backlog (#70–#89)** — all RELEASABLE, awaiting the maintainer's manual tags: **2.1.27** JS/TS exported-object shorthand incl. `as const`/`satisfies` (#74); **2.1.28** TS `#private`-via-`this.#m()` + dynamic-keyed class methods (#76/#78); **2.1.29** Python subscripted-Protocol/ABC + bodyless abstract interface methods (#70/#86); **2.1.30** C/C++ struct used only as a type (#89); **2.1.31** Bash `declare -fx`/`-f -x` / `typeset -fx` export + `time { … }` recall (#73). The rest of #70–#89 were resolved without code change or documented as deliberate cardinal-safe boundaries (#71/#72/#77/#79/#81/#82/#83/#84/#87/#88) or are coverage-only (#85). **2.2.1** then fixed the `PROMPT_COMMAND=fn` half of that gap (#95) — full-diversity panels R147–R148 clean (the generic `var=fn; $var` indirection and the `PROMPT_COMMAND+=fn` append form stay deferred cardinal-safe recall gaps). GitHub issues #18–#22 (v1.0.4-era) verified already fixed in shipped code and closeable. |
 
@@ -1740,6 +1740,708 @@ to non-defects: a cold-run suite flake and transient ruff/oracle failures, both 
 sequentially). (3) The 3 residual `similar.py` survivors are **justified-equivalent**, documented in
 the `tests/test_similar.py` docstring and re-verified by adversarial distinguishing-input attempts in
 both clean rounds — "kill or justify," with the justification itself audited.
+
+## v3.2.0 — the body matrix learns JS / TS / TSX (the first language beyond Python)
+
+The intra-procedural body matrix (v3.0.0, Python) gains a second frontend: `core/structure_js.py`, a
+tree-sitter CST walker for the JS/TS/TSX family that emits the **same** `_VFG` the language-neutral
+core fingerprints. Wired into `find_similar(mode="structure")` and `graph_diff(body=True)` by
+auto-sniffing the snippet/file language and ranking **same-language only** (a body fingerprint's
+topology tracks its extractor, so cross-language scores are not comparable — and a node id maps to
+exactly one file = one language, so the comparison is same-language by construction). Advisory and
+read-only: it never feeds `find_stale`, so the cardinal rule is structurally untouchable. The
+**completeness oracle** recipe ported too: a 51-case metamorphic battery (`helper()` CALL vs `0`
+CONST in every value-bearing position) + a generic fallback so an unhandled node can't silently
+vanish — the tree-sitter introspective guard doesn't port (no small enumerable supertype set), so the
+fallback is the structural "nothing vanishes" guarantee. tree-sitter is an optional extra; without it
+`fingerprint_source` returns `{}` and the JS layer adds nothing (Python stays stdlib-only).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R169 | 3 | ✗ | dev round 1. opus **MEDIUM**: JS `new_expression` read only the `function` field (None for `new C()` / `new (expr)()`) → constructor sub-expression dropped; fixed to read `function` OR `constructor` + a New-callee oracle case. (The oracle also caught a `template_string` `${…}` substitution drop mid-development.) haiku MEDIUM: stale "Python-only" body-matrix scope in the `find_similar_structure` docstring. |
+| R170 | 3 | ✗ | dev round 2. haiku **MEDIUM**: a second stale scope mention — the `find_similar` dispatcher docstring still called the structure mode Python-only. Fixed. |
+| R171 | 3 | ✗ | dev round 3. haiku **MEDIUM**: residual "Python-only"/"(Python)" claims in the README (core-capabilities bullet, "what it delivers", operations table). Fixed; an exhaustive grep then confirmed **zero** residual stale body-matrix scope mentions. |
+| R172 | 3 | ✗ | dev round 4. opus **LOW**: JS `x += e` / `x++` didn't rebind the target, so later reads saw the pre-mutation value — diverged from the Python layer's `x += e ≡ x = x + e` invariance. Fixed via bind-back + base-operator normalization (`+=`→`+`) + a rebind-like-explicit oracle test. (sonnet observed the switch case-value double-walk → R173.) Cardinal-safe (advisory metric only). |
+| R173 | 3 | ✗ | dev round 5 (frozen HEAD 8ab121b). sonnet **LOW**: the switch case-value skip compared by node identity (`st is val`) — a no-op, because tree-sitter returns a fresh wrapper per access, so the case value was walked twice (spurious ARGUMENTS / PROPERTY_IDENTIFIER nodes). Fixed by comparing **byte spans** + a Switch-case-value oracle case + a no-double-walk regression test. Cardinal-safe. |
+| R174 | 3 | ✗ | clean-cycle attempt (frozen HEAD 8ab121b). sonnet + haiku CLEAN (gate 758/136, mutation 15/15 + 9/9, cardinal byte-identical, zero stale scope). opus **MEDIUM** (deep hunt): TS `as`/`satisfies` casts sat in the `_TRANSPARENT` set that descends to the **last** named child — but their children are `[operand, type]`, so it kept the no-flow type node and **dropped the operand's value flow** (`helper() as number` collapsed to `0 as number`, sim 1.0), making `graph_diff` miss a real body change and `find_similar` mis-rank. The inverse of every documented approximation — a genuine dropped-sub-expression. Fixed via `_CAST_OPERAND_FIRST` (first child for as/satisfies, last for `(x)`/`x!`/`<T>x`) + 3 TS-cast metamorphic oracle cases + a TS-cast-no-value-flow invariant test. Streak resets. |
+| R175 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 81e4916). opus (deepest pass): ~60 constructs beyond the 51-case oracle (nested/as-const casts, decorators, optional chaining, computed members, tagged templates, JSX/tsx, destructuring, spreads, sequence) — every value-bearing position discriminates; the three sim==1.0 cases (param-default, object-shorthand-method, class-field-init) are documented approximations that match Python exactly; the R174 cast fix holds across nested casts. sonnet: gate **762/140**, ruff+mypy clean, mutation 15/15 + 9/9, clean degradation without the extra, cardinal byte-identical. haiku: counts 762/140/51 + mutation + version 3.2.0 + zero stale scope all verified. |
+| R176 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** Independent re-run, not a rerun of R175. opus: fresh-angle dropped-sub-expression hunt on realistic multi-statement async/generator/try-catch-finally functions + private-method `this`-dispatch — all discriminate; the three sim==1.0 cases (subscript-**write** index, destructuring defaults, name/position invariance) mirror Python identically; cardinal `find_stale` byte-identical before/after `find_similar`+`graph_diff` on a mixed Python+JS+TS index (scratch db kept outside the source tree). sonnet: gate 762/140, mutation 15/15 + 9/9, cross-language comparison structurally impossible, HEAD unchanged. haiku: 762/140/51 + mutation + version + zero stale scope re-verified. |
+
+Process notes: (1) the **completeness-oracle-first recipe paid off again** — three of the four real
+dev-round findings (New-callee, template-substitution, and the class the oracle is built for) are
+dropped-sub-expressions the metamorphic battery catches deterministically; each fix added an oracle
+case, so the guard is now denser for the next language. (2) The deepest defect (R174 `as`/`satisfies`)
+slipped through five rounds because the *clean* panels (sonnet/haiku) don't hunt dropped-sub-expr and
+the lone TS test only exercised parameter/return annotations — **opus's deep-hunt angle is the one
+that finds this class**; keep it in every body-matrix panel. (3) Same `mutate.py`-concurrency hazard
+as v3.1.0, plus a new one: an *interrupted* `mutate.py` left an `ast.unparse`'d mutant of
+`structure_js.py` on disk (its `finally` restore was bypassed by a worker SIGKILL) — reviewers are now
+told **not to run `mutate.py` on `structure_js.py`** until that tool is made interrupt-safe.
+
+## v3.3.0 — the body matrix learns Go (language 2 of the §5b sweep)
+
+`core/structure_go.py` — a tree-sitter Go walker emitting the **same** `_VFG` the Python and JS
+frontends do, reusing the WL kernel. Bare-name qualnames (a method keys as `Method`, not `T.Method`)
+and nested `func` literals opaque — matching the Go extractor's granularity. Seeds the method
+receiver + named results as parameters. Same advisory/read-only/same-language-ranking contract; the
+45-case completeness oracle (`tests/oracles/test_structure_go_completeness.py`) drove the walker.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R177 | 3 | ✗ | clean-cycle attempt 1 (frozen HEAD 4c3d5a2). opus + sonnet CLEAN (gate **816/190**, mutation 15/15 + 9/9, cardinal byte-identical; opus's ~37-probe deep hunt found only documented Python-parity approximations — the one sim==1.0, `m[k]=e` index-**write** key, matches Python's SETITEM exactly). haiku **MEDIUM**: `LIMITATIONS.md` still scoped the body matrix to "Python + JS/TS/TSX … not the other 8 languages" — a now-false claim post-Go. Fixed → "Python + JS/TS/TSX + Go". Streak resets (doc-accuracy, same class as v3.2.0 R169–R171). |
+| R178 | 3 | ✗ | clean-cycle attempt 2 (frozen HEAD 8c52061). opus + sonnet CLEAN (gate 816/190, mutation 15/15 + 9/9, cardinal: the genuinely-orphan Go func is never flagged by the body matrix). haiku **MEDIUM** (exhaustive scope grep; its first run was cut off by a worker restart, the rerun caught more): the `graph_diff()` **function** docstring still said "Python or JS/TS" (missing Go **and** TSX — the module docstring had been updated but not the function's) and README:34 said "JS/TS + Go" (missing TSX). Both fixed to canonical. Streak resets. |
+| R179 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 30c35a4). opus: whole-function fidelity on idiomatic Go incl. **generics** — a generic body fingerprints non-empty, `helper()` vs `0` inside it differs, type params/constraints (`comparable`/`~int`) carry no spurious flow, generic ≡ concrete; renamed clone ranks first, data-flow change caught. sonnet: gate 816/190, mutation 15/15 + 9/9, clean degradation, cross-language misroute empirically impossible. haiku: exhaustive scope grep, both R178 fixes re-verified, counts 816/190/45. |
+| R180 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus: parse-robustness hunt over 30 edge inputs (syntax error, empty/package-only, unicode idents, 2000–3000-deep expression chains, lone surrogates) — `fingerprint_source` **never raised**, always returned a dict ({} or partial); deep nesting caught → `{}` (documented advisory degrade); cardinal byte-identical, no Go node ever in the stale set. sonnet: 816/190, mutation 15/15 + 9/9, HEAD unchanged. haiku: counts/version/scope all canonical. |
+
+Process notes: (1) the completeness-oracle-first recipe made Go **cheaper than JS** — the walker passed
+its 45-case battery on the first build and the panels found **no code defect at all** (only two
+doc-scope misses). The bug taxonomy in `docs/BODY_MATRIX_LESSONS.md` is paying compounding dividends.
+(2) Both findings this release were **documentation scope-consistency** (the `graph_diff` *function*
+docstring and a README bullet lagging the module docstring) — a recurring tail when one representation
+gains a language; the fix each time is a grep across *every* surface, not just the obvious ones.
+(3) Generics were the one genuinely-new Go construct vs Python/JS; opus confirmed type parameters seed
+no spurious value flow (the walker only reads `receiver`/`parameters`/`result`).
+
+## v3.4.0 — the body matrix learns Rust (language 3 of the §5b sweep)
+
+`core/structure_rust.py` — a tree-sitter Rust walker emitting the **same** `_VFG` the Python/JS/Go
+frontends do. Rust is expression-oriented, so a block's **trailing expression** is its value (`{ x }`
+≡ `{ return x; }`); `if`/`match`/`loop`/`while`/`for` are expressions; `?`/`&x`/`as`/ranges/tuples/
+struct-literals carry operand flow (type carries none); macros are walked best-effort as token trees;
+closures are opaque `NESTED` leaves; `self`/named-results seed like params. Qualname scheme matches
+the Rust extractor: free functions bare, impl methods `Type.method`. The 38-case completeness oracle
+drove the walker.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R181 | 3 | ✗ | clean-cycle attempt 1 (frozen HEAD 5e0152b). sonnet + haiku CLEAN (gate **862/232**, mutation 15/15 + 9/9, cardinal inviolable, exhaustive doc-scope grep clean incl. the `graph_diff` *function* docstring — the Go-release lesson applied up front). opus **MEDIUM** (deep hunt): match-arm **guards** (`pat if <cond> => …`) dropped their condition — the guard lives under the arm's `match_pattern.condition`, not the arm `value`, and the handler walked only `value`. `match v { n if expensive(n) => 1, _ => 0 }` collapsed to `n if true` (sim 1.0). Python captures the analogous `case x if …`; Rust alone dropped it; the oracle's `Match-arm` probed only the arm value. Fixed → walk the guard into the BRANCH + a `Match-guard` oracle case (battery 37→38). Advisory-only; cardinal never at risk. Streak resets. |
+| R182 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 1c52422). opus (fresh angle): `if let`/`while let`/`let else`, struct-update `..base`, deref/index assignment, tuple/struct binding sub-patterns, `?` chains, unsafe/async-move/trait-default/impl-Trait bodies — all discriminate; R181 match-guard fix verified live; the two sim==1.0 (closure-opaque, `a[i]=e` index-write) mirror Python exactly. sonnet: gate **863/233**, mutation 15/15 + 9/9, clean degradation, cross-language impossible. haiku: exhaustive scope grep, counts 863/233/38. |
+| R183 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus: parse-robustness + whole-function hunt (syntax error→partial, empty→{}, `todo!()`, 5000-deep→RecursionError→{} graceful degrade, unicode idents, iterator chains `.iter().map().filter().collect()` + `?`-propagation + match) — `fingerprint_source` never raised; renamed clone ranks first; data-flow changes caught (0.14–0.94); the lone sim==1.0 (commutative arg swap) is the documented WL position-invariance, identical in Python. sonnet: 863/233, mutation 15/15 + 9/9, HEAD unchanged. haiku: counts/version/scope all canonical. |
+
+Process notes: (1) the curve ticked back **up** vs Go (1 real code defect vs 0) — exactly as predicted:
+Rust's expression-oriented blocks + `match` guards are genuinely novel value-flow shapes, and the
+match-**guard** is a position the metamorphic battery under-covered (it probed the arm *value*, not the
+guard predicate). The deep-hunt reviewer (opus) is the one that finds this class; the fix always adds
+the missing oracle case so it can't reopen. (2) The doc-scope-consistency tail **did not recur** this
+release — applying the Go lesson (grep *every* surface incl. the `graph_diff` function docstring, not
+just the module docstring) up front meant haiku found zero stale scope mentions in R181. The recurring
+cost is payable once you know to look for it.
+
+## v3.5.0 — the body matrix learns C and C++ (language 4 of the §5b sweep)
+
+`core/structure_cpp.py` — one tree-sitter `cpp` walker for both C and C++ (the grammar is a superset),
+emitting the **same** `_VFG` the Python/JS/Go/Rust frontends do. Statement-oriented (explicit
+`return`); the function name lives *inside* the declarator (unwrap pointer/reference wrappers, take a
+qualified_identifier's last component for out-of-line `Foo::m`); compound-assign / casts / `?:` /
+`*p` / `&x` / `a[i]` carry operand flow; lambdas are opaque `NESTED` leaves; `sizeof`/`alignof`/
+`decltype`/`noexcept` are unevaluated → CONST; the preprocessor is not expanded. The completeness
+oracle (45 metamorphic cases + invariants) drove the walker. **The hardest language of the sweep so
+far** — 9 real dropped-value-flow defects found and fixed across the panels, every one a C/C++-specific
+node-shape the metamorphic battery had not yet probed; each fix added the missing oracle case.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R184 | 3 | ✓* | first clean-cycle attempt; opus value-flow CLEAN, sonnet gate/cardinal CLEAN, haiku one README file-list NIT (folded into finalize). |
+| R185 | 3 | ✗ | opus **MEDIUM**: reference-return functions (`T& f()`, `V& grow()`) dropped — `reference_declarator` doesn't field-name its inner `function_declarator`, name-unwrap returned None, function never keyed. Fix: `_decl_child` fallback + oracle invariant. |
+| R186 | 3 | ✗ | opus **MEDIUM**: constructor member-initializer-lists (`S(int x): n(compute(x))`) never walked — `field_initializer_list` is a SIBLING of the body, `_build_vfg` walked only `body`. Fix: evaluate each init as a member write + oracle case. |
+| R187 | 3 | ✗ | opus **MEDIUM**: array-new size (`new T[helper()]`) dropped (lives under `new_declarator.length`, not `arguments`). **INCIDENT**: a reviewer was mistakenly asked to run `mutate.py` (not interrupt-safe); a concurrent run left `graphdiff.py` mutated and a stop-hook-prompted `git add -A` committed the mutant (body-divergence flipped `<`→`>=`). Traced across commits, restored byte-identical to canonical f188f97; the mutant was never validated by a passing full suite. Lesson: `mutate.py` runs strictly serially, never by a reviewer, never alongside git staging. |
+| R187b | 3 | ✗ | analysis-only reviewers (no `mutate.py`). opus **2 MEDIUM**: C++17 `if`/`switch` init-statement + C++20 range-`for` init-statement dropped (`_strip_cond` discarded the `initializer` field); placement-`new (addr) T(…)` placement address dropped (separate `placement` field). Both fixed + oracle cases. |
+| R188 | 3 | ✗ | opus **2 MEDIUM**: stack VLA size (`int arr[helper()]`) dropped (bind skipped the `array_declarator` `size` — inconsistent with the R187 heap-new fix); C++14 lambda init-capture (`[z = helper()]`) dropped (`_FUNC_NODES` returned a bare opaque leaf). Both fixed (lambda body stays opaque) + oracle cases. |
+| R189 | 3 | ✓ | clean-cycle round (frozen HEAD 79ed271) — CLEAN. opus deep-hunt 60+ positions all discriminate; sonnet gate **920**, graphdiff `<`, cardinal/isolation/degradation; haiku 920/286/45-case battery, all scope surfaces canonical. (HEAD later advanced for the R190 fix, so this clean panel predates the final HEAD.) |
+| R190 | 3 | ✗ | opus **LOW**: ctor/dtor function-try-block (`S() try : init {…} catch{}`) body + member-init dropped — a function-try-block has NO `body` field; the grammar nests them in an unnamed `try_statement`. A LOW (weight 1 < τ, narrow construct) but a genuine drop of the same class, so fixed for consistency (fall back to the `try_statement` child) + oracle invariant rather than documented. |
+| R191 | 3 | ✓ | **final clean-cycle round 1** (frozen HEAD 33d274d, post function-try-block fix). opus ~90 positions all discriminate; FTB fix verified (destructor/free-function/multi-catch). Cosmetic LOW *noted, not a defect*: `noexcept(expr)` over-counts its operand via the generic fallback — conservative over-counting, the OPPOSITE of a dropped position. sonnet gate **921**, graphdiff `<`; haiku 921/287/45-case battery. |
+| R192 | 3 | ✓ | **final clean-cycle round 2 — streak 2 on the final HEAD, gate met, RELEASABLE.** opus: fresh 30-position sweep (29/30 discriminate; lone sim 1.0 is the documented subscript-LHS-index Python-parity approx) + all 9 prior fixes re-confirmed + 20/20 robustness inputs never raised + whole-function realism (rename-clone 1.0, real change 0.69). sonnet 921, graphdiff `<`, HEAD stable; haiku counts/version/scope all canonical. |
+
+Process notes: (1) the curve ticked **sharply up** vs Go (0) / Rust (1) — exactly as the lessons doc
+predicted C/C++ would: pointers, the declarator-name-inside-the-declarator inversion, out-of-line
+methods, function-try-blocks, VLAs, and C++14/17/20 init forms are a dense field of novel value-flow
+shapes, and the opus deep-hunt is the reviewer that finds each one. The generic fallback kept every
+unhandled node *visible* (nothing silently vanished structurally), but the metamorphic battery is what
+proved each value-bearing position is actually *walked*. (2) The release also produced the sweep's
+first **process** failure rather than a code defect: a `mutate.py` mutant reached two commits because a
+panel reviewer ran the not-interrupt-safe mutator concurrently and a stop-hook prompted a commit
+mid-run. The recovery was clean (the suite pins the body-divergence direction, so the mutant could
+never have passed a full gate), and the standing rule is now explicit — the mutation meta-oracle is
+run by the orchestrator alone, serially, never by a reviewer and never alongside git staging.
+
+## v3.6.0 — the body matrix learns Java and C# (languages 5 & 6 of the §5b sweep)
+
+`core/structure_java.py` + `core/structure_csharp.py` — two tree-sitter walkers emitting the **same**
+`_VFG` the other frontends do. Both key by the dotted chain of enclosing TYPE names (package /
+namespace excluded): Java `Outer.Inner.m` / `C.C`; C# `Calc.Compute` / `Calc.Calc` / local function
+`Calc.Local.Inner`. The first release to land a *pair* in one MINOR. Two completeness oracles (Java +
+C#) drove the walkers; both passed first-run, but the panels then turned the pair into a free
+adversarial probe of the shared machinery — see the two cross-cutting wins below.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R193 | 3 | ✗ | opus(Java) CLEAN; sonnet CLEAN; opus(C#) **2 MEDIUM** + exposed a **meta-oracle weakness in all 7 languages**: the metamorphic check `similarity(a,b) < 1.0` could PASS on byte-identical fingerprints (cosine self-sim of a large WL vector rounds to 0.999…98 < 1.0). Hardened the predicate to exact fingerprint-equality everywhere; that surfaced a 3rd masked C# drop. Three C# fixes: `using (var r=e)` paren resource, `$"{…}"` interpolation holes, `new int[]{…}` element init. Other six re-verified clean under the stricter predicate. |
+| R194 | 3 | ✗ | opus(C#) + opus(Java/cross-frontend) + sonnet CLEAN; haiku 2 stale scope strings (doc LOW, fixed). |
+| R195 | 3 | ✗ | opus + sonnet CLEAN; haiku — the per-frontend module docstrings enumerated only predecessors (doc LOW). Resolved decisively by rephrasing all six to a non-enumerating future-proof form. |
+| R196 | 3 | ✓ | final clean-cycle round 1 (HEAD 9417762). opus 70+ exact-inequality positions; sonnet gate 1024/388 + 7 oracle guards; haiku 20 enumerating surfaces all seven. |
+| R197 | 3 | ✗ | **final-round-2 caught two NEW dropped positions** (this is why the 2nd confirmation panel exists). opus: comma-form `for` 2nd+ init/update (`for(…; i++, sink(x))`) dropped in BOTH frontends (grammars use REPEATED `update`/`init` field children; walker used `child_by_field_name` = first only); C# `catch (E e) when (filter)` predicate never walked. Both fixed + oracle cases; C/C++ & JS verified unaffected (single comma/sequence node). |
+| R198 | 3 | ✓ | final clean-cycle round 1 on corrected HEAD ea410c3. opus re-verified R197 fixes + swept every repeated/positional field-child position; sonnet 1029/393; haiku all surfaces seven. |
+| R199 | 3 | ✓ | **final clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus ~110 fresh exact-inequality probes all differ, all fixes re-confirmed, realism + robustness clean; sonnet 1029/393 all checks; haiku 1029/393/46/47/3.6.0 canonical. |
+
+Process notes: (1) **Language diversity is a defect-finding signal for the shared kernel, not just
+new per-language code** — exactly the model-diversity lesson, one level down. C# (a *new* language)
+exposed the float-rounding oracle blind spot that had been latent in all seven oracles since v3.0.0,
+and hardening it retroactively strengthened the five already-shipped languages. The
+repeated-field-children defect found in Java/C# immediately triggered a cross-frontend audit (C/C++ &
+JS confirmed safe). Net: the body matrix is *more* trustworthy after C# than after C/C++, in ways
+unrelated to C#. (2) The completeness-oracle predicate is now **exact fingerprint inequality**, not a
+`sim < 1.0` threshold — a permanent meta-oracle hardening. (3) The two real code-defect classes this
+release were both **tree-sitter structural surprises** (positional unnamed-field children;
+field-named-but-*repeated* children) — the kind the generic fallback can't catch and only a
+value-bearing metamorphic probe surfaces.
+
+## v3.7.0 — the body matrix learns Ruby, PHP and Bash (the final 3 of the §5b sweep — all 12 languages)
+
+`core/structure_ruby.py` + `core/structure_php.py` + `core/structure_bash.py` — three more
+tree-sitter walkers emitting the **same** `_VFG`, completing the intra-procedural body matrix across
+all 12 indexed languages (Python via stdlib `ast` + 11 via tree-sitter). Ruby keys by dotted
+module/class chain, PHP by class chain (namespace excluded), Bash is command-oriented. Three new
+completeness oracles drove the walkers; as before, adding three languages turned the panels into a
+free adversarial probe of the shared kernel — and this cycle was the most productive yet: roughly a
+dozen esoteric, advisory-only value-flow drops surfaced, **most of them latent in the
+already-shipped frontends**, each fixed and closed *matrix-wide* (not just in the language the panel
+named) plus oracle-pinned.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| (build) | — | — | Ruby/PHP/Bash frontends + 3 oracles + wiring (find_similar/graph_diff) + dogfood; full gate green. |
+| comment-trivia | 3 | ✗ | **comment nodes are named tree-sitter children**, so any *positional* `named_children[i]` / `[-1]` / "first non-body" pick can be displaced by a comment. Closed across all 8 tree-sitter frontends in two layers — per-operator positional picks, then the inline transparent-unwrap descents (`(x /*c*/)`, `await (x /*c*/)`, `f(x /*c*/)`, `d[i /*c*/]`) — via comment-skipping `_nc`/`_first`/`_last` helpers. Pinned by a 64-case comment-invariance battery. |
+| repeated-field | 3 | ✗ | Ruby multi-value `when 1, helper()` dropped values past the first (`child_by_field_name` = first-only over a REPEATED `pattern` field). Audited the multi-value/multi-label arm + multi-declarator class across all 12; only Ruby leaked. |
+| no-flow-arm init | 3 | ✗ | a declaration routed to a `pass`/skip arm but carrying an **initializer**: PHP `static $x = helper()`, then (panel-found twin) Rust local `const`/`static`. Audited a declaration-with-initializer in all 12 (incl. TS `enum` members, bash `local`/`declare`/`readonly` with `$(…)`); all walk it now. |
+| exception selector | 3 | ✗ | runtime-evaluated exception selectors dropped: Ruby `rescue <expr>` (the `exceptions` field) and Python `except <expr>:` / `except*` (`handler.type`). The only two langs with evaluated selectors (others use static type names). |
+| decorator args | 3 | ✗ | Python nested def/class `@deco(helper())` argument dropped — sibling of the enclosing-scope class (defaults/bases/keywords were walked; decorator-call args were not). JS/TS already walked them; Java/C#/PHP attribute args must be compile-time constants. |
+| C# interpolation align | 3 | ✗ | C# `$"{v,helper()}"` alignment clause dropped (excluded wholesale with the literal `:format` clause). Walk the alignment expression, keep `:format`/brace excluded. Folded two stale doc counts. |
+| R200 | 3 | ✓ | **clean-cycle round 1** (HEAD 8d9b95f). opus ~150 fresh exact-inequality constructs all discriminate (every surfaced drop a rigor violation or closed class); sonnet gate 1269 suite / 630 oracles + cardinal + live-matrix; haiku 8 oracle counts + 12-lang enumerations canonical. |
+| R201 | 3 | ✓ | **clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus independent second certification could not falsify round 1 (every frontend's exotic positions probed; non-findings documented under the rigor rules); sonnet cardinal AST-verified + 630 oracles + ruff/mypy + matrix live (Py/Go/Ruby); HEAD frozen. |
+
+Process notes: (1) **The maintainer's process correction mid-cycle — "I thought you checked the same
+class across all languages" — is now the rule:** when a panel finds a defect, close its *entire
+class matrix-wide within the same round* (probe the analogous construct in all 12 and fix every
+instance) before re-panelling, rather than fixing only the named language and letting the next panel
+surface the twins. The PHP-`static` → Rust-`const`/`static` miss is the cautionary example; every
+later class (exception selectors, decorator args, interpolation alignment) was audited across all 12
+the same round. (2) Ruby/PHP/Bash were a far richer kernel probe than the Java/C# pair: the
+comment-trivia-positional-pick and no-flow-arm-initializer classes were **latent in frontends
+shipped as far back as v3.2.0–v3.5.0** and only surfaced now — the body matrix is materially more
+trustworthy across *all* languages after the final three than before. (3) The grind converged
+asymptotically (≈1 esoteric advisory gap per round for many rounds) exactly as the maintainer
+anticipated when choosing the unbounded grind; the two-consecutive-clean gate held the line until
+the space was genuinely exhausted.
+
+## v3.8.0 — the layered code-property graph (§5c phase 1): call ↔ expression drill-down
+
+The 12-language body matrix (v3.0.0–v3.7.0) was an internal fingerprint input; v3.8.0 promotes it to
+a first-class, drill-down-able **layer**. `model.Layer` (CALL / EXPRESSION; STATEMENT reserved);
+`structure.vfg` / `vfg_source` (+ `vfg_source` on all 9 tree-sitter frontends) expose the per-function
+value-flow graph — each frontend's `fingerprint_source` was refactored into a shared
+`_walk(source, …, build)` so the fingerprint and the raw graph key **identically** by construction;
+`get_matrix(layer="expression")` drills a single function's VFG on demand; `graph_diff` is documented
+as the two-layer diff. On-demand only (no store schema change), advisory-only (never feeds
+`find_stale`). The 8 tree-sitter frontends' `vfg_source` were added by 8 parallel same-recipe agents,
+each self-verified, then oracle-pinned across all 12.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R202 | 3 | ✓ | clean-cycle round 1 (HEAD 0dae62c). opus exhaustive: layer-arg handling (case/None/non-str), call-layer byte-identity, every refusal + n=300/301 boundary, all 9 non-Python frontends + qualname parity, differential fuzz 12 langs × 25 inputs × 2 encodings (0 key mismatches / 0 raises), cardinal, registry/CLI/MCP. sonnet: reach.py + operations top-level import-clean (lazy structure import only inside `_expression_vfg`), full suite 1309, ruff+mypy, `find_stale` byte-identical before/after a drill. haiku: version 3.8.0 everywhere; new tests 7 + 33; oracles 663. |
+| R203 | 3 | ✓ | **clean-cycle round 2 — streak 2, gate met, RELEASABLE.** opus (independent) verified `fingerprint_source` is bit-for-bit unchanged by the `_walk` refactor (independent WL recompute from `vfg_source`) across 12 langs, and a WHOLE-REPO invariant sweep — drilled all 637 of stitchgraph's own functions: 568 built / 69 clean refusals / **0 raises / 0 invariant violations**. sonnet: AST-verified operations has zero top-level structure imports; 663 oracles; a 30-function real-repo drill sample (0 crashes) + `find_stale` byte-identical before/after a 41-drill batch. |
+
+Process notes: (1) **The refactor-then-fan-out shape.** Rather than hand-edit the same `vfg_source`
+addition into 9 frontends, one reference implementation (structure_js.py) fixed the exact recipe, then
+8 parallel agents applied it to the rest — each self-verifying key-parity + a well-formed graph + ruff.
+A shared `_walk(build)` per frontend makes fingerprint/vfg key-drift impossible by construction (they
+differ only in the terminal `build` lambda). (2) **The layer arrived cheap because the graph already
+existed** — `graph_diff(body=True)` and `find_similar(mode="structure")` were already computing the
+expression layer on demand; §5c mostly *named* it (`Layer`) and *exposed* it (`vfg_source` +
+`get_matrix` drill-down), which is why v3.8.0 is a clean MINOR with no schema change and a 2-round
+clean cycle on the first HEAD. (3) **On-demand was the right persistence call** — the whole-repo sweep
+(637 functions drilled with zero indexer involvement) shows the expression layer scales as a
+compute-on-read view; persisting deep edges would have fought the streaming indexer for no consumer
+benefit.
+
+## v3.9.0 — the layered code-property graph (§5c phase 2): the STATEMENT / PDG layer
+
+Phase 1 (v3.8.0) added the EXPRESSION layer; v3.9.0 adds the middle depth — the **program-dependence
+graph**. `structure.pdg` / `pdg_source` build a per-Python-function PDG: statement nodes + a synthetic
+`ENTRY` carrying the parameters, control (`C`, nested-under-a-header) and data (`D`, a sequential
+reaching-def) edges; reorder-invariant. `get_matrix(layer="statement")` drills a single function's PDG
+on demand — Python-only so far (deep stdlib `ast`; other languages a future sweep), advisory, never
+feeds `find_stale`. Promotes the validated `research/03-pdg/` prototype; keys identically to
+`fingerprint_source`/`vfg_source` via the shared `_walk_functions`. `Layer.STATEMENT` is no longer
+"reserved". This was a long grind — three real find→fix cycles plus a fully-closed cosmetic class.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R204 | 3 | ✓ | round 1 (HEAD 83e18a1). All three CLEAN — exhaustive PDG cert, gate 1317 passed, docs. (The determinism defect below was latent and uncaught here.) |
+| R205 | 3 | ✗ | **opus caught STATEMENT-layer non-determinism**: `_build_pdg` emitted data edges by iterating a `set` of load names, so `pdg` edges / `get_matrix` cells were `PYTHONHASHSEED`-dependent — the CALL layer's byte-reproducibility guarantee regressed. Advisory-only, cardinal rule never at risk (WL fingerprints sort internally, so the oracle stayed green — which is why round 1 missed it). Fixed 6010687: `sorted(loads/stores)` at the root + `sorted(seen)` cells at the choke point + a cross-`PYTHONHASHSEED` subprocess regression test. |
+| R206 | 3 | ✓ | post-fix (6010687→4b500f8). All CLEAN. opus proved the fix does real work (reverting the sort diverges into distinct hashes); sonnet 1317 passed + cardinal; and independently reproduced a test-hardening fix (4b500f8: the determinism guard now sets `PYTHONHASHSEED` per child env so it can't go inert under a seed-pinning CI). |
+| R207 | 3 | ✗ | opus+sonnet CLEAN; **haiku** found a cosmetic layer-order nit (unknown-layer message `call\|expression\|statement` ≠ enum/depth order). Fixed 2da922b. |
+| R208 | 3 | ✓ | All CLEAN (opus 223 fuzz inputs + 5-seed determinism + exact >300 boundary; sonnet gate+cardinal; haiku docs). |
+| R209 | 3 | ✗ | opus+sonnet CLEAN (opus 4000+ fuzz, repo-wide key parity, cardinal digest byte-identical across 60 drills); **haiku** found another layer-order instance (IDEAS.md). Closed the ENTIRE class matrix-wide at 2a7c18d (enum docstring, get_matrix/_body_matrix docstrings, IDEAS.md). |
+| R210 | 3 | ✗ | **opus found a real completeness defect**: `ast.Match`/`case` bodies were dropped from the PDG — `walk_block` descended only into `body/orelse/finalbody`+`handlers`, but Match sub-statements live in `cases[].body`, so case-body statements vanished and `header_names` misattributed case-body names to the Match node (the EXPRESSION layer already handled match — inconsistent). Fixed e861ebd: descend into `cases[].body`, exclude `cases` from the header. Match is the only such compound in Python's grammar — class closed. |
+| R211 | 3 | ✗ | **opus CLEAN with an exhaustive structural-completeness hunt** — enumerated every `ast.stmt` compound programmatically; zero unwalked statement-bearing fields remain (match was the last gap). sonnet gate CLEAN. **haiku** found the last layer-order instance (README "Layered" bullet); closed class-wide (README + the final two in-code listings) at ad7ff46. |
+| R212 | 3 | ✓ | **FINAL HEAD ad7ff46 — all three CLEAN.** opus full re-cert incl. the match fix (case bodies descend, 2000 fuzz, 4-seed determinism, exact boundary, cardinal byte-identical); sonnet 761 (targeted) passed + cardinal + byte-identical isolation on a match fn; haiku all docs consistent. Reviewed in-place (no `git checkout` of the shared tree). |
+| R213 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 6000+ fuzz + 4-seed determinism + cardinal airtight; sonnet targeted 761 + ruff/mypy + the 3 PDG tests, cardinal import-hygiene (reach.py closure never reaches structure/similar/graphdiff, empirically via `sys.modules`) + byte-identical `find_stale` across a statement drill on a match fn; haiku 11/11 docs consistent. |
+
+Process notes: (1) **Two panels missed the determinism defect because the oracle was immune to it.**
+`_wl_features` sorts each node's signature, so the WL fingerprint — and thus every reorder-invariance
+test — is order-blind by construction; the non-determinism only surfaced in the *raw* `cells`/edge
+list, which no test compared byte-wise until R205's opus probe. Lesson: an order-invariant oracle
+cannot guard an order-sensitive output; the fix shipped its own cross-`PYTHONHASHSEED` subprocess test.
+(2) **"Close the whole class, matrix-wide."** The layer-ordering nit recurred across R207/R209/R211
+because each fix touched only the flagged instance; it stopped only once a repo-wide grep normalized
+*every* current-state listing to `call → statement → expression` at once (historical CHANGELOG/
+REVIEW_HISTORY/readiness records left intact). Same discipline that closed the §5b language matrix.
+(3) **Completeness gaps hide in the one asymmetric AST field.** `ast.Match` is the sole Python compound
+whose child statements live outside `body/orelse/finalbody/handlers` (in `cases[].body`), so it was the
+one place `walk_block` under-walked; R211's fix was to *enumerate every compound* and prove no other
+field is unwalked, rather than patch match alone. (4) **Shared-worktree hazard.** Reviewer subagents
+that `git checkout <sha>` mutate the one working tree everyone shares (it detached HEAD mid-run once);
+later panels were told to review in-place at the branch tip — cheaper and safer than worktree isolation
+for read-only review.
+
+## v3.10.0 — the STATEMENT layer learns the JS family (§5c sweep, language 2)
+
+v3.9.0 shipped the program-dependence-graph layer for Python; v3.10.0 begins sweeping it to the
+tree-sitter languages, starting with the JS family. `structure_js.pdg_source` / `_build_pdg` build a
+per-function PDG from the tree-sitter tree, mirroring Python's `structure._build_pdg` (statement nodes
++ synthetic ENTRY carrying params; control 'C' / data 'D' edges via a sequential reaching-def;
+reorder-invariant; nested functions opaque). `get_matrix(layer="statement")` now dispatches `.py` →
+`structure` and js/ts/tsx → `structure_js`; other languages refuse with a supported-set message.
+On-demand, advisory — never feeds `find_stale`.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R214 | 3 | ✗ | **opus caught a real completeness gap**: the JS PDG's generic `else` branch ran only `data_edges`, so a block-bearing statement not special-cased (the deprecated `with`) dropped its whole body — diverging from Python's generic `walk_block` and the JS EXPRESSION layer. Fixed fc89810: the else branch descends any nested `statement_block`/`else_clause` child through `block()`, closing the class (not just `with`) + oracle test. haiku: stale "Python-only" get_matrix/`structure.pdg` docstrings → fixed. sonnet CLEAN (769 passed). |
+| R215 | 3 | ✓ | post-with-fix (fc89810). All CLEAN. opus verified the fix general (3599+ fuzz, every JS/TS statement kind, TS type positions, cardinal); sonnet 770 passed + byte-identical isolation; haiku docs. Superseded when R216 found a further defect. |
+| R216 | 3 | ✗ | **opus caught a LOW precision defect**: `typeof x` in a TS TYPE position (`type_query`) leaked a false data read — a construct erased at runtime. Fixed b488617: `collect` returns at `type_query` (value-position `typeof` is a `unary_expression`, so the disambiguation is sound) + oracle test. haiku: README/IDEAS said "JS/TS" where the CHANGELOG/model say "the JS family (js/ts/tsx)" → normalized. sonnet CLEAN (770 passed). |
+| R217 | 3 | ✓ | post-type_query-fix (b488617). All CLEAN. opus re-cert verified BOTH fixes general (4000 fuzz; exhaustive TS type-position probe confirming `type_query` is the only leak vector; with/block descent); sonnet 771 passed + cardinal + byte-identical; haiku docs (both the "Python-only" and "JS/TS" wording classes closed). |
+| R218 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 4000 fuzz × 3 langs + all statement kinds + exact >300 boundary + cardinal; sonnet 771 passed + ruff/mypy + import-hygiene + byte-identical JS isolation; haiku 7/7 docs. |
+
+Process notes: (1) **The tree-sitter PDG reused the reference-frontend playbook.** structure_js already had a statement walker inside `_build_vfg`; the PDG added a parallel `_build_pdg` that reuses the same param/target helpers and the shared `_walk`, so `pdg_source` keys identically to `fingerprint_source`/`vfg_source` by construction. (2) **Two completeness gaps, both closed class-wide, not instance-wide.** The `with`-body drop (R214) was fixed by descending *any* un-special-cased block-bearing statement — the same "close the whole class" discipline that fixed the Python `match` gap in v3.9.0 — and the `typeof`-in-type-position leak (R216) was fixed at the one grammar node (`type_query`) that is the sole place a runtime identifier appears in a type. (3) **A tree-sitter frontend needs its own type-erasure awareness.** Unlike Python's `ast` (where `.ctx` distinguishes load/store and there are no type positions), the TS concrete tree puts value identifiers inside type nodes; the PDG's reads/writes collector had to learn that `type_query` carries no runtime flow — a class of bug that simply does not exist in the Python frontend.
+
+## v3.11.0 — the STATEMENT layer learns Go (§5c sweep, language 3)
+
+Third language of the STATEMENT/PDG sweep, after Python (v3.9.0) and the JS family (v3.10.0).
+`structure_go.pdg_source` / `_build_pdg` build a per-function PDG from the tree-sitter Go tree,
+mirroring the Python/JS builders and reusing Go's existing `_walk`/`_param_names`. Go had the richest
+statement grammar swept so far — expression + type switch, `select`, `defer`/`go`, `range` bindings,
+multi-value `:=`, channel send — all covered, with the method receiver seeded at ENTRY.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R219 | 3 | ✗ | **opus caught a LOW completeness defect**: a type-switch `case <T>:` type operand leaked in as a spurious `TypeIdentifier` PDG node — the type sits under the tree-sitter field `type` (not `value`), so `_case_body`'s skip-span was `None` and the `type_identifier` was treated as a body statement. Fixed 37cd045: `_case_body` descends only genuine statements (statement_list + statement/declaration nodes), never a case's value/type operands — closing the class rather than special-casing the `type` field. sonnet + haiku CLEAN. |
+| R220 | 3 | ✓ | post-fix (37cd045). All CLEAN. opus verified the fix general (625 fuzz, exotic type-switch cases `[]map[string]func()`/`chan struct{}`, nested type-switch inside an expression-switch case, all Go statement kinds); sonnet 780 passed + byte-identical isolation; haiku docs. |
+| R221 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 3000 fuzz + all Go statement kinds + exact >300 boundary + cardinal (find_stale byte-identical); sonnet 780 passed + import-hygiene + byte-identical Go isolation; haiku 11/11 docs. |
+
+Process note: **the template is paying off, and the one defect was a familiar class.** Go's PDG reused
+the JS builder's shape (ENTRY seeding, `process`/`block`/`collect`/`data_edges`/`bind_target`, sorted
+determinism, generic block descent) almost verbatim; the single defect (R219) was the same *class* as
+the earlier case/clause-operand leaks (Go type-switch types are to `type_case` what the Python `match`
+case bodies and the switch case values were) — caught by opus's completeness hunt and closed by keying
+on statement-ness. The typed-language type-position hazard (TS `type_query` in v3.10.0) did not recur
+here because Go case *types* are the analogue and were the thing fixed; expect it again in the other
+typed frontends (Rust/C/C++/Java/C#).
+
+## v3.12.0 — the STATEMENT layer learns Rust (§5c sweep, language 4)
+
+Fourth language of the STATEMENT/PDG sweep, after Python (v3.9.0), the JS family (v3.10.0), and Go
+(v3.11.0). `structure_rust.pdg_source` / `_build_pdg` build a per-function PDG from the tree-sitter
+Rust tree, reusing Rust's existing `_walk`/`_pattern_names` and seeding the method receiver + `self` at
+ENTRY. Rust is **expression-oriented** — if/match/loop/while/for are expressions — so the builder
+splits handling by position: control-flow in *statement* position becomes control nodes (`process`),
+while in *value* position (`let y = if …`) it folds into the enclosing statement's reads (`collect`).
+
+This was by far the longest grind of the sweep — **13 real defects across 17 panels (R222–R238)** — but
+every one was a single class: **the read/write projection reading a non-value token (or a pattern
+binding), or dropping a consumed read, versus the VFG sibling that walks the same AST.** Rust's rich
+surface (self receivers, value-position control folding, let-else, let-chains, labels/lifetimes,
+turbofish, macros, function-local const/static, struct/if-let pattern bindings) exposed the class in
+far more positions than the prior three languages combined.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R222 | 3 | ✗ | opus: `self`/`super`/`crate` receiver refs (tree-sitter `self` nodes, not `identifier`) dropped by `collect` → ENTRY `self` seed dead, every receiver-mediated dependence lost. |
+| R223 | 3 | ✗ | opus: value-position control/**block body** reads dropped — `collect` blanket-skipped `block`. Gave it explicit value-position handling mirroring `process`'s read projection. |
+| R224 | 3 | ✗ | opus: **let-else** `else {…}` reads dropped (the `alternative` field never folded). |
+| R225 | 3 | ✗ | opus: **let-chain** plain (non-let) clause reads dropped in both `_cond_reads` and `cond_edges`. |
+| R226 | 3 | ✗ | opus: spurious read of a **macro-invocation name** (generic fallback read the macro name identifier). Read only the token-tree args. |
+| R227 | 3 | ✓ | First clean panel (streak 1). opus VFG-vs-PDG differential verified R222–R226; sonnet 795 passed + cardinal; haiku docs. |
+| R228 | 3 | ✗ | opus: **struct-pattern shorthand** bindings dropped (`add_target` didn't handle the shorthand leaf). haiku: two stale test-module docstrings. **ADDED `tests/oracles/test_pdg_rust_vfg_differential.py`** — a white-box differential oracle (generated value-position wrapper corpus composed to depth 2, cross-checked VFG-reads ⟹ PDG-reads; binding-reaches-use; no-spurious-read families) to regress the whole class at once instead of one finding per panel. |
+| R229 | 3 | ✗ | opus: spurious **loop-label** read in break/continue. |
+| R230 | 3 | ✗ | opus: spurious **labeled-block label** read (label is a `block` child). Guarded `label` uniformly in `collect` + `process`. |
+| R231 | 3 | ✗ | opus: function-local **const/static** binding dropped + declared name self-read. |
+| R232 | 3 | ✗ | opus: PDG spurious read of a **lifetime turbofish** (`foo::<'lt>()`). Guarded `lifetime`. |
+| R233 | 3 | ✗ | opus: the label/lifetime class was **still live in the VFG sibling** (`ev`) — corrupted WL fingerprints by label name. Guarded label/lifetime in `ev` too; hardened the oracle to assert neither builder reads a non-value token. |
+| R234 | 3 | ✗ | opus: VFG read a **turbofish TYPE arg** (`foo::<v>()`) as a value. Gave type names a name-agnostic `freevar` branch (mirrors the PDG's type-skip). |
+| R235 | 3 | ✓ | Clean panel (streak 1). opus: read/write projection complete in both builders; sonnet 1058 passed + cardinal; haiku docs. |
+| R236 | 3 | ✗ | opus: VFG read **if-let/while-let pattern bindings** (and struct field-pattern names) as values (no `let_condition` handler). Added one that binds the pattern + reads only the scrutinee. haiku: `_build_pdg` docstring clarity. |
+| R237 | 3 | ✓ | **Clean (streak 1).** opus independent re-derivation: complete VFG-side sweep of every pattern/type/label position, each guarded/bound in BOTH builders; sonnet 1061 passed + cardinal HOLDS; haiku docs. |
+| R238 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 55+ fresh constructs + 6000-composition depth-3 fuzz + 3000-program well-formedness/determinism fuzz + comment-invariance + key-parity (0 violations); sonnet 1061 passed + cardinal + byte-identical isolation; haiku docs. Tag left to the maintainer. |
+
+Process note: **the whack-a-mole was the point being made, and the fix for it was tooling, not luck.**
+The recurring class — `collect`/`add_target`/`_cond_reads` (PDG) and `ev` (VFG) reading a non-value
+token whose name happens to collide with an in-scope value — kept surfacing one position at a time
+because nothing cross-checked the two builders. R228 added the **VFG-vs-PDG differential oracle**: it
+generates value-position construct *combinations* (depth-2 wrapper composition) and asserts
+`VFG-reads(v) ⟹ PDG-reads(v)`, plus absolute binding-reaches-use and no-spurious-read families. Once
+in place, the remaining findings were driven to closure and the class is now guarded **uniformly in
+both builders** across labels, lifetimes, type positions, macro names, and every pattern position;
+the differential regresses the whole class in one test. The typed-language type-position hazard
+predicted in v3.11.0 did recur (R232/R234 turbofish), as did the pattern-binding hazard (R228/R236) —
+both now closed. Remaining tree-sitter languages (C/C++, Java, C#, Ruby, PHP, Bash) are the rest of
+the sweep; the differential-oracle harness is the template to carry forward.
+
+## v3.13.0 — the STATEMENT layer learns C and C++ (§5c sweep, language 5)
+
+Fifth language of the STATEMENT/PDG sweep, after Python (v3.9.0), the JS family (v3.10.0), Go
+(v3.11.0), and Rust (v3.12.0). `structure_cpp.pdg_source` / `_build_pdg` build a per-function PDG
+from the tree-sitter C/C++ tree — one walker covers both C and C++ — reusing the shared `_walk` and
+seeding the method receiver at ENTRY. C/C++ is **statement-oriented** (like Go), so the builder is far
+less contorted than Rust's expression-oriented fold; the grind was instead C++'s enormous surface.
+
+Learning from Rust, the whole recurring class was **front-loaded**: the `_TYPE_NODES`/label/field
+guards and the VFG-vs-PDG differential oracle (`tests/oracles/test_pdg_cpp_vfg_differential.py`)
+shipped with the first panel (R239), so the RMW/stmt-expr/init-capture defects fell fast. The two
+late finds were the exact divergence the oracle exists to catch — but in positions the corpus had not
+yet composed: a **type-position VFG over-read** (R245) and a **structured-binding VFG under-read**
+(R246), both closed by mirroring the PDG into the VFG and extended into the oracle. **6 real defects
+across 11 panels (R239–R249)** — half of Rust's grind.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R239 | 3 | ✗ | opus: a parenthesized RMW target `(x)+=`/`(x)++` recorded no STORE (`rmw_target` didn't unwrap `parenthesized_expression`) → later use threaded from ENTRY. haiku: stale test_layer_matrix docstring. **Shipped the C/C++ VFG-vs-PDG differential oracle with panel 1.** |
+| R240 | 3 | ✗ | opus: a GNU statement-expression `({ …; value })` in value position had its inner reads/writes dropped (`collect` blanket-skipped `compound_statement`). Fold them into the enclosing statement. |
+| R241 | 3 | ✗ | opus: a lambda **init-capture** `[z = v]` initializer (enclosing-scope flow the VFG walks) was dropped because `collect` early-returned on _FUNC_NODES before inspecting captures. Fold each capture initializer; plain captures stay opaque. |
+| R242 | 3 | ✗ | opus: default-parameter-value VFG/PDG asymmetry undocumented → docstring note. haiku: Python PDG oracle docstring omitted C/C++. sonnet clean. Docs only. |
+| R243 | 3 | ✗ | opus: variadic parameter packs seeded by NEITHER builder — a symmetric under-approximation — undocumented. Completed the docstring's under-approximation list. Docs only. |
+| R244 | 3 | ✓ | Clean panel (streak 1). opus 360 single-position + ~4300 composed cases, 0 violations; sonnet 1186 passed + cardinal. Streak broken by R245 (this corpus omitted decltype/template-type-arg positions). |
+| R245 | 3 | ✗ | opus: the VFG (`ev`) read a param name in a **TYPE position** — `g<v>()`, `decltype(v)`, template TYPE args, alias/typedef — that the correct PDG drops (unevaluated compile-time operand): a literal VFG-reads/PDG-drops divergence. Mirror the PDG's `_TYPE_NODES` skip into `ev` (name-agnostic TYPE node, no descent; qualified_identifier excepted); genuine value operands still read. Extended the oracle's no-spurious-read family. |
+| R246 | 3 | ✗ | opus: the VFG (`bind`) dropped a **used structured-binding** param `auto [a,b]=v; use(a)` (RHS evaluated then discarded). Added a `structured_binding_declarator` case + routed _DECL_WRAP through `_decl_child` so `auto& [a,b]` reaches its inner name. Docstring split the one asymmetry from the two symmetric gaps. haiku: bare-'JS' nomenclature. |
+| R247 | 3 | ✗ | opus + sonnet **CLEAN** — R245/R246 fixes held under 47 hand-written + ~856 fuzz cases and the 1194-test gate + byte-identical isolation; no `_decl_child` regressions. haiku: one pre-existing bare-'JS' in the Rust `_build_pdg` docstring (harmonized). Docs only. |
+| R248 | 3 | ✓ | **Clean (streak 1).** opus independent re-derivation, fresh ~10,100-case corpus (depth-3 composition fuzz, per-parameter attribution), 0 VFG⟹PDG violations; sonnet 1194 passed + cardinal + byte-identical isolation; haiku docs. |
+| R249 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus re-certification with ~24,000 fresh depth-3 fuzz + ~75 curated cases — could not falsify (one informational safe-direction artifact: a vexing-parse `({ long(v); })` the VFG over-reads and the PDG handles correctly). sonnet 1194 passed + cardinal + byte-identical isolation; haiku docs. Tag left to the maintainer. |
+
+Process note: **front-loading the oracle turned Rust's 17-panel grind into 11.** The differential
+oracle and the type/label/field guards shipped with panel 1 (not discovered panel-by-panel), so the
+class-of-one defects (RMW, stmt-expr, init-capture) were caught in the first three rounds. The two
+that slipped to R245/R246 were not new *kinds* of bug — they were the same VFG-vs-PDG divergence in
+**composed positions the corpus had not yet generated** (a param name inside a `decltype`/template
+argument; a param destructured by a structured binding). Both were closed by making the VFG mirror the
+PDG and then *widening the oracle's corpus* so the whole sub-class regresses — the fix for whack-a-mole
+remains tooling, not luck. The type-position hazard predicted since v3.11.0 recurred here (R245) exactly
+as in Rust (R232/R234), confirming it as the standing typed-language risk to front-load for Java/C#.
+Remaining sweep: Java, C#, Ruby, PHP, Bash.
+
+## v3.14.0 — the STATEMENT layer learns Java (§5c sweep, language 6)
+
+Sixth language of the STATEMENT/PDG sweep, after Python (v3.9.0), the JS family (v3.10.0), Go
+(v3.11.0), Rust (v3.12.0), and C/C++ (v3.13.0). `structure_java.pdg_source` / `_build_pdg` build a
+per-function PDG from the tree-sitter Java tree — Java is **statement-oriented** (like Go and C/C++),
+everything lives in a type, methods/constructors keyed by the dotted enclosing-type chain (`Outer.m`,
+`C.C`). The read/write projection (`collect`/`bind_place`/`rmw_target`) was written to **mirror the
+VFG's `ev`/`bind` node-for-node**, so the two builders agree by construction.
+
+The C/C++ lesson was fully applied: the whole recurring class was **front-loaded**. The white-box
+VFG-vs-PDG differential oracle (`tests/oracles/test_pdg_java_vfg_differential.py`) AND the
+`_PDG_TYPE_NODES` / method-name / field / label guards shipped **with panel 1** — and Java became the
+first language of the sweep to ship with **ZERO code defects across all panels**. The only finding in
+three rounds was a one-line docstring nit.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R250 | 3 | ✗ | First Java panel. opus deep-cert of the brand-new builder: 0 VFG⟹PDG violations across ~50 hand-built + a 4000-iteration nested fuzz; precision/determinism/well-formedness/key-parity all pass — **no code defect on the first panel**. sonnet 1312 passed + cardinal + byte-identical isolation. haiku: one doc nit (Python PDG oracle docstring omitted Java). Docs-only. |
+| R251 | 3 | ✓ | **Clean (streak 1).** opus independent falsification, fresh ~75-case corpus + 5000 depth-3 fuzz, 0 DROP / 0 spurious; accepted artifacts only (a `case v:` label-constant safe over-read; a catch-param-shadowing-a-method-param case that is INVALID Java and reverse-direction — PDG more precise than VFG). sonnet 1312 passed + cardinal + byte-identical isolation. haiku docs. |
+| R252 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus re-certification with ~80 fresh cases + 8000 depth-3 fuzz (statement- and expression-position) + a 21-case name-collision corpus — could not falsify; all divergences accepted safe-direction/symmetric; docstring accurate. sonnet 1312 passed + cardinal + byte-identical isolation. haiku docs. Tag left to the maintainer. |
+
+Process note: **front-loading beat the grind — Java shipped defect-free.** Rust took 17 panels and 13
+defects because the differential oracle was built mid-stream (R228); C/C++ took 11 panels and 6
+defects with the oracle shipped at panel 1 but the corpus still discovering composed type/binding
+positions (R245/R246); Java took **3 panels and 0 code defects** because the oracle, the type/label/
+method-name/field guards, AND the discipline of mirroring the VFG `ev`/`bind` node-for-node were ALL
+in place before the first review. The recurring class did not open once. The remaining sweep (C#,
+Ruby, PHP, Bash) carries the same template; C# is the next typed language and inherits the
+type-position front-loading directly.
+
+## v3.15.0 — the STATEMENT layer learns C# (§5c sweep, language 7)
+
+Seventh language of the STATEMENT/PDG sweep, after Python (v3.9.0), the JS family (v3.10.0), Go
+(v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), and Java (v3.14.0). `structure_csharp.pdg_source` /
+`_build_pdg` build a per-function PDG from the tree-sitter C# tree; C# is statement-oriented (like
+Java and C/C++), methods/constructors keyed by the dotted enclosing-type chain. The read/write
+projection **mirrors the VFG's `ev`/`bind` node-for-node**, so the two builders agree by construction
+— and helpfully, C#'s `member_access_expression` reads only its `expression` field, so a call's method
+name is skipped naturally.
+
+Like Java, the whole recurring class was **front-loaded** — the differential oracle
+(`tests/oracles/test_pdg_csharp_vfg_differential.py`) and the type/member-name/label guards shipped
+with panel 1 — and C# became the **second consecutive language to ship with ZERO code defects**.
+
+The one substantive find was a *pre-existing* C# VFG bug surfaced while mirroring: `_do_var_declaration`
+skipped ALL identifier declarator children (to avoid re-reading the declared name), so a bare-identifier
+initializer `int r = v;` dropped the copy entirely. Fixed by identifying the name via its `name` FIELD
+and reading every other child — applied to BOTH `_build_vfg` and the new `_build_pdg` so they stay
+consistent (VFG-reads ⟹ PDG-reads). The expression-layer suite (structure/find_similar/completeness)
+was unregressed by the VFG change.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R253 | 3 | ✓ | First C# panel — and clean. opus deep-cert of the brand-new builder: 0 VFG⟹PDG violations across ~75 hand-built + 1728 depth-3 composs + 3150 context×wrapper fuzz; **found + fixed the pre-existing `_do_var_declaration` bare-identifier-copy bug in both builders**. sonnet 1432 passed + cardinal + byte-identical isolation (no regression from the VFG fix). haiku's only note — the [3.14.0] changelog 'remaining languages' list — was REJECTED as an immutable point-in-time historical record (no edit). Streak 1. |
+| R254 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus re-certification with a fresh corpus + depth-3 fuzz = **317,057 tested cases** (incl. LINQ, stackalloc, `with`, collection expressions, patterns) — 0 divergences, 0 spurious reads; keys/determinism/well-formedness pass; docstring accurate. sonnet 1432 passed + cardinal + byte-identical isolation. haiku docs clean. Tag left to the maintainer. |
+
+Process note: **two languages defect-free in a row confirms the front-loading template.** Java (3
+panels, 0 defects) was not a fluke — C# repeated it (2 panels, 0 code defects). The recurring
+VFG-vs-PDG divergence class is now reliably closed *before* the first review by three things shipped
+together at panel 1: the white-box differential oracle, the type/member-name/label guards, and the
+discipline of writing the PDG's read-projection to mirror the VFG's `ev`/`bind` node-for-node. The
+only surprise was a *pre-existing* expression-layer bug (bare-identifier initializer) that mirroring
+exposed — fixed in both builders at once. A useful lesson: building the PDG as a faithful mirror of
+the VFG is also an audit of the VFG. Remaining sweep: Ruby, PHP, Bash (dynamically-typed — the
+type-position hazard recedes; the pattern/label and method-name hazards remain).
+
+## v3.20.1 — `get_callers`/`get_callees`: precise, actionable name-resolution refusals (dogfood fix)
+
+A PATCH surfaced by the **dogfood build experiment** (`research/07-dogfood-build`, round 2): a fresh
+agent extending an unfamiliar codebase ran `get_callers "nodes"` and got *"'nodes' is not a unique
+symbol"* — the same message the ops emit for a **genuinely ambiguous** name, even though `nodes`
+simply *didn't exist*. Not a crash (the honest-refusal envelope returned a clean `ok=False`), but a
+misleading, unactionable message. Fixed with a new `_resolve_or_explain` helper: unknown → *"no symbol
+named 'X' in the index"* (matching `find_symbol`); ambiguous → lists the sorted candidate ids (cap 8 +
+"(+K more)") and *"pass a qualified id (Type.method or path::qualified.name)"*. `_resolve_target` /
+`_resolve_one` are byte-unchanged, so `trace_path`/`impact_of` are untouched; message/usability only.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R269 | 3 | ✓ | **Clean (streak 1).** opus falsification on 0/1/2/10-def stores: message + count N + sorted deterministic listing + 8-id cap all correct; qualified `Type.method` and full `path::qual` still resolve (no regression); never raises on None/non-str/empty/whitespace/unicode/dotted/'::'-nonexistent; cardinal find_stale byte-identical, import loads no CLI/MCP, reach.py untouched; test_regressions 440 passed. haiku docs consistent (pyproject 3.20.1, CHANGELOG accurate — message-only, not a crash fix). sonnet gate by main: full suite 2295 passed / 28 skipped / 0 failures, ruff + mypy clean. |
+| R270 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus independent re-cert: never raises on adversarial inputs incl. regex metachars, SQL-injection string, 5000-char name, whitespace-only, unicode; "valid full id AND bare homonym" shown structurally impossible; cardinal byte-identical after hammering all four resolving ops; test_regressions 440 passed. haiku docs consistent. Gate re-verified. Non-defect noted both rounds: `impact_of` keeps its own pre-existing ambiguous phrasing (cross-op message parity is a future nicety, not a regression). Tag left to the maintainer. |
+
+### v3.21.0 — `find_modes` (behavioural POD) + `scaffold_coverage` (sandboxed capture kit), §6 win 3
+
+New advisory pair: `find_modes` takes the POD (mean-centred SVD) of a per-test coverage matrix → behavioural modes, intrinsic dimensionality, minimal covering test set; `scaffold_coverage` generates a **sandboxed** (Docker no-network/cap-drop/read-only + shell + CI) capture kit so the user produces that coverage in their own jail — stitchgraph never runs their code, only reads the inert matrix. Language-agnostic (`stitchgraph-coverage-v1`), Python turnkey. Dogfooded with a full POD on stitchgraph itself (2315×764 → 10 modes recovering the per-language architecture; research/10).
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R271 | 3 | ✗ | FIRST v3.21.0 panel. opus MEDIUM: redundancy used an O(n_tests²) similarity matrix → uncaught MemoryError on big-suite/few-function artifacts. LOW: `minimal_test_set` truncated at [:200] (not always a full cover). NIT: converter emitted absolute-path ids at SRC='.'. Fixed: O(n) frozenset grouping + catch MemoryError; un-truncated; always-relativise. |
+| R272 | 3 | ✗ | opus MEDIUM: `intrinsic_dimensionality` could exceed the number of modes on zero-variance coverage (all-identical rows → mean-centred matrix all-zero → searchsorted returned len+1); numpy LinAlgError (SVD non-convergence) not caught. haiku: README/STATUS stale (v3.20.0 header, "15 operations", missing numpy dep). Fixed: k90=0 on zero variance + clamp to len(cum) + LinAlgError→RuntimeError refuse; docs synced. |
+| R273 | 3 | ✓ | opus re-falsification CLEAN (idim≤modes across all inputs; k90 recompute matches; cardinal re-verified vs real store). One NIT (OVERVIEW.md [spectral] omitted find_modes, fixed) + one non-reachable INFO hardened (clamp k90 to nmodes for direct decompose(k=1)). |
+| R274 | 3 | ✗ | opus **HIGH**: shipped Python converter used bare ast names → distinct same-named methods (A.run/B.run, every __init__/run) collapsed to one node id, corrupting the matrix and contradicting the kit's own README spec. NIT: pyproject [spectral] comment omitted find_modes. Fixed: func_ranges walks class/function nesting → qualified ids (Class.method, outer.inner) + innermost-range attribution; comment fixed. |
+| R275 | 3 | ✓ | opus CLEAN — find_modes numeric core exact vs brute force over 400 fuzz trials; greedy cover proven complete; no numpy-scalar JSON leaks; all 4 cardinal rules. 3 non-defect INFO (uncentred scipy path semantics, bare-dict key literally 'format', direct decompose(k<0)). |
+| R276 | 3 | ✓ | FIRST confirmation on converter-fixed tip. opus CLEAN — qualified-name fix exact node-id set-equality vs extract_project() across staticmethod/classmethod/async/nested/property/overload; property+overload same-name collapse matches the extractor's own behaviour. NIT: coverage.py suffixes test-id keys with `|phase`; README example omitted it (keys opaque; values match) — fixed. |
+| R277 | 3 | ✓ | SECOND confirmation. opus comprehensive: numeric hand-recompute exact, determinism, adversarial battery all envelopes (4005×4005>cap refuse, 6000×4, 500-unique untruncated, zero-variance idim=0), sandbox flags present + confined, all cardinal rules. LOW: non-turnkey run_coverage.sh built by .replace() left a stray `--cov=.`/pip/to_canonical line — fixed (clean `_TEMPLATE_RUN` placeholder). |
+| R278 | 3 | ✓ | Clean re-confirmation on the R276/R277-fixed tip: non-turnkey run script clean (bash -n, no stray lines), python turnkey intact, sandbox flags, qualified converter, find_modes battery + determinism + JSON-clean, all cardinal rules. Recommends passing the gate. |
+| R279 | 3 | ✓ | **FINAL sign-off — streak ≥2, gate met, RELEASABLE.** opus independent re-attack: numeric hand-recompute exact, converter ids match reindex node-id parts, sandbox confinement, all 4 cardinal rules, 12/12 test_modes. One UNREACHABLE INFO (direct decompose(k<0) → negative idim; impossible via library/CLI/MCP which sanitise k to ≥2 or None) — accepted non-defect (class of R270's note); optional `max(0,…)` floor a future nicety. Gate: full suite 2305 passed / 28 skipped, ruff + mypy clean. Tag left to the maintainer. |
+
+### v3.22.0 — forward-looking POD ops `select_tests` + `co_change` + `find_coupling` (§6)
+
+Three advisory, read-only, **no-numpy** operations (new `core/coverage_query.py`) that turn the runtime
+co-activation matrix into change-oriented queries: `select_tests` (which tests to run for a change —
+runtime coverage fused with the static blast radius: both / runtime_only / static_only), `co_change`
+(functions that co-activate with a symbol — "what moves together / implements this outcome"), and
+`find_coupling` (pairs that co-run but have no static edge — implicit coupling the call graph can't see).
+Test-ids normalised to node-id convention so runtime/static namespaces align. Dogfooded on stitchgraph's
+own 2315×764 coverage. Total ops: 22 + admin `reindex`.
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R280 | 3 | ✗ | FIRST v3.22.0 panel. opus falsification: essentially CLEAN — all 4 cardinal rules verified (no eager import; find_stale byte-identical; never raises across the adversarial artifact battery incl. NaN/Inf JSON + a 5000-fn giant test; no user-code exec), select_tests partition exact, scores ∈ [0,1], self-pair excluded, find_coupling excludes any-relation/either-direction edges + handles unresolved dst_id, `_COOC_FUNC_CAP=400` bounds OOM, limit/min_shared clamp. One NIT: `base_test_id` split on '|' before stripping `[param]` → a param containing '|' or nested brackets mis-normalised (advisory under-merge, never raises) — fixed (11e18b5). haiku NIT: OVERVIEW select_tests row hyphenated `runtime-only`/`static-only` vs underscored fields — fixed (7424757). |
+| R281 | 3 | ✓ | FIRST clean confirmation on the fixed tip 11e18b5. opus: base_test_id fix correct AND complete (phase stripped before greedy end-anchored `[param]`; `test[a|b]|run`, nested `test[a[b]]`, param-containing-'run' all collapse; 2-part `file::func` intentionally not class-rewritten). Full re-attack clean: artifacts refuse cleanly, select_tests partition + homonym refuse, co_change cosine deterministic across PYTHONHASHSEED, find_coupling edge-exclusion + OOM guard + clamps, all 4 cardinal rules. |
+| R282 | 3 | ✓ | **FINAL sign-off — streak 2 (readiness streak 8), gate met, RELEASABLE.** opus independent re-attack with hand-computed numerics: select_tests both/runtime_only/static_only exact; co_change cosine matches (0.8165, 0.5774); find_coupling score/shared exact, edge-excluded both directions, normalize collapses param rows; JSON-serializable + deterministic; 72-case adversarial battery zero raises; all 4 cardinal rules. One INFO non-defect: `_COOC_FUNC_CAP` skips a >400-fn test from the pair numerator but not the sizes denominator → a pair co-running only in such a near-global test under-reports its cosine (bounded, conservative — only ever under-reports; matches documented near-global-noise suppression). No action required. Gate: full suite **2315 passed / 28 skipped** (tip a48696c; the sole subsequent change is the localised `base_test_id` regex, covered by test_coverage_query 9/9 + test_modes 12/12 on the final tip), ruff + mypy clean. Tag left to the maintainer. |
+
+### v3.23.0 — POD toolkit completion: 8 forward-looking runtime-analysis ops (§6)
+
+Eight new advisory, read-only ops from the POD roadmap (`research/11`): `find_gaps`, `test_order`,
+`redundant_tests`, `find_core`, `runtime_risk`, `coverage_drift` (pure set-math, no numpy) and
+`feature_map`, `find_outlier_tests` (POD/SVD) — plus `select_tests` extended to accept a comma-separated
+changeset. New `core/coverage_query.py` helpers + a `modes._pod` shared SVD builder (the gated
+`decompose` left untouched). 30 ops + admin `reindex`. Dogfooded on stitchgraph's 2315×764 coverage.
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R283 | 3 | ✓ | FIRST v3.23.0 panel — clean on first pass. opus falsification: 0 raises across the full adversarial-artifact matrix × all 8 op entrypoints (missing/bad-JSON/wrong-shape/empty/<4/dup-funcs/NaN-Inf/giant-5000-fn/non-str args); no numpy scalar/ndarray JSON leaks; `_pod` mirrors `decompose`'s numpy/`_DENSE_CAP`/LinAlgError guards; residual ∈ [0,1] incl. zero-variance; kind ⊆ {typical,unique,smoke}; find_gaps partition disjoint + sums; test_order once+cover; redundant ≥2 + caveat; runtime_risk refuses non-git/empty; coverage_drift symmetric; select_tests changeset union + unresolved-noted + ambiguous-refuse; all 4 cardinal rules (no eager import; find_stale byte-identical after all 8). haiku docs: CLEAN (version, 30-op count, CLI names, numpy split, payload fields). |
+| R284 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus independent re-attack with EXACT hand computation: find_core ranking/fractions, greedy_order pick order + minimal-prefix-is-true-cover + each-test-once, redundant_groups, coverage_drift gained/lost + symmetric-under-swap, find_gaps partition, select_tests changeset union + single-symbol ambiguous refuse, feature_map full-ids/files/tests, find_outlier_tests residual∈[0,1] + all 3 kinds + deterministic, runtime_risk churn×centrality + refuses non-git/empty/bad-type + namespace reason. All 4 cardinal rules re-verified (subprocess lazy-import; find_stale byte-identical + node_count after all 8 ops; 16-case never-raise). numpy-absent path refuses cleanly; 34 tests pass. One docstring-wording nuance (greedy_order zero-gain tail order) — fixed, no behaviour change. Gate: full suite green, ruff + mypy clean. Tag left to the maintainer. |
+
+### v3.23.1 — self-audit precision fix (scan `live_stub` on decorator callbacks)
+
+Found by turning the toolset on stitchgraph itself (`research/12`): `scan` RED-flagged a Typer
+`@app.callback` with an idiomatic `pass` body as an unimplemented `live_stub`. Fixed `_is_stub` so an
+empty body under a call/attribute decorator is not a stub; tests added for the fix + the
+`Edge.to_dict`/`Edge.resolved` coverage gaps `find_gaps` surfaced.
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R285 | 3 | ✓ | opus falsification: whole-repo old/new differential = **exactly one** verdict changed (`build_app._root`, the intended target), zero collateral; bare `pass`/`@property`/`@overload` + `raise NotImplementedError` (even decorated) still stubs; async identical; 0 RED live_stub on src; 456 tests pass; cardinal intact. Two LOW non-defects within the documented precision-over-recall intent. |
+| R286 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus independent: 33-case `_is_stub` matrix matches intent, malformed decorator ASTs raise nothing; **`is_stub` is consumed only by `scan.stub_nodes()`, not by `find_stale`/`_live_set`/`_stale_candidates`**, so the flag change cannot move reachability — verified on src + 2 crafted projects (registered callbacks reachable via decorator edges; genuine dead stubs still surface). 490 targeted + full suite **2333 passed / 28 skipped**, ruff + mypy clean. One non-defect (abstractmethod+registration combo — nonsensical, never arises). Tag left to the maintainer. |
+
+Process note: the first defect *found by dogfooding stitchgraph as a build aid rather than by a panel*
+— the round-2 extender agent's own DEVLOG recorded the confusing refusal, which became this fix. A
+reminder that the honest-envelope "refuse clearly" principle is only as good as the clarity of the
+refusal *message*: returning `ok=False` was correct; conflating "unknown" with "ambiguous" and hiding
+the candidates was the real gap.
+
+## v3.20.0 — `find_subsystems`: spectral subsystem decomposition (§6 spectral research → package)
+
+The second §6 "system-matrix" win graduates into the package. New advisory operation `find_subsystems`
+partitions the call/reference graph into its **natural subsystems** by spectral clustering of the graph
+Laplacian, and auto-labels each cluster with the identifier tokens that most distinguish it (a
+"spectral-summarize"). It is the *structural* complement to the semantic `find_similar` /
+`summarize_subsystem`: it **discovers** the module boundaries rather than describing a scope you name.
+Cluster count auto-selected from the spectral eigengap (or set via `k`). Backed by a new
+`core/spectral.py` (normalised-Laplacian embedding + deterministic k-means++ + distinctive-token
+labels); numpy-only out of the box (dense, capped at 2500 giant-component nodes), with an optional
+`[spectral]` extra (scipy) that adds a sparse ARPACK solver for larger graphs. Advisory only, never
+feeds `find_stale`.
+
+The panel earned its keep again: opus's independent falsification caught a real HIGH that the
+hand-written tests had not exercised — `find_subsystems` was **nondeterministic on the scipy/`eigsh`
+path** for graphs with degenerate top Laplacian eigenvalues (regular graphs, hubs, rings): repeated
+calls on the same store returned different partitions, and the sparse path disagreed with the
+deterministic dense path. ARPACK injects random restart vectors on Lanczos breakdown (a fixed all-ones
+`v0` is exactly the Perron eigenvector of a regular graph) and returns an arbitrary basis of a
+degenerate eigenspace. Fixed by preferring the deterministic dense LAPACK solver for every giant
+within the cap (even when scipy is installed) and reserving sparse `eigsh` for above-cap graphs, where
+it now uses a fixed-seed generic start vector plus a tiny deterministic symmetry-breaking term — then
+re-verified deterministic across processes and thread counts on genuine >2500-node graphs.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R266 | 3 | ✗ | First panel. opus falsification found ONE HIGH: nondeterministic clustering on the scipy/`eigsh` path for degenerate top eigenvalues (hub+15 → 10 distinct partitions / 10 calls; sparse≠dense) — ARPACK random restart on an exact-Perron `v0` + arbitrary degenerate-eigenspace basis. Reachable on ordinary hub/ring motifs. Fixed (c420361): dense LAPACK preferred ≤ cap even with scipy; sparse only > cap, with a fixed-seed generic `v0` + 1e-6·(i/n) diagonal symmetry-breaking. haiku docs clean; sonnet superseded by the fix. Dirty (1 HIGH, fixed). |
+| R267 | 3 | ✓ | **Clean (streak 1).** opus re-cert on the fixed tip: 8 degenerate motifs ×10 calls deterministic on default + forced-sparse; a genuine 3000-node >cap SBM on the real sparse path deterministic across PYTHONHASHSEED (NMI=1.0, k=3); dense==sparse on 40 SBM + 32 weakening-coupling + tiny-eigengap (λ2~1e-3) graphs; robustness never raises; cardinal byte-identical, no eager spectral/scipy import. sonnet gates re-verified by main; full suite 2298 passed / 24 skipped. haiku docs consistent. |
+| R268 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus from-scratch: SBM NMI=1.000 all seeds; 3000-node SBM + 2-regular cycle + torus on the real ARPACK path byte-identical across PYTHONHASHSEED {0,1,42,777,12345,999} × OMP_NUM_THREADS {1,4}; 120 near-threshold SBMs dense==sparse (1e-6 ramp never flips real structure); 1000 fuzz runs 0 nondeterminism / 0 raises; contract over 400+ graphs; cardinal byte-identical, reach.py untouched. 3 non-defect NITs noted (structureless-K8 auto-k, tokenizer lone-digits, unreachable dense LinAlgError). Gates re-verified; full suite 2298 passed / 24 skipped. haiku docs. Tag left to the maintainer. |
+
+Process note: the §6 pattern from `find_chokepoints` repeated exactly — a numerically subtle new
+operation whose author-written tests all passed, but an INDEPENDENT adversarial pass (opus) found a
+real defect the tests never provoked. R263's lesson was "tests can encode the bug"; R266's is its
+sibling: **tests can fail to exercise the failure mode at all** — the determinism tests used only the
+non-degenerate planted-community graph, so the ARPACK-on-degenerate-spectrum nondeterminism went
+unseen until opus threw regular graphs / hubs / rings at it. Both wins closed in 3 panels / 1 HIGH
+each. §6 win 3 (POD over runtime coverage, Python-first) remains — explicitly saved for last.
+
+## v3.19.0 — `find_chokepoints`: articulation-point criticality (§6 spectral research → package)
+
+The first result of the §6 "system-matrix" research thread graduates into the shipped package. New
+advisory operation `find_chokepoints` returns the **articulation points** (cut vertices) of the
+call/reference graph — nodes whose removal disconnects the graph — each ranked by its **blast
+radius** (how many nodes get cut off from the main body if it fails). A robustness / "dangerous to
+touch" signal distinct from `orient`'s hub centrality: a chokepoint can have modest fan-in/out yet be
+the sole bridge between two subsystems. Backed by `reach.articulation_points` (one iterative Tarjan
+DFS pass, subtree sizes inline, O(V+E), deterministic, recursion-limit-guarded like the SCC core);
+advisory only, never feeds `find_stale`; no new dependency.
+
+The panel earned its keep: opus's brute-force falsification caught a real HIGH the hand-written tests
+had *masked* (they encoded the buggy values) — the non-root blast radius used `sum(child subtrees)`,
+which inverted the ranking on a chain (a near-leaf reported as top chokepoint). Fixed to the uniform
+`(comp_total-1) - max(pieces)` definition and re-verified against brute force.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R263 | 3 | ✗ | First panel. opus brute force (6000 graphs) confirmed AP-set detection correct (0 mismatches), determinism, robustness (20000-node chain, no RecursionError), cardinal — but found ONE HIGH: non-root blast radius = `sum(child subtrees)` wrongly assumed the parent side is always the main body → ranking inversion + inflated counts (up to N-2). Fixed to `(comp_total-1)-max(pieces)`; re-verified 0/4000 vs brute force; added a chain-symmetry regression (the two original tests had encoded the buggy values). haiku 1 NIT (README "functions" → "code entities"). Both fixed. |
+| R264 | 3 | ✓ | **Clean (streak 1).** opus fresh re-cert: 47,250 random graphs across 14 families, 0 AP-set + 0 blast mismatches; chain symmetric (inversion gone); determinism, robustness, cardinal, contract all pass. sonnet gates + full suite 2284 passed / 24 skipped. haiku docs clean. |
+| R265 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 14,000-graph from-scratch brute force (+self-loops/dup/dangling-dst/pseudo/non-liveness perturbations), ~56,480 APs, 0 mismatches; chain a symmetric tent; determinism across PYTHONHASHSEED; cardinal byte-identical; contract (incl. bad/bool limits) safe. Gates re-verified; full suite 2284 passed. haiku docs. Tag left to the maintainer. |
+
+Process note: this is the first §6-spectral-research win promoted to product, and the first *new
+operation* since the §5c layer work. The lesson reinforced: **tests written by the author of a subtle
+algorithm can encode the bug** — R263's blast-radius defect passed the initial suite because the tests
+asserted the buggy output. An INDEPENDENT brute-force reference (opus's, and then main's 4000-graph
+re-check) is what caught and pinned it. §6 wins 2 (spectral-summarize → `summarize_subsystem`) and 3
+(POD over runtime coverage, Python-first) remain.
+
+## v3.18.0 — the STATEMENT layer learns Bash — the §5c sweep is COMPLETE (language 10)
+
+The tenth and FINAL language of the STATEMENT/PDG sweep. With Bash, the statement layer now covers
+**every body-matrix language** (Python + the JS family + Go + Rust + C/C++ + Java + C# + Ruby + PHP +
+Bash). Bash is the **command-oriented outlier**: a command is a statement whose callee + arguments
+are the reads, and — uniquely — **shell functions have no declared parameter list** (positional `$1…`
+are free variables). So `ENTRY` carries no params, exactly as the value-flow builder seeds no `PARAM`
+nodes. `structure_bash.pdg_source` / `_build_pdg` mirror the VFG's `ev`/`bind`/`_do` node-for-node.
+
+Because there is no parameter to attribute, the differential oracle **seeds** the name-attributable
+variable with a first assignment `v=$SEED`: the VFG makes node 0 the `FREE` node for `SEED` (created
+first) and copy-props it into `v` (read ⟺ node 0 has an out-edge); the PDG's node 1 is that seed
+assignment (read ⟺ any `(1,_,'D')` edge). The build was preceded by a grammar probe that pinned the
+key precision point — a LITERAL command name is a free callee (never a variable read), while a
+*dynamic* `$cmd`/`$(…)` name reads its expansions.
+
+The front-loading template held even for the outlier: **2 clean panels, 0 code defects** — the one
+finding was a doc LOW (a stale README status header).
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R260 | 3 | ✗ | First Bash panel. opus ~39,900-case independent falsification (~29,600 genuine VFG-reads) — 0 VFG⟹PDG violations, and *proved* the node-1 attribution axis sound (a rebind that moves `last_def[v]` also kills the VFG seed, lifting the obligation). sonnet gates: full suite 2276 passed / 24 skipped, ruff/mypy/cardinal clean, byte-identical isolation, Bash oracle 61. haiku found ONE LOW: the README `## Status (v…)` header was stale at v3.16.0 — fixed to v3.18.0 (commit fdbec2a). |
+| R261 | 3 | ✓ | **Clean (streak 1).** opus fresh ~24,000-case re-cert (~15,400 genuine reads) — 0 violations; identified three SYMMETRIC under-reads (`${#v}`, `v+=x`, extglob/single-quoted trap) that miss in BOTH builders (shared soundness limits, not divergences). sonnet gates re-verified; haiku docs clean (status-header fix confirmed). |
+| R262 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus 21,888-case final falsification across 6 seeds (19,232 genuine reads, both directions exercised) — 0 violations / crashes / parity / determinism failures; seed mechanics verified directly. sonnet gates re-verified; haiku docs clean. Tag left to the maintainer. |
+
+Process note: **the §5c STATEMENT-layer sweep is complete — all 10 sweep-languages / 12 body-matrix
+languages.** Bash, the command-oriented, parameter-less outlier, still closed in 2 clean panels with
+0 code defects because the discipline held: build the PDG's read/write projection as a faithful VFG
+mirror, probe the *actual* grammar (literal vs dynamic command names) before writing the walker, and
+ship the differential oracle with panel 1 — here adapted to seed the attributable variable since
+there is no parameter. Across the phase-3 sweep (JS→Go→Rust→C/C++→Java→C#→Ruby→PHP→Bash) the recurring
+VFG-vs-PDG divergence class went from Rust's 17-panel/13-defect grind (pre-oracle) to a steady 2–3
+panels/0–1 defects once the oracle and mirror discipline were front-loaded.
+
+## v3.17.0 — the STATEMENT layer learns PHP (§5c sweep, language 9)
+
+Ninth language of the STATEMENT/PDG sweep, after Python (v3.9.0), the JS family (v3.10.0), Go
+(v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), Java (v3.14.0), C# (v3.15.0), and Ruby (v3.16.0). PHP is
+**statement-oriented** (like Go/C/C++/Java/C#), so `structure_php.pdg_source` / `_build_pdg` mirror
+the VFG's `ev`/`bind`/`do` node-for-node: the read/write projection (`collect`/`bind_place`/
+`rmw_target`) reads exactly the value operands the VFG's `ev` reads and binds exactly what `bind`
+binds. The build was preceded by a **grammar-reconciliation probe** — tree-sitter emits
+`member_call_expression` / `nullsafe_member_call_expression` (not the `method_call_expression` the VFG
+lists), so those calls flow through the *shared generic fallback* in BOTH builders (reading object +
+method-name + args); `scoped_call_expression`/`function_call_expression` hit the explicit CALL handler
+(object/function/args, not scope/name). Mirroring these exactly — plus the symmetric gaps (`foreach`
+`$k=>$v` pair binds nothing, `Foo::$x` opaque freevar, member NAME never read even for dynamic
+`$o->$v`) — kept the two builders in lock-step.
+
+The front-loading template held: the differential oracle + name-position precision cases + the
+VFG-mirror shipped WITH panel 1, so PHP became the **third consecutive language to close with ZERO
+code defects** (after Java and C#) — **2 panels, 0 findings**.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R258 | 3 | ✓ | **First PHP panel — clean (streak 1).** opus INDEPENDENT falsification: ~61,000 cases (85 hand-crafted §5c-targeted + 20,000 depth-0..3 random + 29,960 param-biased, of which 26,735 were genuine VFG-reads) — ALL 26,735 also PDG-reads, 0 invariant violations, 0 raises, 0 malformed graphs, 0 key mismatches, determinism confirmed. sonnet gates (re-verified by main): full suite 2214 passed / 24 skipped, ruff/mypy/cardinal clean, byte-identical find_stale isolation, PHP oracle 161 passed. haiku docs: all 7 surfaces consistent. |
+| R259 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus fresh multi-generator campaign: ~24,900 valid cases (curated + deep-random-nested + §5c-hazard-targeted + 4,000 MULTI-param differential + ~3,060 malformed), ~19,200 genuine VFG-reads (~77% non-vacuous) — 0 violations; every §5c defect-class pattern verified to read identically in both builders; all observed VFG≠PDG cases are the allowed PDG≥VFG direction. sonnet gates re-verified (ruff/mypy/cardinal/oracle clean, full suite 2214 stands). haiku docs. Tag left to the maintainer. |
+
+Process note: **the front-loading template makes statement-oriented languages routine.** PHP is the
+third statement-oriented language (after Java and C#) to ship with zero code defects across its
+panels — the discipline of building the PDG's read-projection as a faithful VFG mirror, shipping the
+differential oracle with panel 1, and probing the *actual* grammar node names before writing the
+walker (member_call vs method_call) means the recurring VFG-vs-PDG divergence class simply does not
+arise. Remaining sweep: **Bash — the last language.**
+
+## v3.16.0 — the STATEMENT layer learns Ruby (§5c sweep, language 8)
+
+Eighth language of the STATEMENT/PDG sweep, after Python (v3.9.0), the JS family (v3.10.0), Go
+(v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), Java (v3.14.0), and C# (v3.15.0). Ruby is
+**expression-oriented** (like Rust — the hard tier): every construct is an expression, a method
+body's trailing expression is its implicit return, and control constructs (`if`/`case`/`while`/`for`)
+appear in both statement AND value position. `structure_ruby.pdg_source` / `_build_pdg` mirror the
+VFG's `ev`/`bind`/`_do` node-for-node: control becomes a control node in statement position but
+**folds its reads into the enclosing statement in value position** (`x = if c then a else b end`).
+
+The front-loading template held even for the hard tier: the differential oracle + method-name/self
+guards + VFG-mirroring shipped at panel 1, so Ruby closed in **3 panels with just 1 real defect** —
+versus Rust's 17 panels / 13 defects for the *same* expression-oriented shape before the oracle
+existed. The one defect was the recurring class in a Ruby-specific position.
+
+| Panel | Models | Clean | Notes |
+|---|---|---|---|
+| R255 | 3 | ✗ | First Ruby panel. opus (HIGH): a `case/in` guard `in P if <cond>` — the `in_clause`'s `guard` field is read by the VFG (generic fallback descends `case_match`) but the PDG hand-enumerated only `pattern`+`body`, dropping it (VFG-reads-but-PDG-drops). Fixed by reading the guard in both `collect` and `process`; extended the differential oracle with case/in guard cases. sonnet gate re-verified 1532 passed locally. haiku's `_build_pdg` 'omits Ruby' note REJECTED (predecessors-only pattern, correct). |
+| R256 | 3 | ✓ | **Clean (streak 1).** opus fresh ~90-case corpus + ~14,000 fuzz (336-combo + 8000 depth-3 nested + 6000 seeded random) — 0 VFG⟹PDG divergences; the guard fix holds; precision (method name not read) holds. sonnet 1532 passed + cardinal + byte-identical isolation. haiku docs. |
+| R257 | 3 | ✓ | **FINAL sign-off — streak 2, gate met, RELEASABLE.** opus re-certification with a fresh 61-case corpus + 8000 depth-3 composition + 20,000 random recursive fuzz — 0 violations, 0 spurious method-name reads; docstring's folding + symmetric gaps + parameter-default asymmetry all confirmed accurate. sonnet 1532 passed + cardinal + byte-identical isolation. haiku docs. Tag left to the maintainer. |
+
+Process note: **the front-loading template survives the expression-oriented hard tier.** Ruby has the
+same everything-is-an-expression shape that made Rust the sweep's longest grind (17 panels, 13
+defects) — but with the differential oracle, the method-name/self guards, and the VFG-mirroring
+discipline all in place at panel 1, it closed in 3 panels with 1 defect. That defect (a `case/in`
+guard field the VFG's generic fallback covered but the PDG's hand-enumeration missed) is the exact
+recurring class, caught immediately by the oracle rather than panel-by-panel. Remaining sweep: PHP,
+Bash — the last two, both dynamically typed.
 
 ## Standing themes
 

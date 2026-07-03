@@ -30,6 +30,9 @@ from stitchgraph.core import structure
 def _sim(src_a: str, src_b: str, name: str = "t") -> float:
     a = structure.fingerprint_source(src_a)[name]
     b = structure.fingerprint_source(src_b)[name]
+    if a == b:
+        return 1.0  # identical fingerprints == construct dropped; avoid the cosine float-rounding
+        #             blind spot: self-cosine of a large WL vector rounds to 0.999...98 < 1.0
     return structure.similarity(a, b)
 
 
@@ -49,7 +52,9 @@ _TEMPLATES: dict[str, str] = {
     "With-ctx": "def t(a):\n    with {probe} as c:\n        return c\n",
     "Try-body": "def t(a):\n    try:\n        return {probe}\n    except Exception:\n        return 0\n",
     "Try-handler": "def t(a):\n    try:\n        pass\n    except Exception:\n        return {probe}\n",
+    "Try-handler-type": "def t(a):\n    try:\n        pass\n    except {probe}:\n        return 1\n    return 0\n",
     "TryStar": "def t(a):\n    try:\n        return {probe}\n    except* Exception:\n        pass\n",
+    "TryStar-type": "def t(a):\n    try:\n        pass\n    except* {probe}:\n        return 1\n    return 0\n",
     "Raise": "def t(a):\n    raise {probe}\n",
     "Assert": "def t(a):\n    assert {probe}\n",
     "Delete": "def t(a):\n    x = [1]\n    del x[{probe}]\n",
@@ -165,3 +170,43 @@ def test_no_uncovered_expression_type():
     assert not uncovered, (
         f"new ast.expr type(s) not classified by the completeness oracle: {sorted(uncovered)} — "
         f"add to _EXPR_COVERED (+ a battery template), _EXPR_LEAF, or _EXPR_OPAQUE")
+
+
+def test_nested_def_class_enclosing_scope_exprs_are_walked():
+    # A nested def/class body is opaque, but parts evaluated in the ENCLOSING scope carry value flow:
+    # default-arg values, base-class expressions, and class keywords (e.g. metaclass=).
+    def differs(a, b):
+        return structure.similarity(structure.fingerprint_source(a)["f"],
+                                    structure.fingerprint_source(b)["f"]) < 1.0
+    assert differs("def f():\n def g(a=helper()):\n  return a\n return g",
+                   "def f():\n def g(a=0):\n  return a\n return g")
+    assert differs("def f():\n class C(make_base()):\n  pass\n return C",
+                   "def f():\n class C(object):\n  pass\n return C")
+    assert differs("def f():\n class C(metaclass=helper()):\n  pass\n return C",
+                   "def f():\n class C(metaclass=type):\n  pass\n return C")
+    # decorator-CALL arguments are evaluated eagerly in the enclosing scope at definition time
+    # (the decorator binding is metadata, but `@deco(expr)` args are a live computation) — def,
+    # async def, and class forms, positional and keyword.
+    assert differs("def f():\n @deco(helper())\n def g():\n  return 1\n return g",
+                   "def f():\n @deco(0)\n def g():\n  return 1\n return g")
+    assert differs("def f():\n @deco(x=helper())\n async def g():\n  return 1\n return g",
+                   "def f():\n @deco(x=0)\n async def g():\n  return 1\n return g")
+    assert differs("def f():\n @deco(helper())\n class C: pass\n return C",
+                   "def f():\n @deco(0)\n class C: pass\n return C")
+    # ...but the nested def's BODY stays opaque (only enclosing-scope parts leak in).
+    body_a = structure.fingerprint_source("def f():\n def g():\n  return helper()\n return g")["f"]
+    body_b = structure.fingerprint_source("def f():\n def g():\n  return other()\n return g")["f"]
+    assert structure.similarity(body_a, body_b) >= 0.99
+
+
+def test_lambda_body_is_opaque():
+    # A lambda is an opaque NESTED leaf (the `_EXPR_OPAQUE` classification above, and matching every
+    # tree-sitter frontend's closure handling): two functions differing only inside a lambda body must
+    # fingerprint identically — the body must NOT leak into the enclosing function.
+    a = structure.fingerprint_source("def f(xs):\n    return sorted(xs, key=lambda x: helper(x))")["f"]
+    b = structure.fingerprint_source("def f(xs):\n    return sorted(xs, key=lambda x: other(x))")["f"]
+    assert structure.similarity(a, b) >= 0.99
+    # ...but a lambda's DEFAULT argument value is evaluated in the enclosing scope, so it carries flow.
+    uses = structure.fingerprint_source("def g(e):\n    return (lambda a=helper(): a)")["g"]
+    ignores = structure.fingerprint_source("def g(e):\n    return (lambda a=0: a)")["g"]
+    assert structure.similarity(uses, ignores) < 1.0

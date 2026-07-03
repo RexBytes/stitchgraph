@@ -19,7 +19,7 @@ from typing import Any
 
 from .entrypoints import EntryPointDetector, PythonLibraryDetector
 from .envelope import Provenance, Result, Urgency, ok, refuse
-from .model import Edge, NodeKind, Relation
+from .model import Edge, Layer, NodeKind, Relation
 from .reach import (
     LIVENESS_RELATIONS,
     best_path,
@@ -115,9 +115,9 @@ def find_symbol(store: Store, name: str) -> Result:
 @operation("Direct callers of a symbol.")
 def get_callers(store: Store, name: str) -> Result:
     """Direct callers of a symbol."""
-    target = _resolve_one(store, name)
+    target, reason = _resolve_or_explain(store, name)
     if target is None:
-        return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
+        return refuse(reason, confidence=0.0)
     edges = store.callers_of(target.id)
     callers = [{"src": e.src, "weight": round(e.weight, 3)} for e in edges]
     return _callgraph_result(callers, edges, symbol=target.id)
@@ -126,9 +126,9 @@ def get_callers(store: Store, name: str) -> Result:
 @operation("Direct callees of a symbol.")
 def get_callees(store: Store, name: str) -> Result:
     """Direct callees of a symbol."""
-    target = _resolve_one(store, name)
+    target, reason = _resolve_or_explain(store, name)
     if target is None:
-        return refuse(f"'{name}' is not a unique symbol in the index", confidence=0.0)
+        return refuse(reason, confidence=0.0)
     edges = store.callees_of(target.id)
     callees = [{"dst": e.dst_id, "weight": round(e.weight, 3)} for e in edges]
     return _callgraph_result(callees, edges, symbol=target.id)
@@ -594,13 +594,534 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     return res
 
 
+@operation("Structural chokepoints: nodes whose removal fragments the graph (criticality).")
+def find_chokepoints(store: Store, limit: int = 20) -> Result:
+    """Articulation points (cut vertices) of the call/reference graph — advisory structural
+    *criticality* (design §6). A chokepoint is a node whose removal disconnects the graph; each is
+    ranked by its **blast radius** — how many nodes get cut off from the main body if it fails
+    (a robustness/"dangerous to touch" signal distinct from the `orient` hub ranking, which measures
+    centrality, not cut-vertex-ness). Structural and advisory ONLY: like hubs, cycles and god
+    objects it never feeds `find_stale` — the cardinal rule is a liveness property. Code entities
+    only (Module / pseudo nodes are excluded, as in `orient`/`scan`). Returns [] on an empty graph;
+    never raises."""
+    from .reach import articulation_points
+
+    lim = limit if isinstance(limit, int) and limit > 0 else 20
+    aps = articulation_points(store)
+    items: list[dict] = []
+    for nid, blast in sorted(aps.items(), key=lambda kv: (-kv[1], kv[0])):
+        node = store.get_node(nid)
+        if node is None or node.kind not in _CODE_KINDS:
+            continue  # a chokepoint label is a code-entity smell; skip Module/pseudo (panel R14A parity)
+        items.append({
+            "id": nid, "name": node.name, "location": node.location,
+            "blast_radius": blast,
+            "reason": f"removing this isolates {blast} node(s) from the rest of the graph",
+        })
+        if len(items) >= lim:
+            break
+    return ok(items, provenance=Provenance.EXTRACTED, count=len(items),
+              chokepoints=len(aps))
+
+
+@operation("Discover the natural subsystems of a codebase (spectral clustering, auto-labelled).")
+def find_subsystems(store: Store, k: int | None = None) -> Result:
+    """Partition the call/reference graph into its natural **subsystems** by spectral clustering of
+    the graph Laplacian (design §6), each auto-labelled with the identifier tokens that most
+    distinguish it — the structural complement to the semantic `find_similar`/`summarize_subsystem`
+    (it *discovers* the boundaries rather than describing a named scope). `k` is the number of
+    subsystems (auto-selected from the spectral eigengap when None). Clusters the giant component of
+    the graph, largest subsystem first. Advisory and read-only: like `orient`/`risk` it never feeds
+    `find_stale`. Needs numpy; the optional `[spectral]` extra (scipy) removes the dense-solver size
+    cap and scales via a sparse solver — without it, a graph beyond the cap refuses cleanly."""
+    from . import spectral
+
+    if not spectral.HAS_NUMPY:
+        return refuse("subsystem decomposition needs numpy (install 'stitchgraph[spectral]')",
+                      confidence=0.0)
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        clusters, meta = spectral.decompose(store, k=want)
+    except RuntimeError as exc:  # too large for the dense fallback / numpy missing
+        return refuse(str(exc), confidence=0.0)
+    return ok(clusters, provenance=Provenance.EXTRACTED, count=len(clusters), **meta)
+
+
+@operation("Behavioural modes from runtime coverage (POD): functional modes + minimal test set.")
+def find_modes(store: Store, coverage: str = "coverage_modes.json",
+               k: int | None = None) -> Result:
+    """Decompose a codebase's **runtime behaviour** via POD (SVD of the per-test co-activation matrix)
+    — the runtime complement to the static `find_subsystems` (design §6). Reads a per-test coverage
+    artifact (canonical `stitchgraph-coverage-v1` JSON of which test executed which function) and
+    returns the ranked **behavioural modes** (function groups that fire together — routing, sessions,
+    …), the **intrinsic dimensionality** (modes to 90% energy), a **minimal test set** that covers all
+    executed functions, and a redundant-test-pair count. Advisory and read-only — never feeds
+    `find_stale`; stitchgraph never runs your code, it only reads the inert matrix (produce it in your
+    own sandbox with `scaffold_coverage`). Needs numpy; the `[spectral]` extra scales large matrices."""
+    from . import modes
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not modes.HAS_NUMPY:
+        return refuse("behavioural-mode analysis needs numpy (install 'stitchgraph[spectral]')",
+                      confidence=0.0)
+    if not modes.load_coverage(coverage):
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected {modes.FORMAT} JSON; "
+                      "generate it with scaffold_coverage)", confidence=0.0)
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        payload, meta = modes.decompose(store, coverage, k=want)
+    except (RuntimeError, MemoryError) as exc:  # matrix too big for dense path / OOM on a huge artifact
+        return refuse(f"coverage matrix too large to decompose in memory ({exc}); "
+                      "install the 'spectral' extra or reduce the suite", confidence=0.0)
+    return ok(payload, provenance=Provenance.EXTRACTED,
+              count=len(payload["modes"]), **meta)
+
+
+@operation("Generate a sandboxed per-test-coverage capture kit (Docker / shell / CI) for find_modes.")
+def scaffold_coverage(store: Store, out_dir: str = "stitchgraph-coverage",
+                      language: str | None = None) -> Result:
+    """Write a sandboxed capture kit that produces the per-test coverage artifact `find_modes` needs
+    (design §6). Producing coverage means running the project's tests (arbitrary code), so stitchgraph
+    **generates the recipe but never runs it** — you run it in your own jail. Emits, per detected
+    language, three interchangeable options (Docker, plain shell, CI) plus a README and the canonical
+    format spec; Python is turnkey, other languages ship a wired template. Writes helper files into
+    `out_dir` only (like `report`) — never touches source, never executes. Read-only w.r.t. the graph;
+    never feeds `find_stale`."""
+    from . import coverage_scaffold
+
+    if not isinstance(out_dir, str) or not out_dir:
+        return refuse("out_dir must be a non-empty string", confidence=0.0)
+    if language is not None and not isinstance(language, str):
+        return refuse("language must be a string", confidence=0.0)
+    try:
+        manifest = coverage_scaffold.generate(store, out_dir, language=language)
+    except OSError as exc:
+        return refuse(f"could not write coverage kit to '{out_dir}': {exc}", confidence=0.0)
+    return ok(manifest, provenance=Provenance.EXTRACTED,
+              count=len(manifest["files"]), languages=manifest["languages"])
+
+
+@operation("Feature map: each behavioural mode's implementing functions × files × expressing tests.")
+def feature_map(store: Store, coverage: str = "coverage_modes.json", k: int | None = None) -> Result:
+    """The actionable, full-id view of the behavioural modes (design §6): per mode, the top-loading
+    **functions** (the feature's implementation), the **files** they span, and the **tests** that most
+    express it — a feature ↔ code ↔ test map for "which tests exercise feature X", coverage-gap-by-
+    feature, and onboarding slices. Advisory, read-only; needs numpy (POD/SVD)."""
+    from . import modes
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not modes.HAS_NUMPY:
+        return refuse("feature-map analysis needs numpy (install 'stitchgraph[spectral]')",
+                      confidence=0.0)
+    if not modes.load_coverage(coverage):
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        features, meta = modes.feature_map(store, coverage, k=want)
+    except (RuntimeError, MemoryError) as exc:
+        return refuse(f"coverage matrix too large to decompose in memory ({exc}); install the "
+                      "'spectral' extra or reduce the suite", confidence=0.0)
+    return ok({"features": features}, provenance=Provenance.EXTRACTED, count=len(features), **meta)
+
+
+@operation("Behavioural outlier tests: unique-behaviour vs everything-touching smoke (mode residual).")
+def find_outlier_tests(store: Store, coverage: str = "coverage_modes.json",
+                       limit: int = 20, k: int | None = None) -> Result:
+    """Tests the mainstream behavioural modes reconstruct poorly (design §6): a high residual marks a
+    *unique-behaviour* test (the only thing covering something — keep it) or an *everything-touching
+    smoke* test (high load on mode 1). Ranked by residual. Advisory, read-only; needs numpy (POD/SVD)."""
+    from . import modes
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not modes.HAS_NUMPY:
+        return refuse("outlier analysis needs numpy (install 'stitchgraph[spectral]')", confidence=0.0)
+    if not modes.load_coverage(coverage):
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
+    try:
+        rows, meta = modes.outlier_tests(store, coverage, k=want, limit=lim)
+    except (RuntimeError, MemoryError) as exc:
+        return refuse(f"coverage matrix too large to decompose in memory ({exc}); install the "
+                      "'spectral' extra or reduce the suite", confidence=0.0)
+    return ok({"outliers": rows}, provenance=Provenance.EXTRACTED, count=len(rows), **meta)
+
+
+@operation("Which tests to run for a change: runtime coverage fused with the static blast radius.")
+def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json") -> Result:
+    """Forward-looking test selection for a change to `name` (design §6). Fuses two signals: the tests
+    that **actually executed** the symbol (from a per-test coverage artifact — ground truth) and the
+    tests that **statically reach** it via the call graph (like `impact_of`). Classifies the union into
+    `both` (high confidence), `runtime_only` (ran it via a path the static graph missed — dynamic
+    dispatch / framework), and `static_only` (reachable but never run in the recorded suite — a coverage
+    gap). `run_these` is the recommended set. `name` may be a **changeset** — several comma-separated
+    symbols (e.g. a PR's touched functions) — whose tests are unioned. Advisory, read-only; needs no
+    numpy — pure set math over the inert matrix (produce it in your own sandbox with
+    `scaffold_coverage`)."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    if not isinstance(name, str):
+        return refuse("symbol name must be a string", confidence=0.0)
+    parts = [p.strip() for p in name.split(",") if p.strip()]
+    if not parts:
+        return refuse("no symbol given", confidence=0.0)
+    unresolved: list[str] = []
+    if len(parts) == 1:  # single symbol: refuse an ambiguous homonym with candidates (as before)
+        target, candidates = _resolve_target(store, parts[0])
+        if target is None:
+            if len(candidates) > 1:
+                res = refuse(
+                    f"'{parts[0]}' matches {len(candidates)} symbols — pass a qualified id to scope to "
+                    f"one (e.g. {candidates[0].id!r})", confidence=0.0)
+                res.alternatives = [n.to_dict() for n in candidates]
+                return res
+            return refuse(f"'{parts[0]}' is not in the index", confidence=0.0)
+        targets = [target.id]
+    else:  # changeset: resolve each; an unresolvable/ambiguous one is noted, not fatal
+        targets = []
+        for p in parts:
+            t = _resolve_one(store, p)
+            (targets.append(t.id) if t is not None else unresolved.append(p))
+        if not targets:
+            return refuse(f"none of the changeset symbols resolve to a unique indexed symbol: {parts}",
+                          confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage); for static-only "
+                      "selection use impact_of", confidence=0.0)
+    tset = set(targets)
+    runtime = coverage_query.tests_for(cov, tset)
+    dependents = reverse_reachable_from(store, tset)
+    static = {d for d in dependents if (n := store.get_node(d)) and "test" in n.roles}
+    recommended = sorted(runtime | static)
+    payload = {
+        "symbols": sorted(tset),
+        "run_these": recommended,
+        "count": len(recommended),
+        "ran_it": sorted(runtime),
+        "both": sorted(runtime & static),
+        "runtime_only": sorted(runtime - static),   # exercised via a path the call graph missed
+        "static_only": sorted(static - runtime),     # reachable but never executed in this coverage
+    }
+    if len(targets) == 1:
+        payload["symbol"] = targets[0]               # back-compat for the single-symbol shape
+    if unresolved:
+        payload["unresolved"] = sorted(unresolved)
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
+             runtime=len(runtime), static=len(static))
+    if not runtime:
+        res.needs_review = True
+        res.add_reason("none of the symbols were executed in this coverage artifact — 'run_these' is "
+                       "the static blast radius only; coverage may predate them or not exercise them")
+    if unresolved:
+        res.needs_review = True
+        res.add_reason(f"{len(unresolved)} changeset symbol(s) did not resolve to a unique indexed "
+                       "symbol and were skipped")
+    return res
+
+
+@operation("What code moves together with a symbol (co-activation neighbourhood, for planning a change).")
+def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
+              limit: int = 20) -> Result:
+    """Functions whose runtime activation most resembles `name`'s across the suite — the behavioural
+    neighbourhood you likely touch together when changing it (or the code that implements a given
+    outcome, anchored on one of its functions) (design §6). Score is cosine similarity over the per-test
+    activation columns. The runtime complement to static `get_callers`/`get_callees`: it surfaces
+    co-movement the call graph can't (functions that merely fire in the same behaviours). Advisory,
+    read-only; needs no numpy — pure set math over the inert coverage matrix."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    target, candidates = _resolve_target(store, name)
+    if target is None:
+        if len(candidates) > 1:
+            res = refuse(
+                f"'{name}' matches {len(candidates)} symbols — pass a qualified id to scope to one "
+                f"(e.g. {candidates[0].id!r})", confidence=0.0)
+            res.alternatives = [n.to_dict() for n in candidates]
+            return res
+        return refuse(f"'{name}' is not in the index", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    neighbours = coverage_query.co_functions(cov, target.id, k=lim)
+    if not neighbours:
+        res = ok({"symbol": target.id, "co_changing": []}, provenance=Provenance.EXTRACTED, count=0)
+        res.needs_review = True
+        res.add_reason("the symbol was never executed in this coverage artifact — no co-activation "
+                       "neighbourhood to report")
+        return res
+    payload = {
+        "symbol": target.id,
+        "co_changing": [{"function": g, "score": s, "shared_tests": c} for g, s, c in neighbours],
+    }
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours))
+
+
+@operation("Hidden coupling: functions that co-run but never statically call each other (implicit deps).")
+def find_coupling(store: Store, coverage: str = "coverage_modes.json",
+                  limit: int = 40, min_shared: int = 3) -> Result:
+    """Function pairs that **co-activate** strongly across the suite yet have **no static edge** between
+    them (design §6) — the runtime∖structure gap. A high co-activation score with no call/inheritance
+    edge flags *implicit* coupling the call graph cannot see: shared global state, event/dispatch, a
+    protocol contract, or a common caller. Advisory, read-only; needs no numpy — pure set math over the
+    inert coverage matrix. Each pair is a *candidate* (it also catches common-caller siblings — inspect
+    before acting); `cross_file` pairs are usually the more interesting ones."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
+    ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
+        min_shared > 0 else 3
+    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those
+    connected = {frozenset((e.src, e.dst_id)) for e in store.resolved_edges()
+                 if e.dst_id is not None}
+    try:
+        pairs = coverage_query.hidden_coupling(cov, connected, min_shared=ms, limit=lim)
+    except MemoryError:
+        return refuse("coverage matrix too large to correlate in memory; raise min_shared or reduce "
+                      "the suite", confidence=0.0)
+
+    def _file(fid: str) -> str:
+        return fid.split("::", 1)[0]
+
+    payload = {
+        "pairs": [{"a": a, "b": b, "score": s, "shared_tests": c, "cross_file": _file(a) != _file(b)}
+                  for a, b, s, c in pairs],
+        "count": len(pairs),
+    }
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs))
+    res.needs_review = True
+    res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — it "
+                   "also includes functions sharing a common caller; inspect before acting")
+    return res
+
+
+def _function_ids(store: Store) -> set[str]:
+    """Function/method node ids in the graph (the universe coverage is measured against)."""
+    return {nid for nid in store.all_node_ids()
+            if (n := store.get_node(nid)) and n.kind in (NodeKind.FUNCTION, NodeKind.METHOD)}
+
+
+@operation("Coverage gaps: functions no test executed, split into live (write a test) vs dead.")
+def find_gaps(store: Store, coverage: str = "coverage_modes.json") -> Result:
+    """Functions the suite never executed, fused with reachability (design §6): `untested_live` are
+    reachable-from-entry-points **and** never run — genuine coverage gaps to write a test for;
+    `untested_dead` are unreachable **and** untested — corroborated dead code (cross-checks
+    `find_stale`). The runtime complement to `find_stale`: static says "no one *can* reach it",
+    coverage says "no test *did*". Advisory, read-only; needs no numpy. NOTE only sees code the suite
+    exercised, and coverage function ids must share the reindex namespace (same root as the converter's
+    SRC)."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    funcs = _function_ids(store)
+    exercised = {f for fs in cov.values() for f in fs}
+    ungapped = coverage_query.untested(cov, funcs)
+    detector = _default_detector(store)
+    reachable = _live_set(store, detector.detect(store))
+    untested_live = sorted(f for f in ungapped if f in reachable)
+    untested_dead = sorted(f for f in ungapped if f not in reachable)
+    payload = {
+        "untested_live": untested_live,
+        "untested_dead": untested_dead,
+        "tested": len(funcs) - len(ungapped),
+        "total_functions": len(funcs),
+    }
+    res = ok(payload, provenance=Provenance.INFERRED, count=len(untested_live),
+             untested_live=len(untested_live), untested_dead=len(untested_dead))
+    res.needs_review = True
+    if funcs and not (exercised & funcs):
+        res.add_reason("no coverage function id matches a graph node id — likely a namespace mismatch "
+                       "(reindex root vs converter SRC); results are not meaningful until they align")
+    else:
+        res.add_reason("reachability is name-based (no type info); an 'untested_live' gap is real, but "
+                       "verify a symbol before treating 'untested_dead' as removable")
+    return res
+
+
+@operation("Fail-fast test order: run tests so new coverage accrues fastest (prefix = a minimal cover).")
+def test_order(store: Store, coverage: str = "coverage_modes.json") -> Result:
+    """Order the suite so each next test adds the most *new* function coverage (greedy over the
+    coverage matrix) — a regression surfaces early instead of last (design §6). The prefix up to the
+    first zero-gain test is a minimal cover; the rest add no new function coverage (a fast-tier
+    candidate list). Advisory, read-only; needs no numpy. Note: coverage-greedy front-loads breadth,
+    not failure-likelihood."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    order = coverage_query.greedy_order(cov)
+    minimal = [t for t, gain in order if gain > 0]
+    payload = {
+        "order": [{"test": t, "new_functions": gain} for t, gain in order],
+        "minimal_prefix": minimal,
+        "minimal_count": len(minimal),
+        "total_tests": len(order),
+    }
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(order),
+              minimal=len(minimal), total=len(order))
+
+
+@operation("Redundant tests: groups sharing an identical coverage profile (review aid, not auto-delete).")
+def redundant_tests(store: Store, coverage: str = "coverage_modes.json") -> Result:
+    """Groups of tests with an **identical** function-coverage profile (design §6) — candidates for
+    consolidation review. Advisory, read-only; needs no numpy. IMPORTANT: coverage-identical is NOT
+    behavioural redundancy — parametrized/data-driven tests share a profile yet exercise different
+    inputs (never auto-delete on this alone); this is a review aid. Near-duplicate (not identical)
+    profiles are `co_change`'s territory."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    groups = coverage_query.redundant_groups(cov)
+    payload = {
+        "groups": [{"tests": g, "size": len(g)} for g in groups],
+        "group_count": len(groups),
+        "redundant_tests": sum(len(g) - 1 for g in groups),
+    }
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(groups),
+             redundant=sum(len(g) - 1 for g in groups))
+    res.needs_review = True
+    res.add_reason("identical coverage profile != behavioural redundancy (parametrized tests share a "
+                   "profile but test different inputs) — a consolidation review aid, not a delete list")
+    return res
+
+
+@operation("The always-on core: functions executed by the most tests (highest behavioural blast radius).")
+def find_core(store: Store, coverage: str = "coverage_modes.json", limit: int = 20) -> Result:
+    """Functions executed by the largest fraction of tests (design §6) — the always-on core touched by
+    nearly every behaviour, so the highest-blast-radius code to review before changing. The runtime
+    complement to static `find_chokepoints`. Advisory, read-only; needs no numpy."""
+    from . import coverage_query
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    core = coverage_query.core_functions(cov, top=lim)
+    payload = {"core": [{"function": f, "test_count": c, "fraction": frac} for f, c, frac in core]}
+    return ok(payload, provenance=Provenance.EXTRACTED, count=len(core))
+
+
+@operation("Runtime risk: files that change often AND are exercised by many behaviours (churn × coverage).")
+def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str | None = None,
+                 limit: int = 15) -> Result:
+    """The runtime companion to `risk` (design §6.H): fuses git **churn** with **behavioural
+    centrality** — how many tests exercise a file's functions (from the coverage matrix). A file that
+    changes often *and* is touched by many behaviours is the most dangerous to modify, a sharper hotspot
+    than churn × static-centrality alone. Advisory, read-only; needs no numpy (git + set math)."""
+    from . import coverage_query, gitrisk
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    path = path or store.get_meta("root") or "."
+    if not gitrisk.is_git_repo(path):
+        return refuse(f"'{path}' is not a git repository", confidence=0.0)
+    churn = gitrisk.churn(path)
+    if not churn:
+        return refuse("no git history found for indexed source files", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 15
+    # behavioural centrality per file = total activation frequency of the functions it defines
+    fmap = coverage_query.invert(cov)
+    file_beh: dict[str, float] = {}
+    for fid, tset in fmap.items():
+        f = fid.split("::", 1)[0]
+        file_beh[f] = file_beh.get(f, 0.0) + len(tset)
+    hotspots: list[dict[str, Any]] = []
+    for f, c in churn.items():
+        beh = file_beh.get(f, 0.0)
+        if beh <= 0:
+            continue
+        hotspots.append({"file": f, "churn": c, "behavioural_centrality": round(beh, 2),
+                         "risk": round(c * beh, 2)})
+    hotspots.sort(key=lambda h: h["risk"], reverse=True)
+    if hotspots:
+        top = hotspots[0]["risk"]
+        for h in hotspots:
+            h["urgency"] = (Urgency.ORANGE.value if h["risk"] >= top / 2 else Urgency.GREEN.value)
+    payload = {"hotspots": hotspots[:lim]}
+    res = ok(payload, provenance=Provenance.INFERRED, confidence=0.7, hotspots=len(hotspots))
+    res.needs_review = True
+    if not hotspots:
+        res.add_reason("no file's coverage functions matched a churned file — likely a namespace "
+                       "mismatch (coverage SRC vs git root) or the changed files are untested")
+    return res
+
+
+@operation("Coverage drift: which functions gained or lost test exposure between two coverage snapshots.")
+def coverage_drift(store: Store, old: str = "coverage_old.json",
+                   new: str = "coverage_modes.json") -> Result:
+    """Behavioural diff between two per-test coverage snapshots (design §6): functions that **gained**
+    test exposure (newly exercised) or **lost** it (no longer run) between releases — a behavioural
+    changelog to pair with the structural `graph_diff`. Advisory, read-only; needs no numpy."""
+    from . import coverage_query
+
+    if not isinstance(old, str) or not isinstance(new, str):
+        return refuse("both coverage paths must be strings", confidence=0.0)
+    o = coverage_query.load_coverage(old)
+    n = coverage_query.load_coverage(new)
+    if not o:
+        return refuse(f"no usable coverage in old snapshot '{old}'", confidence=0.0)
+    if not n:
+        return refuse(f"no usable coverage in new snapshot '{new}'", confidence=0.0)
+    drift = coverage_query.mode_drift(o, n)
+    payload = {
+        "gained_coverage": drift["gained_coverage"],
+        "lost_coverage": drift["lost_coverage"],
+        "gained": len(drift["gained_coverage"]),
+        "lost": len(drift["lost_coverage"]),
+    }
+    return ok(payload, provenance=Provenance.EXTRACTED,
+              count=len(drift["gained_coverage"]) + len(drift["lost_coverage"]))
+
+
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
                  mode: str = "semantic") -> Result:
     """Semantic-ish retrieval over the graph (design §1). mode="semantic" (default) ranks
     functions/methods/classes by token similarity (name + docstring + callees) to the snippet;
-    mode="structure" ranks stored *Python* functions by body-shape similarity (structure.py) to
-    the snippet's function — language-agnostic of names, advisory, Python-only."""
+    mode="structure" ranks stored functions by body-shape similarity to the snippet's function —
+    name-agnostic, advisory. The snippet's language is auto-detected (Python, the JS/TS family, Go,
+    Rust, C/C++, Java, C#, Ruby, PHP, or Bash) and ranked only against stored functions of the SAME
+    language (a fingerprint's topology tracks its extractor, so cross-language scores aren't
+    comparable). Every language but Python needs the tree-sitter extra."""
     from . import similar
 
     # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
@@ -615,8 +1136,10 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         return refuse("mode must be 'semantic' or 'structure'", confidence=0.0)
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
-        hint = ("no structurally-similar Python function found (snippet must be Python "
-                "function source; structure mode is Python-only)" if mode == "structure"
+        hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, "
+                "C/C++, Java, C#, Ruby, PHP, or Bash function source; the tree-sitter languages "
+                "need the extra)"
+                if mode == "structure"
                 else "no similar code found (or snippet had no usable tokens)")
         return refuse(hint, confidence=0.0)
     payload = [{"id": nid, "score": round(s, 3)} for nid, s in matches]
@@ -629,11 +1152,15 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
 def graph_diff(store: Store, other_db: str, mode: str = "id", body: bool = True,
                body_threshold: float = 0.95) -> Result:
     """Compare this index with another built index at `other_db` (a stitchgraph `.db` path).
-    Reports located node/edge deltas — mode="id" is exact (same codebase: did a refactor change the
-    graph? does the actual match the plan?), mode="leaf" reduces names to their last component so two
-    *different* codebases (e.g. a translation) can be compared (advisory: cross-language topology
-    tracks the extractor). With `body`, Python functions present in both whose *body shape* diverged
-    are listed too. Advisory and read-only; never edits source, never feeds find_stale.
+
+    A two-LAYER diff of the code-property graph (design §5c): the CALL layer (located node/edge
+    deltas) always, and — with `body` — the EXPRESSION layer (per-function value-flow shape, the
+    same graph `get_matrix(layer="expression")` surfaces). mode="id" is exact (same codebase: did a
+    refactor change the graph? does the actual match the plan?), mode="leaf" reduces names to their
+    last component so two *different* codebases (e.g. a translation) can be compared (advisory:
+    cross-language topology tracks the extractor). With `body`, Python, JS/TS/TSX, Go, Rust, C/C++,
+    Java, C#, Ruby, PHP, and Bash functions present in both whose *body shape* diverged are listed
+    too (same-language only). Advisory and read-only; never edits source, never feeds find_stale.
 
     Note: the body layer fingerprints functions from their **source files at diff time** (the body
     matrix is computed on demand, not persisted, for scale). If a side's source has moved or been
@@ -881,15 +1408,182 @@ def summarize_subsystem(store: Store, path: str) -> Result:
     return ok(payload, total=len(members))
 
 
+_EXPRESSION_MAX_NODES = 300  # a value-flow graph beyond this is unreadable as a matrix (advisory)
+
+
+def _expression_vfg(store: Store, node) -> tuple[list[str], list] | None:
+    """The EXPRESSION-layer value-flow graph for one Function/Method node, or None if it can't be
+    built (source unreadable, unknown language, or the tree-sitter extra missing). Reads the node's
+    source file and runs the matching frontend's `vfg_source`, selecting by the qualname in the id —
+    the same on-demand scheme `find_similar(mode="structure")` / `graph_diff(body=True)` use."""
+    from pathlib import Path
+
+    from . import (
+        structure,
+        structure_bash,
+        structure_cpp,
+        structure_csharp,
+        structure_go,
+        structure_java,
+        structure_js,
+        structure_php,
+        structure_ruby,
+        structure_rust,
+    )
+    path, sep, qual = node.id.partition("::")
+    if not sep:
+        return None
+    qual = qual.split("#", 1)[0]
+    try:
+        src = Path(store.get_meta("root") or ".", path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    suf = Path(path).suffix.lower()
+    vfgs: dict = {}
+    if suf == ".py":
+        vfgs = structure.vfg_source(src)
+    else:
+        for mod in (structure_js, structure_go, structure_rust, structure_cpp, structure_java,
+                    structure_csharp, structure_ruby, structure_php, structure_bash):
+            lang = mod._lang_for_ext(suf)
+            if lang is not None:
+                vfgs = mod.vfg_source(src, lang=lang)
+                break
+    return vfgs.get(qual)
+
+
+def _pdg_for_node(store: Store, node) -> tuple[list[str], list] | None:
+    """The STATEMENT-layer program-dependence graph for one Function/Method node, or None if it can't
+    be built (unsupported language, source unreadable, or the tree-sitter extra missing). Python (deep
+    stdlib ast), the JS family (js/ts/tsx), Go, Rust, C/C++, Java, C#, Ruby, PHP, and Bash
+    (tree-sitter) — the STATEMENT-layer sweep now covers every body-matrix language. Selects the frontend by extension and the function by the qualname in the id."""
+    from pathlib import Path
+
+    from . import (
+        structure,
+        structure_bash,
+        structure_cpp,
+        structure_csharp,
+        structure_go,
+        structure_java,
+        structure_js,
+        structure_php,
+        structure_ruby,
+        structure_rust,
+    )
+    path, sep, qual = node.id.partition("::")
+    if not sep:
+        return None
+    qual = qual.split("#", 1)[0]
+    try:
+        src = Path(store.get_meta("root") or ".", path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    suf = Path(path).suffix.lower()
+    if suf == ".py":
+        return structure.pdg_source(src).get(qual)
+    # tree-sitter frontends with a STATEMENT layer.
+    for mod in (structure_js, structure_go, structure_rust, structure_cpp, structure_java,
+                structure_csharp, structure_ruby, structure_php, structure_bash):
+        lang = mod._lang_for_ext(suf)
+        if lang is not None:
+            return mod.pdg_source(src, lang=lang).get(qual)
+    return None
+
+
+def _body_matrix(store: Store, scope: str, layer: str) -> Result:
+    """Drill into ONE function's body graph — the STATEMENT (program-dependence) or EXPRESSION
+    (value-flow) layer. `scope` must resolve to a single Function/Method; returns the graph in the
+    same shape as the call-layer matrix (labels + cells tagged by edge kind). Advisory — the body
+    matrix never feeds liveness."""
+    kind_word = "value-flow graph" if layer == Layer.EXPRESSION.value else "program-dependence graph"
+    fns = [nid for nid in store.all_node_ids() if _under_scope(nid, scope)
+           and (nd := store.get_node(nid)) is not None
+           and nd.kind in (NodeKind.FUNCTION, NodeKind.METHOD)]
+    if not fns:
+        return refuse(f"no function/method under scope '{scope}' — the {layer} layer drills into one "
+                      f"function's {kind_word}", confidence=0.0)
+    if len(fns) > 1:
+        return refuse(f"scope '{scope}' matches {len(fns)} functions; the {layer} layer needs a "
+                      "SINGLE function (give its full id)", confidence=0.0, node_count=len(fns))
+    node = store.get_node(fns[0])
+    if node is None:
+        return refuse(f"node '{fns[0]}' vanished during lookup", confidence=0.0)
+    if layer == Layer.STATEMENT.value:
+        from . import (
+            structure_bash,
+            structure_cpp,
+            structure_csharp,
+            structure_go,
+            structure_java,
+            structure_js,
+            structure_php,
+            structure_ruby,
+            structure_rust,
+        )
+        _path = fns[0].partition("::")[0]
+        _suf = _path[_path.rfind("."):].lower() if "." in _path else ""
+        if (_suf != ".py" and structure_js._lang_for_ext(_suf) is None
+                and structure_go._lang_for_ext(_suf) is None
+                and structure_rust._lang_for_ext(_suf) is None
+                and structure_cpp._lang_for_ext(_suf) is None
+                and structure_java._lang_for_ext(_suf) is None
+                and structure_csharp._lang_for_ext(_suf) is None
+                and structure_ruby._lang_for_ext(_suf) is None
+                and structure_php._lang_for_ext(_suf) is None
+                and structure_bash._lang_for_ext(_suf) is None):
+            return refuse("the statement (PDG) layer supports Python, the JS family (js/ts/tsx), Go, "
+                          "Rust, C/C++, Java, C#, Ruby, PHP, and Bash — every body-matrix language; "
+                          f"'{fns[0]}' is not a supported-language function",
+                          confidence=0.0)
+    graph = _expression_vfg(store, node) if layer == Layer.EXPRESSION.value \
+        else _pdg_for_node(store, node)
+    if graph is None:
+        return refuse(f"could not build the {kind_word} for '{fns[0]}' (source unavailable or the "
+                      "required extractor is not installed)", confidence=0.0)
+    labels, edges = graph
+    if len(labels) > _EXPRESSION_MAX_NODES:
+        return refuse(f"function '{fns[0]}' has {len(labels)} {layer}-layer nodes (> "
+                      f"{_EXPRESSION_MAX_NODES}); too large to read as a matrix", confidence=0.0,
+                      node_count=len(labels))
+    seen: dict[tuple[int, int, str], None] = {}
+    for s, d, k in edges:  # collapse duplicate (src, dst, kind) triples
+        seen.setdefault((int(s), int(d), k), None)
+    # Emit cells in a deterministic order so the payload is byte-reproducible across
+    # processes regardless of how a frontend ordered its edges (R205 — a deep-layer
+    # builder that iterates a set would otherwise leak PYTHONHASHSEED order here).
+    cells = [{"src": s, "dst": d, "k": k} for (s, d, k) in sorted(seen)]
+    payload: dict = {
+        "layer": layer,
+        "function": node.id.split("::", 1)[-1],
+        "labels": labels,       # statements (statement) / ops (expression), by index
+        "cells": cells,         # sparse (src_index, dst_index, kind): d/c (expr) or C/D (stmt)
+        "n": len(labels),
+    }
+    if len(labels) <= 12:
+        grid = [[0] * len(labels) for _ in labels]
+        for s, d, _k in seen:
+            grid[s][d] = 1
+        payload["grid"] = grid
+    return ok(payload, layer=layer, nodes=len(labels), edges=len(cells))
+
+
 @operation("A bounded relation submatrix for one subsystem (compact, for an LLM).")
 def get_matrix(store: Store, scope: str, relation: str = "CALLS",
-               limit: int = 25) -> Result:
+               limit: int = 25, layer: str = "call") -> Result:
     """Return a *bounded* sparse submatrix for the nodes under `scope` (an id
     prefix, e.g. a file or class), for one relation (design §8).
 
     Never the whole-repo N×N matrix — that's the dense anti-pattern (design §12).
     Refuses when the scope exceeds `limit` so the result stays small enough for an
     LLM to actually reason over.
+
+    `layer` selects the granularity (design §5c), coarse→fine: "call" (default) is
+    the inter-procedural relation graph; "statement" drills into a SINGLE function's
+    program-dependence graph (labels = statements, cells tagged C=control / D=data
+    dependence — Python + the JS family + Go + Rust + C/C++ + Java + C# + Ruby so far); "expression" drills into its intra-procedural
+    value-flow graph (labels = operations, cells tagged data/control). The deeper
+    layers are advisory and computed on demand — they never feed liveness.
     """
     # Validate arg types BEFORE using them — relation.upper()/startswith()/`> limit` would
     # otherwise raise on None/wrong-type from a library or MCP call (panel R18B).
@@ -899,6 +1593,13 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         return refuse("relation must be a string", confidence=0.0)
     if not isinstance(limit, int) or isinstance(limit, bool):
         return refuse("limit must be an integer", confidence=0.0)
+    if not isinstance(layer, str):
+        return refuse("layer must be a string", confidence=0.0)
+    layer = layer.lower()
+    if layer not in (Layer.CALL.value, Layer.STATEMENT.value, Layer.EXPRESSION.value):
+        return refuse(f"unknown layer '{layer}' (call|statement|expression)", confidence=0.0)
+    if layer in (Layer.STATEMENT.value, Layer.EXPRESSION.value):
+        return _body_matrix(store, scope, layer)
     try:
         rel = Relation(relation.upper())
     except ValueError:
@@ -925,6 +1626,7 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
     cells = [{"src": s, "dst": d, "w": w} for (s, d), w in sorted(cell_w.items())]
     labels = [m.split("::", 1)[-1] for m in members]
     payload = {
+        "layer": Layer.CALL.value,
         "relation": rel.value,
         "labels": labels,
         "cells": cells,        # sparse (src_index, dst_index, weight)
@@ -1281,6 +1983,24 @@ def _resolve_target(store: Store, name: str):
 
 def _resolve_one(store: Store, name: str):
     return _resolve_target(store, name)[0]
+
+
+def _resolve_or_explain(store: Store, name: str):
+    """Resolve `name` to a single node, or return a *precise* reason it could not — distinguishing
+    an unknown name ("no symbol named X") from a genuinely ambiguous one, and in the ambiguous case
+    listing the candidate ids so the caller can re-issue with a qualified id (panel R266 / dogfood
+    round-2 usability finding: `get_callers` used to say "not a unique symbol" for both cases and
+    never surfaced the candidates). Returns `(node, None)` or `(None, reason)`."""
+    target, candidates = _resolve_target(store, name)
+    if target is not None:
+        return target, None
+    if not candidates:
+        return None, f"no symbol named '{name}' in the index"
+    ids = sorted(n.id for n in candidates)
+    shown = ", ".join(ids[:8])
+    more = "" if len(ids) <= 8 else f" (+{len(ids) - 8} more)"
+    return None, (f"'{name}' is ambiguous across {len(candidates)} definitions: {shown}{more}; "
+                  "pass a qualified id (Type.method or path::qualified.name) to disambiguate")
 
 
 def _default_detector(store: Store) -> PythonLibraryDetector:

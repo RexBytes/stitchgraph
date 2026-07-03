@@ -85,3 +85,78 @@ grammar's node-type enumeration and (b) a small battery of source snippets per n
 This is the same shape as the cardinal-hardening loop in `CONTRIBUTING.md`, specialised for the body
 matrix. Recording it is exactly what makes languages 2–12 incremental rather than each re-deriving
 Python's seven rounds.
+
+### Operational rules for `scripts/mutate.py` (learned the hard way)
+
+- **Always point it at a TARGETED test subset, never the whole suite.** `mutate.py <file> -- pytest
+  -x -q <the few test files that exercise <file>>`. It re-runs the command *once per mutant*; against
+  the full 1000+-test suite a single file's mutation pass takes ~2 hours and blocks the loop. Targeted,
+  it finishes in a couple of minutes. (The script's own header examples already do this — follow them.)
+  For `similar.py` the right subset is `tests/test_similar.py tests/test_find_similar_structure.py
+  tests/test_graph_diff.py`; for `structure.py`/`graphdiff.py` use the structure/graphdiff oracle +
+  unit files.
+- **Run it serially, by the orchestrator only — never inside an adversarial-panel reviewer, never
+  concurrently with another `pytest`/`git add`.** It rewrites the target file in place (AST
+  round-trip + one mutation at a time) and restores at the end; a concurrent `git add -A` or an
+  interrupted run can commit a transient mutant (this happened once in the C/C++ round and flipped a
+  `graphdiff` comparison). If a run is killed, immediately `git checkout HEAD -- <file>` to restore
+  the canonical bytes before doing anything else.
+- **A surviving mutant in newly-added code is usually a real coverage gap, not a false alarm** — add
+  the missing test rather than rationalising it. (Adding the JS/Go/Rust/C++/Java/C# fingerprint
+  functions to `similar.py` each needs a `graph_diff`/`find_similar` test that actually drives that
+  language's `_*_fn_fingerprints`, or its mutants survive.)
+
+### A new language is a free adversarial probe of the shared kernel + meta-oracle (v3.6.0)
+
+Each new frontend is not just new per-language code — it is an *independent adversary* against the
+language-neutral core (`structure.py`'s `_VFG`/WL kernel) and against the oracle methodology itself.
+Two cross-cutting wins came out of adding C#, neither about C#:
+
+- **C# exposed a float-rounding blind spot latent in ALL seven completeness oracles since v3.0.0.**
+  The metamorphic predicate was `similarity(a, b) < 1.0`, but cosine self-similarity of a *large* WL
+  vector rounds to `0.999…98 < 1.0` — so the assertion could PASS on byte-identical fingerprints and
+  silently mask a fully-dropped construct. Python/JS/Go/Rust/C++ never tripped it only because their
+  oracle bodies were small enough to round to exactly `1.0`. C#'s larger `using`-body case finally
+  triggered it. **Fix: the predicate now compares fingerprints for EXACT equality** (`a == b → drop`),
+  float-free; re-running the older six under the stricter check confirmed they were genuinely (not
+  luckily) clean. The body matrix is *more* trustworthy after each language, not just *wider*.
+- **A defect found in one frontend is a one-shot audit of the family.** The "repeated field-children"
+  drop (Java/C# model `for (…; i++, sink(x))` as repeated `update` field children; `child_by_field_name`
+  returns only the first) immediately prompted checking C/C++ and JS — both confirmed safe (they model
+  the comma form as a single `comma_expression`/`sequence_expression` node). Always ask "do the
+  siblings have this shape?" when a structural surprise turns up.
+
+Corollary for the panel design: keep **language diversity** in the review the way you keep model
+diversity — a frontend with a different grammar breaks blind spots in the shared core that same-grammar
+probing can't. And the two real code-defect classes of v3.6.0 were both **tree-sitter structural
+surprises** (positional *unnamed-field* children; field-named but *repeated* children) — the generic
+fallback can't catch these, only a value-bearing metamorphic probe can, so the completeness oracle
+(not the fallback) is what earns the release.
+
+### The command-oriented outlier closes the sweep (Bash, v3.7.0 — sweep complete)
+
+v3.7.0 added Ruby, PHP, and **Bash**, completing all 12 languages. The first two were oracle-green
+first run — the expression-oriented recipe transferred cleanly. **Bash was the genuine outlier**:
+it has no expressions, only commands, so the model inverts — a `command` *is* a CALL (the command
+name is the callee, args flow as data), `$(…)` command substitution carries a value, and assignment
+is copy propagation. That inversion exercised a position the seven prior expression-oriented frontends
+never could: **callee position**. A command whose *name* is itself a `$(…)` substitution
+(`$(resolve) arg`) was collapsed to an opaque free word, dropping the inner CALL — caught by the
+hardened exact-equality oracle, not the generic fallback. Lesson reaffirmed: the most distinct grammar
+in the sweep found a class of drop the similar grammars couldn't, *and* the value-bearing metamorphic
+probe (in a position the recipe didn't originally enumerate — the callee, not just arguments) is what
+surfaced it. When porting, ask not only "is every value-bearing child walked?" but "is every value
+*producer* walked, including the one in the verb/callee slot?".
+
+And the family-audit lesson fired hardest here: the v3.7.0 confirmation panel found a `comment` node
+leaking into the value-flow graph (via the generic fallback) in the **new** Ruby/PHP/Bash frontends —
+and a one-shot cross-frontend audit then showed the SAME leak had been latent in **Go, Rust, C/C++,
+Java and C# since v3.3.0–v3.6.0**. A no-op comment edit was changing body fingerprints (down-ranking
+commented clones; comment-only diffs showing as `graph_diff` body changes). Python is immune (its
+`ast` discards comments) and JS/TS happened to be (their generic fallback only recurses into
+`*statement` children). Two takeaways: (1) **trivia is a value-flow concern** — anything that can
+appear as a `named_child` but carries no semantics (comments, and watch for doc-attributes) must be
+skipped, or the generic "nothing vanishes" fallback will faithfully encode it and break the no-op /
+renamed-clone invariant; (2) when a new frontend exposes a shared-design bug, **immediately re-probe
+every sibling** — the cheap cross-language oracle (`test_comment_invariance.py`) that pins the
+invariant for all 11 frontends at once is the durable fix, not a per-language patch.

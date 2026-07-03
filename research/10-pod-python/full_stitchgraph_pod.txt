@@ -1,0 +1,86 @@
+FULL POD on stitchgraph (entire suite under per-test coverage, fixed qualified-id converter)
+matrix: 2315 tests x 764 functions | density 0.0626 | solver numpy-dense
+intrinsic dimensionality (90% energy): 10 modes
+minimal covering set: 62/2315 tests cover all 764 executed functions
+redundant identical-profile test pairs: 28700
+
+mode 1  energy=45.9%  [seed targets console script]
+  modules: src/stitchgraph/core/extract/python.py
+  functions: _console_script_targets, _detect_source_prefix, _index, _pyproject_targets, _seed_entrypoint_classes, _seed_exported_inherited_methods, _seed_protocol_dunders, extract_project
+  top tests: test_streaming_differential.py::test_streaming_equals_full_polyglot|run, test_incremental_differential.py::test_polyglot_incremental_equals_full|run, store.py]|run, reach.py]|run, test_incremental_differential.py::test_incremental_build_equals_full_reindex|run
+
+mode 2  energy=11.9%  [names reexport collect import]
+  modules: src/stitchgraph/core/extract/treesitter.py
+  functions: _collect, _import_names, _reexport_names.add_value, _reexport_names.rec, _reexport_names, _canon_lang, _name_of, _is_ruby_operator_method
+  top tests: test_graph_diff_dogfood.py::test_self_diff_is_equivalent_leaf_mode|run, test_graph_diff_dogfood.py::test_self_diff_is_equivalent_id_mode|run, test_graph_diff_dogfood.py::test_self_diff_has_no_body_changes|run, test_extract.py::test_get_matrix_bounded_and_refuses|run, test_graph_diff.py::test_leaf_mode_resolves_module_path_edges|run
+
+mode 3  energy=8.6%  [walk build vfg visit]
+  modules: src/stitchgraph/core/structure_rust.py
+  functions: _walk.visit, _walk, _walk.emit, _walk.text, _parser, _pattern_names, _build_vfg._walk_block, _build_vfg._walk_token_tree
+  top tests: test_pdg_rust_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-cast]|run, test_pdg_rust_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-block_let]|run, test_pdg_rust_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-array]|run, test_pdg_rust_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-block]|run, test_pdg_rust_vfg_differential.py::test_composed_wrappers_read_not_dropped[array-add]|run
+
+mode 4  energy=5.1%  [walk declarator parser emit]
+  modules: src/stitchgraph/core/structure_cpp.py
+  functions: _walk, _parser, _walk.emit, _walk.visit, _walk.text, _name_of_declarator, _func_declarator, _decl_child
+  top tests: test_pdg_source_cpp_layer.py::test_pdg_source_keys_match_fingerprint_source|run, test_pdg_cpp_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-comma]|run, test_pdg_cpp_vfg_differential.py::test_composed_wrappers_read_not_dropped[cast-neg]|run, test_pdg_cpp_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-ternary]|run, test_pdg_cpp_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-paren]|run
+
+mode 5  energy=4.7%  [walk visit body build]
+  modules: src/stitchgraph/core/structure_csharp.py
+  functions: _walk.emit, _walk.text, _walk.visit, _walk, _walk.visit_body_locals, _parser, _build_vfg._do_body, _build_vfg.bind
+  top tests: test_pdg_source_csharp_layer.py::test_pdg_source_keys_match_fingerprint_source|run, test_pdg_csharp_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-add]|run, test_pdg_csharp_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-paren]|run, test_pdg_csharp_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-recv]|run, test_pdg_csharp_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-callarg]|run
+
+mode 6  energy=4.4%  [walk build vfg text]
+  modules: src/stitchgraph/core/structure_java.py
+  functions: _walk.emit, _walk.text, _parser, _walk.visit, _walk, _build_vfg.bind, _build_vfg.ev, _build_vfg.text
+  top tests: test_pdg_source_java_layer.py::test_pdg_source_keys_match_fingerprint_source|run, test_pdg_java_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-paren]|run, test_pdg_java_vfg_differential.py::test_composed_wrappers_read_not_dropped[ternary-add]|run, test_pdg_java_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-callarg]|run, test_pdg_java_vfg_differential.py::test_composed_wrappers_read_not_dropped[neg-index]|run
+
+mode 7  energy=3.6%  [walk build vfg do]
+  modules: src/stitchgraph/core/structure_ruby.py
+  functions: _parser, _walk.emit, _walk.text, _walk, _walk.visit, _build_vfg._do, _build_vfg, _build_vfg._do_body
+  top tests: test_pdg_source_ruby_layer.py::test_pdg_source_keys_match_fingerprint_source|run, test_pdg_ruby_vfg_differential.py::test_composed_wrappers_read_not_dropped[callarg-add]|run, test_pdg_ruby_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-neg]|run, test_pdg_ruby_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-array]|run, test_pdg_ruby_vfg_differential.py::test_composed_wrappers_read_not_dropped[add-recv]|run
+
+mode 8  energy=3.0%  [vfg init features wl]
+  modules: src/stitchgraph/core/structure.py, src/stitchgraph/core/store.py, src/stitchgraph/core/algebra.py
+  functions: _wl_features, similarity, _serialize_vfg, _VFG.__init__, _VFG.add, _VFG.link, Store.iter_resolved, _Adjacency.__init__
+  top tests: test_graph_diff.py::test_js_body_diff_catches_dataflow_bug_call_graph_misses|run, test_graph_diff.py::test_js_self_diff_is_equivalent|run, test_graph_diff.py::test_go_body_diff_catches_dataflow_bug_call_graph_misses|run, test_graph_diff.py::test_go_self_diff_is_equivalent|run, test_find_similar_structure.py::test_bash_graph_diff_body_layer_and_fingerprints|run
+
+mode 9  energy=2.8%  [vfg walk serialize link]
+  modules: src/stitchgraph/core/structure.py, src/stitchgraph/core/structure_ruby.py, src/stitchgraph/core/extract/treesitter.py
+  functions: _serialize_vfg, _VFG.link, _VFG.add, _VFG.__init__, _load_grammar, _walk.emit, _walk.text, _walk.visit
+  top tests: test_find_similar_structure.py::test_ruby_graph_diff_body_layer_and_fingerprints|run, test_find_similar_structure.py::test_cpp_structure_mode_ranks_same_language_only|run, test_find_similar_structure.py::test_java_graph_diff_body_layer_and_fingerprints|run, test_find_similar_structure.py::test_csharp_graph_diff_body_layer_and_fingerprints|run, test_find_similar_structure.py::test_cpp_structure_mode_ranks_the_clone_first|run
+
+mode 10  energy=2.1%  [walk features wl text]
+  modules: src/stitchgraph/core/structure_bash.py, src/stitchgraph/core/structure.py
+  functions: _wl_features, _walk.text, _walk.visit, _walk, _walk.emit, _parser, similarity, _build_vfg.ev
+  top tests: test_pdg_bash_vfg_differential.py::test_composed_wrappers_read_not_dropped[arith-array]|run, test_pdg_bash_vfg_differential.py::test_single_wrapper_read_not_dropped[arith]|run, test_pdg_bash_vfg_differential.py::test_statement_position_reads[  echo $(( $v + 1 ))]|run, test_pdg_bash_vfg_differential.py::test_composed_wrappers_read_not_dropped[arith-string]|run, test_pdg_bash_vfg_differential.py::test_composed_wrappers_read_not_dropped[cmdsub-arith]|run
+
+mode 11  energy=2.0%  [vfg link add init]
+  modules: src/stitchgraph/core/structure.py, src/stitchgraph/core/extract/treesitter.py, src/stitchgraph/core/structure_bash.py
+  functions: _VFG.link, _VFG.add, _VFG.__init__, _serialize_vfg, _load_grammar, _wl_features, similarity, _walk.emit
+  top tests: test_pdg_source_bash_layer.py::test_pdg_source_keys_match_fingerprint_source|run, test_pdg_bash_vfg_differential.py::test_composed_wrappers_read_not_dropped[arith-concat]|run, test_pdg_bash_vfg_differential.py::test_composed_wrappers_read_not_dropped[arith-arith]|run, test_pdg_bash_vfg_differential.py::test_statement_position_reads[  echo $(( $v + 1 ))]|run, test_pdg_bash_vfg_differential.py::test_composed_wrappers_read_not_dropped[cmdsub-arith]|run
+
+mode 12  energy=1.7%  [walk build vfg name]
+  modules: src/stitchgraph/core/structure_js.py
+  functions: _walk.name_of, _walk.emit, _walk, _walk.visit, _parser, _build_vfg, _build_vfg.do, _build_vfg.text
+  top tests: test_find_similar_structure.py::test_structure_mode_ranks_same_language_only|run, test_pdg_source_js_layer.py::test_pdg_source_keys_match_fingerprint_source|run, test_vfg_source_layers.py::test_vfg_source_keys_match_fingerprint_source[javascript]|run, test_vfg_source_layers.py::test_vfg_source_keys_match_fingerprint_source[typescript]|run, test_find_similar_structure.py::test_js_structure_mode_ranks_the_clone_first|run
+
+mode 13  energy=1.4%  [walk build vfg name]
+  modules: src/stitchgraph/core/structure_go.py
+  functions: _walk, _walk.name_of, _walk.visit, _parser, _param_names, _build_vfg._stmt_or_expr, _build_vfg.ev, _build_vfg._exprs
+  top tests: test_structure_go_completeness.py::test_value_bearing_expression_is_walked[Deref]|run, test_structure_go_completeness.py::test_value_bearing_expression_is_walked[Receive]|run, test_structure_go_completeness.py::test_value_bearing_statement_is_walked[For-init]|run, test_structure_go_completeness.py::test_value_bearing_statement_is_walked[For-cond]|run, test_structure_go_completeness.py::test_value_bearing_statement_is_walked[For-body]|run
+
+mode 14  energy=1.1%  [build pdg cond edges]
+  modules: src/stitchgraph/core/structure_rust.py
+  functions: _build_pdg.collect, _build_pdg.cond_edges, _build_pdg.bind_target, _build_pdg._cond_reads, _build_pdg.block, _build_pdg.add_target, _build_pdg.new_id, _build_pdg.data_edges
+  top tests: test_structure_rust_completeness.py::test_value_bearing_expression_is_walked[Reference]|run, test_structure_rust_completeness.py::test_value_bearing_expression_is_walked[Binary-right]|run, test_structure_rust_completeness.py::test_trailing_expression_equals_explicit_return|run, test_structure_rust_completeness.py::test_value_bearing_expression_is_walked[Binary-left]|run, test_structure_rust_completeness.py::test_value_bearing_statement_is_walked[If-then]|run
+
+mode 15  energy=1.0%  [vfg build fingerprint source]
+  modules: src/stitchgraph/core/structure.py, src/stitchgraph/core/structure_rust.py, src/stitchgraph/core/structure_csharp.py
+  functions: _serialize_vfg, _wl_features, similarity, fingerprint_source, fingerprint_source, _build_vfg._last_expr, _build_vfg._walk_block, _build_vfg
+  top tests: test_find_similar_structure.py::test_cpp_structure_mode_ranks_same_language_only|run, test_find_similar_structure.py::test_cpp_structure_mode_ranks_the_clone_first|run, test_vfg_source_layers.py::test_vfg_source_reflects_body_value_flow[go]|run, test_vfg_source_layers.py::test_vfg_source_graphs_are_well_formed[go]|run, test_pdg_source_go_layer.py::test_pdg_source_keys_match_fingerprint_source|run
+
+mode 16  energy=0.8%  [pdg build source fingerprint]
+  modules: src/stitchgraph/core/structure_cpp.py, src/stitchgraph/core/structure_csharp.py
+  functions: fingerprint_source, fingerprint_source, pdg_source, _build_pdg, _build_pdg.data_edges, _build_pdg.process, _build_pdg.bind_place, _build_pdg.new_id
+  top tests: test_graph_diff.py::test_cpp_body_diff_catches_dataflow_bug_call_graph_misses|run, test_graph_diff.py::test_cpp_self_diff_is_equivalent|run, test_find_similar_structure.py::test_cpp_structure_mode_ranks_the_clone_first|run, test_find_similar_structure.py::test_cpp_structure_mode_ranks_same_language_only|run, test_comment_invariance.py::test_comment_at_positional_site_is_a_noop[cpp-paren-cond]|run
+

@@ -190,3 +190,52 @@ PYTHONPATH=src:research/graphdiff python research/graphdiff/measure_translation.
 > Python↔JS translation pair to get an honest delta-to-noise number; (c) then promote `graph_diff`
 > to `src/` as `sg.graph_diff(...) -> Result`, add a `diff(idx, idx)==∅` differential oracle per
 > language, and run the two-round full-diversity panel before any release.
+
+---
+
+# Dogfood & POD thread (2026-07-02, post-v3.20.0)
+
+Does stitchgraph actually help do dev work — and can its runtime layer (POD over per-test coverage)
+produce analysis a capable LLM can't just read its way to? This thread ran honest A/B experiments and
+then **built the POD toolkit and turned it on stitchgraph itself**. The self-use is the headline: the
+tool auditing its own author, findings acted on, re-gated.
+
+| # | Question | Verdict | Where |
+|---|---|---|---|
+| 07 | Does stitchgraph help an LLM *build* a package from requirements? (A/B, with vs without) | **Tie/slight-control** — on small, clean, in-context code a capable model builds fine without it. | `07-dogfood-build/` |
+| 08 | …help *impact discovery* on a large unfamiliar repo? | Neutral in-context; the plausible win is low-context/long-session (external memory). | `08-large-repo-impact/` |
+| 09 | …help *translate* a real project (Python→JS, →Rust)? | Both ports 100%; stitchgraph +cost, no accuracy delta on in-context work. | `09-translation/` |
+| 10 | **POD** (SVD over per-test coverage) — what's it for? | **The exception — LLM-*complementary*.** Behavioural modes, intrinsic dimensionality, minimal covering set: grounded in runtime + linear algebra, not reproducible by reading. Full self-run: **stitchgraph 2315→62** (later 2338→67); recovers its own per-language architecture. | `10-pod-python/` |
+| 11 | What *else* can the co-activation matrix do for users? | A ranked roadmap (untested-fns, diff→CI subset, feature maps, runtime risk, drift, …). Every concrete item was then **built** (v3.22.0–v3.23.0). | `11-pod-roadmap.md` |
+| 12 | **stitchgraph ⊳ stitchgraph** — full 30-op self-analysis | **The dogfood paid off:** found a real `scan` `live_stub` false-positive (Typer `@app.callback` empty body RED-flagged) + genuine coverage gaps (`Edge.to_dict`/`resolved`) — both **fixed in v3.23.1**. Confirmed architecture stable (10 modes), `find_holes` 0, `coverage_drift` shows the new POD code shipped under test. | `12-self-analysis.md` |
+| 13 | **Large-repo dogfood** — does it scale to infamous massive repos? | **Yes for large Python, and the wall is disk not memory.** Django 5.2: **47,429 nodes in 166 s**, flat memory; spectral clustered its 43,624-node giant component into 7 legible subsystems (ORM/SQL/forms/admin) in 13 s once given scipy. Full Home Assistant hit the container's **~12 GB disk ceiling with memory flat at ~3.3 GB** — a streaming *success* bounded by an environmental limit; a 4,638-file HA slice (38,930 nodes, 5.4 GB store) corroborated the curve. Linux kernel documented as **ambitious future research** (blocked by git egress here; macro/pointer-table dispatch caveat). | `13-large-repos.md` |
+
+**Honest through-line.** For a capable in-context LLM, stitchgraph's *static* ops mostly tie with "just
+read the code" (07–09). Its *runtime/POD* ops are the genuine complement (10) because you cannot read
+your way to "these 62 tests cover everything" or "these two functions are implicitly coupled." The
+self-analysis (12) is the proof-of-value: pointed at its own source, the toolkit surfaced a precision
+bug and coverage gaps a careful reader had missed across 285+ prior review panels — and the fix went
+back through the same gate (v3.23.1). Caveat, stated everywhere: POD needs a runnable suite + coverage,
+and only sees exercised code.
+
+### Layout
+- `07-dogfood-build/` — A/B greenfield build (round1/round2 DEVLOGs) + `FINDINGS.md`.
+- `08-large-repo-impact/` — impact-discovery A/B + `FINDINGS.md`.
+- `09-translation/` — real Python→JS→Rust port A/B + `FINDINGS.md`.
+- `10-pod-python/` — `pod_modes.py`/`pod_uses.py`, `full_stitchgraph_pod.txt` (the self-run), `FINDINGS.md`.
+- `11-pod-roadmap.md` — the full menu of POD/co-activation capabilities, ranked, with op sketches.
+- `12-self-analysis.md` — the 30-op self-audit; findings → v3.23.1 fixes.
+- `13-large-repos.md` — Django + Home Assistant at scale (the disk-ceiling finding), Linux kernel as ambitious future research.
+
+### Run (self-analysis is reproducible)
+```bash
+# 1. capture per-test coverage in a sandbox (stitchgraph never runs your code):
+pytest --cov=src/stitchgraph --cov-context=test        # → .coverage
+python <(python -c "import stitchgraph.core.coverage_scaffold as c;print(c._PY_CONVERTER)") . cov.json
+# 2. analyse — static + runtime, all advisory/read-only:
+stitchgraph scan --db sg.db          # found the live_stub FP
+stitchgraph find-gaps cov.json       # found Edge.to_dict / Edge.resolved
+stitchgraph find-modes cov.json      # 10 behavioural modes = the real architecture
+stitchgraph runtime-risk cov.json    # churn × behavioural centrality hotspots
+stitchgraph coverage-drift old.json cov.json   # what changed between releases
+```

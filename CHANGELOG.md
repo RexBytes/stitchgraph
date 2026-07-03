@@ -4,6 +4,752 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.24.0] — 2026-07-02
+
+**Release marker — the POD-toolkit line merges to `main`.** No new code beyond v3.23.1 (the tip is
+byte-identical); this is the consolidated release that brings `main` (last at v3.1.0) up through the
+full runtime-analysis toolkit. Everything below already shipped and was gated per-version — see
+`docs/RELEASE_NOTES_v3.24.0.md` for the roll-up. Highlights since v3.1.0:
+
+- **§5b/§5c — the layered code-property graph** (v3.2.0–v3.12.0): the intra-procedural body matrix
+  across all 12 languages + the call ↔ statement ↔ expression layers, drill-down via `get_matrix`.
+- **§6 spectral analysis** (v3.19.0–v3.20.1): `find_chokepoints`, `find_subsystems`.
+- **§6 POD toolkit — behavioural analysis from runtime coverage** (v3.21.0–v3.23.0): `find_modes` +
+  `scaffold_coverage`, then the forward-looking query layer `select_tests`, `co_change`,
+  `find_coupling`, `find_gaps`, `test_order`, `redundant_tests`, `find_core`, `feature_map`,
+  `find_outlier_tests`, `runtime_risk`, `coverage_drift`. **30 operations + admin `reindex`.**
+- **Self-audit** (v3.23.1): stitchgraph turned on itself (`research/12`) found and fixed a `scan`
+  `live_stub` false-positive on decorator-registered callbacks.
+
+All advisory, read-only, cardinal-safe; every version reached two consecutive clean full-diversity
+adversarial panels on a frozen post-fix HEAD (`release_readiness.json`, `REVIEW_HISTORY.md`).
+
+## [3.23.1] — 2026-07-02
+
+**Precision fix from the v3.23.0 self-analysis dogfood (`research/12`).** Turning the full toolset on
+stitchgraph's own source surfaced a `scan` false-positive: a function registered via a **call/attribute
+decorator** (`@app.callback(...)`, `@app.route("/")`, `@foo.register`) with an idiomatic empty
+(`pass`/`…`) body was RED-flagged as an unimplemented `live_stub`. The decorator supplies the behaviour,
+so the empty body is intentional. `_is_stub` now excludes such registered callbacks; a bare `pass`/`…`
+(no decorator or a bare-name decorator like `@property`) and any explicit `raise NotImplementedError`
+(even when decorated) are still stubs. Also added tests for two genuine coverage gaps `find_gaps` found
+(`Edge.to_dict`, `Edge.resolved`). No API change.
+
+## [3.23.0] — 2026-07-02
+
+**POD toolkit completion: eight forward-looking runtime-analysis operations (§6).** Building on the
+co-activation matrix (`find_modes`) and the v3.22.0 query ops, this fills out the roadmap
+(`research/11-pod-roadmap.md`). All advisory, read-only, cardinal-safe; the set-math ones need no numpy.
+
+Pure set-math over the matrix (`core/coverage_query.py`):
+- **`find_gaps`** — functions no test executed, split `untested_live` (reachable → real coverage gap,
+  write a test) vs `untested_dead` (unreachable → corroborates `find_stale`). The runtime complement to
+  `find_stale`: static says "no one *can* reach it", coverage says "no test *did*".
+- **`test_order`** — fail-fast ordering: each next test adds the most new coverage; the prefix is a
+  minimal cover, the tail a fast-tier candidate list.
+- **`redundant_tests`** — groups of tests with an identical coverage profile (a consolidation *review
+  aid* — parametrized tests share a profile but test different inputs; never an auto-delete).
+- **`find_core`** — the always-on core: functions executed by the most tests (highest behavioural blast
+  radius); runtime companion to `find_chokepoints`.
+- **`runtime_risk`** — git churn × behavioural centrality: files that change often *and* are exercised
+  by many behaviours; sharper hotspots than `risk`'s churn × static-centrality.
+- **`coverage_drift`** — functions that gained/lost test exposure between two coverage snapshots; a
+  behavioural changelog to pair with `graph_diff`.
+- **`select_tests`** now also accepts a **changeset** (comma-separated symbols — a PR's touched
+  functions) and unions their tests.
+
+POD/SVD (`core/modes.py`, numpy):
+- **`feature_map`** — per behavioural mode: its implementing functions (full ids) × the files they span
+  × the tests that most express it. The actionable feature ↔ code ↔ test map.
+- **`find_outlier_tests`** — tests the mainstream modes reconstruct poorly (mode-space residual):
+  unique-behaviour tests (keep) vs everything-touching smoke (high mode-1 load).
+
+All exposed as library API + CLI + MCP. Total operations: **30 + admin `reindex`**. Dogfooded on
+stitchgraph's own 2315×764 coverage (e.g. `runtime_risk` ranks the tree-sitter/Python extractors and
+the store as top hotspots; `find_core` surfaces `Store.__init__`).
+
+## [3.22.0] — 2026-07-02
+
+**Forward-looking POD-based operations: `select_tests`, `co_change`, `find_coupling` — turn the runtime
+co-activation matrix from advisory analysis into actionable, change-oriented queries (§6).** All three
+are pure set math over the same inert `stitchgraph-coverage-v1` matrix `find_modes` consumes — **no
+numpy**, advisory, read-only (stitchgraph never executes your code, never touches the graph). Backed by
+a new `core/coverage_query.py`.
+
+- **`select_tests(name, coverage)` — "which tests should I run for this change?"** Fuses the tests that
+  *actually executed* the symbol (runtime ground truth) with the tests that *statically reach* it (like
+  `impact_of`), classifying the union into `both`, `runtime_only` (ran it via a path the call graph
+  missed — dynamic dispatch / framework), and `static_only` (reachable but never run — a coverage gap).
+- **`co_change(name, coverage)` — "what code moves together / what implements this outcome?"** The
+  functions whose per-test activation most resembles the symbol's (cosine over the test columns) — its
+  behavioural neighbourhood. The runtime complement to static `get_callers`/`get_callees`.
+- **`find_coupling(coverage)` — implicit coupling.** Function pairs that co-activate strongly yet have
+  **no static edge** between them: dependencies (shared state, dispatch, protocol, or a common caller)
+  the call graph cannot see. The runtime∖structure gap; `cross_file` pairs are the interesting ones.
+
+Test-id keys are normalised to graph node-id convention (pytest `[param]` and coverage.py `|phase`
+suffixes stripped; `file::Class::method` → `file::Class.method`), so runtime and static ids line up.
+Dogfooded on stitchgraph's own 2315×764 coverage. All exposed as library API + CLI (`select-tests`,
+`co-change`, `find-coupling`) + MCP. Total operations: 22 + admin `reindex`.
+
+## [3.21.0] — 2026-07-02
+
+**New advisory operations: `find_modes` + `scaffold_coverage` — behavioural analysis from runtime
+coverage (§6 spectral research, win 3 — "POD over runtime coverage").** `find_modes` decomposes a
+codebase's *runtime* behaviour via **POD** (mean-centred SVD of the per-test co-activation matrix
+`M[test, function]`): it returns the ranked **behavioural modes** (function groups that fire together —
+routing, sessions, …), the **intrinsic dimensionality** (modes to 90% energy), a **minimal test set**
+that covers every executed function, and a redundant-test-pair count. It is the *runtime* complement to
+the static `find_subsystems`, and — unlike static analysis — **language-agnostic**: it consumes a
+canonical `stitchgraph-coverage-v1` JSON (`{test_id: [function_id, …]}`) produced by any language's
+per-test coverage tool. Backed by a new `core/modes.py` (numpy SVD; sparse `svds` via the optional
+`[spectral]` extra for large matrices). **stitchgraph never executes your code** — it only reads the
+inert matrix. `scaffold_coverage` **generates a sandboxed capture kit** (`core/coverage_scaffold.py`)
+so you can produce that matrix safely: per detected language it writes three interchangeable recipes —
+**Docker** (no-network, non-root, read-only rootfs, capped), **plain shell**, and a **CI** snippet —
+plus a README and the canonical-format spec; Python is turnkey (coverage.py `--cov-context=test` +
+an AST line→function converter), JS/Go/Rust/Java ship a wired template. It writes helper files only
+(like `report`), never touches source, never runs anything. Both advisory and read-only — never feed
+`find_stale`. Auto-exposed on the library API, CLI, and MCP. Backward-compatible → MINOR.
+
+## [3.20.1] — 2026-07-02
+
+**Fix: `get_callers` / `get_callees` name resolution gives precise, actionable refusals.** Surfaced by
+the dogfood build experiment (`research/07-dogfood-build`, round 2): both ops refused an unresolvable
+name with the same message — *"'X' is not a unique symbol in the index"* — whether the name was
+**unknown** (zero matches) or genuinely **ambiguous** (multiple definitions), and never surfaced the
+candidates. Now they distinguish the two: an unknown name reports *"no symbol named 'X' in the index"*
+(matching `find_symbol`), and an ambiguous one lists the candidate ids (*"'X' is ambiguous across N
+definitions: a.py::Svc.save, b.py::Svc.save; pass a qualified id …"*) so the caller can re-issue with a
+qualified `Type.method` or full `path::qual` id. Still a clean `ok=False` Result (never raises);
+qualified/full ids resolve as before. Message/usability only — no API change → PATCH.
+
+## [3.20.0] — 2026-07-02
+
+**New advisory operation: `find_subsystems` — automatic subsystem decomposition (§6 spectral
+research, win 2).** The second §6 result graduates in. `find_subsystems` partitions a repo's
+call/reference graph into its **natural subsystems** by spectral clustering of the graph Laplacian,
+and auto-labels each cluster with the identifier tokens that most distinguish it (a
+"spectral-summarize"). It's the *structural* complement to the semantic `find_similar` /
+`summarize_subsystem`: it **discovers** the module boundaries rather than describing a scope you name.
+The cluster count is auto-selected from the spectral eigengap (or set via `k`). Backed by a new
+`core/spectral.py` (normalised-Laplacian embedding + deterministic k-means++ + distinctive-token
+labelling). Numerics: numpy-only out of the box (dense eigendecomposition, fine for typical repos,
+capped at 2500 giant-component nodes); the optional **`[spectral]` extra (scipy)** adds a sparse
+ARPACK solver that removes the cap and scales to large graphs — matrix-free in spirit (top-k
+eigenvectors only). Deterministic — same store → same partition, run to run and across processes: the
+reproducible dense (LAPACK) solver is preferred for every giant component within the cap (even when
+scipy is installed), and the above-cap sparse path starts from a fixed generic vector plus a
+deterministic symmetry-breaking term so it stays reproducible even on degenerate spectra (seeded
+k-means++ throughout). **Advisory and read-only — like `orient`/`risk` it never feeds `find_stale`**
+(re-verified byte-identical).
+Auto-exposed on the library API, CLI, and MCP. Backward-compatible → MINOR.
+
+## [3.19.0] — 2026-07-02
+
+**New advisory operation: `find_chokepoints` — structural criticality (§6 spectral research,
+promoted).** The first result from the §6 "system-matrix" research thread graduates into the package.
+`find_chokepoints` returns the **articulation points** (cut vertices) of the call/reference graph —
+nodes whose removal disconnects the graph — each ranked by its **blast radius**, i.e. how many nodes
+get cut off from the main body if it fails. This is a robustness / "dangerous to touch" signal
+*distinct* from `orient`'s hub ranking (which measures centrality, not cut-vertex-ness): a chokepoint
+can have modest fan-in/out yet still be the sole bridge between two subsystems. Backed by a new
+`reach.articulation_points` (one Tarjan DFS pass, subtree sizes computed inline, O(V+E),
+deterministic; recursion-limit guarded like the shared SCC core). Code entities only (Module / pseudo
+nodes excluded, as in `orient`/`scan`). Auto-exposed on the library API, CLI, and MCP server from the
+operation registry. **Advisory and structural only — like hubs, cycles and god objects it never feeds
+`find_stale`** (the cardinal rule is a liveness property; re-verified byte-identical). No new
+dependency. Backward-compatible → MINOR.
+
+## [3.18.0] — 2026-07-02
+
+**The STATEMENT layer learns Bash — the §5c sweep is COMPLETE (language 10, all body-matrix
+languages).** After Python (v3.9.0), the JS family (v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++
+(v3.13.0), Java (v3.14.0), C# (v3.15.0), Ruby (v3.16.0), and PHP (v3.17.0), v3.18.0 adds Bash to the
+program-dependence-graph layer: `structure_bash.pdg_source` builds a per-function PDG (statement
+nodes + a synthetic `ENTRY`; control `C` / data `D` sequential-reaching-def edges) and
+`get_matrix(layer="statement")` drills it. Bash is the **command-oriented** outlier and has **no
+declared parameter list** (shell functions read positional `$1…` as free variables), so `ENTRY`
+carries no params — the same as the value-flow builder, which seeds no `PARAM` nodes. Its read/write
+projection (`collect`/`bind_place`) mirrors the VFG's `ev`/`bind` node-for-node: a **literal command
+name is a free callee, never a variable read** (a *dynamic* `$cmd`/`$(…)` name reads its expansions),
+a bare `local x` declaration binds no value, `for` loop variables bind, and `$x`/`${x}`/`$(( … ))`/
+string / here-string interpolation holes are read. A new white-box VFG-vs-PDG differential oracle
+(`tests/oracles/test_pdg_bash_vfg_differential.py`) cross-checks the statement- and expression-layer
+builders. `get_matrix(layer="statement")` now dispatches **every body-matrix language** (Python + the
+JS family + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash); the layer-level "unsupported language"
+refusal is now reachable only for a foreign file extension. On-demand, advisory, never feeds liveness
+(cardinal rule re-verified). Backward-compatible (no schema change, default behavior unchanged) →
+MINOR.
+
+## [3.17.0] — 2026-07-01
+
+**The STATEMENT layer learns PHP (§5c sweep, language 9).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), Java (v3.14.0), C# (v3.15.0), and Ruby
+(v3.16.0), v3.17.0 adds PHP to the program-dependence-graph layer: `structure_php.pdg_source` builds
+a per-function PDG (statement nodes + a synthetic `ENTRY` carrying params; control `C` / data `D`
+sequential-reaching-def edges) and `get_matrix(layer="statement")` drills it. PHP is
+**statement-oriented** (like Go/C/C++/Java/C#): its read/write projection (`collect`/`bind_place`)
+mirrors the value-flow builder (`ev`/`bind`) node-for-node. A member/property NAME and a call's method
+NAME carry no value read (the object + args do); a *dynamic* method call `$o->$v()` reads `$v` in both
+builders (genuine dynamic dispatch); `Foo::$x` / `Foo::CONST` scoped accesses are opaque free
+variables; `foreach` loop vars and `list()` destructuring bind, while a `$k => $v` `pair` binds
+nothing (mirroring the VFG gap); string/heredoc interpolation holes are read; closures / arrow
+functions are opaque NESTED leaves; `static $x = init` locals bind. A new white-box VFG-vs-PDG
+differential oracle (`tests/oracles/test_pdg_php_vfg_differential.py`) cross-checks the statement- and
+expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the JS family + Go
++ Rust + C/C++ + Java + C# + Ruby + PHP; the last tree-sitter language (Bash) is the rest of the sweep
+and refuses with a supported-set message. On-demand, advisory, never feeds liveness (cardinal rule
+re-verified). Backward-compatible (no schema change, default behavior unchanged) → MINOR.
+
+## [3.16.0] — 2026-07-01
+
+**The STATEMENT layer learns Ruby (§5c sweep, language 8).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), Java (v3.14.0), and C# (v3.15.0), v3.16.0
+adds Ruby to the program-dependence-graph layer: `structure_ruby.pdg_source` builds a per-function
+PDG (statement nodes + a synthetic `ENTRY` carrying params; control `C` / data `D`
+sequential-reaching-def edges) and `get_matrix(layer="statement")` drills it. Ruby is
+**expression-oriented** (like Rust): control constructs (`if`/`case`/`while`/`for`) become control
+nodes in statement position but FOLD their reads into the enclosing statement in value position
+(`x = if c then a else b end`). A call's method name carries no value read (receiver + args do);
+`self`/`@ivar` route through free variables; blocks / `do…end` / lambdas are opaque NESTED leaves;
+`for`/rescue bindings are stores; string-interpolation holes are read. A new white-box VFG-vs-PDG
+differential oracle (`tests/oracles/test_pdg_ruby_vfg_differential.py`) cross-checks the statement-
+and expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the JS family
++ Go + Rust + C/C++ + Java + C# + Ruby; the remaining tree-sitter languages (PHP, Bash) are the rest
+of the sweep and refuse with a supported-set message. On-demand, advisory, never feeds liveness
+(cardinal rule re-verified). Backward-compatible (no schema change, default behavior unchanged) → MINOR.
+
+## [3.15.0] — 2026-07-01
+
+**The STATEMENT layer learns C# (§5c sweep, language 7).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), C/C++ (v3.13.0), and Java (v3.14.0), v3.15.0 adds C# to the
+program-dependence-graph layer: `structure_csharp.pdg_source` builds a per-function PDG (statement
+nodes + a synthetic `ENTRY` carrying params; control `C` / data `D` sequential-reaching-def edges)
+and `get_matrix(layer="statement")` drills it. Type positions, the member name in a `.` access, and
+pattern/label selectors carry no value read; member/element assignment targets are reads, not stores;
+`foreach` loop vars, `using` resources, and tuple deconstructions bind; expression-bodied members
+(`=> expr`), interpolated-string holes, and switch expressions/patterns are modelled. A new white-box
+VFG-vs-PDG differential oracle (`tests/oracles/test_pdg_csharp_vfg_differential.py`) cross-checks the
+statement- and expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the
+JS family + Go + Rust + C/C++ + Java + C#; the remaining tree-sitter languages (Ruby, PHP, Bash) are
+the rest of the sweep and refuse with a supported-set message. On-demand, advisory, never feeds
+liveness (cardinal rule re-verified). Backward-compatible (no schema change, default behavior
+unchanged) → MINOR.
+
+## [3.14.0] — 2026-07-01
+
+**The STATEMENT layer learns Java (§5c sweep, language 6).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), Rust (v3.12.0), and C/C++ (v3.13.0), v3.14.0 adds Java to the
+program-dependence-graph layer: `structure_java.pdg_source` builds a per-function PDG (statement
+nodes + a synthetic `ENTRY` carrying params; control `C` / data `D` sequential-reaching-def edges)
+and `get_matrix(layer="statement")` drills it. Type positions, a call's method name, field/member
+names, statement labels, and switch case selectors carry no value read; field/array assignment
+targets are reads, not stores; enhanced-`for` loop vars, try-with-resources, and caught exceptions
+bind. A new white-box VFG-vs-PDG differential oracle (`tests/oracles/test_pdg_java_vfg_differential.py`)
+cross-checks the statement- and expression-layer builders. `get_matrix(layer="statement")` now
+dispatches Python + the JS family + Go + Rust + C/C++ + Java; the remaining tree-sitter languages
+(C#, Ruby, PHP, Bash) are the rest of the sweep and refuse with a supported-set message. On-demand,
+advisory, never feeds liveness (cardinal rule re-verified). Backward-compatible (no schema change,
+default behavior unchanged) → MINOR.
+
+## [3.13.0] — 2026-07-01
+
+**The STATEMENT layer learns C/C++ (§5c sweep, language 5).** After Python (v3.9.0), the JS family
+(v3.10.0), Go (v3.11.0), and Rust (v3.12.0), v3.13.0 adds C/C++ to the program-dependence-graph
+layer: `structure_cpp.pdg_source` builds a per-function PDG (statement nodes + a synthetic `ENTRY`
+carrying params; control `C` / data `D` sequential-reaching-def edges) and `get_matrix(layer=
+"statement")` drills it. Type positions, `goto`/labels, field names, and switch case values carry no
+value read; place/deref/index/member assignment targets are reads, not stores. A new white-box
+VFG-vs-PDG differential oracle (`tests/oracles/test_pdg_cpp_vfg_differential.py`) cross-checks the
+statement- and expression-layer builders. `get_matrix(layer="statement")` now dispatches Python + the
+JS family + Go + Rust + C/C++; the remaining tree-sitter languages (Java, C#, Ruby, PHP, Bash) are
+the rest of the sweep and refuse with a supported-set message. On-demand, advisory, never feeds
+liveness (cardinal rule re-verified). Backward-compatible (no schema change, default behavior
+unchanged) → MINOR.
+
+## [3.12.0] — 2026-07-01
+
+**The STATEMENT layer learns Rust (§5c sweep, language 4).** After Python (v3.9.0), the JS family
+(v3.10.0), and Go (v3.11.0), v3.12.0 adds Rust to the program-dependence-graph layer.
+Backward-compatible (no schema change, default behavior unchanged) → MINOR.
+
+### Added
+- **`structure_rust.pdg_source`** — a Rust function's program-dependence graph. Rust is
+  expression-oriented, so control-flow *expressions* (`if`/`match`/`loop`/`while`/`for`) in statement
+  position become control nodes; in value position (`let y = if …`) they fold into the enclosing
+  statement's reads (mirroring how the Python PDG folds walrus/comprehensions). ENTRY seeds params +
+  `self`; `if let`/`while let` bind their pattern and read their scrutinee; `for` binds its pattern
+  and reads the iterator; `match` descends each arm body; closures/nested fns are opaque `NESTED`.
+  Type positions (`type_identifier` / `*_type` / scoped paths) carry no value read, so `let x: T = …`
+  and `x as T` never leak a false dependency. Keyed identically to `fingerprint_source`/`vfg_source`.
+- **`get_matrix(layer="statement")` now covers Rust** — dispatches `.py` → `structure`, js/ts/tsx →
+  `structure_js`, `.go` → `structure_go`, `.rs` → `structure_rust`. Other languages refuse with a
+  supported-set message.
+
+### Notes
+- A structural **approximation** (sequential reaching-def, no SSA/alias analysis), **advisory** —
+  never persisted, never feeds `find_stale`. Remaining tree-sitter languages (C/C++, Java, C#, Ruby,
+  PHP, Bash) are the rest of the sweep.
+
+### Guarantees
+- Advisory — the STATEMENT layer never feeds `find_stale`/liveness (a test pins a Rust drill-down
+  cannot change `find_stale`).
+- **Deterministic output** — byte-reproducible across processes (sorted edge emission).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_rust_layer.py`
+  (key-parity, well-formed C/D graph, reorder-invariance, dependence sensitivity, type-position
+  safety, Rust-specific constructs [if-let/while-let/match-guards/labeled-loop/closures/macros/`?`],
+  never-raises, cross-`PYTHONHASHSEED` determinism) + a Rust drill case in `tests/test_layer_matrix.py`.
+  Two-round full-diversity adversarial panel clean.
+
+## [3.11.0] — 2026-07-01
+
+**The STATEMENT layer learns Go (§5c sweep, language 3).** After Python (v3.9.0) and the JS family
+(v3.10.0), v3.11.0 adds Go to the program-dependence-graph layer. Backward-compatible (no schema
+change, default behavior unchanged) → MINOR.
+
+### Added
+- **`structure_go.pdg_source`** — a Go function's program-dependence graph, built from the
+  tree-sitter tree and mirroring `structure.pdg_source` (Python) / `structure_js.pdg_source`:
+  statement nodes (+ a synthetic `ENTRY` carrying the parameters and receiver), `C` (control) and
+  `D` (data: sequential reaching-def) edges. Go constructs covered: `if`/`for` (for-clause, `range`
+  binding, bare condition), expression/type `switch` (case bodies + values), `select` (comm cases),
+  `defer`/`go`/labeled statements, `:=`/`var`/`const`/assignment (incl. compound `op=` and
+  multi-value `a, b := …`), `++`/`--`, channel send; selector/index assignment targets read their
+  object (no false store). `func_literal` is an opaque `NESTED` leaf. Keyed identically to
+  `fingerprint_source`/`vfg_source`.
+- **`get_matrix(layer="statement")` now covers Go** — dispatches `.py` → `structure`, js/ts/tsx →
+  `structure_js`, and `.go` → `structure_go`. Other languages refuse with a supported-set message.
+
+### Notes
+- A structural **approximation** (sequential reaching-def, no SSA/alias analysis), **advisory** —
+  computed on demand, never persisted, never feeds `find_stale`. Remaining tree-sitter languages
+  (Rust, C/C++, Java, C#, Ruby, PHP, Bash) are the rest of the sweep.
+
+### Guarantees
+- Advisory — the STATEMENT layer never feeds `find_stale`/liveness (a test pins that a Go drill-down
+  cannot change `find_stale`).
+- **Deterministic output** — `pdg_source`'s edges and `get_matrix`'s `cells` are byte-reproducible
+  across processes (edges emitted in sorted order, not `set`/`PYTHONHASHSEED` order).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_go_layer.py`
+  (key-parity, well-formed C/D graph, reorder-invariance, dependence sensitivity, Go-specific
+  statements [range/type-switch/select/defer/goroutine], never-raises, cross-`PYTHONHASHSEED`
+  determinism) + a Go statement-drill case in `tests/test_layer_matrix.py`. Two-round full-diversity
+  adversarial panel clean.
+
+## [3.10.0] — 2026-07-01
+
+**The STATEMENT layer learns the JS family — js/ts/tsx (§5c sweep, language 2).** v3.9.0 shipped the
+program-dependence-graph (PDG) layer for Python; v3.10.0 begins sweeping it to the tree-sitter
+languages, starting with the JS family. Backward-compatible (no schema change, default behavior
+unchanged) → MINOR.
+
+### Added
+- **`structure_js.pdg_source`** — a JS/TS/TSX function's program-dependence graph, built from the
+  tree-sitter tree and mirroring `structure.pdg_source` (Python): statement nodes (+ a synthetic
+  `ENTRY` carrying the parameters), `C` (control: nested-under-a-header) and `D` (data: a sequential
+  reaching-def) edges. Nested functions are opaque `NESTED` leaves; try/catch/finally, switch cases,
+  and `for…of`/`for…in` bindings are covered. The STATEMENT-layer companion to
+  `fingerprint_source`/`vfg_source`, keyed identically (shared `_walk`).
+- **`get_matrix(layer="statement")` now covers the JS family** — dispatches `.py` → `structure`
+  and `.js/.jsx/.mjs/.cjs/.ts/.mts/.cts/.tsx` → `structure_js`. Other languages refuse cleanly with a
+  message naming the supported set (Python + JS family).
+
+### Notes
+- Like the Python PDG, this is a structural **approximation** (sequential reaching-def, no SSA/alias
+  analysis) and **advisory** — computed on demand, never persisted, never feeds `find_stale`. The
+  remaining tree-sitter languages (Go, Rust, C/C++, Java, C#, Ruby, PHP, Bash) are a future sweep.
+
+### Guarantees
+- Advisory — the STATEMENT layer never feeds `find_stale`/liveness (a test pins that a JS drill-down
+  cannot change `find_stale`).
+- **Deterministic output** — `pdg_source`'s edges and `get_matrix`'s `cells` are byte-reproducible
+  across processes (edges emitted in sorted order, not `set`/`PYTHONHASHSEED` order).
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_js_layer.py`
+  (key-parity, well-formed C/D graph, **reorder-invariance**, dependence-change sensitivity,
+  never-raises on TS/exotic input, try/switch/for-of, cross-`PYTHONHASHSEED` determinism) + a JS
+  statement-drill case and an unsupported-language refusal in `tests/test_layer_matrix.py`.
+  Two-round full-diversity adversarial panel clean.
+
+## [3.9.0] — 2026-07-01
+
+**The STATEMENT layer — drill into a function's program-dependence graph (§5c phase 2).** v3.8.0
+added the call↔expression drill-down; v3.9.0 adds the middle layer: the **PDG** (nodes = statements,
+edges = control + data dependence). Promotes the validated `research/03-pdg/` prototype. Python-only
+so far (deep stdlib `ast`), on demand, advisory. Backward-compatible (no schema change, default
+behavior unchanged) → MINOR.
+
+### Added
+- **`structure.pdg` / `pdg_source`** — a function's program-dependence graph: statement nodes (+ a
+  synthetic `ENTRY` carrying the parameters), `C` (control: nested-under-a-header) and `D` (data: a
+  def reaching a later use, a sequential reaching-def approximation) edges. The STATEMENT-layer
+  companion to `fingerprint_source`/`vfg_source`, keyed identically (shared `_walk_functions`).
+- **`get_matrix(..., layer="statement")`** — drills a SINGLE Python function's PDG, in the same
+  Result shape (labels = statements, cells tagged `C`/`D`, dense grid when small). Refuses cleanly on
+  a multi-function scope, a missing function, an oversized graph, or a **non-Python** function (the
+  layer is Python-only for now — a precise "Python-only so far" refusal, no crash).
+
+### Notes
+- The PDG is **complementary**, not a strict upgrade to the expression/token fingerprints: it is
+  order-invariant by construction (reordering independent statements leaves it unchanged) and the
+  only layer that models statement-level data flow, but a naive reaching-def over-penalises
+  temp-variable factoring (see `research/03-pdg/FINDINGS.md`). Exposed as a drill-down + public
+  `pdg_source`; `find_similar`/`graph_diff` remain on the expression layer.
+
+### Guarantees
+- On-demand only (no store schema change); advisory — the STATEMENT layer never feeds
+  `find_stale`/liveness (a test pins that a drill-down cannot change `find_stale`).
+- **Deterministic output** — `pdg`'s edge list and `get_matrix`'s `cells` are byte-reproducible
+  across processes (edges emitted in sorted order, not `set`/`PYTHONHASHSEED` order), matching the
+  guarantee the CALL layer already upheld.
+
+### Quality gate
+- ruff + mypy clean; full suite passing. New: `tests/oracles/test_pdg_source_layer.py`
+  (key-parity, well-formed C/D graph, **reorder-invariance**, dependence-change sensitivity,
+  never-raises, **cross-`PYTHONHASHSEED` determinism**) + statement-layer cases in
+  `tests/test_layer_matrix.py` (drill, refusals incl. non-Python, cardinal isolation).
+  Full-diversity adversarial panel clean (a mid-review round caught + fixed the determinism nit).
+
+## [3.8.0] — 2026-07-01
+
+**The graph learns layers — drill from the call graph into a function's value-flow graph (§5c
+phase 1).** v3.0.0–v3.7.0 built the intra-procedural body matrix for all 12 languages but kept it an
+internal fingerprint input. v3.8.0 makes it a first-class, drill-down-able **layer** of the
+code-property graph (`docs/IDEAS.md` §5c): the same `get_matrix` / `graph_diff` primitives now work
+at call OR expression depth. New capability for an existing representation, backward-compatible
+(schema, indexes, and every operation's default behavior unchanged) → MINOR.
+
+### Added
+- **`model.Layer`** — the granularity tag (`CALL` / `EXPRESSION`; `STATEMENT`/PDG reserved for a
+  future phase), analogous to how `Relation`/`Provenance` qualify edges. One graph, picked depths.
+- **`structure.vfg` / `vfg_source`** (and the same `vfg_source` on all 9 tree-sitter frontends) —
+  expose the per-function value-flow graph publicly: `{qualname: (node_labels, [(src, dst, kind)])}`,
+  kind `d`=data / `c`=control. The EXPRESSION-layer companion to `fingerprint_source` (guaranteed
+  identical keys — they share one traversal). Computed on demand, never persisted.
+- **`get_matrix(..., layer="call"|"expression")`** — `"call"` is unchanged (now tagged
+  `layer="call"`); `"expression"` drills into a SINGLE function's value-flow graph, returned in the
+  same shape (labels = operations, cells tagged data/control, a dense grid when small). Dispatched by
+  file extension across all 12 languages; refuses cleanly on a multi-function scope, a missing
+  function, an oversized graph, the reserved `statement` layer, or an unknown layer. CLI
+  `--layer expression` and the MCP tool schema pick it up automatically (registry-generated).
+
+### Changed
+- `graph_diff` is documented as the two-layer diff: call-layer node/edge deltas always, plus (with
+  `body`) the expression-layer `body_changed` — the same graph `get_matrix(layer="expression")`
+  surfaces. API unchanged.
+
+### Guarantees
+- **On-demand only** — no store schema change, no indexer/scale impact; the CALL layer stays the sole
+  persisted graph. The EXPRESSION layer is **advisory** and never feeds `find_stale`/liveness — the
+  cardinal rule is a call-layer property (a test pins that a drill-down cannot change `find_stale`).
+
+### Quality gate
+- ruff + mypy clean; full suite passing.
+- New tests: `tests/test_layer_matrix.py` (drill-down, layer tag, every refusal path, cardinal
+  isolation) and `tests/oracles/test_vfg_source_layers.py` (vfg_source keys == fingerprint keys,
+  well-formed graphs, metamorphic body-value-flow — all 12 languages).
+- Two-round full-diversity adversarial panel clean on the post-fix HEAD.
+
+## [3.7.0] — 2026-06-30
+
+**The body matrix completes the language sweep — Ruby, PHP, and Bash.** v3.6.0 added Java and C#;
+v3.7.0 adds the final three — **Ruby, PHP, and Bash** — so the body matrix now spans **all 12
+languages** the extractor indexes (`docs/IDEAS.md` §5b, sweep complete). Bash is the command-oriented
+outlier that closes it. New languages for an existing representation → MINOR; backward-compatible
+(schema, indexes, and every existing operation unchanged; the new behavior is opt-in and advisory).
+
+### Added
+- **`core/structure_ruby.py`** — Ruby body fingerprint. Dotted module/class keying (`M.Calc.compute`,
+  singleton `M.top`, bare top-level `free_fn`), expression-oriented (trailing implicit return),
+  blocks opaque. Same `_VFG` + WL kernel as the other frontends.
+- **`core/structure_php.py`** — PHP body fingerprint. Class-chain keying (namespace excluded,
+  `Calc.compute`, `C.__construct`), statement-oriented, argument-wrapper unwrapping, closures opaque.
+- **`core/structure_bash.py`** — Bash body fingerprint, the command-oriented outlier: a command is a
+  CALL, command substitution carries values (incl. callee position), flat function keys, nested
+  functions opaque.
+- **`find_similar(mode="structure")` and `graph_diff`** now cover Ruby, PHP, and Bash, ranked/diffed
+  same-language only. Sniff order …C# → Ruby → PHP → Bash → C/C++ (Bash/PHP before C/C++, whose
+  grammar parses a bare `name() {…}`).
+
+### Fixed / hardened
+- The adversarial panel found **10 dropped value-flow positions**, all now fixed and oracle-pinned:
+  Bash dynamic-callee (`$(resolve) arg`), Bash command-substitution array-subscript index
+  (`${arr[$(helper)]}` read + `arr[$(helper)]=x` LHS), Ruby `begin/rescue/else` clause body, Ruby
+  parenthesized multi-statement group (non-trailing statement), PHP anonymous-class constructor
+  arguments (`new class(helper()) {}`), PHP **heredoc** interpolation holes (`<<<E…{$o->m()}…E`)
+  — heredoc was wrongly bucketed with non-interpolating `nowdoc` as a constant, while double-quoted
+  interpolation was already walked — the **C# constructor initializer** (`: this(helper())` /
+  `: base(helper())`), whose arguments run before the body but live in a `constructor_initializer`
+  sibling of the body that was never walked (the C# analogue of the C++ member-initializer-list, which
+  was already handled), and the **C# indexed/dictionary-initializer key** (`new D { [Key()] = v }`),
+  whose key routes through `bind()` as an `element_binding_expression` that had no branch, and the
+  **JS/TS computed *method* key** in an object literal (`{ [helper()]() {} }`), whose key is evaluated
+  in the enclosing scope but was dropped while the method body stayed (correctly) opaque — the data-
+  property computed key `{ [helper()]: 1 }` was always walked. None were caught by the generic
+  fallback — only the value-bearing metamorphic probe surfaces them.
+- **Meta-pattern closure: "an expression syntactically inside a closure/class-bearing node but
+  evaluated in the enclosing scope."** Rather than fix only the specific instances the panel reported,
+  each was generalised across the matrix. This class now covers C++ lambda init-captures, C# element-
+  binding init keys, JS/TS computed method keys in **both** object literals **and** class expressions,
+  and Python nested-`def` default-argument values + nested-`class` base/keyword (`metaclass=`)
+  expressions — all walked into the enclosing function's value-flow while the closure/class **body**
+  stays opaque. Pinned by `tests/oracles/test_param_and_index_invariance.py` and the Python
+  completeness oracle.
+- Documented two Bash structural blind spots that are not fixable in-AST (advisory-only, never
+  cardinal): `${var#$(cmd)}`/`${var%…}` strip patterns (lexed as one opaque `regex` token) and
+  single-quoted deferred actions like `trap '$(cmd)' EXIT` (`raw_string`, expanded only at `eval`).
+- **Comments are now trivia in every tree-sitter frontend (cross-cutting fix).** A confirmation-panel
+  sweep found that a `comment` node leaked into the value-flow graph via each walker's generic
+  fallback, so a no-op comment edit changed a body fingerprint (down-ranking commented clones and
+  showing comment-only diffs as `graph_diff` body changes). This was **latent in Go, Rust, C/C++,
+  Java, C# (shipped v3.3.0–v3.6.0) and JS/TS** as well as the new Ruby/PHP/Bash; only Python (its
+  `ast` drops comments) was truly immune. (JS/TS first looked immune because statement-position
+  comments use field access — but comments in *expression* positions, e.g. a call argument or array
+  literal, still leaked; the oracle now exercises both.) All nine affected frontends skip comment
+  nodes as trivia, pinned by a cross-language oracle (`tests/oracles/test_comment_invariance.py`) that
+  also guards against over-pruning real flow. Advisory-only, never cardinal.
+- **Default parameter-value expressions are now walked (cross-cutting fix).** A `helper()` CALL vs a
+  `0` CONST in a parameter's default value (`def f(b = helper())`) produced an identical fingerprint —
+  the parameter-seeding loop registered only the parameter name and never walked its default-value
+  child. Found across **every language with default-argument syntax**: latent in **C++, C# (shipped)**
+  and **Python, JS/TS (shipped, the original frontends)**, plus the new Ruby/PHP; Go/Rust/Java have no
+  default-argument syntax. All now link the default-value expression into the parameter's node
+  (incl. destructured defaults like JS `function f({a = helper()})`, AND JS/TS destructuring defaults
+  in a *declaration/assignment* target — `const {x = helper()} = a` — which route through `bind()`, a
+  separate path), pinned by a cross-language oracle. Advisory-only, but a true CALL-vs-CONST
+  completeness violation.
+- **Python lambdas are now opaque (invariant fix).** A `lambda` in expression position leaked its
+  body's value flow into the enclosing function's fingerprint — `_build_vfg.ev` had no `ast.Lambda`
+  branch, so it hit the generic fallback and recursed into the lambda body. This broke the documented
+  "closures are opaque `NESTED`" invariant (which the Python completeness oracle already *classified*
+  but never behaviorally tested) and is the one frontend that diverged — all 11 tree-sitter frontends
+  already treat an expression-position closure as a single `NESTED` leaf. Now Python does too (the
+  lambda's default-argument values still carry flow, since they evaluate in the enclosing scope).
+- **Assignment-target subscript index is now walked (cross-cutting fix).** A `helper()` CALL vs a `0`
+  CONST in the *index of an assignment target* (`d[helper()] = v`) produced an identical fingerprint:
+  the read path `… = d[helper()]` always walked the index, but the write (`bind`) path linked only the
+  written value and the container, never the index expression. Latent in **Python, JS/TS, Go, Rust and
+  C/C++** (Java/C#/PHP/Ruby already walked it). All now walk the index on the write path, pinned by the
+  same cross-language oracle. Advisory-only, never cardinal.
+- **Comment trivia displacing a *positional* child pick (cross-cutting fix).** Beyond the generic-
+  fallback comment leak above, a `comment` is itself a *named* tree-sitter child, so any walker site
+  that selected one child by position (`named_children[0]`/`[-1]`/`[i]`, "first non-body" heuristics,
+  or the inline transparent-unwrap descents `(x /*c*/)`, `await (x /*c*/)`, `f(x /*c*/)`, `d[i /*c*/]`)
+  was displaced by a leading/trailing comment, dropping the real operand. Closed across all 8 tree-
+  sitter frontends with comment-skipping helpers and a 64-case positional/trailing-wrapper battery.
+- **Several value-bearing positions wrongly classified no-flow, closed matrix-wide.** A short
+  find→fix→panel grind on the completed 12-language matrix surfaced (and a same-round audit closed
+  across every applicable language) a cluster of advisory completeness drops, each oracle-pinned:
+  first-only read of a **repeated** field (Ruby multi-value `rescue`/`when 1, helper()`); a
+  **declaration carrying an initializer** routed to a no-flow/skip arm (PHP `static $x = helper()`,
+  Rust local `const`/`static`); the **runtime-evaluated exception selector** (Ruby `rescue <expr>`,
+  Python `except <expr>:` / `except*`); Python nested-def/class **decorator-call arguments**
+  (`@deco(helper())`, evaluated in the enclosing scope — JS/TS already walked them); and the **C#
+  interpolated-string alignment clause** (`$"{v,helper()}"`, distinct from the literal `:format`).
+  All advisory-only, never cardinal.
+
+### Quality gate
+- ruff + mypy clean; full suite passing (1269 tests).
+- Three new body-matrix completeness oracles — Ruby (49), PHP (51), Bash (36) — plus two new cross-
+  language batteries, `test_comment_invariance.py` (64) and `test_param_and_index_invariance.py` (26),
+  and `graph_diff` body tests pinning the new corpora; the Python (59), Rust (45) and C# (58) oracles
+  grew with the cross-cutting fixes. **Two consecutive clean full-diversity panels** (opus + sonnet +
+  haiku) on the frozen post-fix HEAD — RELEASABLE.
+
+## [3.6.0] — 2026-06-30
+
+**The body matrix learns Java and C#.** v3.5.0 added C/C++; v3.6.0 adds **Java and C#** — languages 5
+and 6 of the multi-language sweep (`docs/IDEAS.md` §5b), the first release to add a *pair* in one
+MINOR. New languages for an existing representation → MINOR; backward-compatible (schema, indexes, and
+every existing operation unchanged; the new behavior is opt-in and advisory).
+
+### Added
+- **`core/structure_java.py` — Java body matrix.** A tree-sitter Java walker emitting the **same**
+  `_VFG` the other frontends do, reusing the WL kernel. Methods/constructors are keyed by the dotted
+  chain of enclosing TYPE names (the `package`/imports are NOT part of the key) — `Outer.compute`,
+  nested `Outer.Inner.m`, interface default `Shape.area`, constructor `C.C`. Statement-oriented;
+  compound-assign normalises to base-op + rebind; casts are operand-transparent; enhanced-`for`,
+  `switch` (statement and arrow expression), try-with-resources, `synchronized`/labeled blocks carry
+  flow; lambdas / anonymous classes are opaque `NESTED` leaves. Java has no free functions, so a
+  top-level method (only seen in error-tolerant parses of non-Java source) is intentionally not keyed.
+- **`core/structure_csharp.py` — C# body matrix.** A tree-sitter C# walker emitting the same `_VFG`.
+  Methods/constructors **and local functions** are keyed by the dotted TYPE chain (the `namespace` is
+  NOT part of the key) — `Calc.Compute`, constructor `Calc.Calc`, local function `Calc.Local.Inner` —
+  matching the extractor. Call/index arguments are unwrapped from their `argument` nodes;
+  expression-bodied members (`int M() => e;`), `foreach`, `switch` statement/expression, `using`/`lock`
+  blocks carry flow; lambdas / anonymous methods are opaque. Properties, operators, and destructors are
+  not method nodes in the extractor, so they are not keyed.
+- **`find_similar(mode="structure")` and `graph_diff`** now cover Java and C#, ranked/diffed
+  same-language only (a node id maps to exactly one file → one language).
+
+### Quality gate
+- ruff + mypy clean; full suite **1029** passing; differential oracle suite **393** — incl. two new
+  body-matrix completeness oracles: **Java** (46 metamorphic cases + invariants) and **C#** (47
+  metamorphic cases + invariants), each requiring a `helper()` CALL vs a `0` CONST in every
+  value-bearing position to change the fingerprint.
+- Adversarial rounds found and fixed two more dropped positions in **both** frontends: a comma-separated
+  `for` loop's 2nd-and-later **init/update** expressions (`for (…; …; i++, sink(x))`) were dropped
+  because the grammar models them as *repeated* `update`/`init` field children and the walker read only
+  the first via `child_by_field_name`; and a C# `catch (E e) when (filter)` **exception-filter**
+  predicate was never walked. Both now iterate the repeated field children / walk the filter.
+- **Hardened the completeness-oracle predicate across all seven languages.** The metamorphic check was
+  `similarity(a, b) < 1.0`, but cosine self-similarity of a large WL vector rounds to `0.999…98 < 1.0`,
+  so it could *pass on byte-identical fingerprints* — masking a fully-dropped construct. It now returns
+  `1.0` (fails) when the two fingerprints are exactly equal. This caught three C# drops the weak
+  predicate had hidden — `using (var r = e)` paren-form resource (a positional, unnamed-field child),
+  `$"{…}"` interpolated-string holes (was one CONST), and the `new int[]{…}` element initializer (a
+  positional `initializer_expression`) — all now walked. The other six languages re-verified clean.
+- Mutation meta-oracle: `structure.py` 15/15,
+  `graphdiff` 9/9, `similar.py` **53/61** (the new Java/C# fingerprint corpora are now mutation-pinned
+  by `graph_diff` body tests; the 8 survivors are justified-equivalent — the `not sep or … is None`
+  short-circuit guards, unreachable because every node id contains `::`, plus the `_cosine`/`_dot_cos`
+  defensive guards). Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
+
+## [3.5.0] — 2026-06-30
+
+**The body matrix learns C and C++.** v3.4.0 added Rust; v3.5.0 adds C/C++ — language 4 of the
+multi-language sweep (`docs/IDEAS.md` §5b), and the predicted "harder" one (pointers, the
+preprocessor, out-of-line methods, templates). New language for an existing representation → MINOR;
+backward-compatible (schema/indexes/existing ops unchanged, opt-in, advisory).
+
+### Added
+
+- **`core/structure_cpp.py`** — one tree-sitter walker covering **both C and C++** (the `cpp` grammar
+  is a superset that parses C cleanly), emitting the **same** `_VFG` vocabulary as the other frontends
+  and reusing the WL kernel. The function name is dug out of the declarator chain (unwrapping
+  `pointer_declarator`/`reference_declarator` for `int* f()`; an out-of-line `int Foo::m()` keys to
+  the bare last component `m`, matching the extractor). Statement-oriented (explicit `return`).
+  Handles compound assignment, `?:`, casts (operand flows, type doesn't), `*p`/`&x`, `a[i]`
+  (the cpp grammar's `indices`/`subscript_argument_list` shape), range-for, switch (case value walked
+  once), `new`/`delete`, initializer lists, lambdas (opaque `NESTED`). `sizeof(expr)` collapses to a
+  CONST — correct, since it never evaluates its operand. Function-like `#define` macros are
+  preprocessor constructs (not `function_definition`s) and out of scope; a *call* to a macro is a
+  normal `call_expression`.
+- **`find_similar(mode="structure")`** auto-detects C/C++ (after Python, JS/TS, Go, Rust) and ranks
+  same-language only.
+- **`graph_diff`** body layer now covers C/C++ functions/methods too.
+
+Qualname scheme matches the extractor: free/namespace/template functions bare, inline methods
+`Class.method`, out-of-line `Foo::m` definitions bare `m`. Requires the optional **tree-sitter
+extra** (advisory degrade without it); the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **921** passing; differential oracle suite **287** — incl. a new
+  **C/C++ body-matrix completeness oracle** (45 metamorphic cases + invariants: compound-assign /
+  cast / out-of-line-vs-inline qualnames / `sizeof`-is-constant / nested-lambda-opaque / reference-return captured / constructor-member-init-list walked / array-new-size captured / C++17-C++20 init-statement walked / placement-new address captured / stack-VLA-size captured / lambda-init-capture captured / ctor-dtor-function-try-block walked). The oracle
+  caught a real drop during development (the cpp grammar keeps a subscript index under `indices`, not
+  C's `index` field). Mutation meta-oracle unchanged (`structure.py` 15/15, `graphdiff` 9/9,
+  `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
+
+## [3.4.0] — 2026-06-30
+
+**The body matrix learns Rust.** v3.3.0 added Go; v3.4.0 adds Rust — language 3 of the
+multi-language sweep (`docs/IDEAS.md` §5b). New language for an existing representation → MINOR;
+backward-compatible (schema/indexes/existing ops unchanged, opt-in, advisory).
+
+### Added
+
+- **`core/structure_rust.py`** — a tree-sitter value-flow walker for Rust that emits the **same**
+  `_VFG` vocabulary as the Python, JS, and Go frontends and reuses the language-neutral
+  Weisfeiler-Lehman kernel, so Rust↔Rust bodies compare the way Python↔Python ones do. Handles Rust's
+  expression-oriented shape — a block's **trailing expression** is its value, so `{ x }` fingerprints
+  like `{ return x; }`; `if`/`match`/`loop`/`while`/`for` are expressions; the `?` operator,
+  references (`&x`), `as` casts, ranges, tuples, arrays, and struct literals carry their operand's
+  value flow (the cast/asserted *type* carries none); macro invocations (`vec![…]`, `println!(…)`)
+  expose args as a raw token tree, walked best-effort so a variable passed to a macro still threads
+  flow; closures (`|x| …`) are opaque `NESTED` leaves; `self` and named results seed like parameters.
+- **`find_similar(mode="structure")`** now auto-detects Rust (after Python, the JS/TS family, Go) and
+  ranks it against stored functions of the **same** language only.
+- **`graph_diff`** body layer now covers Rust functions/methods too.
+
+Qualname scheme matches the Rust extractor: free functions are bare (`free_fn`), impl methods are
+`Type.method`. Requires the optional **tree-sitter extra** for the Rust layer (advisory degrade
+without it); the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **863** passing; differential oracle suite **233** — incl. a new
+  **Rust body-matrix completeness oracle** (38 metamorphic cases: `helper()` vs `0` in each
+  value-bearing statement/expression position must change the fingerprint, + trailing-expr-equals-
+  return / compound-assign / cast / receiver / nested-closure invariants). Mutation meta-oracle
+  unchanged (`structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity
+  adversarial panel (opus/sonnet/haiku), clean.
+
+## [3.3.0] — 2026-06-30
+
+**The body matrix learns Go.** v3.2.0 ported the intra-procedural value-flow matrix to the JS family;
+v3.3.0 adds Go — language 2 of the multi-language sweep (`docs/IDEAS.md` §5b). New language for an
+existing representation → MINOR; backward-compatible (schema/indexes/existing ops unchanged, opt-in,
+advisory).
+
+### Added
+
+- **`core/structure_go.py`** — a tree-sitter value-flow walker for Go that emits the **same** `_VFG`
+  vocabulary as the Python and JS frontends (operations + control points, data + control edges, copy
+  propagation) and reuses the language-neutral Weisfeiler-Lehman kernel, so Go↔Go bodies compare the
+  way Python↔Python ones do. Covers Go's statement/expression set — short-var/`var`/`const` and
+  multi-value assignment, compound assignment + `++`/`--` rebinds, `if`/`for`/`for…range`/`switch`/
+  `type switch`/`select`, channel send/receive, `go`/`defer`, slices, composite literals, type
+  assertions/conversions — seeds the method **receiver** and named results like parameters, and
+  treats nested `func` literals as opaque leaves (matching the Go extractor, which keys a method by
+  its bare field name and does not mint closures as nodes).
+- **`find_similar(mode="structure")`** now auto-detects Go (after Python and the JS/TS family) and
+  ranks it against stored functions of the **same** language only.
+- **`graph_diff`** body layer now covers Go functions/methods too: a data-flow change that leaves the
+  call graph identical is caught in Go just as in Python and JS (same-language by construction).
+
+Requires the optional **tree-sitter extra** for the Go layer; without it those paths return nothing
+(advisory degrade) — the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **816** passing; differential oracle suite **190** — incl. a new
+  **Go body-matrix completeness oracle** (45 metamorphic cases: `helper()` vs `0` in each
+  value-bearing statement/expression position must change the fingerprint, + receiver/aug-assign/
+  type-assertion/nested-closure invariants). Mutation meta-oracle unchanged (`structure.py` 15/15,
+  `graphdiff` 9/9, `similar.py` 29/32). Two-round full-diversity adversarial panel (opus/sonnet/
+  haiku), clean.
+
+## [3.2.0] — 2026-06-29
+
+**The body matrix learns JavaScript / TypeScript / TSX.** v3.0.0 shipped the intra-procedural
+value-flow matrix for Python; v3.2.0 ports it to the JS family — the first step of the
+multi-language roadmap (`docs/IDEAS.md` §5b). New representation for new languages → MINOR;
+backward-compatible (schema/indexes/existing ops unchanged, opt-in, advisory).
+
+### Added
+
+- **`core/structure_js.py`** — a tree-sitter value-flow walker for JS/TS/TSX that emits the **same**
+  `_VFG` vocabulary as the Python frontend (operations + control points, data + control edges, copy
+  propagation) and reuses the language-neutral Weisfeiler-Lehman kernel, so JS↔JS bodies compare the
+  way Python↔Python ones do. Captures every idiomatic function form — declarations, methods,
+  `const f = () =>…` / `= function(){…}` bindings, object methods, class-field arrows, nested
+  functions — and walks TS type annotations through as no-value-flow (so `TS ≡ JS`).
+- **`find_similar(mode="structure")`** now auto-detects the snippet's language (Python, else the
+  JS/TS family) and ranks it against stored functions of the **same** language (a fingerprint's
+  topology tracks its extractor — cross-language scores aren't comparable).
+- **`graph_diff`** body layer now covers JS/TS/TSX functions too: a data-flow change that leaves the
+  call graph identical is caught in JS just as in Python (same-language by construction).
+
+Requires the optional **tree-sitter extra** for the JS layer; without it those paths return nothing
+(advisory degrade) — the Python body matrix stays stdlib-only.
+
+### Quality gate
+
+- ruff + mypy clean; full suite **762** passing; differential oracle suite **140** — incl. a
+  **JS/TS body-matrix completeness oracle** (51 metamorphic cases: `helper()` vs `0` in each
+  value-bearing position must change the fingerprint), which caught a real template-literal
+  substitution drop during development and a TS `as`/`satisfies` cast that dropped its operand.
+  Mutation meta-oracle unchanged (`structure.py` 15/15, `graphdiff` 9/9, `similar.py` 29/32).
+  Two-round full-diversity adversarial panel (opus/sonnet/haiku), clean.
+
 ## [3.1.0] — 2026-06-29
 
 **Test-coverage hardening + docs.** No source, API, or schema change — indexes don't need

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitchgraph"
-version = "3.1.0"
+version = "3.24.0"
 description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
 readme = "README.md"
 license = "MIT"
@@ -40,6 +40,7 @@ treesitter-download = ["tree-sitter>=0.25.2,<1", "tree-sitter-language-pack>=1.0
 precise = ["jedi>=0.19"]            # jedi-accurate Python resolution (reindex --precise)
 resolve = ["sqlglot>=20"]           # SQL resolver
 algebra = ["python-graphblas>=2023.0"]
+spectral = ["scipy>=1.10"]          # sparse eigensolver/svds — uncaps find_subsystems and find_modes on large graphs
 # Everything (offline-by-default grammar line).
 all = [
   "typer>=0.12",
@@ -49,11 +50,12 @@ all = [
   "jedi>=0.19",
   "sqlglot>=20",
   "python-graphblas>=2023.0",
+  "scipy>=1.10",
 ]
 dev = [
   "pytest>=8.0", "pytest-cov", "hypothesis", "ruff", "mypy",
   "typer>=0.12", "tree-sitter>=0.25.2,<1", "tree-sitter-language-pack>=0.7,<1.0",
-  "jedi>=0.19", "sqlglot>=20", "python-graphblas>=2023.0",
+  "jedi>=0.19", "sqlglot>=20", "python-graphblas>=2023.0", "scipy>=1.10",
 ]
 
 [project.scripts]

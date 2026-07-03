@@ -35,6 +35,14 @@ tests to ground liveness in what actually executed.
   verify before acting.
 - **Where's the risk?** Call `risk` — files that change often AND are depended on
   heavily, plus hidden coupling (files that co-change but share no code edge).
+- **What's dangerous to touch structurally?** Call `find_chokepoints` — the
+  articulation points (sole bridges whose removal fragments the graph), ranked by
+  blast radius. Distinct from `risk`/`orient`: a chokepoint can have modest
+  fan-in/out yet be the only link between two subsystems. Advisory.
+- **Want the codebase's natural subsystems?** Call `find_subsystems` — spectral
+  clustering of the call graph into auto-labelled clusters (the structural
+  complement to `orient`/`summarize_subsystem`; it *discovers* the boundaries).
+  Advisory; `[spectral]` extra (scipy) lets it scale past large graphs.
 - **Want the raw structure of one module?** `get_matrix <scope> <relation>` —
   a small relation matrix for a single file/class (it refuses broad scopes).
 

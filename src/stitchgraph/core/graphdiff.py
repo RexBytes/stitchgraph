@@ -8,9 +8,14 @@ Given two built indexes, locate where their graphs differ. Two layers:
     of two *different* codebases (e.g. a translation) can be compared — advisory only, since the
     prior research (research/README §2) shows raw topology tracks the extractor across languages.
 
-  * body-level (Python only, ``body=True``) — for functions present in BOTH sides, compare their
-    structural fingerprint (`structure.py`). Catches a function whose *implementation* changed even
-    when its name and call edges did not — the plan-vs-actual / translation-fidelity signal.
+  * body-level (Python + JS/TS/TSX + Go + Rust + C/C++ + Java + C# + Ruby + PHP + Bash, ``body=True``)
+    — for functions present in BOTH sides, compare their structural fingerprint (`structure.py` for
+    Python, `structure_js.py` for the JS family, `structure_go.py` for Go, `structure_rust.py` for
+    Rust, `structure_cpp.py` for C/C++, `structure_java.py` for Java, `structure_csharp.py` for C#,
+    `structure_ruby.py` for Ruby, `structure_php.py` for PHP, `structure_bash.py` for Bash). Catches
+    a function whose *implementation* changed even when its name and call edges did not — the
+    plan-vs-actual / translation-fidelity signal. (Every language but Python needs the tree-sitter
+    extra; without it that layer simply contributes nothing.)
 
 Advisory and read-only: it reports located deltas for a human/LLM to act on; it never edits source
 and never feeds `find_stale`.
@@ -62,18 +67,32 @@ def _counter_delta(ca: collections.Counter, cb: collections.Counter) -> tuple[li
 
 
 def _id_fingerprints(store: Store) -> dict[str, collections.Counter[str]]:
-    """{node-id -> structural fingerprint} for stored Python functions/methods. Keyed by the FULL
-    node id (`path::qualname#disamb`, path relative to the indexed root) — NOT the bare qualname —
-    so two files defining the same name (`helper`, `__init__`, …) don't collide and silently drop a
-    real body change. Two separately-indexed trees with the same internal layout (plan vs actual)
-    still line up, because node paths are root-relative and therefore identical."""
-    return dict(similar._python_fn_fingerprints(store))
+    """{node-id -> structural fingerprint} for stored Python, JS/TS/TSX, Go, Rust, C/C++, Java, C#,
+    Ruby, PHP AND Bash functions/methods. Keyed by the FULL node id (`path::qualname#disamb`, path
+    relative to the indexed root) — NOT the bare qualname — so two files defining the same name
+    (`helper`, `__init__`, …) don't collide and silently drop a real body change. Two separately-indexed
+    trees with the same internal layout (plan vs actual) still line up, because node paths are
+    root-relative and therefore identical. A node id maps to exactly one file (one language), so the
+    body comparison in `graph_diff` only ever compares same-language fingerprints — never the
+    not-comparable cross-language case."""
+    out = dict(similar._python_fn_fingerprints(store))
+    out.update(similar._js_fn_fingerprints(store))
+    out.update(similar._go_fn_fingerprints(store))
+    out.update(similar._rust_fn_fingerprints(store))
+    out.update(similar._cpp_fn_fingerprints(store))
+    out.update(similar._java_fn_fingerprints(store))
+    out.update(similar._csharp_fn_fingerprints(store))
+    out.update(similar._ruby_fn_fingerprints(store))
+    out.update(similar._php_fn_fingerprints(store))
+    out.update(similar._bash_fn_fingerprints(store))
+    return out
 
 
 def graph_diff(store_a: Store, store_b: Store, mode: str = "id",
                body: bool = True, body_threshold: float = 0.95) -> dict:
     """Structural diff of two indexes. Returns a dict with located node/edge deltas and (when
-    ``body`` and there are Python functions in common) the functions whose body shape diverged."""
+    ``body`` and there are Python, JS/TS/TSX, Go, Rust, C/C++, Java, C#, Ruby, PHP, or Bash functions
+    in common) the functions whose body shape diverged."""
     na, nb = _node_keys(store_a, mode), _node_keys(store_b, mode)
     ea, eb = _edge_keys(store_a, mode), _edge_keys(store_b, mode)
     nodes_only_a, nodes_only_b = _counter_delta(na, nb)
