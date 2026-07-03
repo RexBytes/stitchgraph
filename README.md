@@ -75,7 +75,7 @@ for LLM agents. The full operation list and the question each answers is in the 
   tens-of-thousands-of-file repos (e.g. Magento, 24k PHP files) without holding
   the whole graph in RAM — see below.
 
-## Status (v3.25.0 — the external-review hardening release: 24 findings fixed across the POD math, body matrix, extractor, streaming, and adapters — see `docs/RELEASE_NOTES_v3.25.0.md`; the toolkit itself: `select_tests`/`co_change`/`find_coupling`/`find_gaps`/`test_order`/`redundant_tests`/`find_core`/`feature_map`/`find_outlier_tests`/`runtime_risk`/`coverage_drift` atop `find_modes`/`find_subsystems`/`find_chokepoints`, over the layered call ↔ statement ↔ expression code-property graph)
+## Status (v3.25.1 — the external-review hardening release: 24 findings fixed across the POD math, body matrix, extractor, streaming, and adapters — see `docs/RELEASE_NOTES_v3.25.0.md`; the toolkit itself: `select_tests`/`co_change`/`find_coupling`/`find_gaps`/`test_order`/`redundant_tests`/`find_core`/`feature_map`/`find_outlier_tests`/`runtime_risk`/`coverage_drift` atop `find_modes`/`find_subsystems`/`find_chokepoints`, over the layered call ↔ statement ↔ expression code-property graph)
 
 Working end-to-end and dogfooding on its own source. The per-language **cardinal
 sweep is complete across all supported languages** (Python + 11 via tree-sitter),
