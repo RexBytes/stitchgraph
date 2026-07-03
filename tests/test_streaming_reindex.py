@@ -289,7 +289,13 @@ def test_streaming_python_edges_bounded_memory(tmp_path):
     address-space cap. CALIBRATED (2026-07-03, identical corpus shape at 610 files): pre-fix
     peaks at ~190 B/edge linear (412 MB at 2.16M edges), post-fix is flat at ~43 MB. At this
     test's ~1.2M edges the pre-fix code needs ~230 MB and dies at the 130 MB cap about a third
-    of the way through (verified); the streamed path passes with ~3x headroom."""
+    of the way through (verified); the streamed path passes with ~3x headroom.
+
+    The corpus MUST contain class inheritance with overrides: the endgame override widening
+    (`Store._propagate_overrides`) early-returns on an inheritance-free graph, and its first
+    cut fetchall'd the whole edge table — this gate passed while real Home Assistant still
+    OOM'd in that endgame (field report #2, same day). The Base/Impl pairs below keep that
+    path exercised, and the widened-edge assertion proves it ran rather than early-returned."""
     import subprocess
     import sys
     import textwrap
@@ -309,6 +315,16 @@ def test_streaming_python_edges_bounded_memory(tmp_path):
             def load(): return 4
             def save(): return 5
             def mk(): return 6
+            class Base{i}:
+                def start(self):
+                    return self.step()
+                def step(self):
+                    return 0
+            class Impl{i}(Base{i}):
+                def step(self):
+                    return get()
+            def boot{i}():
+                return Impl{i}().start()
         """))
     script = textwrap.dedent(f"""
         import resource
@@ -319,6 +335,9 @@ def test_streaming_python_edges_bounded_memory(tmp_path):
             assert r.ok and r.result["nodes"] > 3000, r.result
             n = store.conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
             assert n > 1_000_000, f"fan-out corpus must produce bulk edges, got {{n}}"
+            w = store.conn.execute("SELECT COUNT(*) c FROM edges WHERE provenance = "
+                                   "'ambiguous' AND name_based = 0").fetchone()["c"]
+            assert w >= 400, f"override widening must run on this corpus, got {{w}} edges"
         print("BOUNDED-OK")
     """)
     proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,

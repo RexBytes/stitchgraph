@@ -426,7 +426,15 @@ class Store:
         R22A, cardinal). Re-derive those edges here from the store's INHERITS graph.
 
         Scoped to the inheritance subtree (not by name), so unrelated same-named members are
-        never linked; AMBIGUOUS, so it only adds reachability, never under-counts."""
+        never linked; AMBIGUOUS, so it only adds reachability, never under-counts.
+
+        Constant-memory (2026-07-03 HA field report): Python touches only SYMBOL-scale data
+        — class ids, the INHERITS closure, node ids, and the distinct edge *targets*. The
+        edge scan and the widened inserts run inside SQLite. The previous body fetchall'd
+        every resolved CALLS/REFERENCES row plus a seen-set of their key tuples — O(edges)
+        Python memory, the one allocation the streaming reindex's per-file drain didn't
+        remove, and it OOM'd Home Assistant's ~16M-edge graph in the endgame after the
+        whole index had streamed at a flat ~113 MB."""
         class_ids = {r["id"] for r in self.conn.execute(
             "SELECT id FROM nodes WHERE kind = ?", (NodeKind.CLASS.value,)).fetchall()}
         if not class_ids:
@@ -455,31 +463,58 @@ class Store:
             cache[base_id] = out
             return out
 
-        node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()}
-        edges = self.conn.execute(
-            """SELECT src, relation, dst_symbol, dst_id, location, source, file FROM edges
-                WHERE dst_id IS NOT NULL AND relation IN (?, ?)""",
-            (Relation.CALLS.value, Relation.REFERENCES.value)).fetchall()
-        seen = {(e["src"], e["relation"], e["dst_id"]) for e in edges}
-        for e in edges:
-            base_id = _owner_scope(e["dst_id"])
+        # Widening map at symbol scale: for each DISTINCT bound target that is a class
+        # member, every existing override of it below the class. (base, override, method)
+        # rows — O(actual overrides), never O(edges).
+        node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes")}
+        pairs: list[tuple[str, str, str]] = []
+        for r in self.conn.execute(
+                """SELECT DISTINCT dst_id FROM edges
+                    WHERE dst_id IS NOT NULL AND relation IN (?, ?)""",
+                (Relation.CALLS.value, Relation.REFERENCES.value)):
+            base_id = _owner_scope(r["dst_id"])
             if base_id is None or base_id not in class_ids:
                 continue
-            method = e["dst_id"].rsplit(".", 1)[1]
+            method = r["dst_id"].rsplit(".", 1)[1]
             for sub_id in descendants(base_id):
                 override = f"{sub_id}.{method}"
-                if override == e["dst_id"] or override not in node_ids:
-                    continue
-                key = (e["src"], e["relation"], override)
-                if key in seen:
-                    continue
-                seen.add(key)
-                self.conn.execute(
-                    """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
-                                         provenance, location, source, file, name_based)
-                       VALUES (?, ?, ?, ?, 1.0, 'ambiguous', ?, ?, ?, 0)""",
-                    (e["src"], e["relation"], method, override,
-                     e["location"], e["source"], e["file"]))
+                if override != r["dst_id"] and override in node_ids:
+                    pairs.append((r["dst_id"], override, method))
+        if not pairs:
+            return
+        self.conn.execute("DROP TABLE IF EXISTS temp._widen")
+        self.conn.execute("CREATE TEMP TABLE _widen (base TEXT, override TEXT, method TEXT)")
+        self.conn.executemany("INSERT INTO _widen VALUES (?, ?, ?)", pairs)
+        self.conn.execute("CREATE INDEX idx_widen_base ON _widen(base)")
+        # Materialise the candidates BEFORE inserting (the in-memory twin iterates a
+        # snapshot of the edge list — a widened edge must never seed further widening).
+        # rn = 1 keeps the first triggering edge per (src, relation, override) key in
+        # insertion (rowid) order, matching the twin's first-wins seen-set; NOT EXISTS
+        # skips keys that already exist as real edges, matching its seen-set seeding.
+        self.conn.execute("DROP TABLE IF EXISTS temp._widen_out")
+        self.conn.execute(
+            """CREATE TEMP TABLE _widen_out AS
+               SELECT src, relation, method, override, location, source, file
+                 FROM (SELECT e.src AS src, e.relation AS relation, w.method AS method,
+                              w.override AS override, e.location AS location,
+                              e.source AS source, e.file AS file,
+                              ROW_NUMBER() OVER (PARTITION BY e.src, e.relation, w.override
+                                                 ORDER BY e.id) AS rn
+                         FROM edges e JOIN _widen w ON w.base = e.dst_id
+                        WHERE e.relation IN (?, ?)
+                          AND NOT EXISTS (SELECT 1 FROM edges p
+                                           WHERE p.src = e.src AND p.relation = e.relation
+                                             AND p.dst_id = w.override))
+                WHERE rn = 1""",
+            (Relation.CALLS.value, Relation.REFERENCES.value))
+        self.conn.execute(
+            """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                 provenance, location, source, file, name_based)
+               SELECT src, relation, method, override, 1.0, 'ambiguous',
+                      location, source, file, 0
+                 FROM _widen_out""")
+        self.conn.execute("DROP TABLE temp._widen_out")
+        self.conn.execute("DROP TABLE temp._widen")
 
     def _dedup_resolved_edges(self) -> None:
         """Collapse duplicate resolved edges and drop redundant REFERENCES — the DB-level
@@ -728,6 +763,17 @@ class Store:
                        AND NOT (provenance = 'ambiguous' AND name_based = 0))"""
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
+
+    def unresolved_count(self) -> int:
+        """COUNT twin of `unresolved_edges` (same predicate, no row materialisation) for
+        callers that only need the tally — the streaming reindex's final holes count must
+        not undo its constant-memory work by building an Edge per hole (2026-07-03)."""
+        return self.conn.execute(
+            """SELECT COUNT(*) AS c FROM edges
+                WHERE dst_id IS NULL
+                   OR (dst_id NOT IN (SELECT id FROM nodes)
+                       AND NOT (provenance = 'ambiguous' AND name_based = 0))"""
+        ).fetchone()["c"]
 
     def resolved_edges(self, relation: Relation | None = None) -> list[Edge]:
         if relation is None:

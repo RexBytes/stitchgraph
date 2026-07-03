@@ -1941,27 +1941,33 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
             """DELETE FROM edges WHERE
                    src NOT IN (SELECT id FROM nodes)
                 OR (dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes))""")
-    # Override widening: the in-memory path runs the extractor's _propagate_overrides over
-    # the full edge list; the sink path never materialises that list (the HA constant-memory
-    # fix), so re-derive the same AMBIGUOUS subclass-override edges from the store — the DB
-    # twin already pinned equal to the extractor's by the incremental differential oracle.
-    # Runs after nodes land (it reads class kinds + INHERITS rows) and before the global
-    # dedup, exactly where the in-memory path's override edges sit relative to dedup.
-    with store.conn:
-        store._propagate_overrides()
-    # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo. The
-    # dedup correlates rows by (src, relation, dst_id); a covering index makes its EXISTS
-    # subqueries index lookups instead of full scans. Temporary: dropped after, since the
+    # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo.
+    # Both endgame passes below correlate rows by (src, relation, dst_id): the override
+    # widening's NOT-EXISTS probes and the dedup's EXISTS subqueries. A covering index makes
+    # those index lookups instead of full scans. Temporary: dropped after, since the
     # steady-state read indexes differ.
     with store.conn:
         store.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_edges_dedup ON edges(src, relation, dst_id, weight)")
+    # Override widening: the in-memory path runs the extractor's _propagate_overrides over
+    # the full edge list; the sink path never materialises that list (the HA constant-memory
+    # fix), so re-derive the same AMBIGUOUS subclass-override edges from the store — the DB
+    # twin already pinned equal to the extractor's by the incremental differential oracle,
+    # and itself constant-memory (symbol-scale Python + SQL-side scan/insert; its first cut
+    # fetchall'd the edge table and re-OOM'd HA in the endgame, 2026-07-03). Runs after nodes
+    # land (it reads class kinds + INHERITS rows) and before the global dedup, exactly where
+    # the in-memory path's override edges sit relative to dedup.
+    with store.conn:
+        store._propagate_overrides()
+    with store.conn:
         store._dedup_resolved_edges()
         store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
 
     store.set_meta("root", abs_root)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
-    holes = len(store.unresolved_edges())
+    # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,
+    # an O(holes) allocation this path exists to avoid.
+    holes = store.unresolved_count()
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
               files=len(files), nodes=store.node_count())
 
