@@ -29,14 +29,44 @@ def test_operations_expose_only_json_params():
 
 
 def test_mcp_server_builds():
+    """A broken MCP surface must FAIL, not skip: the old blanket `except Exception:
+    pytest.skip` converted any adapter breakage (pydantic schema failure, FastMCP API
+    drift) into a green CI run (review 2026-07-03, F10d). Only a missing SDK skips."""
     pytest.importorskip("mcp")
     from stitchgraph.adapters.mcp import build_server
 
-    try:
-        server = build_server(":memory:")
-    except Exception as exc:  # noqa: BLE001 — best-effort across SDK versions
-        pytest.skip(f"MCP SDK build issue: {exc}")
+    server = build_server(":memory:")
     assert server is not None
+
+
+@pytest.mark.anyio
+async def test_mcp_tool_call_end_to_end(tmp_path):
+    """Drive one real tool call through FastMCP: schema generation, kwargs dispatch,
+    and the envelope JSON must survive the SDK boundary (review 2026-07-03, F10d)."""
+    pytest.importorskip("mcp")
+    import json
+
+    import stitchgraph as sg
+    from stitchgraph.adapters.mcp import build_server
+
+    (tmp_path / "m.py").write_text("def f():\n    return 1\n")
+    db = tmp_path / "idx.db"
+    with sg.Store(str(db)) as store:
+        sg.reindex(store, str(tmp_path))
+    server = build_server(str(db))
+    result = await server.call_tool("orient", {})
+    # FastMCP returns (content_blocks, structured) or just content blocks depending on
+    # version; the text block always carries the serialized envelope.
+    blocks = result[0] if isinstance(result, tuple) else result
+    envelope = json.loads(blocks[0].text)
+    assert envelope.get("ok") is True
+    assert envelope.get("meta", {}).get("total_nodes", 0) > 0
+    assert envelope.get("result", {}).get("node_counts", {}).get("Function", 0) == 1
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 
 # -- Review 2026-07-03 / F2b: adapters must refuse, not silently create, an index --
