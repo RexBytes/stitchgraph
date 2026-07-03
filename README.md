@@ -232,9 +232,15 @@ Per-language support matrix: [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
 ## Scale
 
 `reindex` streams the graph to SQLite in constant memory (auto-enabled for large
-on-disk trees): a 4,300-file Magento module indexes in **269 MB** peak instead of
-3.2 GB, byte-identical output, pinned by a differential oracle. Query sweeps stream
-their adjacency too — a 16M-edge graph (Home Assistant scale) is queried in ~2 GB.
+on-disk trees), byte-identical to the in-memory path and pinned by a differential
+oracle. Measured:
+
+- Magento (4,300 PHP files): **269 MB** peak instead of 3.2 GB.
+- A homonym-fanout Python corpus producing **8.6M edges: 50 MB** peak (the pre-v3.28.0
+  Python path materialized its edge list first — a field report of Home Assistant
+  OOMing at 7 GB exposed it; fixed and now **gated in CI** by a hard-memory-cap test).
+- Query sweeps stream their adjacency too — a 16M-edge graph is queried in ~2 GB.
+
 Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
 
 ## Develop

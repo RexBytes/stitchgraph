@@ -547,6 +547,13 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   necessarily holds the rows in RAM). As of v2.0.0 it is the **default** (`streaming=None` →
   AUTO: on-disk store with ≥ `_STREAM_AUTO_FILES` source files); force it either way with
   `streaming=True` / `streaming=False`.
+- **Python-path correction (v3.28.0):** until v3.28.0 only the tree-sitter extractor
+  streamed edges; the Python extractor materialised its full edge list before the sink
+  drained it, so a large pure-Python repo (Home Assistant, field report 2026-07-03) OOM'd
+  at ~7 GB despite `streaming=True`. Fixed (per-file drain + store-side override widening,
+  measured 8.6M edges / 50 MB peak) and now gated by a hard-memory-cap CI test
+  (`test_streaming_python_edges_bounded_memory`), so the constant-memory property is a
+  tested invariant rather than a documented claim.
 - **Querying at that scale (v2.1.0):** the reachability sweeps (`find_stale`, `impact_of`,
   `fan_in`) now stream their adjacency from `Store.iter_resolved()` rather than materialising
   every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM. The
