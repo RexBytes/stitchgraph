@@ -1764,10 +1764,17 @@ def _auto_stream(path: str, store: Store) -> bool:
     """Decide whether AUTO mode (`streaming=None`) should stream. Streams only for an on-disk
     store (a `:memory:` DB keeps rows in RAM, so streaming saves nothing there) with a large
     source tree. The count short-circuits at the threshold, so this is O(threshold), not
-    O(repo) — a cheap probe, never a second full walk on a big monorepo."""
+    O(repo) — a cheap probe, never a second full walk on a big monorepo.
+
+    Counts only files EXTRACTION will actually read: the old bare rglob("*") counted
+    everything — a populated .venv alone exceeds the threshold, forcing a 50-file project
+    onto the ~40% slower, non-crash-atomic streaming path (review 2026-07-03, F8). Prunes
+    the shared SKIP_DIRS exactly like `_wanted` in both extractors."""
     if getattr(store, "path", ":memory:") == ":memory:":
         return False
-    from pathlib import Path
+    import os
+
+    from .extract.python import SKIP_DIRS
     suffixes = {".py"}  # the Python extractor's fixed extension
     try:
         from .extract import treesitter
@@ -1776,11 +1783,13 @@ def _auto_stream(path: str, store: Store) -> bool:
         pass
     n = 0
     try:
-        for p in Path(path).rglob("*"):
-            if p.suffix in suffixes and p.is_file():
-                n += 1
-                if n >= _STREAM_AUTO_FILES:
-                    return True
+        for _root, dirs, files in os.walk(path):
+            dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+            for f in files:
+                if os.path.splitext(f)[1] in suffixes:
+                    n += 1
+                    if n >= _STREAM_AUTO_FILES:
+                        return True
     except OSError:
         return False
     return False
@@ -1907,6 +1916,17 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     with store.conn:
         for n in nodes:
             store.add_node(n)
+        # Orphan sweep (review 2026-07-03, F9): a swallowed tree-sitter failure mid-extract
+        # (see extract_project's warn-and-continue) leaves already-COMMITTED edge batches whose
+        # defining nodes were never returned — resolved edges into/out of phantom ids that
+        # would flood find_holes/scan with findings indistinguishable from real broken
+        # references. Drop any edge whose src or resolved dst has no node. On a clean run this
+        # deletes nothing (every extractor edge resolves against the full symbol table), so the
+        # streamed index stays byte-identical to the in-memory path.
+        store.conn.execute(
+            """DELETE FROM edges WHERE
+                   src NOT IN (SELECT id FROM nodes)
+                OR (dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes))""")
     # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo. The
     # dedup correlates rows by (src, relation, dst_id); a covering index makes its EXISTS
     # subqueries index lookups instead of full scans. Temporary: dropped after, since the

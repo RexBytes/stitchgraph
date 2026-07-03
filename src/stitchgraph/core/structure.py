@@ -173,6 +173,14 @@ def _build_vfg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> _VFG:
             return ev(node.value, ctrl)
         if isinstance(node, ast.Starred):
             return ev(node.value, ctrl)
+        if isinstance(node, ast.NamedExpr):
+            # Walrus: evaluate the value, bind the target, yield the value. Without this case
+            # the fallback dropped the binding (the Store-ctx target returns None from ev), so
+            # `if (x := f()): return x + 1` read x FREE everywhere and scored ~0.32 against its
+            # two-line equivalent — breaking temp-factoring invariance (review 2026-07-03, F5c).
+            val = ev(node.value, ctrl)
+            bind(node.target, val)
+            return val
         if isinstance(node, ast.Lambda):
             # A lambda is an opaque closure — one NESTED leaf, matching nested `def` statements (via
             # `_OPAQUE` in `do`) and every tree-sitter frontend. Its body must NOT leak into the
@@ -510,9 +518,19 @@ def _build_pdg(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[list[str], l
                 #  accepted under-approximation, consistent with the no-SSA disclaimer above).
             for v in (value if isinstance(value, list) else [value]):
                 if isinstance(v, ast.AST):
-                    for sub in ast.walk(v):
+                    # Stop at nested function scopes: a lambda body executes in its own scope —
+                    # the VFG models it as an opaque NESTED leaf and every tree-sitter PDG's
+                    # collect() stops at _FUNC_NODES, so walking through it here created data
+                    # edges for lambda-captured names that no sibling frontend produces,
+                    # breaking the certified cross-frontend symmetry (review 2026-07-03, F5e).
+                    stack = [v]
+                    while stack:
+                        sub = stack.pop()
                         if isinstance(sub, ast.Name):
                             (stores if isinstance(sub.ctx, ast.Store) else loads).add(sub.id)
+                        if isinstance(sub, (ast.Lambda, ast.FunctionDef, ast.AsyncFunctionDef)):
+                            continue
+                        stack.extend(ast.iter_child_nodes(sub))
         return loads, stores
 
     last_def: dict[str, int] = {a.arg: entry for a in _all_args(fn)}
