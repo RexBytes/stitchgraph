@@ -4,6 +4,22 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.27.0] — 2026-07-03
+
+**Docs release: the README becomes a front door.** No code change.
+
+### Changed
+- **README rewritten** for readers who don't live in this repo: a lead introduction (what it is,
+  the two design commitments), install matrix, a five-minute human quickstart (every command
+  verified against a live index), the operations as ask→operation tables, the behavioural toolkit
+  with the sandboxed capture workflow, an **agents section** (MCP launch + Claude Desktop/Code
+  config + rules of engagement distilled from `AGENTS.md`), the trust model, languages, and scale.
+  The version-archaeology status section moved out (it lives in `docs/STATUS.md` / `CHANGELOG.md`).
+
+### Added
+- `docs/RELEASE_NOTES_v3.26.0.md` (the D2 dedup notes, missed at release time) and
+  `docs/RELEASE_NOTES_v3.27.0.md`.
+
 ## [3.26.0] — 2026-07-03
 
 **D2 dedup** (review 2026-07-03 finding D2; `research/14` showed the nine tree-sitter
