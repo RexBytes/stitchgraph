@@ -28,6 +28,7 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
+from .structure_common import make_parser, op_text
 
 _EXTS = {".sh": "bash", ".bash": "bash"}
 
@@ -39,14 +40,7 @@ _CONST = frozenset({"number", "raw_string", "word", "regex"})
 
 
 def _parser():
-    """A tree-sitter Bash parser, or None if the extra isn't installed."""
-    try:
-        from tree_sitter import Parser
-
-        from .extract.treesitter import _load_grammar
-        return Parser(_load_grammar("bash"))
-    except Exception:  # noqa: BLE001 — no extra / no grammar -> the body layer adds nothing
-        return None
+    return make_parser("bash")
 
 
 def _lang_for_ext(ext: str) -> str | None:
@@ -379,13 +373,7 @@ _STMT_TYPES = frozenset({
 
 
 def _op_text(node, text) -> str:
-    op = node.child_by_field_name("operator")
-    if op is not None:
-        return op.text.decode("utf-8", "replace")
-    for c in node.children:
-        if not c.is_named and c.text:
-            return c.text.decode("utf-8", "replace")
-    return "?"
+    return op_text(node)
 
 
 # --- STATEMENT layer (PDG) — design §5c sweep, Bash (the final language) --------------------------

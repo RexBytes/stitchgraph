@@ -20,6 +20,7 @@ from __future__ import annotations
 import collections
 
 from .structure import _CTRL, _DATA, _VFG, _serialize_vfg, _wl_features
+from .structure_common import first, last, make_parser, nc, op_text
 
 # JS-family grammars share one tree-sitter family; one walker covers all three.
 _LANGS = ("javascript", "typescript", "tsx")
@@ -44,14 +45,7 @@ _CAST_OPERAND_FIRST = frozenset({"as_expression", "satisfies_expression"})
 
 
 def _parser(lang: str):
-    """A tree-sitter parser for `lang`, or None if the extra isn't installed (advisory degrade)."""
-    try:
-        from tree_sitter import Parser
-
-        from .extract.treesitter import _load_grammar
-        return Parser(_load_grammar(lang))
-    except Exception:  # noqa: BLE001 — no extra / no grammar -> the body layer adds nothing
-        return None
+    return make_parser(lang)
 
 
 def _lang_for_ext(ext: str) -> str | None:
@@ -491,31 +485,19 @@ def _param_names(node, text) -> list[str]:
 
 
 def _nc(node):
-    """Named children minus comment trivia. Tree-sitter exposes comments as named nodes, so any
-    positional pick over ``named_children`` (``[0]`` / ``[-1]`` / ``[i]``) can be silently displaced
-    by a leading/trailing comment — filter them out before selecting a child by position."""
-    return [c for c in node.named_children if c.type != "comment"]
+    return nc(node)
 
 
 def _first(node):
-    k = _nc(node)
-    return k[0] if k else None
+    return first(node)
 
 
 def _last(node):
-    k = _nc(node)
-    return k[-1] if k else None
+    return last(node)
 
 
 def _op_text(node, text) -> str:
-    op = node.child_by_field_name("operator")
-    if op is not None:
-        return op.text.decode("utf-8", "replace")
-    # operator isn't a named field on every grammar version — scan anonymous children.
-    for c in node.children:
-        if not c.is_named and c.text:
-            return c.text.decode("utf-8", "replace")
-    return "?"
+    return op_text(node)
 
 
 # --- STATEMENT layer (PDG) — design §5c phase 2, JS/TS/TSX ---------------------------------------
