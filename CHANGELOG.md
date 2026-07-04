@@ -4,6 +4,37 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.29.0] — 2026-07-04
+
+**The field-analysis release.** v3.28.0's freshly-indexable Home Assistant graph (16M
+edges) was pointed at the full analysis battery (`research/16-ha-field-analysis.md`) —
+finding real dead code in HA and three scale defects/artifacts in our own query layer.
+
+### Fixed
+- **`scan` was Edge-object scale, twice**: its provenance-share step indexed every
+  resolved edge into Python dicts, and its EXTRACTED-only sweep materialised the same
+  list inside `_adjacency(edge_filter=...)` — MemoryError at a 6 GB cap on the 16M-edge
+  graph. Now per-component/per-candidate COUNT queries in SQLite + a streaming
+  `Store.iter_resolved_full()`. Byte-identical output (162-issue differential on our own
+  graph); **1,486 MB → 185 MB** and ~3× faster on the ~1.2M-edge gate corpus; the memory
+  gate now runs `scan` under a 400 MB cap that kills the pre-fix code.
+- **`orient`/`risk` hub ranking drowned in homonym artifacts** at scale (HA's top "hubs"
+  were `.hass`/`.data` attribute nodes with fan-in ~12,000 of pure AMBIGUOUS widening
+  arms). The fan-in fallback now counts CONFIDENT (EXTRACTED) edges only via one SQL
+  GROUP BY, reported as `confident_fan_in`. (GraphBLAS metrics unchanged; a
+  provenance-filtered matrix variant is recorded follow-up.)
+
+### Added
+- **`[entry_points] root_modules`** config: glob patterns over module file paths for
+  framework-loaded plugin/integration trees (e.g. `["components/*"]` for Home
+  Assistant). Roots the MODULE node — module-level wiring (schema validators, registered
+  hooks, dispatch tables) stops surfacing as dead-code candidates without
+  blanket-rescuing unreferenced functions. Proven on HA: rescues exactly the 33
+  module-level-rooted candidates.
+- `research/16-ha-field-analysis.md`: the full HA field analysis — verified dead code in
+  HA core (`rgbww_to_color_temperature` dead pair, `is_ipv6_address`, 4/5 deprecation
+  helpers, …), the POD feasibility verdict, and the query-layer scale profile.
+
 ## [3.28.0] — 2026-07-03
 
 **The constant-memory release.** A field report falsified the core scale claim: Home
