@@ -367,3 +367,37 @@ def test_streaming_python_edges_bounded_memory(tmp_path):
     assert "SCAN-BOUNDED-OK" in proc.stdout, (
         f"scan exceeded the 400 MB memory cap (rc={proc.returncode}):\n"
         f"{proc.stderr[-800:]}")
+
+
+# ---------------------------------------------------------------------------
+# Planner statistics: reindex must leave approximate ANALYZE stats behind.
+
+
+def _stat1_indexes(store):
+    if not store.conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='sqlite_stat1'").fetchone()[0]:
+        return set()
+    return {r[0] for r in store.conn.execute("SELECT idx FROM sqlite_stat1")}
+
+
+def test_reindex_leaves_planner_stats_in_memory_path(tmp_path):
+    """Both reindex paths must end with `sqlite_stat1` covering the edge indexes. A
+    stat-less db lets the planner choose by schema order, not selectivity — on the
+    16M-edge field graph that walked idx_edges_rel (12.9M entries) per scan candidate
+    (v3.29.0 planner trap). The hot shipped queries are pinned by shape; the stats
+    protect every other query by default."""
+    _write(tmp_path, {"a.py": "def f():\n    return g()\n\ndef g():\n    return 1\n"})
+    with sg.Store(str(tmp_path / "idx.db")) as store:
+        assert sg.reindex(store, str(tmp_path), streaming=False).ok
+        idxs = _stat1_indexes(store)
+        assert {"idx_edges_src", "idx_edges_dst"} <= idxs, idxs
+
+
+def test_reindex_leaves_planner_stats_streaming_path(tmp_path):
+    _write(tmp_path, {"a.py": "def f():\n    return g()\n\ndef g():\n    return 1\n"})
+    with sg.Store(str(tmp_path / "idx.db")) as store:
+        assert sg.reindex(store, str(tmp_path), streaming=True).ok
+        idxs = _stat1_indexes(store)
+        assert {"idx_edges_src", "idx_edges_dst"} <= idxs, idxs
+        # The endgame's temporary covering index must not leak into the stats.
+        assert "idx_edges_dedup" not in idxs

@@ -1788,6 +1788,7 @@ def reindex(store: Store, path: str, precise: bool = False,
         for e in edges:
             store.add_edge(e)
 
+    store.analyze()
     store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
@@ -1996,6 +1997,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         store._dedup_resolved_edges()
         store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
 
+    store.analyze()
     store.set_meta("root", abs_root)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,

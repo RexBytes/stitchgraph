@@ -72,4 +72,14 @@ equality (`src` / `dst_id`) in the WHERE and move relation/provenance into `SUM`
 aggregates, with `CROSS JOIN` pinning the cycle query's join order. Verified with
 `EXPLAIN QUERY PLAN` on the field graph: `idx_edges_src`/`idx_edges_dst` probes at
 0.3–25 ms. This hardening applies to any store queried without stats — i.e. every
-stitchgraph index ever built.
+stitchgraph index built before this release.
+
+Belt and braces: `reindex` now also finishes with an approximate `ANALYZE`
+(`analysis_limit=1000` — measured 0.03 s on the 16M-edge graph, vs 13.8 s for a full
+scan), so freshly built indexes carry `sqlite_stat1` planner statistics. Measured on
+the field graph, those stats alone steer the planner off the trap. The pinned query
+shapes stay the primary defense — indexes already in the field remain stat-less until
+their next reindex, the sampled stats are imprecise (they rank index selectivity
+correctly but misestimate absolute counts by orders of magnitude), and a deterministic
+shape beats a data-dependent plan — the stats exist to protect every *other* query
+(ad-hoc, future, user-issued) by default.

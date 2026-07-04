@@ -34,6 +34,12 @@ finding real dead code in HA and three scale defects/artifacts in our own query 
 - `research/16-ha-field-analysis.md`: the full HA field analysis — verified dead code in
   HA core (`rgbww_to_color_temperature` dead pair, `is_ipv6_address`, 4/5 deprecation
   helpers, …), the POD feasibility verdict, and the query-layer scale profile.
+- `reindex` now finishes with an approximate `ANALYZE` (`analysis_limit=1000` —
+  0.03 s measured on the 16M-edge graph), so fresh indexes carry `sqlite_stat1`
+  planner statistics; measured on the field graph, the stats alone steer the planner
+  off the `idx_edges_rel` trap. The pinned query shapes remain the primary defense
+  (indexes built before this release stay stat-less until their next reindex); the
+  stats protect every non-pinned query — ad-hoc, future, user-issued — by default.
 
 ## [3.28.0] — 2026-07-03
 
