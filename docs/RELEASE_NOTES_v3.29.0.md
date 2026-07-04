@@ -55,7 +55,21 @@ All three fixes are general: they change how every run behaves on every codebase
 - New tests falsified against the pre-fix code: the hub-ranking test's homonym strictly
   dominates raw fan-in (old code ranks it first, new code inverts); the `root_modules`
   test fails on old code (key unknown).
-- 16M-edge field graph under a 6 GB cap: `scan` <!-- HA_SCAN_NUMBERS --> where the
-  pre-fix code MemoryError'd; `orient` returns architecture-shaped hubs under
-  `confident_fan_in`.
+- 16M-edge field graph under a 6 GB cap: `scan` completes in **625 s at 2.1 GB peak**
+  (compact-adjacency scale, same league as the other sweeps) where the pre-fix code
+  MemoryError'd; `orient` drops from 106 s to **4 s** and its top hubs become
+  architecture (`HomeAssistant`, `ConfigEntry`, `AddEntitiesCallback`, `FlowResult`,
+  `Platform`) instead of homonym attribute noise.
 - Full suite green.
+
+## Also fixed en route: a query-planner trap this same graph exposed
+
+The first cut of the SQL shares put `relation = ?` in the WHERE clause next to the
+selective key. On a database without ANALYZE stats, SQLite's planner may choose
+`idx_edges_rel` — a 12.9M-entry index walk **per god-object candidate** (~2 s each,
+hours in total), caught live with py-spy. The shipped queries keep only the selective
+equality (`src` / `dst_id`) in the WHERE and move relation/provenance into `SUM`
+aggregates, with `CROSS JOIN` pinning the cycle query's join order. Verified with
+`EXPLAIN QUERY PLAN` on the field graph: `idx_edges_src`/`idx_edges_dst` probes at
+0.3–25 ms. This hardening applies to any store queried without stats — i.e. every
+stitchgraph index ever built.

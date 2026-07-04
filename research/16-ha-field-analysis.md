@@ -90,7 +90,16 @@ blanket-rescuing unreferenced functions in the same file (pinned by
 | `find_stale` | 119 s | 1.97 GB |
 | `find_chokepoints` | 216 s | 3.24 GB |
 | `scan` (pre-fix) | died | >6 GB |
-| `scan` (fixed) | see v3.29.0 notes | adjacency scale |
+| `scan` (v3.29.0) | 625 s | 2.09 GB |
+| `orient` (v3.29.0, confident_fan_in) | 4 s | O(nodes) |
+
+The v3.29.0 `scan` run also exposed a **query-planner trap**: `WHERE src = ? AND
+relation = ?` on a stat-less db let SQLite walk `idx_edges_rel` (12.9M entries) per
+god-object candidate — caught live with py-spy at 110 min CPU, fixed by keeping only
+the selective equality in the WHERE (relation/provenance as SUM aggregates; CROSS JOIN
+pins the cycle query's join order). Post-fix `orient` hubs on this graph:
+`HomeAssistant` (8,307), `ConfigEntry` (4,675), `AddEntitiesCallback` (2,283),
+`FlowResult` (1,935), `Platform` (1,020) — architecture, not artifacts.
 
 The remaining O(edges) query structure is the compact in-memory adjacency itself
 (documented in LIMITATIONS.md); pushing it to GraphBLAS-on-disk is the next rung if a

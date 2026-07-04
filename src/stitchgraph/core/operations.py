@@ -522,16 +522,23 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         if any((cn := store.get_node(m)) is None or cn.kind not in _CODE_KINDS
                for m in comp):
             continue
+        # CROSS JOIN pins the join order (SQLite honours it as a directive): drive from
+        # the small member table and probe edges via idx_edges_src per member. The
+        # relation/membership predicates live in the aggregates, NOT the WHERE — a
+        # `relation IN (...)` there invites a stat-less planner onto idx_edges_rel
+        # (a walk of every CALLS entry in the table, per component) instead.
         store.conn.execute("DROP TABLE IF EXISTS temp._scan_comp")
         store.conn.execute("CREATE TEMP TABLE _scan_comp (id TEXT PRIMARY KEY)")
         store.conn.executemany("INSERT OR IGNORE INTO _scan_comp VALUES (?)",
                                [(m,) for m in comp])
+        _srel = tuple(r.value for r in _SCC_RELATIONS)
         row = store.conn.execute(
-            """SELECT COUNT(*) AS t, COALESCE(SUM(e.provenance = ?), 0) AS c
-                 FROM _scan_comp s JOIN edges e ON e.src = s.id
-                WHERE e.relation IN (?, ?)
-                  AND e.dst_id IN (SELECT id FROM _scan_comp)""",
-            (_extracted, *(r.value for r in _SCC_RELATIONS))).fetchone()
+            """SELECT COALESCE(SUM(e.relation IN (?, ?)
+                                   AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
+                      COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
+                                   AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
+                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id""",
+            (*_srel, *_srel, _extracted)).fetchone()
         store.conn.execute("DROP TABLE temp._scan_comp")
         frac, conf_n, total = _share_rows(row["t"], row["c"])
         artifact = frac < 0.5  # majority of the linking edges are guesses
@@ -579,16 +586,24 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
             # coupling is mostly ambiguous/heuristic edges (homonym `new`/`build` calls
             # that edge to every same-named def), the god-object smell is an artifact.
+            # Only the selective equality (dst_id / src) goes in the WHERE; relation and
+            # provenance are SUM aggregates. `WHERE src = ? AND relation = ?` let a
+            # stat-less planner pick idx_edges_rel — a 12.9M-entry index walk PER
+            # candidate on the 16M-edge field graph (~2 s each, hours in total) instead
+            # of an idx_edges_src probe (caught live by py-spy, 2026-07-04).
+            ph = ",".join("?" * len(_lv))
             in_row = store.conn.execute(
-                f"""SELECT COUNT(*) AS t, COALESCE(SUM(provenance = ?), 0) AS c
-                     FROM edges WHERE dst_id = ?
-                      AND relation IN ({",".join("?" * len(_lv))})""",
-                (_extracted, nid, *_lv)).fetchone()
+                f"""SELECT COALESCE(SUM(relation IN ({ph})), 0) AS t,
+                           COALESCE(SUM(relation IN ({ph}) AND provenance = ?), 0) AS c
+                     FROM edges WHERE dst_id = ?""",
+                (*_lv, *_lv, _extracted, nid)).fetchone()
             out_row = store.conn.execute(
-                """SELECT COUNT(*) AS t, COALESCE(SUM(provenance = ?), 0) AS c
-                     FROM edges WHERE src = ? AND relation = ?
-                      AND dst_id IS NOT NULL""",
-                (_extracted, nid, Relation.CALLS.value)).fetchone()
+                """SELECT COALESCE(SUM(relation = ? AND dst_id IS NOT NULL), 0) AS t,
+                          COALESCE(SUM(relation = ? AND dst_id IS NOT NULL
+                                       AND provenance = ?), 0) AS c
+                     FROM edges WHERE src = ?""",
+                (Relation.CALLS.value, Relation.CALLS.value, _extracted,
+                 nid)).fetchone()
             in_frac, c_in, _ = _share_rows(in_row["t"], in_row["c"])
             out_frac, c_out, _ = _share_rows(out_row["t"], out_row["c"])
             # An artifact needs BOTH halves to survive on confident edges; if either the
