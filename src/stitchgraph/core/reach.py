@@ -42,9 +42,11 @@ def _adjacency(store: Store, relations: Iterable[Relation],
                 adj[src].append(dst)
     else:
         # edge_filter inspects fields beyond (src,rel,dst) (e.g. provenance), so it needs the
-        # full Edge; this is the rarer EXTRACTED-only path.
+        # full Edge — but streamed one at a time, never the whole list: scan's EXTRACTED-only
+        # sweep through resolved_edges() was a second O(edges) Edge-object peak that
+        # MemoryError'd at 6 GB on Home Assistant (field analysis 2026-07-03).
         rels = set(relations)
-        for edge in store.resolved_edges():
+        for edge in store.iter_resolved_full():
             if edge.relation in rels and edge.dst_id in nodes and edge_filter(edge):
                 adj[edge.src].append(edge.dst_id)
     return adj

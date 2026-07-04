@@ -775,6 +775,19 @@ class Store:
                        AND NOT (provenance = 'ambiguous' AND name_based = 0))"""
         ).fetchone()["c"]
 
+    def iter_resolved_full(self) -> Iterator[Edge]:
+        """Stream resolved edges as full `Edge` objects one at a time (cursor-iterated, no
+        fetchall) — for consumers that need fields beyond `iter_resolved`'s lean tuple
+        (provenance, weight) but must never hold the O(edges) list. `scan`'s
+        EXTRACTED-only liveness sweep on Home Assistant's 16M-edge graph MemoryError'd
+        at 6 GB through `resolved_edges()` (field analysis 2026-07-03); one-at-a-time
+        keeps that sweep at adjacency scale. Same row set + corrupt-row filtering as
+        `resolved_edges()`."""
+        for r in self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL"):
+            e = _row_to_edge(r)
+            if e is not None:
+                yield e
+
     def resolved_edges(self, relation: Relation | None = None) -> list[Edge]:
         if relation is None:
             rows = self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL").fetchall()

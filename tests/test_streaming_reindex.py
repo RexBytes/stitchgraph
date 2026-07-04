@@ -345,3 +345,25 @@ def test_streaming_python_edges_bounded_memory(tmp_path):
     assert "BOUNDED-OK" in proc.stdout, (
         f"streaming reindex exceeded the 130 MB memory cap (rc={proc.returncode}):\n"
         f"{proc.stderr[-800:]}")
+
+    # scan over the index it just built must stay at ADJACENCY scale (compact ints), never
+    # Edge-object scale: its provenance-share step indexed every resolved edge into Python
+    # dicts and MemoryError'd at a 6 GB cap on Home Assistant's 16M-edge graph (field
+    # analysis 2026-07-03). CALIBRATED on this corpus's ~1.2M edges: pre-fix scan peaks at
+    # 1,486 MB, the SQL-share rewrite at 185 MB — the 400 MB cap kills the former with the
+    # same margin it grants the latter. Separate subprocess so the caps stay independent.
+    scan_script = textwrap.dedent(f"""
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (400 * 1024 * 1024,) * 2)  # 400 MB hard cap
+        import stitchgraph as sg
+        with sg.Store({str(str(tmp_path / 'i.db'))!r}) as store:
+            r = sg.scan(store)
+            assert r.ok, r
+        print("SCAN-BOUNDED-OK")
+    """)
+    proc = subprocess.run([sys.executable, "-c", scan_script], capture_output=True,
+                          text=True, env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+                          timeout=600)
+    assert "SCAN-BOUNDED-OK" in proc.stdout, (
+        f"scan exceeded the 400 MB memory cap (rc={proc.returncode}):\n"
+        f"{proc.stderr[-800:]}")
