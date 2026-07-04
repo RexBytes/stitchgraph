@@ -567,9 +567,10 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   adjcache.py) derives it once — 137 MB on disk for the 16M-edge graph, opened in
   milliseconds thereafter; the packed provenance bitmask makes the EXTRACTED-only closure a
   bit-probe instead of an `Edge` object per row. Sidecar-less operation (no numpy, read-only
-  index dir, `adjacency_cache = false`) keeps the v2.1.0 streaming behaviour. SCC and
-  articulation-point sweeps still build the Python adjacency (follow-up); GraphBLAS-on-disk
-  remains the rung above if a graph outgrows even the sidecar.
+  index dir, `adjacency_cache = false`, or `--pure`) keeps the v2.1.0 streaming behaviour.
+  v3.31.0 moved SCC and articulation points onto the sidecar too (int-CSR Tarjan/DFS with
+  reference-identical ordering); GraphBLAS-on-disk remains the rung above if a graph
+  outgrows even the sidecar.
 
 ## Behaviour is the contract (changing it would silently break callers)
 

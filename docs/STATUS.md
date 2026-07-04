@@ -75,7 +75,7 @@ spec and section references.
 
 ## Test coverage
 
-2298 tests (`tests/`): envelope, store + incremental + migration, polyglot
+2,380+ tests (`tests/`): envelope, store + incremental + migration, polyglot
 extraction (Python + 11 tree-sitter languages), operations, config, `get_matrix`,
 the body-matrix walkers + value-flow/PDG layers (all 12 languages), cross-language
 resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/SQL/ORM) + full-stack
@@ -93,8 +93,11 @@ file-watching, and a precision/recall eval harness.
 | gRPC/proto & OpenAPI contract resolvers | M | More service-boundary tracing. |
 | More ORMs (Prisma, TypeORM, …) and frameworks | M | Additive resolvers. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
-| ~100k-node scale validation; bound the `transitive_fan_in` closure | M | Needs a large real repo to stress-test. |
+| ~100k-node scale validation; bound the `transitive_fan_in` closure | M | Largely covered by the 59k-node / 16M-edge Home Assistant field runs (v3.28–v3.31: constant-memory index, sidecar-scale sweeps); a >100k-node corpus run remains. |
 | True incremental reindex (wire `replace_file` to `watch`) | M | `watch` currently full-rebuilds (fast at personal scale). |
+| Provenance-filtered GraphBLAS matrices (`transitive_fan_in`/`pagerank`) | M | The fan-in fallback is confident-only since v3.29.0; the GraphBLAS metrics still rank raw matrices. |
+| `find_component(query)` — purpose-aware component locator | M | Research-validated (76% P@1, `research/05-archetype-purpose`); productise as a first-class op. |
+| POD leftovers: test-anchored `co_change`, behavioural embeddings, `impact_of` runtime cross-validation | M | `research/11-pod-roadmap.md` Tier A5/B4/C3. |
 
 ## Known seams (honest)
 

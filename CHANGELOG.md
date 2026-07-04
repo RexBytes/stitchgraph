@@ -4,6 +4,36 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.31.0] — 2026-07-04
+
+**The fast-by-default release.** The remaining Python-adjacency sweeps move onto the
+sidecar, and the install default flips to full power. Notes:
+`docs/RELEASE_NOTES_v3.31.0.md`.
+
+### Changed
+- **`pip install stitchgraph` now installs the full tool** — CLI, MCP, tree-sitter
+  grammars, jedi, sqlglot, numpy (sidecar), GraphBLAS, scipy. Every accelerated path
+  is pinned byte-identical to its pure-Python reference, so fast-by-default costs
+  nothing in trust. The lean footprint stays supported: the library core remains
+  stdlib-only with guarded imports (`pip install --no-deps stitchgraph`, pinned by
+  the core-only CI job), the old extras still exist for selective installs, and
+  **`--pure`** (CLI + MCP) / `STITCHGRAPH_PURE=1` forces the reference paths at
+  runtime — identical results, for debugging or byte-reproducing old runs.
+- **SCC and articulation points now run on the CSR sidecar** (iterative int Tarjan +
+  articulation DFS emitting exactly the reference's component/visit order — the scan
+  differential is pinned identical with and without the cache). 16M-edge field graph:
+  `find_chokepoints` **216 s / 3.24 GB → 58.9 s / 2.42 GB**; `scan` 371 s → **307 s**
+  (its remaining time is per-candidate SQL shares and liveness logic, not adjacency).
+- **`orient`'s `confident_fan_in` fallback uses the sidecar bitmask** (0.06 s vs
+  4–61 s for the SQL GROUP BY on the field graph).
+
+### Added
+- **God-object review cap**: hedged (`needs_review`) god-object flags beyond the top
+  500 by confidence are suppressed with an explicit count in `meta` and a reason on
+  the envelope — the 16M-edge field graph emitted 11,117 hedged flags, individually
+  honest and collectively unusable. Confident flags are never dropped; small graphs
+  are unaffected.
+
 ## [3.30.0] — 2026-07-04
 
 **The adjacency-sidecar release.** Every reachability sweep rebuilt its adjacency from
