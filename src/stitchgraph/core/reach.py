@@ -56,6 +56,9 @@ def _adjacency(store: Store, relations: Iterable[Relation],
 
 def _graphblas():
     """Return the GraphBLAS algebra module if available, else None."""
+    from .purity import pure_mode
+    if pure_mode():
+        return None
     try:
         from . import algebra
         return algebra if algebra.HAS_GRAPHBLAS else None
@@ -146,13 +149,19 @@ def strongly_connected_components(
 ) -> list[list[str]]:
     """Tarjan SCC over the given relations. Components of size > 1 (or a self-loop)
     are cycles — circular dependencies / recursion (design §6.C/F)."""
-    adj = _adjacency(store, relations)
+    from .adjcache import load_cache
     nodes = store.all_node_ids()
-    out = tarjan_scc(adj, nodes, len(nodes))
+    cache = load_cache(store)
+    if cache is not None:
+        out = cache.scc(nodes, relations)
+        self_loops = cache.self_loops(relations)
+    else:
+        adj = _adjacency(store, relations)
+        out = tarjan_scc(adj, nodes, len(nodes))
+        _rels = {r.value for r in relations}
+        self_loops = {src for src, rel, dst, _w in store.iter_resolved()
+                      if dst == src and rel in _rels}
     # Keep only genuine cycles: multi-node components or self-loops.
-    _rels = {r.value for r in relations}
-    self_loops = {src for src, rel, dst, _w in store.iter_resolved()
-                  if dst == src and rel in _rels}
     return [c for c in out if len(c) > 1 or (c and c[0] in self_loops)]
 
 
@@ -172,6 +181,10 @@ def articulation_points(store: Store,
     `comp_total - 1 - sum(child subtrees)`). The largest surviving piece is the 'main body'; the
     blast radius is what is cut off from it, `(comp_total - 1) - max(piece sizes)`. (For the root the
     parent side is empty, so this reduces to sum-of-children minus the largest child.)"""
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.articulation(relations)
     directed = _adjacency(store, relations)
     undirected: dict[str, set[str]] = defaultdict(set)
     for u, vs in directed.items():

@@ -167,11 +167,167 @@ class AdjacencyCache:
         out.difference_update(targets)  # blast radius excludes the targets themselves
         return out
 
-    def fan_in(self, relations: Iterable[Relation]) -> dict[str, int]:
-        return self._degrees(self.rev_indptr, self.rev_rel, self.rev_conf, relations)
+    def fan_in(self, relations: Iterable[Relation],
+               confident_only: bool = False) -> dict[str, int]:
+        return self._degrees(self.rev_indptr, self.rev_rel, self.rev_conf, relations,
+                             confident_only)
 
-    def fan_out(self, relations: Iterable[Relation]) -> dict[str, int]:
-        return self._degrees(self.fwd_indptr, self.fwd_rel, self.fwd_conf, relations)
+    def fan_out(self, relations: Iterable[Relation],
+                confident_only: bool = False) -> dict[str, int]:
+        return self._degrees(self.fwd_indptr, self.fwd_rel, self.fwd_conf, relations,
+                             confident_only)
+
+    def _filtered_csr(self, relations: Iterable[Relation], *, drop_self: bool = False):
+        """Materialise a relation-filtered forward CSR (indptr, indices, rows) so the
+        Python traversals below touch only kept edges with no per-edge relation test.
+        Vectorised; the transient row array is int32[E]."""
+        allowed = self._rel_mask(relations)
+        mask = allowed[_np.asarray(self.fwd_rel)]
+        rows = _np.repeat(_np.arange(self.n, dtype=_np.int32),
+                          _np.diff(self.fwd_indptr))
+        if drop_self:
+            mask &= rows != _np.asarray(self.fwd_indices)
+        rows = rows[mask]
+        indices = _np.asarray(self.fwd_indices)[mask]
+        indptr = _np.zeros(self.n + 1, _np.int64)
+        _np.cumsum(_np.bincount(rows, minlength=self.n), out=indptr[1:])
+        return indptr, indices, rows
+
+    def self_loops(self, relations: Iterable[Relation]) -> set[str]:
+        """Node ids with a self-edge under `relations` (recursion markers for SCC)."""
+        allowed = self._rel_mask(relations)
+        rows = _np.repeat(_np.arange(self.n, dtype=_np.int32),
+                          _np.diff(self.fwd_indptr))
+        hit = rows[(rows == _np.asarray(self.fwd_indices))
+                   & allowed[_np.asarray(self.fwd_rel)]]
+        return {self.ids[i] for i in _np.unique(hit)}
+
+    def scc(self, seeds: Iterable[str],
+            relations: Iterable[Relation]) -> list[list[str]]:
+        """Tarjan SCC over the relation-filtered graph — ITERATIVE but emitting
+        components in exactly the recursive reference's order (`_scc.tarjan_scc`):
+        seeds visited in caller order, neighbours in stored-edge order, components
+        in reverse-topological completion order, members in stack-pop order. The
+        scan differential depends on this parity."""
+        indptr, indices, _ = self._filtered_csr(relations)
+        indptr = indptr.tolist()
+        indices = indices.tolist()
+        n = self.n
+        index = [-1] * n
+        low = [0] * n
+        on_stack = bytearray(n)
+        stack: list[int] = []
+        counter = 0
+        out: list[list[str]] = []
+        for s in seeds:
+            si = self.idx.get(s)
+            if si is None or index[si] >= 0:
+                continue
+            index[si] = low[si] = counter
+            counter += 1
+            stack.append(si)
+            on_stack[si] = 1
+            work = [(si, indptr[si])]
+            while work:
+                v, ptr = work.pop()
+                end = indptr[v + 1]
+                advanced = False
+                while ptr < end:
+                    w = indices[ptr]
+                    ptr += 1
+                    if index[w] < 0:
+                        work.append((v, ptr))
+                        index[w] = low[w] = counter
+                        counter += 1
+                        stack.append(w)
+                        on_stack[w] = 1
+                        work.append((w, indptr[w]))
+                        advanced = True
+                        break
+                    if on_stack[w] and index[w] < low[v]:
+                        low[v] = index[w]
+                if advanced:
+                    continue
+                if low[v] == index[v]:
+                    comp: list[str] = []
+                    while True:
+                        w = stack.pop()
+                        on_stack[w] = 0
+                        comp.append(self.ids[w])
+                        if w == v:
+                            break
+                    out.append(comp)
+                if work and low[v] < low[work[-1][0]]:
+                    low[work[-1][0]] = low[v]
+        return out
+
+    def articulation(self, relations: Iterable[Relation]) -> dict[str, int]:
+        """Cut vertices of the undirected projection, blast-radius valued — the exact
+        algorithm of `reach.articulation_points` over ints. Neighbour order parity:
+        the reference iterates `sorted(undirected[u])` (string sort); sidecar ids are
+        stored sorted, so ascending int == that order, and the symmetrised unique()
+        below yields ascending neighbours per row for free."""
+        _indptr_f, indices_f, rows = self._filtered_csr(relations, drop_self=True)
+        n = self.n
+        # symmetrise + dedup via packed 64-bit keys; unique() sorts, giving both the
+        # ascending root order and ascending per-row neighbour order the reference uses
+        fwd_keys = rows.astype(_np.int64) * n + indices_f
+        rev_keys = indices_f.astype(_np.int64) * n + rows
+        keys = _np.unique(_np.concatenate((fwd_keys, rev_keys)))
+        uu = (keys // n).astype(_np.int64)
+        vv = (keys % n).astype(_np.int64)
+        indptr = _np.zeros(n + 1, _np.int64)
+        _np.cumsum(_np.bincount(uu, minlength=n), out=indptr[1:])
+        indptr = indptr.tolist()
+        neigh = vv.tolist()
+
+        disc = [-1] * n
+        low = [0] * n
+        timer = 0
+        guarded: dict[int, int] = {}
+        roots = _np.unique(uu).tolist()
+        for root in roots:
+            if disc[root] >= 0:
+                continue
+            disc[root] = low[root] = timer
+            timer += 1
+            size = {root: 1}
+            sep: dict[int, list[int]] = {}
+            stack: list[tuple[int, int, int]] = [(root, -1, indptr[root])]
+            while stack:
+                u, parent, ptr = stack.pop()
+                end = indptr[u + 1]
+                advanced = False
+                while ptr < end:
+                    v = neigh[ptr]
+                    ptr += 1
+                    if disc[v] < 0:
+                        stack.append((u, parent, ptr))
+                        disc[v] = low[v] = timer
+                        timer += 1
+                        size[v] = 1
+                        stack.append((v, u, indptr[v]))
+                        advanced = True
+                        break
+                    if v != parent and disc[v] < low[u]:
+                        low[u] = disc[v]
+                if advanced:
+                    continue
+                if parent >= 0:
+                    if low[u] < low[parent]:
+                        low[parent] = low[u]
+                    size[parent] += size[u]
+                    if low[u] >= disc[parent]:
+                        sep.setdefault(parent, []).append(size[u])
+            comp_total = size[root]
+            for u, sizes in sep.items():
+                if u == root:
+                    if len(sizes) > 1:
+                        guarded[root] = (comp_total - 1) - max(sizes)
+                else:
+                    parent_side = comp_total - 1 - sum(sizes)
+                    guarded[u] = (comp_total - 1) - max([*sizes, parent_side])
+        return {self.ids[u]: g for u, g in guarded.items() if g > 0}
 
 
 # --------------------------------------------------------------------------
@@ -272,7 +428,8 @@ def load_cache(store: Store, *, build: bool = True) -> AdjacencyCache | None:
     Fresh = manifest generation and node count match the live store. When stale or
     absent (and `build` and config allow), rebuilds synchronously — the one-time
     cost that replaces every subsequent per-sweep dict build."""
-    if _np is None:
+    from .purity import pure_mode
+    if _np is None or pure_mode():
         return None
     target = sidecar_path(store)
     if target is None:

@@ -195,3 +195,104 @@ def test_tampered_manifest_refused(tmp_path):
         f'"generation": "{adjcache.current_generation(store)}"', '"generation": "999"'))
     adjcache._loaded.clear()
     assert adjcache.load_cache(store, build=False) is None
+
+
+def test_scc_articulation_scan_equivalence(tmp_path, monkeypatch):
+    """SCC, articulation points, orient's confident fan-in, and the FULL scan result
+    must be identical with and without the sidecar — including component member
+    order and issue order (the scan differential contract)."""
+    root = tmp_path / "src"
+    root.mkdir()
+    for rel, content in CORPUS.items():
+        (root / rel).write_text(textwrap.dedent(content))
+    # add a mutual-recursion cycle and a self-loop so SCC has real work
+    (root / "d.py").write_text(textwrap.dedent("""
+        def ping(n):
+            return pong(n - 1) if n else 0
+
+        def pong(n):
+            return ping(n - 1) if n else 1
+
+        def rec(n):
+            return rec(n - 1) if n else 2
+    """))
+    store = sg.Store(str(tmp_path / "idx.db"))
+    assert sg.reindex(store, str(root)).ok
+
+    def snapshot():
+        return {
+            "scc": reach.strongly_connected_components(store),
+            "aps": reach.articulation_points(store),
+            "scan": sg.scan(store).result,
+        }
+
+    with monkeypatch.context() as m:
+        m.setattr(adjcache, "load_cache", lambda s, **kw: None)
+        reference = snapshot()
+    accelerated = snapshot()
+    assert adjcache.load_cache(store) is not None
+    assert accelerated == reference
+    assert any("ping" in m for c in reference["scc"] for m in c), "cycle must be found"
+
+
+def test_god_object_review_cap(monkeypatch):
+    """Above the cap, hedged god-object flags are cut to the top-N by (confidence
+    desc, node) with the suppression reported; confident flags always survive."""
+    from stitchgraph.core import operations as ops
+    from stitchgraph.core.model import Edge, Node, NodeKind, Provenance, Relation
+
+    store = sg.Store(":memory:")
+    def fn(name):
+        store.add_node(Node(id=f"m.py::{name}", name=name, kind=NodeKind.FUNCTION,
+                            location="m.py:1:0"))
+    # three hedged god objects (ambiguous in/out >= 5, confident < 5) with distinct
+    # confident shares, one confident god object (extracted in/out >= 5)
+    targets = [f"g{i}" for i in range(3)] + ["solid"]
+    for t in targets:
+        fn(t)
+    callers = [f"c{i}" for i in range(8)]
+    callees = [f"e{i}" for i in range(8)]
+    for x in callers + callees:
+        fn(x)
+    for gi, t in enumerate(targets):
+        conf_n = gi if t != "solid" else 6  # g0:0, g1:1, g2:2 confident arms
+        for i in range(6):
+            prov = Provenance.EXTRACTED if i < conf_n else Provenance.AMBIGUOUS
+            store.add_edge(Edge(src=f"m.py::{callers[i]}", relation=Relation.CALLS,
+                                dst_symbol=t, dst_id=f"m.py::{t}", provenance=prov))
+            store.add_edge(Edge(src=f"m.py::{t}", relation=Relation.CALLS,
+                                dst_symbol=callees[i], dst_id=f"m.py::{callees[i]}",
+                                provenance=prov))
+    store.commit()
+
+    monkeypatch.setattr(ops, "_GOD_REVIEW_CAP", 2)
+    r = sg.scan(store)
+    gods = [i for i in r.result if i["kind"] == "god_object"]
+    hedged = [g["node"] for g in gods if g["needs_review"]]
+    solid = [g["node"] for g in gods if not g["needs_review"]]
+    assert solid == ["m.py::solid"], gods
+    # top 2 hedged by confidence desc = g2, g1; g0 suppressed
+    assert sorted(hedged) == ["m.py::g1", "m.py::g2"]
+    assert r.meta.get("god_objects_suppressed") == 1
+    assert any("suppressed" in reason for reason in r.review_reasons)
+
+
+def test_pure_mode_forces_reference_paths(tmp_path, monkeypatch):
+    """STITCHGRAPH_PURE=1 must disable the sidecar (and GraphBLAS) while every op
+    still answers — identically — via the reference implementations."""
+    from stitchgraph.core import purity
+    from stitchgraph.core import reach as reach_mod
+
+    store = _index(tmp_path)
+    seeds = _seeds(store)
+    fast = reach_mod.reachable_from(store, seeds)
+    assert (tmp_path / "idx.db.adjcache").exists()
+
+    monkeypatch.setenv("STITCHGRAPH_PURE", "1")
+    assert purity.pure_mode()
+    assert adjcache.load_cache(store) is None, "pure mode must refuse the sidecar"
+    assert reach_mod._graphblas() is None, "pure mode must refuse GraphBLAS"
+    assert reach_mod.reachable_from(store, seeds) == fast, "identical results"
+
+    monkeypatch.delenv("STITCHGRAPH_PURE")
+    assert adjcache.load_cache(store) is not None

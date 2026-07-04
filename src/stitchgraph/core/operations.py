@@ -303,7 +303,8 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     # Config from the *indexed* root (stored at reindex), not the process cwd — an
     # operation run from another directory must still honour the project's config.
     metric = load_config(store.get_meta("root")).hub_metric
-    if algebra.HAS_GRAPHBLAS and metric != "fan_in":
+    from .purity import pure_mode
+    if algebra.HAS_GRAPHBLAS and not pure_mode() and metric != "fan_in":
         if metric == "pagerank":
             ranks = algebra.pagerank(store)
             if ranks:
@@ -316,9 +317,15 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     # AMBIGUOUS widening arm at full weight let homonym attributes drown the hub list at
     # scale — Home Assistant's top "hubs" were `.hass`/`.data` attribute nodes with
     # fan-in ~12,000 across 8,600 classes, pure resolution artifact (field analysis
-    # 2026-07-03). One SQL GROUP BY, O(nodes) output, never a Python edge sweep.
+    # 2026-07-03). Sidecar first (0.06 s vs 4–61 s for the GROUP BY on the field graph),
+    # else one SQL GROUP BY, O(nodes) output, never a Python edge sweep.
     # (The GraphBLAS metrics above still rank over the raw matrices; a provenance-
     # filtered variant is recorded follow-up work in research/16.)
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        counts = cache.fan_in(LIVENESS_RELATIONS, confident_only=True)
+        return {k: float(v) for k, v in counts.items()}, "confident_fan_in"
     lv = tuple(r.value for r in LIVENESS_RELATIONS)
     rows = store.conn.execute(
         f"""SELECT dst_id, COUNT(*) AS c FROM edges
@@ -451,6 +458,9 @@ def _path_edges(store: Store, path: list[str]) -> list[Edge]:
 _SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
 
 
+_GOD_REVIEW_CAP = 500  # hedged god-object flags kept per scan; see the cutoff comment below
+
+
 @operation("Ranked issue list with urgency (structural scan).")
 def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
@@ -572,6 +582,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # God objects: high fan-in AND fan-out.
     _lv = tuple(r.value for r in LIVENESS_RELATIONS)
     fi, fo = fan_in(store), fan_out(store)
+    god_issues: list[dict] = []
     for nid in set(fi) & set(fo):
         if fi[nid] >= 5 and fo[nid] >= 5:
             # "God object" is a code-entity smell; a MODULE node with many importers
@@ -613,7 +624,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             reason = (f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
                       + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
                          f"fan-out {c_out}) — verify before acting" if artifact else ""))
-            issues.append({
+            god_issues.append({
                 "kind": "god_object", "node": nid,
                 "urgency": Urgency.GREEN.value if artifact else Urgency.ORANGE.value,
                 "confidence": round(0.3 + 0.6 * frac, 2),
@@ -622,6 +633,21 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
                 "reason": reason,
                 "review_reasons": [reason] if artifact else [],  # inner-item contract (panel R34B)
             })
+    # Scale cutoff: on the 16M-edge field graph the hedged (needs_review) god-object
+    # flags numbered 11,117 of 11,124 — individually honest, collectively unusable
+    # (field analysis 2026-07-04). Confident flags always survive; hedged ones are
+    # capped at the top _GOD_REVIEW_CAP by (confidence desc, node) — deterministic,
+    # and a no-op on any graph a human would read unfiltered. The suppression is
+    # reported, never silent.
+    god_suppressed = 0
+    hedged = [g for g in god_issues if g["needs_review"]]
+    if len(hedged) > _GOD_REVIEW_CAP:
+        keep = set(id(g) for g in sorted(
+            hedged, key=lambda g: (-g["confidence"], g["node"]))[:_GOD_REVIEW_CAP])
+        god_suppressed = len(hedged) - _GOD_REVIEW_CAP
+        god_issues = [g for g in god_issues
+                      if not g["needs_review"] or id(g) in keep]
+    issues.extend(god_issues)
 
     rank = {Urgency.RED.value: 0, Urgency.ORANGE.value: 1, Urgency.GREEN.value: 2}
     issues.sort(key=lambda i: rank[i["urgency"]])
@@ -631,6 +657,12 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
              red=sum(i["urgency"] == "red" for i in issues),
              orange=sum(i["urgency"] == "orange" for i in issues))
     res.urgency = Urgency(top) if issues else Urgency.GREEN
+    if god_suppressed:
+        res.meta["god_objects_suppressed"] = god_suppressed
+        res.add_reason(
+            f"{god_suppressed} low-confidence (needs_review) god-object flags beyond "
+            f"the top {_GOD_REVIEW_CAP} were suppressed — individually hedged, "
+            "collectively noise at this graph size; confident flags are never dropped")
     if not seeds:
         res.add_reason("no entry points found — liveness-ranked issues (stubs, "
                        "holes) are omitted; only structural issues are shown")
