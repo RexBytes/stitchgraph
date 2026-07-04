@@ -4,6 +4,24 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.34.0] — 2026-07-04
+
+**The import-completeness release.** The last ⬜ cells in the language matrix's
+imports column close.
+
+### Added
+- **C/C++ `#include "…"` imports**: the quoted local form resolves to the header's
+  module node; `<system>` headers deliberately emit nothing (external by definition —
+  precision over recall). New `LangSpec.import_strings` mechanism.
+- **Ruby `require` / `require_relative`** and **Bash `source` / `.`** imports: the
+  path argument's stem resolves to the target module. New `LangSpec.import_calls`
+  mechanism for call/command-shaped imports; external targets (`require "json"`)
+  emit nothing.
+
+### Fixed
+- `docs/LANGUAGES.md` matrix was stale: Rust inheritance (`impl Trait for Type` →
+  INHERITS) has been shipped since the R16A panel — marked ✅.
+
 ## [3.33.0] — 2026-07-04
 
 **The runtime-completeness release.** The remaining items from the POD/co-activation

@@ -20,15 +20,15 @@ Legend: ✅ full · 🟡 partial · ⬜ not yet · — n/a
 | **Python** | stdlib `ast` (+ `jedi`) | ✅ | ✅ scope-aware | ✅ | ✅ | ✅ (API/main/scripts/tests/routes/runtime) | ✅ |
 | **JavaScript** | tree-sitter | ✅ (+ arrow consts) | ✅ | ✅ | ✅ extends | 🟡 `export`, `main`, tests | ✅ |
 | **TypeScript / TSX** | tree-sitter | ✅ | ✅ | ✅ | ✅ | 🟡 `export`, `main`, tests | ✅ |
-| **Rust** | tree-sitter | ✅ (fn/struct/enum/trait/impl) | ✅ | ✅ `use` | ⬜ | 🟡 `pub`, `main` | ✅ |
-| **C** | tree-sitter | ✅ (fn/struct) | ✅ | ⬜ | — | 🟡 `main` | ✅ |
-| **C++** | tree-sitter | ✅ (fn/class/struct/methods) | ✅ | ⬜ | ✅ base clause | 🟡 `main` | ✅ |
+| **Rust** | tree-sitter | ✅ (fn/struct/enum/trait/impl) | ✅ | ✅ `use` | ✅ `impl Trait for Type` | 🟡 `pub`, `main` | ✅ |
+| **C** | tree-sitter | ✅ (fn/struct) | ✅ | ✅ `#include "…"` | — | 🟡 `main` | ✅ |
+| **C++** | tree-sitter | ✅ (fn/class/struct/methods) | ✅ | ✅ `#include "…"` | ✅ base clause | 🟡 `main` | ✅ |
 | **C#** | tree-sitter | ✅ (class/struct/iface/methods) | ✅ | ✅ `using` | ✅ base list | 🟡 `public`/`Main` | ✅ |
 | **Go** | tree-sitter | ✅ (func/method/type) | ✅ | ✅ | — | 🟡 capitalised/`main`/`Test*` | ✅ |
 | **Java** | tree-sitter | ✅ (class/iface/enum/methods) | ✅ | ✅ | ✅ extends/implements | 🟡 `public`/`main`/tests | ✅ |
-| **Ruby** | tree-sitter | ✅ (class/module/methods) | ✅ | ⬜ | ✅ superclass | ⬜ | ✅ (with config roots) |
+| **Ruby** | tree-sitter | ✅ (class/module/methods) | ✅ | ✅ `require`(`_relative`) | ✅ superclass | ⬜ | ✅ (with config roots) |
 | **PHP** | tree-sitter | ✅ (class/trait/methods) | ✅ | ✅ `use` | ✅ extends/implements | 🟡 `public` | ✅ |
-| **Bash / Shell** | tree-sitter | ✅ (functions) | ✅ | ⬜ | — | ⬜ | ✅ (with config roots) |
+| **Bash / Shell** | tree-sitter | ✅ (functions) | ✅ | ✅ `source`/`.` | — | ⬜ | ✅ (with config roots) |
 | **HTML** | resolver | — | — | — | — | — | detected: `<form action>` → route |
 | **SQL** | resolver (sqlglot) | — | — | — | — | — | detected: query → table, READS/WRITES |
 
