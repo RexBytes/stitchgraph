@@ -940,6 +940,27 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    if "test" in target.roles:
+        # Anchored on a TEST (v3.33.0, research/11 A5): the answer flips from "what
+        # co-moves with this function" to "what does this test REALLY cover" — its
+        # executed function set, the test-intent audit. Parametrized/phase rows are
+        # collapsed onto the base id, so one logical test reports one union.
+        from .modes import base_test_id
+        covered: set[str] = set()
+        rows = 0
+        for tid, funcs in cov.items():
+            if base_test_id(tid) == target.id:
+                covered.update(funcs)
+                rows += 1
+        if not rows:
+            res = ok({"test": target.id, "covers": []},
+                     provenance=Provenance.EXTRACTED, count=0)
+            res.needs_review = True
+            res.add_reason("this test has no row in the coverage artifact — it was not "
+                           "part of the recorded run")
+            return res
+        payload = {"test": target.id, "covers": sorted(covered), "coverage_rows": rows}
+        return ok(payload, provenance=Provenance.EXTRACTED, count=len(covered))
     neighbours = coverage_query.co_functions(cov, target.id, k=lim)
     if not neighbours:
         res = ok({"symbol": target.id, "co_changing": []}, provenance=Provenance.EXTRACTED, count=0)
@@ -954,19 +975,106 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
     return ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours))
 
 
+@operation("Audit the call graph against runtime ground truth (static reach vs executed, per test).")
+def audit_graph(store: Store, coverage: str = "coverage_modes.json",
+                limit: int = 20) -> Result:
+    """A standing precision/recall audit of the call graph, using runtime coverage as
+    ground truth (design §6 / research/11 C3). For every test that has both a coverage
+    row and a node in the graph, compare the functions it EXECUTED with the functions
+    it statically REACHES:
+
+    - executed ∧ reachable — the graph predicted reality (recall's numerator);
+    - executed ∧ ¬reachable — a path the graph MISSED (dynamic dispatch, getattr,
+      framework wiring): these aggregate into `missed_functions`, the actionable
+      resolver-gap list — each is a place the extractor/resolvers could improve;
+    - reachable ∧ ¬executed is NOT an error (static reach over-approximates by
+      design and the run may simply not exercise a branch), so it is reported only
+      as the over-approximation ratio, never as a defect list.
+
+    Advisory, read-only, no numpy — set math over the inert matrix plus one forward
+    closure per test (sidecar-fast). Only functions that exist as graph nodes are
+    compared, so id-scheme drift between the artifact and the index reads as
+    `unmatched`, not as fake misses."""
+    from . import coverage_query
+    from .modes import base_test_id
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    nodes = set(store.all_node_ids())
+    # collapse parametrized/phase rows onto the base test id (one logical test, one row)
+    by_test: dict[str, set[str]] = {}
+    for tid, funcs in cov.items():
+        by_test.setdefault(base_test_id(tid), set()).update(funcs)
+
+    per_test: list[dict] = []
+    missed_count: dict[str, int] = {}
+    unmatched = 0
+    tot_exec = tot_hit = tot_reach = 0
+    for tid in sorted(by_test):
+        if tid not in nodes:
+            unmatched += 1
+            continue
+        executed = by_test[tid] & nodes
+        if not executed:
+            unmatched += 1
+            continue
+        reached = reachable_from(store, {tid})
+        hit = executed & reached
+        for f in sorted(executed - reached):
+            missed_count[f] = missed_count.get(f, 0) + 1
+        tot_exec += len(executed)
+        tot_hit += len(hit)
+        tot_reach += len(reached & nodes)
+        per_test.append({
+            "test": tid, "executed": len(executed), "reached": len(hit),
+            "recall": round(len(hit) / len(executed), 3),
+        })
+    if not per_test:
+        return refuse("no coverage row matched a test node in the graph — are the artifact "
+                      "and the index from the same tree?", confidence=0.0)
+    per_test.sort(key=lambda r: (r["recall"], r["test"]))
+    missed = sorted(missed_count.items(), key=lambda kv: (-kv[1], kv[0]))[:lim]
+    payload = {
+        "tests_audited": len(per_test), "tests_unmatched": unmatched,
+        "recall": round(tot_hit / tot_exec, 3) if tot_exec else 1.0,
+        "overapproximation": round(tot_reach / tot_exec, 2) if tot_exec else 0.0,
+        "worst_tests": per_test[:lim],
+        "missed_functions": [{"function": f, "tests_missing_it": n} for f, n in missed],
+    }
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(per_test))
+    if missed:
+        res.needs_review = True
+        res.add_reason("missed_functions are executed on paths the static graph cannot see "
+                       "(dynamic dispatch, getattr, framework wiring) — resolver-gap "
+                       "candidates, not necessarily bugs in the analyzed code")
+    return res
+
+
 @operation("Hidden coupling: functions that co-run but never statically call each other (implicit deps).")
 def find_coupling(store: Store, coverage: str = "coverage_modes.json",
-                  limit: int = 40, min_shared: int = 3) -> Result:
+                  limit: int = 40, min_shared: int = 3, scope: str = "all") -> Result:
     """Function pairs that **co-activate** strongly across the suite yet have **no static edge** between
     them (design §6) — the runtime∖structure gap. A high co-activation score with no call/inheritance
     edge flags *implicit* coupling the call graph cannot see: shared global state, event/dispatch, a
     protocol contract, or a common caller. Advisory, read-only; needs no numpy — pure set math over the
     inert coverage matrix. Each pair is a *candidate* (it also catches common-caller siblings — inspect
-    before acting); `cross_file` pairs are usually the more interesting ones."""
+    before acting); `cross_file` pairs are usually the more interesting ones.
+
+    `scope` filters to "cross_file" / "same_file" pairs ("all" default), and every reported
+    pair carries `common_callers` — static callers shared by both sides (v3.33.0, research/11
+    A5): a populated list usually *explains* the co-activation (siblings of one dispatcher),
+    ranking truly-hidden coupling (empty list) above sibling noise."""
     from . import coverage_query
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
+    if scope not in ("all", "cross_file", "same_file"):
+        return refuse("scope must be 'all', 'cross_file' or 'same_file'", confidence=0.0)
     cov = coverage_query.load_coverage(coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
@@ -986,15 +1094,28 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     def _file(fid: str) -> str:
         return fid.split("::", 1)[0]
 
+    if scope != "all":
+        want_cross = scope == "cross_file"
+        pairs = [p for p in pairs if (_file(p[0]) != _file(p[1])) == want_cross]
+
+    def _common_callers(a: str, b: str) -> list[str]:
+        ca = {e.src for e in store.callers_of(a)}
+        if not ca:
+            return []
+        return sorted(ca & {e.src for e in store.callers_of(b)})[:3]
+
     payload = {
-        "pairs": [{"a": a, "b": b, "score": s, "shared_tests": c, "cross_file": _file(a) != _file(b)}
+        "pairs": [{"a": a, "b": b, "score": s, "shared_tests": c,
+                   "cross_file": _file(a) != _file(b),
+                   "common_callers": _common_callers(a, b)}
                   for a, b, s, c in pairs],
         "count": len(pairs),
     }
     res = ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs))
     res.needs_review = True
-    res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — it "
-                   "also includes functions sharing a common caller; inspect before acting")
+    res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — "
+                   "populated common_callers usually explains it (siblings of one dispatcher); "
+                   "pairs with no common caller are the truly hidden ones")
     return res
 
 
@@ -1203,14 +1324,21 @@ def coverage_drift(store: Store, old: str = "coverage_old.json",
 
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
-                 mode: str = "semantic") -> Result:
+                 mode: str = "semantic",
+                 coverage: str = "coverage_modes.json") -> Result:
     """Semantic-ish retrieval over the graph (design §1). mode="semantic" (default) ranks
     functions/methods/classes by token similarity (name + docstring + callees) to the snippet;
     mode="structure" ranks stored functions by body-shape similarity to the snippet's function —
     name-agnostic, advisory. The snippet's language is auto-detected (Python, the JS/TS family, Go,
     Rust, C/C++, Java, C#, Ruby, PHP, or Bash) and ranked only against stored functions of the SAME
     language (a fingerprint's topology tracks its extractor, so cross-language scores aren't
-    comparable). Every language but Python needs the tree-sitter extra."""
+    comparable). Every language but Python needs the tree-sitter extra.
+
+    mode="behavior" (v3.33.0, research/11 B4): `snippet` names a SYMBOL, and the ranking is
+    nearest neighbours in the coverage matrix's MODE space — functions that *behave* like it
+    across the suite even when lexically/structurally unrelated (the denoised complement to
+    `co_change`'s raw column cosine). Needs numpy and the `coverage` artifact; only functions
+    the suite exercised can appear."""
     from . import similar
 
     # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
@@ -1221,8 +1349,32 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         return refuse("snippet must be a string", confidence=0.0)
     if not isinstance(limit, int) or isinstance(limit, bool):
         return refuse("limit must be an integer", confidence=0.0)
-    if mode not in ("semantic", "structure"):
-        return refuse("mode must be 'semantic' or 'structure'", confidence=0.0)
+    if mode not in ("semantic", "structure", "behavior"):
+        return refuse("mode must be 'semantic', 'structure' or 'behavior'", confidence=0.0)
+    if mode == "behavior":
+        from . import coverage_query, modes
+        target, candidates = _resolve_target(store, snippet)
+        if target is None:
+            if len(candidates) > 1:
+                res = refuse(
+                    f"'{snippet}' matches {len(candidates)} symbols — pass a qualified id "
+                    f"(e.g. {candidates[0].id!r})", confidence=0.0)
+                res.alternatives = [n.to_dict() for n in candidates]
+                return res
+            return refuse(f"'{snippet}' is not in the index", confidence=0.0)
+        cov = coverage_query.load_coverage(coverage)
+        if not cov:
+            return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                          "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+        try:
+            neighbours = modes.behavioural_neighbours(cov, target.id, limit=max(0, limit))
+        except RuntimeError as exc:
+            return refuse(str(exc), confidence=0.0)
+        if not neighbours:
+            return refuse(f"'{target.id}' was never executed in this coverage artifact — "
+                          "no behavioural embedding to rank from", confidence=0.0)
+        return ok([{"id": nid, "score": s} for nid, s in neighbours],
+                  provenance=Provenance.INFERRED, count=len(neighbours))
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
         hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, "

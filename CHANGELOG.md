@@ -4,6 +4,31 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.33.0] — 2026-07-04
+
+**The runtime-completeness release.** The remaining items from the POD/co-activation
+roadmap (`research/11-pod-roadmap.md` A5/B4/C3) ship. Notes:
+`docs/RELEASE_NOTES_v3.33.0.md`.
+
+### Added
+- **`audit_graph`** (C3): a standing precision audit of the call graph against runtime
+  ground truth. Per test: executed vs statically-reached function sets; global recall +
+  over-approximation ratio; `missed_functions` = executed on paths the graph cannot see
+  (dynamic dispatch, getattr, framework wiring) ranked by how many tests hit them — the
+  actionable resolver-gap list. Falsified in test: wiring the missing static edge takes
+  recall to 1.0 and empties the miss list.
+- **`co_change` anchored on a TEST** (A5): passing a test symbol flips the question to
+  "what does this test really cover" — its executed function union across
+  parametrized/phase rows (the test-intent audit).
+- **`find_coupling`: `common_callers` annotation + `scope` filter** (A5): every reported
+  pair carries the static callers shared by both sides — a populated list usually
+  *explains* the co-activation (siblings of one dispatcher), ranking truly-hidden
+  coupling above sibling noise; `scope="cross_file"/"same_file"` filters.
+- **`find_similar(mode="behavior")`** (B4): rank functions by nearness in the coverage
+  matrix's MODE space — the denoised runtime embedding (singular-value-scaled loadings,
+  cosine). Functions that *behave* alike even when lexically/structurally unrelated;
+  the SVD complement to `co_change`'s raw column cosine. numpy-gated, refuses honestly.
+
 ## [3.32.0] — 2026-07-04
 
 **The purpose release.** The first capability from the parked IDEAS research

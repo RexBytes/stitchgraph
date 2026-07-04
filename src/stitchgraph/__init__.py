@@ -29,6 +29,7 @@ from .core import (
     registry,
 )
 from .core.operations import (
+    audit_graph,
     co_change,
     coverage_drift,
     feature_map,
@@ -81,7 +82,7 @@ __all__ = [
     "ingest_trace", "find_similar", "find_component", "summarize_subsystem",
     "graph_diff",
     "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
-    "select_tests", "co_change", "find_coupling",
+    "select_tests", "co_change", "find_coupling", "audit_graph",
     "find_gaps", "test_order", "redundant_tests", "find_core",
     "feature_map", "find_outlier_tests", "runtime_risk", "coverage_drift",
 ]
