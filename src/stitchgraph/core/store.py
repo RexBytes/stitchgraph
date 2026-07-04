@@ -238,6 +238,23 @@ class Store:
     def commit(self) -> None:
         self.conn.commit()
 
+    def analyze(self) -> None:
+        """Refresh approximate planner statistics (`sqlite_stat1`) after a rebuild.
+
+        Every stitchgraph index is otherwise stat-less, and on a stat-less db the
+        planner chooses by schema order, not selectivity — on the 16M-edge field graph
+        that turned one hot query into a 12.9M-entry idx_edges_rel walk per candidate
+        (v3.29.0 planner trap). The hot shipped queries are pinned by shape and never
+        rely on stats; this protects every OTHER query — ad-hoc, future, or
+        user-issued — by default. `analysis_limit` samples ~1000 rows per index
+        (measured 0.03 s on 16M edges, vs 13.8 s for a full ANALYZE) — imprecise
+        absolute counts, but it ranks index selectivity correctly, which is all the
+        planner needs. Existing indexes in the field stay stat-less until their next
+        reindex; readers must keep working without stats."""
+        self.conn.execute("PRAGMA analysis_limit=1000")
+        self.conn.execute("ANALYZE")
+        self.conn.commit()
+
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                           (key, value))
@@ -774,6 +791,19 @@ class Store:
                    OR (dst_id NOT IN (SELECT id FROM nodes)
                        AND NOT (provenance = 'ambiguous' AND name_based = 0))"""
         ).fetchone()["c"]
+
+    def iter_resolved_full(self) -> Iterator[Edge]:
+        """Stream resolved edges as full `Edge` objects one at a time (cursor-iterated, no
+        fetchall) — for consumers that need fields beyond `iter_resolved`'s lean tuple
+        (provenance, weight) but must never hold the O(edges) list. `scan`'s
+        EXTRACTED-only liveness sweep on Home Assistant's 16M-edge graph MemoryError'd
+        at 6 GB through `resolved_edges()` (field analysis 2026-07-03); one-at-a-time
+        keeps that sweep at adjacency scale. Same row set + corrupt-row filtering as
+        `resolved_edges()`."""
+        for r in self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL"):
+            e = _row_to_edge(r)
+            if e is not None:
+                yield e
 
     def resolved_edges(self, relation: Relation | None = None) -> list[Edge]:
         if relation is None:

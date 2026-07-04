@@ -7,6 +7,13 @@
 include = [
   # "myapp/plugins.py::register",
 ]
+# Glob patterns over module FILE paths for framework-loaded plugin/integration trees:
+# every matching module is a load root, so its module-level wiring (schema validators,
+# registered hooks, dispatch tables) is never flagged dead for lack of a static importer.
+# Example: Home Assistant loads every components/<domain>/* module dynamically by name.
+root_modules = [
+  # "components/*",
+]
 include_tests = true        # treat test functions as entry points
 
 [index]

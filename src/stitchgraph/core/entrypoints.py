@@ -79,9 +79,11 @@ class PythonLibraryDetector:
     not_implemented = False
 
     def __init__(self, overrides: set[str] | None = None, *,
-                 include_tests: bool = True) -> None:
+                 include_tests: bool = True,
+                 root_modules: list[str] | None = None) -> None:
         self.overrides = overrides or set()
         self.include_tests = include_tests
+        self.root_modules = root_modules or []
 
     def detect(self, store: Store) -> set[str]:
         roots: set[str] = set()
@@ -95,6 +97,19 @@ class PythonLibraryDetector:
         for kind in (NodeKind.ROUTE, NodeKind.ENDPOINT):
             roots.update(n.id for n in store.nodes_by_kind(kind))
         roots.update(nid for nid in self.overrides if store.get_node(nid) is not None)
+        # Framework-loaded module trees (`[entry_points] root_modules` globs): modules a
+        # plugin loader imports dynamically by name have no static importer, so their
+        # module-level wiring — schema validators, registered hooks, dispatch-dict
+        # entries — would be flagged dead. Rooting the MODULE node (not every symbol in
+        # the file) keeps the analysis meaningful: only what the module body actually
+        # references becomes live. Proven on Home Assistant's components/ tree, where it
+        # rescued exactly the 33 module-level-rooted candidates (field analysis 2026-07-03).
+        if self.root_modules:
+            from fnmatch import fnmatch
+            for m in store.nodes_by_kind(NodeKind.MODULE):
+                mf = m.id.split("::", 1)[0]
+                if any(fnmatch(mf, g) for g in self.root_modules):
+                    roots.add(m.id)
         # A module's top-level code runs when the module is loaded, and the module is
         # loaded whenever any symbol it defines is reached (you can't call an exported
         # function or import a name without executing the module body). So a module that

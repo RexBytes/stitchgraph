@@ -12,7 +12,6 @@ only read the index, never mutate source (design §4 read-only invariant).
 from __future__ import annotations
 
 import inspect
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -313,7 +312,22 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
             tfi = algebra.transitive_fan_in(store)
             if tfi:
                 return {k: float(v) for k, v in tfi.items()}, "transitive_fan_in"
-    return {k: float(v) for k, v in fan_in(store).items()}, "fan_in"
+    # Fallback: direct fan-in over CONFIDENT (EXTRACTED) edges only. Counting every
+    # AMBIGUOUS widening arm at full weight let homonym attributes drown the hub list at
+    # scale — Home Assistant's top "hubs" were `.hass`/`.data` attribute nodes with
+    # fan-in ~12,000 across 8,600 classes, pure resolution artifact (field analysis
+    # 2026-07-03). One SQL GROUP BY, O(nodes) output, never a Python edge sweep.
+    # (The GraphBLAS metrics above still rank over the raw matrices; a provenance-
+    # filtered variant is recorded follow-up work in research/16.)
+    lv = tuple(r.value for r in LIVENESS_RELATIONS)
+    rows = store.conn.execute(
+        f"""SELECT dst_id, COUNT(*) AS c FROM edges
+             WHERE dst_id IS NOT NULL AND provenance = ?
+               AND relation IN ({",".join("?" * len(lv))})
+               AND dst_id IN (SELECT id FROM nodes)
+             GROUP BY dst_id""",
+        (Provenance.EXTRACTED.value, *lv)).fetchall()
+    return {r["dst_id"]: float(r["c"]) for r in rows}, "confident_fan_in"
 
 
 # --------------------------------------------------------------------------
@@ -437,18 +451,6 @@ def _path_edges(store: Store, path: list[str]) -> list[Edge]:
 _SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
 
 
-def _confident_share(edges: list[Edge]) -> tuple[float, int, int]:
-    """(confident_fraction, confident_count, total) over a bag of edges — the share
-    backed by type-certain `EXTRACTED` provenance vs heuristic (`INFERRED`) or
-    over-approximated (`AMBIGUOUS`) ones. Empty -> treated as fully confident (1.0),
-    so a finding with no qualifying edges is never spuriously demoted (issue #11)."""
-    total = len(edges)
-    if total == 0:
-        return 1.0, 0, 0
-    confident = sum(1 for e in edges if e.provenance is Provenance.EXTRACTED)
-    return confident / total, confident, total
-
-
 @operation("Ranked issue list with urgency (structural scan).")
 def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
@@ -496,14 +498,16 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # Provenance of the participating edges decides whether a *structural* finding is
     # trustworthy or a resolution artifact (issue #11): a cycle / god object that exists
     # only because of AMBIGUOUS (over-approximated homonym) or INFERRED (heuristic) edges
-    # is mostly noise on a language without type resolution. Index edges once.
-    all_edges = store.resolved_edges()
-    edges_by_src: dict[str, list[Edge]] = defaultdict(list)
-    edges_by_dst: dict[str, list[Edge]] = defaultdict(list)
-    for e in all_edges:
-        edges_by_src[e.src].append(e)
-        if e.dst_id is not None:
-            edges_by_dst[e.dst_id].append(e)
+    # is mostly noise on a language without type resolution. The shares are per-component /
+    # per-candidate COUNT queries in SQLite, never a materialised edge list: indexing all
+    # edges into Python dicts here was scan's O(edges) peak — MemoryError at a 6 GB cap on
+    # Home Assistant's 16M-edge graph while every sweep around it ran at adjacency scale
+    # (field analysis 2026-07-03).
+    _extracted = Provenance.EXTRACTED.value
+
+    def _share_rows(total: int, confident: int) -> tuple[float, int, int]:
+        # same contract as _confident_share: empty -> fully confident (issue #11)
+        return (confident / total if total else 1.0), confident, total
 
     # Circular dependencies (SCC > 1). Single-node self-loops are ordinary
     # recursion, not a coupling smell, so they're excluded.
@@ -518,11 +522,25 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         if any((cn := store.get_node(m)) is None or cn.kind not in _CODE_KINDS
                for m in comp):
             continue
-        members = set(comp)
-        internal = [e for e in all_edges
-                    if e.src in members and e.dst_id in members
-                    and e.relation in _SCC_RELATIONS]
-        frac, conf_n, total = _confident_share(internal)
+        # CROSS JOIN pins the join order (SQLite honours it as a directive): drive from
+        # the small member table and probe edges via idx_edges_src per member. The
+        # relation/membership predicates live in the aggregates, NOT the WHERE — a
+        # `relation IN (...)` there invites a stat-less planner onto idx_edges_rel
+        # (a walk of every CALLS entry in the table, per component) instead.
+        store.conn.execute("DROP TABLE IF EXISTS temp._scan_comp")
+        store.conn.execute("CREATE TEMP TABLE _scan_comp (id TEXT PRIMARY KEY)")
+        store.conn.executemany("INSERT OR IGNORE INTO _scan_comp VALUES (?)",
+                               [(m,) for m in comp])
+        _srel = tuple(r.value for r in _SCC_RELATIONS)
+        row = store.conn.execute(
+            """SELECT COALESCE(SUM(e.relation IN (?, ?)
+                                   AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
+                      COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
+                                   AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
+                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id""",
+            (*_srel, *_srel, _extracted)).fetchone()
+        store.conn.execute("DROP TABLE temp._scan_comp")
+        frac, conf_n, total = _share_rows(row["t"], row["c"])
         artifact = frac < 0.5  # majority of the linking edges are guesses
         reason = (f"circular dependency among {len(comp)} symbols"
                   + ("; rests mostly on name-ambiguous/heuristic edges "
@@ -553,7 +571,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         })
 
     # God objects: high fan-in AND fan-out.
-    _LIVENESS = set(LIVENESS_RELATIONS)
+    _lv = tuple(r.value for r in LIVENESS_RELATIONS)
     fi, fo = fan_in(store), fan_out(store)
     for nid in set(fi) & set(fo):
         if fi[nid] >= 5 and fo[nid] >= 5:
@@ -568,11 +586,26 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
             # coupling is mostly ambiguous/heuristic edges (homonym `new`/`build` calls
             # that edge to every same-named def), the god-object smell is an artifact.
-            in_edges = [e for e in edges_by_dst.get(nid, ()) if e.relation in _LIVENESS]
-            out_edges = [e for e in edges_by_src.get(nid, ())
-                         if e.relation is Relation.CALLS]
-            in_frac, c_in, _ = _confident_share(in_edges)
-            out_frac, c_out, _ = _confident_share(out_edges)
+            # Only the selective equality (dst_id / src) goes in the WHERE; relation and
+            # provenance are SUM aggregates. `WHERE src = ? AND relation = ?` let a
+            # stat-less planner pick idx_edges_rel — a 12.9M-entry index walk PER
+            # candidate on the 16M-edge field graph (~2 s each, hours in total) instead
+            # of an idx_edges_src probe (caught live by py-spy, 2026-07-04).
+            ph = ",".join("?" * len(_lv))
+            in_row = store.conn.execute(
+                f"""SELECT COALESCE(SUM(relation IN ({ph})), 0) AS t,
+                           COALESCE(SUM(relation IN ({ph}) AND provenance = ?), 0) AS c
+                     FROM edges WHERE dst_id = ?""",
+                (*_lv, *_lv, _extracted, nid)).fetchone()
+            out_row = store.conn.execute(
+                """SELECT COALESCE(SUM(relation = ? AND dst_id IS NOT NULL), 0) AS t,
+                          COALESCE(SUM(relation = ? AND dst_id IS NOT NULL
+                                       AND provenance = ?), 0) AS c
+                     FROM edges WHERE src = ?""",
+                (Relation.CALLS.value, Relation.CALLS.value, _extracted,
+                 nid)).fetchone()
+            in_frac, c_in, _ = _share_rows(in_row["t"], in_row["c"])
+            out_frac, c_out, _ = _share_rows(out_row["t"], out_row["c"])
             # An artifact needs BOTH halves to survive on confident edges; if either the
             # confident fan-in or fan-out falls below the threshold the coupling isn't
             # really there once the guesses are removed.
@@ -1755,6 +1788,7 @@ def reindex(store: Store, path: str, precise: bool = False,
         for e in edges:
             store.add_edge(e)
 
+    store.analyze()
     store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
@@ -1963,6 +1997,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         store._dedup_resolved_edges()
         store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
 
+    store.analyze()
     store.set_meta("root", abs_root)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,
@@ -2078,7 +2113,8 @@ def _default_detector(store: Store) -> PythonLibraryDetector:
     inclusion follow the project even when the operation runs from elsewhere."""
     from .config import load_config
     cfg = load_config(store.get_meta("root"))
-    return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests)
+    return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests,
+                                 root_modules=cfg.root_modules)
 
 
 _CODE_KINDS = {NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS}
