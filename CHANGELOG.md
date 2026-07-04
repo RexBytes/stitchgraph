@@ -4,6 +4,32 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.32.0] — 2026-07-04
+
+**The purpose release.** The first capability from the parked IDEAS research
+(archetype/purpose, §2–3) ships, and the last hub metric picks up the provenance
+discount. Notes: `docs/RELEASE_NOTES_v3.32.0.md`.
+
+### Added
+- **`find_component(query)`** — purpose-aware component locator: "parse command line
+  options" → `Command`/`Option`. `find_similar`'s semantic ranking made navigational
+  by two structural facts the graph holds: test code is excluded (by role AND
+  test-file path) and exported/public API is boosted. Research ablation (17 labelled
+  queries × 17 packages, `research/05-archetype-purpose`): raw 53% P@1 → drop-tests
+  59% → +public-boost **76% P@1 / 0.80 MRR**. Advisory, INFERRED, boost visible in
+  the score; registry-registered so the CLI (`stitchgraph find-component`) and MCP
+  tool come for free.
+
+### Changed
+- **`transitive_fan_in` and `pagerank` rank over EXTRACTED edges by default**
+  (`confident_only=True`) — the same discount `confident_fan_in` has applied since
+  v3.29.0, closing the recorded follow-up: a homonym's AMBIGUOUS widening arms are
+  resolution artifacts, not dependency mass. Falsified both ways in tests (raw
+  matrices rank the homonym first; confident-only inverts). Liveness sweeps
+  deliberately stay raw — an ambiguous edge must keep its target alive.
+- `Store.iter_resolved(confident_only=True)` — the provenance-filtered lean stream
+  the matrices build from.
+
 ## [3.31.0] — 2026-07-04
 
 **The fast-by-default release.** The remaining Python-adjacency sweeps move onto the

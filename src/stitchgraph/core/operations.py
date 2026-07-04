@@ -319,8 +319,8 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     # fan-in ~12,000 across 8,600 classes, pure resolution artifact (field analysis
     # 2026-07-03). Sidecar first (0.06 s vs 4–61 s for the GROUP BY on the field graph),
     # else one SQL GROUP BY, O(nodes) output, never a Python edge sweep.
-    # (The GraphBLAS metrics above still rank over the raw matrices; a provenance-
-    # filtered variant is recorded follow-up work in research/16.)
+    # (Since v3.32.0 the GraphBLAS metrics above also rank confident-only — every
+    # hub metric now applies the same provenance discount.)
     from .adjcache import load_cache
     cache = load_cache(store)
     if cache is not None:
@@ -1235,6 +1235,66 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     top = matches[0][1]
     return ok(payload, confidence=min(top + 0.3, 0.9),
               provenance=Provenance.INFERRED, count=len(payload))
+
+
+# Test-file path fragments for find_component's exclusion (mirrors the research spike):
+# the `test` role marks test FUNCTIONS, but helpers nested inside test files are
+# first-class nodes without the role — the path signal catches those.
+_TEST_PATH_HINTS = ("/test", "test_", "_test", "/tests/", "/spec", ".spec.", ".test.")
+
+
+def _is_test_path(node_id: str) -> bool:
+    rel = node_id.split("::", 1)[0].lower()
+    leaf = rel.rsplit("/", 1)[-1]
+    return any(h in rel for h in _TEST_PATH_HINTS) or leaf.startswith("test")
+
+
+@operation("Locate the public component that implements a described purpose.")
+def find_component(store: Store, query: str, limit: int = 5,
+                   public_boost: float = 0.15) -> Result:
+    """Purpose-aware component locator: "parse command line options" -> `Command` /
+    `Option`. `find_similar`'s semantic ranking (name + docstring + callees), made
+    navigational by two structural facts the graph already holds (design §1 /
+    IDEAS §3, quantified in research/05-archetype-purpose): TEST code is excluded
+    (by role and by test-file path), and EXPORTED / public-API symbols are boosted —
+    the answer to "where is the thing that does X" is almost always public surface,
+    not an internal helper. Ablation on 17 labelled queries x 17 packages: raw
+    find_similar 53% P@1 -> drop-tests 59% -> +public-boost **76% P@1 / 0.80 MRR**.
+
+    Advisory and INFERRED like find_similar: token/embedding similarity, not proof —
+    minified/bundled sources (single-char identifiers) defeat name search, and a
+    specific public function can drown under same-token siblings. The score carries
+    the boost explicitly so a consumer can see why something ranked."""
+    if not isinstance(query, str) or not query.strip():
+        return refuse("query must be a non-empty string", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        return refuse("limit must be a positive integer", confidence=0.0)
+    from . import similar
+
+    # Over-fetch so the post-filter can drop tests without starving the result;
+    # 80 matched the research eval and is plenty above any sane `limit`.
+    matches = similar.find_similar(store, query, max(80, limit))
+    if not matches:
+        return refuse("no similar code found (or query had no usable tokens)",
+                      confidence=0.0)
+    out = []
+    for nid, score in matches:
+        node = store.get_node(nid)
+        if node is None or "test" in node.roles or _is_test_path(nid):
+            continue
+        exported = "exported" in node.roles
+        out.append({
+            "id": nid, "name": node.name, "kind": node.kind.value,
+            "location": node.location, "exported": exported,
+            "score": round(score + (public_boost if exported else 0.0), 3),
+        })
+    if not out:
+        return refuse("every match was test code — no public component found",
+                      confidence=0.0)
+    out.sort(key=lambda r: (-float(r["score"]), str(r["id"])))
+    out = out[:limit]
+    return ok(out, confidence=min(float(out[0]["score"]) + 0.3, 0.9),
+              provenance=Provenance.INFERRED, count=len(out))
 
 
 @operation("Structurally diff this index against another (translation / plan-vs-actual).")

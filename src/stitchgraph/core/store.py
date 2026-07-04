@@ -829,7 +829,7 @@ class Store:
         return [e for r in rows if (e := _row_to_edge(r))]
 
     def iter_resolved(
-        self, relation: Relation | None = None,
+        self, relation: Relation | None = None, *, confident_only: bool = False,
     ) -> Iterator[tuple[str, str, str, float]]:
         """Stream resolved edges as lean `(src, relation, dst_id, weight)` tuples, cursor-
         iterated (no `fetchall`, no `Edge` construction). The reachability / centrality sweeps
@@ -843,13 +843,20 @@ class Store:
         corrupt/bit-rotted index (no writer emits one), but it keeps parity with
         `resolved_edges()`'s `_row_to_edge` drop so an unfiltered consumer (`best_path`/
         `trace_path` with `relations=None`) can't traverse a garbage edge (panel R58, opus).
-        A non-finite `weight` from such an index is coerced to 1.0 (matches the Edge default)."""
+        A non-finite `weight` from such an index is coerced to 1.0 (matches the Edge default).
+
+        `confident_only` keeps EXTRACTED rows only — the provenance-filtered stream
+        the hub-ranking matrices build from (v3.32.0: homonym widening arms must not
+        rank as centrality; the same discount `confident_fan_in` already applies)."""
         valid = {r.value for r in Relation}
         sql = "SELECT src, relation, dst_id, weight FROM edges WHERE dst_id IS NOT NULL"
         params: tuple[str, ...] = ()
         if relation is not None:
             sql += " AND relation = ?"
             params = (relation.value,)
+        if confident_only:
+            sql += " AND provenance = ?"
+            params = (*params, Provenance.EXTRACTED.value)
         cur = self.conn.execute(sql, params)
         while True:
             rows = cur.fetchmany(20000)
