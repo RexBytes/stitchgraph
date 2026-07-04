@@ -465,8 +465,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # reachable only through an INFERRED/AMBIGUOUS hop (a heuristic route, an
     # ambiguous name) the liveness itself is uncertain, so the provenance ceiling
     # caps it at ORANGE (envelope §7: nothing low-confidence shouts red).
-    certain = (reachable_from(store, seeds,
-                              edge_filter=lambda e: e.provenance is Provenance.EXTRACTED)
+    certain = (reachable_from(store, seeds, confident_only=True)
                if seeds else set())
     issues: list[dict] = []
 
@@ -1755,6 +1754,7 @@ def reindex(store: Store, path: str, precise: bool = False,
         with store.conn:
             store.conn.execute("DELETE FROM nodes")
             store.conn.execute("DELETE FROM edges")
+        store.bump_generation()
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
 
@@ -1789,6 +1789,7 @@ def reindex(store: Store, path: str, precise: bool = False,
             store.add_edge(e)
 
     store.analyze()
+    store.bump_generation()
     store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
@@ -1998,6 +1999,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
 
     store.analyze()
+    store.bump_generation()
     store.set_meta("root", abs_root)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
     # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,

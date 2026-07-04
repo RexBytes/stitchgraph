@@ -255,6 +255,18 @@ class Store:
         self.conn.execute("ANALYZE")
         self.conn.commit()
 
+    def bump_generation(self) -> None:
+        """Advance the graph's generation counter (meta key `generation`).
+
+        The adjacency sidecar (adjcache.py) records the generation it was derived
+        from and is refused on mismatch — this bump is what makes it impossible for
+        a sweep to read a stale cache. Called by everything that mutates the edge
+        set through the official paths (`reindex` both ways, `replace_file`, the
+        invalid-root wipe); API users mutating a store directly via
+        `add_node`/`add_edge` must call it themselves before the next sweep."""
+        cur = int(self.get_meta("generation") or "0")
+        self.set_meta("generation", str(cur + 1))
+
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                           (key, value))
@@ -330,6 +342,7 @@ class Store:
             self._dedup_resolved_edges()
             if exported_ids is not None:
                 self._set_exported_roles(exported_ids)
+        self.bump_generation()  # the adjacency sidecar must never survive this edit
 
     def _set_exported_roles(self, exported_ids: set[str]) -> None:
         """Make the cross-file `exported` role match `exported_ids` exactly — set on a node

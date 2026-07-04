@@ -561,9 +561,15 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   158 MB peak RSS in ~34 min.
 - **Querying at that scale (v2.1.0):** the reachability sweeps (`find_stale`, `impact_of`,
   `fan_in`) now stream their adjacency from `Store.iter_resolved()` rather than materialising
-  every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM. The
-  one remaining O(edges) structure is the in-memory adjacency itself (compact ints, not `Edge`
-  objects); pushing that to disk/GraphBLAS-on-disk is the next step if even that is too big.
+  every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM.
+- **The per-sweep adjacency rebuild itself (v3.30.0):** that ~2 GB / ~130 s dict-of-strings
+  build ran on EVERY sweep and was thrown away. The mmapped CSR sidecar (`<db>.adjcache/`,
+  adjcache.py) derives it once — 137 MB on disk for the 16M-edge graph, opened in
+  milliseconds thereafter; the packed provenance bitmask makes the EXTRACTED-only closure a
+  bit-probe instead of an `Edge` object per row. Sidecar-less operation (no numpy, read-only
+  index dir, `adjacency_cache = false`) keeps the v2.1.0 streaming behaviour. SCC and
+  articulation-point sweeps still build the Python adjacency (follow-up); GraphBLAS-on-disk
+  remains the rung above if a graph outgrows even the sidecar.
 
 ## Behaviour is the contract (changing it would silently break callers)
 

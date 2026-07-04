@@ -29,6 +29,10 @@ class Config:
     include_tests: bool = True
     # [index]
     ignore: list[str] = field(default_factory=list)  # globs skipped on reindex
+    # Derived mmapped CSR sidecar for the reachability sweeps (adjcache.py). On by
+    # default; costs one lazy build after each (re)index and pays it back on the
+    # first sweep. Disable for read-only index locations or to pin the pure paths.
+    adjacency_cache: bool = True
     # [review]
     threshold: float = 0.80
     # [orient]
@@ -105,6 +109,7 @@ def _load(start: str | Path | None) -> Config:
         root_modules=_str_list(ep.get("root_modules")),
         include_tests=bool(ep.get("include_tests", True)),
         ignore=_str_list(idx.get("ignore")),
+        adjacency_cache=bool(idx.get("adjacency_cache", True)),
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,

@@ -15,8 +15,10 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
 
 from ._scc import tarjan_scc
-from .model import Edge, Relation
+from .model import Edge, Provenance, Relation
 from .store import Store
+
+_EXTRACTED = Provenance.EXTRACTED
 
 # Relations that propagate "liveness" — used by reachability / dead-code.
 # EMITS/HANDLES carry liveness across a pub/sub boundary: if an emit is reachable,
@@ -63,16 +65,29 @@ def _graphblas():
 
 def reachable_from(store: Store, seeds: Iterable[str],
                    relations: Iterable[Relation] = LIVENESS_RELATIONS,
-                   edge_filter: Callable[[Edge], bool] | None = None) -> set[str]:
+                   edge_filter: Callable[[Edge], bool] | None = None,
+                   confident_only: bool = False) -> set[str]:
     """Forward closure: every node reachable from any seed.
 
-    Uses the GraphBLAS sweep when available (design §2b), else this pure-Python
-    frontier BFS — identical results, the BFS is the reference implementation.
+    Dispatch, fastest first — all three produce identical results (the BFS is the
+    reference implementation, the others are pinned to it by tests):
+    1. the mmapped adjacency sidecar (adjcache.py) when fresh/buildable — it also
+       handles `confident_only` natively via its packed provenance bitmask;
+    2. the GraphBLAS sweep (design §2b) when installed;
+    3. this pure-Python frontier BFS.
 
-    `edge_filter` restricts which edges propagate liveness (e.g. EXTRACTED-only,
-    to tell a certain path from an inferred one); it forces the pure-Python sweep
-    since GraphBLAS works on the raw relation matrices.
+    `confident_only` restricts propagation to EXTRACTED edges (scan's certainty
+    pass). `edge_filter` is the general hook for anything else (arbitrary
+    per-Edge predicates); it forces the pure-Python sweep since neither the
+    sidecar nor GraphBLAS can evaluate an opaque callable per edge.
     """
+    if edge_filter is None:
+        from .adjcache import load_cache
+        cache = load_cache(store)
+        if cache is not None:
+            return cache.reachable(seeds, relations, confident_only)
+        if confident_only:
+            edge_filter = lambda e: e.provenance is _EXTRACTED  # noqa: E731
     gb = _graphblas()
     if gb is not None and edge_filter is None:
         return gb.reachable_from(store, seeds, relations)
@@ -105,6 +120,10 @@ def reverse_reachable_from(store: Store, targets: Iterable[str],
 
     This is the blast radius for impact_of (design §6.B): who depends on X.
     """
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.reverse_reachable(targets, relations)
     gb = _graphblas()
     if gb is not None:
         return gb.reverse_reachable_from(store, targets, relations)
@@ -275,6 +294,10 @@ def fan_in(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS) -> 
 
     (Transitive fan-in / PageRank is the GraphBLAS upgrade, design §6.A.)
     """
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.fan_in(relations)
     counts: dict[str, int] = defaultdict(int)
     rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
@@ -286,6 +309,10 @@ def fan_in(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS) -> 
 
 def fan_out(store: Store, relations: Iterable[Relation] = (Relation.CALLS,)) -> dict[str, int]:
     """Direct out-degree per node (callees) — half of the god-object signal."""
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.fan_out(relations)
     counts: dict[str, int] = defaultdict(int)
     rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)

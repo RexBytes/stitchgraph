@@ -22,6 +22,11 @@ ignore = [
   # "**/migrations/**",
   # "**/_vendor/**",
 ]
+# Derived mmapped adjacency sidecar (<db>.adjcache/) for the reachability sweeps.
+# Built lazily by the first sweep after a (re)index, refused automatically when
+# stale, always safe to delete. Needs numpy; without it the sweeps use their
+# pure-Python paths. Disable for read-only index locations.
+adjacency_cache = true
 
 [review]
 threshold = 0.80            # results below this confidence are flagged needs_review
