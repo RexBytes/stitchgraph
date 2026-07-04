@@ -242,7 +242,10 @@ oracle. Measured:
 - Home Assistant 2024.3.3 (6,728 Python files, 59k nodes, 16.0M edges): the repo from
   the field report completes a clean end-to-end streaming reindex under a **4 GB
   address-space ulimit at 158 MB peak RSS** (~34 min).
-- Query sweeps stream their adjacency too — a 16M-edge graph is queried in ~2 GB.
+- Query sweeps use a derived mmapped adjacency sidecar (`<db>.adjcache/`, built lazily
+  on the first sweep, auto-invalidated by a generation counter): on the 16M-edge graph,
+  `find_stale` drops from 119 s / 1.97 GB to **2.1 s / 516 MB** warm. Without numpy the
+  sweeps stream from SQLite instead (~2 GB on the same graph).
 
 Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
 

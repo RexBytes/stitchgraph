@@ -4,6 +4,34 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.30.0] — 2026-07-04
+
+**The adjacency-sidecar release.** Every reachability sweep rebuilt its adjacency from
+SQLite into a dict of Python strings on each call — ~130 s / ~2 GB per op on the 16M-edge
+field graph, thrown away afterwards. Notes: `docs/RELEASE_NOTES_v3.30.0.md`.
+
+### Added
+- **Mmapped CSR adjacency sidecar** (`<db>.adjcache/`, `core/adjcache.py`): derived once,
+  lazily, by the first sweep after a (re)index; opened in milliseconds thereafter. CSR both
+  directions + uint8 relation codes + a **packed per-edge provenance bitmask** (2 MB for
+  16M edges) probed bitwise in the BFS inner loop, so the EXTRACTED-only closure reads one
+  bit per edge instead of constructing an `Edge` object per row. Serves `reachable_from`,
+  `reverse_reachable_from`, `fan_in`, `fan_out` (dispatch: sidecar → GraphBLAS → pure
+  Python; identical results pinned by equivalence tests). Measured on the 16M-edge field
+  graph: `find_stale` **119 s / 1.97 GB → 2.1 s / 516 MB** warm (cold first sweep 171 s
+  including the one-time build), `scan` **625 s → 371 s** (its SCC pass still builds the
+  Python adjacency — recorded follow-up), sidecar **161 MB** beside a 10 GB index, field
+  results byte-identical (1,703 stale candidates, 11,619 scan issues).
+- **Staleness contract**: a `generation` counter in `meta` (bumped by both `reindex`
+  paths, `replace_file`, and the invalid-root wipe) is recorded in the sidecar manifest;
+  any mismatch refuses the cache — a sweep can never read stale adjacency. SQLite remains
+  the sole source of truth; the sidecar is always safe to delete.
+- **Degrades to exactly the old behaviour** without numpy (guarded import — core stays
+  stdlib-only), on `:memory:` stores, on read-only index directories (failed builds are
+  memoised per generation), or with `[index] adjacency_cache = false`.
+- `scan`'s certainty pass is now `reachable_from(confident_only=True)` (was a per-Edge
+  provenance lambda), so the bitmask path serves it on all three dispatch tiers.
+
 ## [3.29.0] — 2026-07-04
 
 **The field-analysis release.** v3.28.0's freshly-indexable Home Assistant graph (16M
