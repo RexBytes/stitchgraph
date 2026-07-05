@@ -4,6 +4,54 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.39.0] — 2026-07-05
+
+**The recall-tail release.** Every item is an evidence-ranked entry from the
+HA field validation (research/18) or the Django run (research/19) — the
+dynamic-dispatch patterns static analysis missed, plus the instrumentation to
+re-measure them cheaply.
+
+### Added
+- **Protocol-method resolver**: dunders the source never names — `with` /
+  `async with` → `__enter__`/`__exit__`/`__aenter__`/`__aexit__`, `for` /
+  `async for` / comprehensions → `__iter__`/`__next__`/`__aiter__`/`__anext__`,
+  subscripts → `__getitem__`/`__setitem__`/`__delitem__` — now resolve exactly
+  when the receiver is known (constructor call / declared local type) and via
+  the standard name-based fallback (INFERRED/AMBIGUOUS) when it isn't, with a
+  per-function fan dedup. Builtin receivers resolve to no project symbol —
+  zero noise. (research/18: `TemplateContextManager.__exit__` executed by 389
+  of 2,056 tests, statically reached by none.)
+- **getattr-dispatch heuristic**: `getattr(recv, f"_step_{x}")` (also
+  `"as_%s" %`, `"a_" + x + "_b"`, `"h_{}".format(x)` — single-hole shapes)
+  references every member matching the literal anchor; anchorless patterns
+  rejected. (research/18 `_async_step_*`; research/19 `as_%s` vendor methods,
+  `_get_%s_permissions`.)
+- **Fixture-aware test rooting**: pytest injects fixtures BY PARAMETER NAME —
+  test/fixture parameters naming a known `@pytest.fixture` def (pass-1
+  registry, conftest chains included) now bind through the name-based rules,
+  closing research/18's zero-recall fixture-blind tests.
+- **Django/Jinja template-variable resolver** (`resolve/djangotpl.py`):
+  `{{ obj.prop }}` / `{% if obj.prop %}` member segments reference matching
+  functions/methods (stoplisted, dotted-paths only); TEMPLATE nodes are now
+  entry-point ROOTS (frameworks render templates by name — an external entry
+  surface like a route). Kills research/19's admin-property false-dead bucket.
+- **Bit-parallel multi-source BFS** (`AdjacencyCache.reachable_many` /
+  `reach.reachable_from_many`): 64 reachability queries per fixed-point sweep
+  via uint64 lane labels; `audit_graph`'s per-test closure loop batches
+  through it (was 31.6 min for 2,056 tests on the HA field index).
+  Lane-equality with sequential BFS pinned by differential tests.
+
+### Fixed
+- **`find_coupling` 10-12 GB peak eliminated**: the "no static edge between
+  the pair" filter materialised a frozenset per resolved edge; it now probes
+  the few hundred candidate pairs with two indexed lookups each.
+- **Latent `with`-collector gap**: a `with` statement that was a DIRECT
+  function-body statement (the most common shape) was never collected — only
+  withs nested inside other blocks got their `__enter__`/`__exit__` edges.
+- **Tuple-unpack module constants** (`HORIZONTAL, VERTICAL = 1, 2`) now join
+  `module_consts`, so imports of the unpacked names stop surfacing as phantom
+  holes (the bulk of Django's find_holes noise — research/19).
+
 ## [3.38.0] — 2026-07-05
 
 ### Added

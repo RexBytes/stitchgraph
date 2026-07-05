@@ -13,6 +13,7 @@ Two questions they answer:
 from __future__ import annotations
 
 import collections
+from collections.abc import Callable
 
 # base_test_id/normalize live in modes.py (imports must point that way — modes can't import
 # this module back) so the POD ops normalize with the SAME logic (review 2026-07-03, F4).
@@ -102,18 +103,26 @@ def coactivation_pairs(cov: dict[str, list[str]], min_shared: int = 3
     return out
 
 
-def hidden_coupling(cov: dict[str, list[str]], connected: set[frozenset[str]],
+def hidden_coupling(cov: dict[str, list[str]],
+                    connected: set[frozenset[str]] | Callable[[str, str], bool],
                     min_shared: int = 3, min_score: float = 0.5, limit: int = 40
                     ) -> list[tuple[str, str, float, int]]:
-    """High co-activation pairs with **no static edge** between them (`connected` = the set of
-    `frozenset({src, dst})` structurally-linked function pairs). These are candidates for *implicit*
-    coupling — dependencies (shared state, dispatch, protocol, or a common caller) that the call graph
-    cannot see. Returns up to `limit` `(fa, fb, score, shared_tests)`, strongest first."""
+    """High co-activation pairs with **no static edge** between them. `connected`
+    is either the set of `frozenset({src, dst})` structurally-linked pairs, or —
+    v3.39.0, the memory fix — a `(a, b) -> bool` probe: materialising the set cost
+    one frozenset PER RESOLVED EDGE (~10 GB at 27M edges, the recorded
+    known-cost-op peak), while only the few hundred candidate pairs the
+    co-activation scan surfaces ever get LOOKED UP. These are candidates for
+    *implicit* coupling — dependencies (shared state, dispatch, protocol, or a
+    common caller) the call graph cannot see. Returns up to `limit`
+    `(fa, fb, score, shared_tests)`, strongest first."""
+    is_linked = (connected if callable(connected)
+                 else lambda a, b: frozenset((a, b)) in connected)
     out: list[tuple[str, str, float, int]] = []
     for a, b, score, c in coactivation_pairs(cov, min_shared=min_shared):
         if score < min_score:
             continue
-        if frozenset((a, b)) in connected:
+        if is_linked(a, b):
             continue
         out.append((a, b, score, c))
         if len(out) >= limit:

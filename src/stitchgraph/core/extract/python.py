@@ -54,6 +54,7 @@ class _Project:
     exported_names: set[str] = field(default_factory=set)
     main_calls: set[str] = field(default_factory=set)
     module_consts: set[str] = field(default_factory=set)  # module-level assigned names
+    fixture_names: set[str] = field(default_factory=set)  # @pytest.fixture def names
     external_base_classes: set[str] = field(default_factory=set)  # subclass framework bases
     module_by_qual: dict[str, str] = field(default_factory=dict)  # module qualname -> node id
     module_ids: set[str] = field(default_factory=set)  # all MODULE node ids
@@ -639,6 +640,16 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         qual = f"{parent}.{node.name}" if parent else node.name
         kind = NodeKind.METHOD if parent_is_class else NodeKind.FUNCTION
+        # Pytest fixture registry (v3.39.0, fixture-aware test rooting): a def
+        # decorated @pytest.fixture / @fixture / @pytest_asyncio.fixture is
+        # injected BY PARAMETER NAME into tests — record the name in pass 1 so
+        # pass 2 can bind test/fixture parameters project-wide regardless of
+        # file visit order (fixtures live in conftest.py up the tree).
+        for dec in node.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if _name_of(target) == "fixture":
+                proj.fixture_names.add(node.name)
+                break
         roles: set[str] = set()
         if is_test_file and node.name.startswith("test"):
             roles.add("test")
@@ -1261,6 +1272,22 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
                                        dunders, line, proto_seen)
             # getattr(recv, f"_prefix_{x}") dispatch (v3.39.0, research/18-19).
             _getattr_dispatch_edges(proj, rel, cid, child)
+            # Fixture-aware test rooting (v3.39.0 — research/18's zero-recall
+            # tests): pytest injects fixtures BY PARAMETER NAME, so a test whose
+            # only static edges point at its own nested helpers reaches ALL its
+            # real setup through parameters. Bind each parameter that names a
+            # known @pytest.fixture def (pass-1 registry — conftest chains
+            # included by construction) through the standard name-based rules;
+            # fixtures request other fixtures the same way, so fixture defs get
+            # the same binding. Builtin fixtures (tmp_path, monkeypatch, …) are
+            # not project defs and bind to nothing.
+            if proj.fixture_names and (
+                    child.name.startswith("test") or child.name in proj.fixture_names):
+                args = child.args
+                for a in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                    if a.arg in proj.fixture_names:
+                        _ref_edges(proj, cid, a.arg, Relation.CALLS, rel,
+                                   child.lineno, is_method=True)
             # Nested defs keep the enclosing class context (for closed-over self).
             _walk_scope(proj, rel, child, parent=qual, class_qual=class_qual)
 

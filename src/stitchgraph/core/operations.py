@@ -1092,11 +1092,19 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
     ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
         min_shared > 0 else 3
-    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those.
-    # Streamed tuples, not materialized Edge objects (review 2026-07-03, F11a).
-    connected = {frozenset((src, dst_id)) for src, _rel, dst_id, _w in store.iter_resolved()}
+    # Every structurally-linked function pair (any resolved edge) is "visible" —
+    # exclude those. Probed per CANDIDATE pair via two indexed lookups instead of
+    # materialising a frozenset per resolved edge (v3.39.0: that set was the op's
+    # entire 10-12 GB peak at 27-30M edges — the recorded known-cost-op hazard —
+    # while only the few hundred co-activation candidates are ever checked).
+    _q = "SELECT 1 FROM edges WHERE src=? AND dst_id=? LIMIT 1"
+
+    def _linked(a: str, b: str) -> bool:
+        return (store.conn.execute(_q, (a, b)).fetchone() is not None
+                or store.conn.execute(_q, (b, a)).fetchone() is not None)
+
     try:
-        pairs = coverage_query.hidden_coupling(cov, connected, min_shared=ms, limit=lim)
+        pairs = coverage_query.hidden_coupling(cov, _linked, min_shared=ms, limit=lim)
     except MemoryError:
         return refuse("coverage matrix too large to correlate in memory; raise min_shared or reduce "
                       "the suite", confidence=0.0)
