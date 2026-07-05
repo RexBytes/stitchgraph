@@ -33,6 +33,9 @@ class Config:
     # default; costs one lazy build after each (re)index and pays it back on the
     # first sweep. Disable for read-only index locations or to pin the pure paths.
     adjacency_cache: bool = True
+    # Derived token-vector sidecar for find_similar/find_component (simcache.py).
+    # Same contract: lazy, generation-gated, delete-safe.
+    similarity_cache: bool = True
     # [review]
     threshold: float = 0.80
     # [orient]
@@ -110,6 +113,7 @@ def _load(start: str | Path | None) -> Config:
         include_tests=bool(ep.get("include_tests", True)),
         ignore=_str_list(idx.get("ignore")),
         adjacency_cache=bool(idx.get("adjacency_cache", True)),
+        similarity_cache=bool(idx.get("similarity_cache", True)),
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,

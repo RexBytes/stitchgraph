@@ -125,6 +125,19 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     if mode == "structure":
         return find_similar_structure(store, snippet, limit)
     limit = max(0, limit)  # a negative limit must bound to nothing, not slice from the end
+    if _EMBEDDER is None and not _try_model2vec():
+        # Token path: the similarity sidecar answers in one CSR·vector product —
+        # the reference below re-materialises every CALLS edge PER QUERY (26.8M
+        # Edge objects ≈ 3 min/query on the 106k-node field corpus, the recorded
+        # PERFORMANCE.md gap). Same token pipeline, same cosine maths; sidecar
+        # absent/stale/disabled/pure-mode -> the reference path unchanged. The
+        # dense-embedder path deliberately bypasses it (different vector space;
+        # persisting embeddings is the recorded follow-up).
+        from .simcache import load_cache
+        cache = load_cache(store)
+        if cache is not None:
+            return [(nid, round(s, 6))
+                    for nid, s in cache.query(tokenise(snippet), limit)]
     callees: dict[str, list[str]] = {}
     for edge in store.resolved_edges(Relation.CALLS):
         if edge.dst_id:
