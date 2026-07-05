@@ -97,6 +97,9 @@ file-watching, and a precision/recall eval harness.
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
 | Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
 | Single-file extraction against a persistent symbol table | L | Would extend v3.38.0's incremental watch past the AUTO-streaming threshold (~2k files), where the differential apply currently falls back to a full streaming reindex; needs store-backed by_name/module tables with the extractor's exact resolution semantics. |
+| **Protocol-method resolver** (`with X:` → `__enter__`/`__exit__`, `x[k]=v` → `__setitem__`, operator dunders) | M | The single largest slice of the 0.9% recall tail measured in research/18 (`TemplateContextManager.__exit__` missed by 389 of 2,056 HA tests). Evidence-ranked: re-measure with `audit_graph` after shipping. |
+| getattr-dispatch heuristic (`getattr(self, f"_prefix_{x}")` → `_prefix_*` members) | M | Second slice of the research/18 tail (`_ScriptRun._async_step_*`); cardinal-safe over-approximation by prefix match. |
+| Fixture-aware test rooting (pytest fixture graph) | M | The remaining zero-recall tests in research/18 reach all code through fixtures; rooting test→fixture edges closes them. |
 
 ## Known seams (honest)
 
