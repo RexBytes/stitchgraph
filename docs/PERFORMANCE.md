@@ -23,7 +23,11 @@ Measured anchors:
 | memory-gate corpus | 450 | 1.2M | ~0.5 GB | ~1 min | <130 MB (capped) |
 | homonym corpus | 1,212 | 8.6M | — | — | 50 MB |
 | Home Assistant 2024.3.3 | 6,728 | 16.0M | 10 GB | **34 min** | 158 MB |
-| composite megacorpus | 9,006 | (see note) | — | (recorded on completion) | ~150 MB |
+| megacorpus (HA + sympy + django + 21 pkgs) | 9,080 | **26.8M** | 17 GB | **61.6 min** | 228 MB |
+
+Estimator check on the megacorpus (the first field test of this doc): edges/500k
+predicts 54 min vs 61.6 measured (−12%); 0.65 KB/edge predicts 17.4 GB vs 17
+measured. Good enough to plan around.
 
 Estimation method, in order of increasing accuracy:
 
@@ -50,9 +54,9 @@ after that opens the sidecar in milliseconds. Warm anchors on the 16M-edge graph
 
 | op | time | notes |
 |---|---|---|
-| `find_stale` | 2.1 s | reachability is effectively free now |
+| `find_stale` | 2.1 s | reachability is effectively free now (1.8 s even at 26.8M edges / 106k nodes) |
 | `impact_of` | ~30 s | name resolution + rendering dominate |
-| `find_chokepoints` | 59 s | articulation DFS in Python over ints |
+| `find_chokepoints` | 59 s | articulation DFS in Python over ints; **memory is its cost** — 4.1 GB peak at 26.8M edges (the symmetrised int lists; recorded follow-up) |
 | `orient` (fallback) | <1 s | sidecar bitcount |
 | `scan` | ~5 min | per-candidate SQL shares dominate; scale ≈ linear in flagged candidates |
 | `find_component` / `find_similar` | ~3 min/query | O(nodes) token scan — the recorded gap; a prebuilt embedder index is the fix |
@@ -71,9 +75,14 @@ with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph.
 
 ## When an estimate misses badly, suspect (in order)
 
-1. **Cold page cache / slow disk** — the endgame and first sidecar build are
+1. **Near-duplicate trees in one indexed root** — N copies of similar code make
+   every homonym resolve ambiguously across all N copies; edge count grows
+   quadratically-ish and nothing downstream measures anything real. Observed: a
+   corpus padded with near-identical synthetic packages hit 21 GB (2× the
+   realistic figure) and was still writing. Index real, distinct codebases.
+2. **Cold page cache / slow disk** — the endgame and first sidecar build are
    disk-bound; everything else here assumed warm.
-2. **Homonym density** — check `edges/files` after the fact; >1,000 means the
+3. **Homonym density** — check `edges/files` after the fact; >1,000 means the
    graph, and everything downstream, is 3–5× the typical-code estimate.
-3. **A pre-v3.29 index without planner stats** — reindex once; the ANALYZE
+4. **A pre-v3.29 index without planner stats** — reindex once; the ANALYZE
    safety net and pinned query shapes only fully protect fresh indexes.

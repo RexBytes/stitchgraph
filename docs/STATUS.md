@@ -95,7 +95,8 @@ file-watching, and a precision/recall eval harness.
 | gRPC/proto & OpenAPI contract resolvers | M | More service-boundary tracing. |
 | More ORMs (Prisma, TypeORM, …) and frameworks | M | Additive resolvers. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
-| ~100k-node scale validation; bound the `transitive_fan_in` closure | M | Largely covered by the 59k-node / 16M-edge Home Assistant field runs (v3.28–v3.31: constant-memory index, sidecar-scale sweeps); a >100k-node corpus run remains. |
+| Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
+| `find_chokepoints` memory at scale (4.1 GB peak at 26.8M edges) | S | The articulation symmetrised int lists; keep them as numpy arrays instead of .tolist(). |
 | True incremental reindex (wire `replace_file` to `watch`) | M | `watch` currently full-rebuilds (fast at personal scale). |
 | Dense-embedder index for `find_component`/`find_similar` at scale | M | Token scan is O(nodes) per query (~minutes at 59k nodes); a prebuilt embedding index is the fix. |
 
