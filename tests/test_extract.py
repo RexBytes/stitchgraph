@@ -83,6 +83,29 @@ def test_find_holes_flags_internal_missing(tmp_path):
         assert isinstance(holes.result, list)
 
 
+def test_tuple_unpacked_module_constants_are_not_holes(tmp_path):
+    """v3.39.0 (research/19): `HORIZONTAL, VERTICAL = 1, 2` defines module
+    constants exactly like `LIMIT = 10` does — but only bare-Name targets were
+    collected into module_consts, so an import of an unpacked name surfaced as
+    a phantom hole (the bulk of Django's find_holes noise: admin.options'
+    HORIZONTAL/VERTICAL alone accounted for a dozen entries)."""
+    pkg = tmp_path / "p"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "consts.py").write_text(
+        "LIMIT = 10\n"
+        "HORIZONTAL, VERTICAL = 1, 2\n"
+        "[FIRST, SECOND] = ['a', 'b']\n"
+        "HEAD, *REST = [1, 2, 3]\n")
+    (pkg / "user.py").write_text(
+        "from p.consts import LIMIT, HORIZONTAL, VERTICAL, FIRST, REST\n\n"
+        "def use():\n    return LIMIT\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        holes = {h["missing"] for h in sg.find_holes(store).result}
+        assert holes & {"HORIZONTAL", "VERTICAL", "FIRST", "REST", "LIMIT"} == set()
+
+
 def test_scan_flags_live_stub(tmp_path):
     with _index(tmp_path) as store:
         # `todo` raises NotImplementedError but isn't reachable -> green stub,

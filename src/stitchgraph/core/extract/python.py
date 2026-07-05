@@ -504,7 +504,21 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     proj.main_calls.update(_main_block_calls(tree))
     for stmt in tree.body:  # module-level constants (not graphed as nodes)
         if isinstance(stmt, ast.Assign):
-            proj.module_consts.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+            for t in stmt.targets:
+                # Flatten tuple/list unpacking (incl. starred): `HORIZONTAL, VERTICAL
+                # = 1, 2` (django.contrib.admin.options) defines two module constants,
+                # but only bare-Name targets were collected — imports of the unpacked
+                # names then surfaced as phantom holes (the bulk of Django's
+                # find_holes noise, research/19).
+                stack = [t]
+                while stack:
+                    n = stack.pop()
+                    if isinstance(n, ast.Name):
+                        proj.module_consts.add(n.id)
+                    elif isinstance(n, (ast.Tuple, ast.List)):
+                        stack.extend(n.elts)
+                    elif isinstance(n, ast.Starred):
+                        stack.append(n.value)
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
             proj.module_consts.add(stmt.target.id)
     has_main = _has_main_block(tree)
@@ -1233,9 +1247,18 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # by walking the whole def node).
             for ann_name in _annotation_names(child):
                 _ref_edges(proj, cid, ann_name, Relation.REFERENCES, rel, child.lineno)
-            # `with EXPR as ...` exercises the context manager's __enter__/__exit__.
-            for cm in _direct_withs(child):
-                _with_edges(proj, rel, cid, class_qual, local_types, cm)
+            # Protocol dunders the source never NAMES (v3.39.0, research/18's recall
+            # tail): `with` -> __enter__/__exit__ (async: __aenter__/__aexit__),
+            # `for .. in` -> __iter__/__next__ (async: __aiter__/__anext__),
+            # subscripts -> __getitem__/__setitem__/__delitem__. One shared `seen`
+            # set bounds the per-function fan to one fallback per dunder.
+            proto_seen: set[str] = set()
+            for cm, is_async in _direct_withs(child):
+                _with_edges(proj, rel, cid, class_qual, local_types, cm,
+                            is_async=is_async, seen=proto_seen)
+            for expr, dunders, line in _direct_protocol_uses(child):
+                _protocol_dunder_edges(proj, rel, cid, local_types, expr,
+                                       dunders, line, proto_seen)
             # Nested defs keep the enclosing class context (for closed-over self).
             _walk_scope(proj, rel, child, parent=qual, class_qual=class_qual)
 
@@ -1326,24 +1349,67 @@ def _add_ref(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,
                            location=f"{rel}:{line}:0", source="ast"))
 
 
-def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
-                local_types: dict[str, str], item: ast.withitem) -> None:
-    """A `with` context manager uses __enter__/__exit__ — reference them so they
-    aren't flagged dead, and the cleanup they call (e.g. close) stays live."""
-    expr = item.context_expr
-    cls_ids: list[str] = []
+def _protocol_receiver_classes(proj: _Project, local_types: dict[str, str],
+                               expr: ast.AST) -> list[str]:
+    """Class node ids a protocol receiver expression resolves to: a direct
+    constructor call (`with Lock():`) or a name with a declared local type."""
     if isinstance(expr, ast.Call):
         ctor = _name_of(expr.func)
         if ctor:
-            cls_ids = proj.class_by_name.get(ctor, [])
+            return proj.class_by_name.get(ctor, [])
     elif isinstance(expr, ast.Name) and expr.id in local_types:
-        cls_ids = proj.class_by_name.get(local_types[expr.id], [])
-    for cid in cls_ids:
-        for dunder in ("__enter__", "__exit__"):
-            mid = f"{cid}.{dunder}"
-            if mid in proj.ids:
-                _add_ref(proj, src_id, dunder, mid, rel,
-                         getattr(expr, "lineno", 0))
+        return proj.class_by_name.get(local_types[expr.id], [])
+    return []
+
+
+def _protocol_dunder_edges(proj: _Project, rel: str, src_id: str,
+                           local_types: dict[str, str], expr: ast.AST,
+                           dunders: tuple[str, ...], line: int,
+                           seen: set[str]) -> None:
+    """The protocol-method resolver core (v3.39.0 — the largest slice of the
+    recall tail measured in research/18: `TemplateContextManager.__exit__` was
+    executed by 389 of 2,056 HA tests and statically reached by none). A `with`
+    block, a `for` loop, or a subscript runs a dunder the source never names,
+    so no call pass can see it. Resolution follows the house two-tier pattern:
+
+    - receiver resolvable (constructor call / declared local type) -> EXACT
+      references to that class's dunders (the pre-v3.39 `_with_edges` path);
+    - receiver unknown -> the same name-based fallback every unknown-receiver
+      call/read gets (`_ref_edges`, is_method=True): INFERRED single candidate,
+      AMBIGUOUS homonym fan across the classes that define the dunder.
+      Cardinal-safe (only ever adds reachability); a builtin receiver (dict/
+      list subscripts — the overwhelmingly common case) resolves to no project
+      symbol and adds nothing.
+
+    `seen` dedupes per (function, dunder): fifty dict lookups in one function
+    emit ONE `__getitem__` fan, not fifty (`_dedup_edges` would collapse the
+    final rows anyway; this bounds the transient list)."""
+    cls_ids = _protocol_receiver_classes(proj, local_types, expr)
+    if cls_ids:
+        for cid in cls_ids:
+            for dunder in dunders:
+                mid = f"{cid}.{dunder}"
+                if mid in proj.ids and f"exact:{mid}" not in seen:
+                    seen.add(f"exact:{mid}")
+                    _add_ref(proj, src_id, dunder, mid, rel, line)
+        return
+    for dunder in dunders:
+        if dunder not in seen:
+            seen.add(dunder)
+            _ref_edges(proj, src_id, dunder, Relation.REFERENCES, rel, line,
+                       is_method=True)
+
+
+def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
+                local_types: dict[str, str], item: ast.withitem,
+                is_async: bool = False, seen: set[str] | None = None) -> None:
+    """A `with` context manager uses __enter__/__exit__ (`async with`:
+    __aenter__/__aexit__) — reference them so they aren't flagged dead, and the
+    cleanup they call (e.g. close) stays live."""
+    dunders = ("__aenter__", "__aexit__") if is_async else ("__enter__", "__exit__")
+    _protocol_dunder_edges(proj, rel, src_id, local_types, item.context_expr,
+                           dunders, getattr(item.context_expr, "lineno", 0),
+                           seen if seen is not None else set())
 
 
 def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribute]:
@@ -1431,15 +1497,61 @@ def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
     return out
 
 
-def _direct_withs(func: ast.AST) -> list[ast.withitem]:
-    out: list[ast.withitem] = []
+def _direct_protocol_uses(func: ast.AST) -> list[tuple[ast.AST, tuple[str, ...], int]]:
+    """(receiver_expr, dunders, line) for the implicit-dispatch sites in a
+    function body other than `with` (which `_direct_withs` collects): `for`
+    loops (incl. comprehension iterables) and subscript load/store/delete.
+    Skips nested defs exactly like the other _direct_* collectors."""
+    out: list[tuple[ast.AST, tuple[str, ...], int]] = []
 
+    # Checks NODE ITSELF, then recurses — the check-children-only shape misses a
+    # statement that is itself the match (`for x in reg:` as a direct body stmt),
+    # the same latent gap fixed in _direct_withs (v3.39.0).
     def rec(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        if isinstance(node, ast.For):
+            out.append((node.iter, ("__iter__", "__next__"), node.lineno))
+        elif isinstance(node, ast.AsyncFor):
+            out.append((node.iter, ("__aiter__", "__anext__"), node.lineno))
+        elif isinstance(node, ast.comprehension):
+            dunders: tuple[str, ...] = (("__aiter__", "__anext__") if node.is_async
+                                        else ("__iter__", "__next__"))
+            out.append((node.iter, dunders, getattr(node.iter, "lineno", 0)))
+        elif isinstance(node, ast.Subscript):
+            sub: tuple[str, ...]
+            if isinstance(node.ctx, ast.Store):
+                sub = ("__setitem__",)
+            elif isinstance(node.ctx, ast.Del):
+                sub = ("__delitem__",)
+            else:
+                sub = ("__getitem__",)
+            out.append((node.value, sub, node.lineno))
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            if isinstance(child, (ast.With, ast.AsyncWith)):
-                out.extend(child.items)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        rec(stmt)
+    return out
+
+
+def _direct_withs(func: ast.AST) -> list[tuple[ast.withitem, bool]]:
+    out: list[tuple[ast.withitem, bool]] = []
+
+    # Checks NODE ITSELF, then recurses. The old check-children-only shape never
+    # collected a `with` that is a DIRECT body statement of the function — only
+    # withs nested inside try/if/for were seen, so the top-level `with ctx:` (the
+    # most common shape) emitted no __enter__/__exit__ edges at all. Latent since
+    # the original _with_edges; exposed by the v3.39.0 protocol-resolver tests.
+    def rec(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            is_async = isinstance(node, ast.AsyncWith)
+            out.extend((item, is_async) for item in node.items)
+        for child in ast.iter_child_nodes(node):
             rec(child)
 
     for stmt in getattr(func, "body", []):
