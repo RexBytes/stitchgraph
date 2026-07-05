@@ -80,7 +80,15 @@ def test_callback_methods_not_dead(tmp_path):
 def test_openapi_spec_routes_and_handlers(tmp_path):
     """v3.35.0: an OpenAPI spec is a routing table — paths become ROUTE nodes on the
     code-first id convention, operationId links the handler, and the spec-wired
-    handler stops being dead. YAML and JSON both."""
+    handler stops being dead. JSON always (stdlib); the YAML expectations apply only
+    when PyYAML is installed — without it YAML specs are skipped BY DESIGN (the
+    guarded-import contract), and this test asserts that degradation too (the
+    core-only CI job runs with --no-deps; the else-branch is what it pins)."""
+    try:
+        import yaml  # noqa: F401
+        has_yaml = True
+    except ImportError:
+        has_yaml = False
     (tmp_path / "openapi.yaml").write_text(
         "openapi: 3.0.0\n"
         "paths:\n"
@@ -97,12 +105,19 @@ def test_openapi_spec_routes_and_handlers(tmp_path):
         "def ping():\n    return 'pong'\n")
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
-        assert {"GET /users", "DELETE /users/{id}", "GET /ping"} <= _routes(store)
+        routes = _routes(store)
         rt = _routes_to(store)
-        assert ("route:GET /users", "list_users") in rt
+        assert "GET /ping" in routes  # JSON spec: stdlib, works in every install
         assert ("route:GET /ping", "ping") in rt
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
-        assert "list_users" not in stale and "fetch_all" not in stale
+        if has_yaml:
+            assert {"GET /users", "DELETE /users/{id}"} <= routes
+            assert ("route:GET /users", "list_users") in rt
+            assert "list_users" not in stale and "fetch_all" not in stale
+        else:
+            # the guarded-import degradation: the YAML spec contributes NOTHING —
+            # no routes, no phantom edges
+            assert not any("users" in r for r in routes)
 
 
 def test_grpc_proto_binds_servicer(tmp_path):

@@ -4,6 +4,17 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.36.2] — 2026-07-05
+
+### Fixed
+- **core-only CI**: the OpenAPI resolver test asserted YAML-spec routes
+  unconditionally; without PyYAML (the `--no-deps` job) YAML specs are skipped BY
+  DESIGN, so the test now pins that degradation explicitly (JSON assertions
+  everywhere; YAML assertions only when PyYAML is importable, an
+  every-route-absent check when it isn't). The lint failure on the same branch
+  (a newer CI mypy rejecting an ndarray→list reassignment) was already resolved
+  by v3.36.1's C-int-array refactor.
+
 ## [3.36.1] — 2026-07-05
 
 ### Fixed
