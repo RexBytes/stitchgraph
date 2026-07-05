@@ -248,7 +248,10 @@ oracle. Measured:
   `find_stale` drops from 119 s / 1.97 GB to **2.1 s / 516 MB** warm. Without numpy the
   sweeps stream from SQLite instead (~2 GB on the same graph).
 
-Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
+Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md). Wondering
+how long *your* repo will take? [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) has
+measured anchors and an estimation method (edges drive cost, not files; watch the
+db growth rate for a live ETA; a flat ~150 MB RSS with an active WAL is healthy).
 
 ## Develop
 
