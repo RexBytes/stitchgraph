@@ -159,3 +159,34 @@ def test_streaming_equals_full_heavy_fanout_and_cross_group(tmp_path):
     php.append("drive(new Svc0());\n")
     (tmp_path / "svc.php").write_text("\n".join(php))
     _assert_identical(str(tmp_path))
+
+
+def test_streaming_equals_full_on_homonym_override_fanout(tmp_path):
+    """The Home Assistant shape (field report 2026-07-03): a pure-Python tree whose bare-name
+    homonyms (`get`/`setup`/`run` defined in every module) fan out AMBIGUOUS edges per call
+    site, with inheritance + overrides + framework bases + dunders layered on. This is the
+    path the fix moved onto the per-file sink drain + the store-twin override widening
+    (`Store._propagate_overrides`), so pin: streamed rows == in-memory rows, including the
+    override AMBIGUOUS edges, callback/test roles, and dunder seeds."""
+    for i in range(12):
+        d = tmp_path / f"pkg{i % 3}"
+        d.mkdir(exist_ok=True)
+        (d / "__init__.py").write_text("")
+        (d / f"m{i}.py").write_text(
+            f"class Base{i}:\n"
+            f"    def get(self): return {i}\n"
+            f"    def __getitem__(self, k): return self._pick(k)\n"
+            f"    def _pick(self, k): return k\n"
+            f"class Sub{i}(Base{i}):\n"
+            f"    def get(self): return {i} + 1\n"
+            f"class Handler{i}(SomeFrameworkBase):\n"
+            f"    def handle(self): return get()\n"
+            f"def work{i}(x: Base{i}):\n"
+            f"    x.get()\n"
+            f"    return get(), setup(), run()\n"
+            f"def get(): return 1\n"
+            f"def setup(): return 2\n"
+            f"def run(): return 3\n"
+            f"if __name__ == '__main__':\n"
+            f"    work{i}(Sub{i}())\n")
+    _assert_identical(str(tmp_path))

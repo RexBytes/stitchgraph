@@ -80,7 +80,15 @@ def main() -> None:
         "--db",
         default=os.environ.get("STITCHGRAPH_DB", "stitchgraph.db"),
         help="index database path (env: STITCHGRAPH_DB; default: ./stitchgraph.db)")
+    parser.add_argument(
+        "--pure", action="store_true",
+        help="run on the pure-Python reference paths only (disable the adjacency "
+             "sidecar and GraphBLAS accelerators — identical results, stdlib "
+             "footprint; env: STITCHGRAPH_PURE=1)")
     args = parser.parse_args()
+    if args.pure:
+        from ..core.purity import set_pure_mode
+        set_pure_mode(True)
     build_server(db=args.db).run()
 
 

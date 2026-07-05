@@ -376,6 +376,32 @@ def feature_map(store: Store, coverage_path: str, k: int | None = None,
     return features, meta
 
 
+def behavioural_neighbours(cov: dict[str, list[str]], fid: str, limit: int = 10,
+                           k: int | None = None) -> list[tuple[str, float]]:
+    """Functions nearest `fid` in MODE space — the denoised runtime embedding
+    (research/11 B4). Two functions close here *behave* similarly across the suite
+    even when lexically/structurally unrelated: the SVD's top-k modes smooth away
+    single-test noise that raw column cosine (`co_functions`) keeps. Embedding is
+    the singular-value-scaled function loading (column of diag(S)·Vt); similarity
+    is cosine. Empty when `fid` never executed. Raises RuntimeError without numpy
+    (same contract as the other POD entry points)."""
+    _tests, funcs, _U, S, Vt, _kk, _d, _solver, _re, _tot = _pod(cov, k)
+    if fid not in funcs:
+        return []
+    F = Vt * S[:, None]  # kk x nF
+    j = funcs.index(fid)
+    v = F[:, j]
+    vn = float(np.linalg.norm(v))
+    if vn == 0.0:
+        return []
+    norms = np.linalg.norm(F, axis=0) * vn
+    sims = (F.T @ v) / np.where(norms == 0.0, 1.0, norms)
+    order = np.argsort(-sims)
+    out = [(funcs[i], round(float(sims[i]), 4))
+           for i in order if funcs[i] != fid and sims[i] > 0.0]
+    return out[:limit]
+
+
 def outlier_tests(store: Store, coverage_path: str, k: int | None = None, limit: int = 20
                   ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Tests ranked by how poorly the top behavioural modes reconstruct them (residual in mode space).

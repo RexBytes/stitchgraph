@@ -42,22 +42,23 @@ finding is advisory: ranked options for a human or agent to act on.
 ## Install
 
 ```bash
-pip install stitchgraph              # library only (stdlib core, Python analysis)
-pip install 'stitchgraph[cli]'       # + the `stitchgraph` command
-pip install 'stitchgraph[mcp]'       # + the `stitchgraph-mcp` server for agents
-pip install 'stitchgraph[all]'       # everything below
+pip install stitchgraph              # the full tool: CLI, MCP, 12 languages, all accelerators
+pip install --no-deps stitchgraph   # lean: stdlib-only library core (Python analysis)
 ```
 
-| Extra | Unlocks |
-|---|---|
-| `cli` | The `stitchgraph` command (Typer) |
-| `mcp` | The `stitchgraph-mcp` server for LLM agents (FastMCP) |
-| `treesitter` | The other 11 languages, with **bundled offline grammars** (CI/air-gap safe) |
-| `treesitter-download` | Same, but fetches the newest grammars on first use |
-| `precise` | jedi type-grade Python resolution (`reindex --precise`) |
-| `resolve` | SQL statement resolution (sqlglot) — powers full-stack traces into tables |
-| `algebra` | GraphBLAS-accelerated whole-graph sweeps (pure-Python fallback built in) |
-| `spectral` | scipy sparse solvers — uncaps `find_subsystems` / `find_modes` on large repos |
+**The default install is the full-power one** (since v3.31.0): CLI, MCP server,
+polyglot grammars, jedi precision, SQL resolution, the mmapped adjacency sidecar
+(numpy), GraphBLAS and sparse solvers. Every accelerated path is pinned
+byte-identical to its pure-Python reference by the test suite, so fast-by-default
+costs nothing in trust. Two opt-outs:
+
+- **Lean install**: `pip install --no-deps stitchgraph` — the library core is
+  stdlib-only (every dependency is a guarded import) and degrades gracefully;
+  a CI job pins this. The old extras (`[cli]`, `[mcp]`, `[treesitter]`, …) still
+  exist for picking individual capabilities onto a `--no-deps` base.
+- **Pure run**: `stitchgraph --pure …`, `stitchgraph-mcp --pure`, or
+  `STITCHGRAPH_PURE=1` — everything installed, but sweeps use the reference
+  implementations (identical results; for debugging or byte-reproducing old runs).
 
 Run `stitchgraph doctor` (add `--strict` in CI) to check which grammars load.
 
@@ -232,10 +233,25 @@ Per-language support matrix: [`docs/LANGUAGES.md`](docs/LANGUAGES.md).
 ## Scale
 
 `reindex` streams the graph to SQLite in constant memory (auto-enabled for large
-on-disk trees): a 4,300-file Magento module indexes in **269 MB** peak instead of
-3.2 GB, byte-identical output, pinned by a differential oracle. Query sweeps stream
-their adjacency too — a 16M-edge graph (Home Assistant scale) is queried in ~2 GB.
-Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md).
+on-disk trees), byte-identical to the in-memory path and pinned by a differential
+oracle. Measured:
+
+- Magento (4,300 PHP files): **269 MB** peak instead of 3.2 GB.
+- A homonym-fanout Python corpus producing **8.6M edges: 50 MB** peak (the pre-v3.28.0
+  Python path materialized its edge list first — a field report of Home Assistant
+  OOMing at 7 GB exposed it; fixed and now **gated in CI** by a hard-memory-cap test).
+- Home Assistant 2024.3.3 (6,728 Python files, 59k nodes, 16.0M edges): the repo from
+  the field report completes a clean end-to-end streaming reindex under a **4 GB
+  address-space ulimit at 158 MB peak RSS** (~34 min).
+- Query sweeps use a derived mmapped adjacency sidecar (`<db>.adjcache/`, built lazily
+  on the first sweep, auto-invalidated by a generation counter): on the 16M-edge graph,
+  `find_stale` drops from 119 s / 1.97 GB to **2.1 s / 516 MB** warm. Without numpy the
+  sweeps stream from SQLite instead (~2 GB on the same graph).
+
+Details: [`docs/V2_STREAMING_DESIGN.md`](docs/V2_STREAMING_DESIGN.md). Wondering
+how long *your* repo will take? [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) has
+measured anchors and an estimation method (edges drive cost, not files; watch the
+db growth rate for a live ETA; a flat ~150 MB RSS with an active WAL is healthy).
 
 ## Develop
 

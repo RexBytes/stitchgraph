@@ -547,11 +547,30 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   necessarily holds the rows in RAM). As of v2.0.0 it is the **default** (`streaming=None` →
   AUTO: on-disk store with ≥ `_STREAM_AUTO_FILES` source files); force it either way with
   `streaming=True` / `streaming=False`.
+- **Python-path correction (v3.28.0):** until v3.28.0 only the tree-sitter extractor
+  streamed edges; the Python extractor materialised its full edge list before the sink
+  drained it, so a large pure-Python repo (Home Assistant, field report 2026-07-03) OOM'd
+  at ~7 GB despite `streaming=True`. Fixed (per-file drain + store-side override widening,
+  measured 8.6M edges / 50 MB peak) and now gated by a hard-memory-cap CI test
+  (`test_streaming_python_edges_bounded_memory`), so the constant-memory property is a
+  tested invariant rather than a documented claim. The store-side widening's first cut was
+  itself O(edges) in Python (a fetchall of every resolved CALLS/REFERENCES row) and re-OOM'd
+  Home Assistant in the endgame — now symbol-scale Python with the scan/insert inside SQLite,
+  and the gate corpus contains inheritance so the widening path stays exercised. End-to-end
+  on HA 2024.3.3 (6,728 files, 16.0M edges): completes under a 4 GB address-space ulimit at
+  158 MB peak RSS in ~34 min.
 - **Querying at that scale (v2.1.0):** the reachability sweeps (`find_stale`, `impact_of`,
   `fan_in`) now stream their adjacency from `Store.iter_resolved()` rather than materialising
-  every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM. The
-  one remaining O(edges) structure is the in-memory adjacency itself (compact ints, not `Edge`
-  objects); pushing that to disk/GraphBLAS-on-disk is the next step if even that is too big.
+  every `Edge`, so a ~16M-edge graph (Home Assistant) is queried in ~2 GB instead of OOM.
+- **The per-sweep adjacency rebuild itself (v3.30.0):** that ~2 GB / ~130 s dict-of-strings
+  build ran on EVERY sweep and was thrown away. The mmapped CSR sidecar (`<db>.adjcache/`,
+  adjcache.py) derives it once — 137 MB on disk for the 16M-edge graph, opened in
+  milliseconds thereafter; the packed provenance bitmask makes the EXTRACTED-only closure a
+  bit-probe instead of an `Edge` object per row. Sidecar-less operation (no numpy, read-only
+  index dir, `adjacency_cache = false`, or `--pure`) keeps the v2.1.0 streaming behaviour.
+  v3.31.0 moved SCC and articulation points onto the sidecar too (int-CSR Tarjan/DFS with
+  reference-identical ordering); GraphBLAS-on-disk remains the rung above if a graph
+  outgrows even the sidecar.
 
 ## Behaviour is the contract (changing it would silently break callers)
 

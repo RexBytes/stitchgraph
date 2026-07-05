@@ -18,10 +18,24 @@ from pathlib import Path
 @dataclass
 class Config:
     # [entry_points]
-    include: set[str] = field(default_factory=set)   # extra roots (force-live)
+    include: set[str] = field(default_factory=set)   # extra roots (force-live), exact node ids
+    # Glob patterns over module FILE paths whose modules are loaded dynamically by a
+    # framework (plugin trees, integration registries) and so have no static importer —
+    # e.g. Home Assistant loads every `components/<domain>/*` module by name, so
+    # `root_modules = ["components/*"]` roots them all and their module-level wiring
+    # (schema validators, registered hooks) stops surfacing as dead-code candidates
+    # (field analysis 2026-07-03). Matched with fnmatch against each MODULE node's file.
+    root_modules: list[str] = field(default_factory=list)
     include_tests: bool = True
     # [index]
     ignore: list[str] = field(default_factory=list)  # globs skipped on reindex
+    # Derived mmapped CSR sidecar for the reachability sweeps (adjcache.py). On by
+    # default; costs one lazy build after each (re)index and pays it back on the
+    # first sweep. Disable for read-only index locations or to pin the pure paths.
+    adjacency_cache: bool = True
+    # Derived token-vector sidecar for find_similar/find_component (simcache.py).
+    # Same contract: lazy, generation-gated, delete-safe.
+    similarity_cache: bool = True
     # [review]
     threshold: float = 0.80
     # [orient]
@@ -95,8 +109,11 @@ def _load(start: str | Path | None) -> Config:
     embed = sim.get("embed_model")
     return Config(
         include=set(_str_list(ep.get("include"))),
+        root_modules=_str_list(ep.get("root_modules")),
         include_tests=bool(ep.get("include_tests", True)),
         ignore=_str_list(idx.get("ignore")),
+        adjacency_cache=bool(idx.get("adjacency_cache", True)),
+        similarity_cache=bool(idx.get("similarity_cache", True)),
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,

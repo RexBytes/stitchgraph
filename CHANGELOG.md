@@ -4,6 +4,262 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.36.2] — 2026-07-05
+
+### Fixed
+- **core-only CI**: the OpenAPI resolver test asserted YAML-spec routes
+  unconditionally; without PyYAML (the `--no-deps` job) YAML specs are skipped BY
+  DESIGN, so the test now pins that degradation explicitly (JSON assertions
+  everywhere; YAML assertions only when PyYAML is importable, an
+  every-route-absent check when it isn't). The lint failure on the same branch
+  (a newer CI mypy rejecting an ndarray→list reassignment) was already resolved
+  by v3.36.1's C-int-array refactor.
+
+## [3.36.1] — 2026-07-05
+
+### Fixed
+- **`find_chokepoints`/SCC memory at scale**: the sidecar traversals boxed every edge
+  id via `.tolist()` (~28 B/entry — the 4.1 GB peak recorded in the scale validation).
+  Now `array.array('q')` C-int storage plus explicit transient lifetimes in the
+  symmetrise/unique chain: **4.1 GB → 3.0 GB peak and 78.6 s → 58.5 s** on the
+  26.8M-edge megacorpus. Closes the scale-validation follow-up.
+
+## [3.36.0] — 2026-07-05
+
+**The instant-search release.** The last genuinely slow query path — token
+similarity — becomes sidecar-served. Notes: `docs/RELEASE_NOTES_v3.36.0.md`.
+
+### Added
+- **Similarity sidecar** (`<db>.simcache/`, `core/simcache.py`): the token path of
+  `find_similar`/`find_component` re-materialised every CALLS edge *per query*
+  (26.8M Edge objects ≈ 3 min/query on the 106k-node field corpus). The sidecar
+  bakes it once — an exact-vocabulary sparse TF matrix (CSR, L2-normalised rows,
+  callee tokens baked in) — and a query becomes one CSR·vector product. Measured
+  on the 106k-node megacorpus: **<0.1 s warm** (was ~3 min, >1000×), identical
+  results, one-time build 335 s, **12 MB** beside the 17 GB index. Inherits every
+  adjacency-sidecar contract: generation-gated staleness, lazy build, numpy-gated,
+  `[index] similarity_cache = false` / `--pure` opt-outs, delete-safe. The
+  dense-embedder path bypasses it (persisting embeddings: recorded follow-up).
+
+## [3.35.0] — 2026-07-05
+
+**The contract-resolvers release.** The service boundary gets spec-first coverage;
+the ORM family gains its JS/TS twins. Closes the two remaining "additive resolvers"
+roadmap rows.
+
+### Added
+- **OpenAPI/Swagger resolver**: spec files (`openapi`/`swagger` + `paths`; JSON via
+  stdlib, YAML via pyyaml — guarded import, YAML skipped without it) become ROUTE
+  nodes on the code-first id convention, so `<form action>` and JS `fetch` links
+  converge on them; `operationId` links the same-named handler(s) — spec-wired
+  handlers stop being flagged dead. No operationId → the route node still roots the
+  path; several candidates → AMBIGUOUS edges, recorded.
+- **gRPC proto resolver**: `rpc` definitions in `.proto` services become ROUTE nodes
+  (`{rel}::rpc:{Service}.{Method}`) bound to conventional implementations
+  (`{Service}Servicer`/`Base`/`Impl` methods) — servicer methods, which nothing in
+  the static call graph calls, stop surfacing as dead code. Deliberately small
+  regex/brace parse; no protobuf dependency.
+- **Prisma resolver**: `schema.prisma` models → `db::<table>` DBTable nodes
+  (honouring `@@map`), MAPS_TO from same-named hand-written domain classes.
+- **TypeORM resolver**: `@Entity()`/`@Entity("name")` classes in TS/TSX → MAPS_TO
+  onto `db::<table>`, converging with the SQL resolver's table keys (byte-gated
+  text pass; the class node itself comes from the tree-sitter extractor).
+- pyyaml joins the default (full-power) install; the lean `--no-deps` story is
+  unchanged.
+
+## [3.34.0] — 2026-07-04
+
+**The import-completeness release.** The last ⬜ cells in the language matrix's
+imports column close.
+
+### Added
+- **C/C++ `#include "…"` imports**: the quoted local form resolves to the header's
+  module node; `<system>` headers deliberately emit nothing (external by definition —
+  precision over recall). New `LangSpec.import_strings` mechanism.
+- **Ruby `require` / `require_relative`** and **Bash `source` / `.`** imports: the
+  path argument's stem resolves to the target module. New `LangSpec.import_calls`
+  mechanism for call/command-shaped imports; external targets (`require "json"`)
+  emit nothing.
+
+### Fixed
+- `docs/LANGUAGES.md` matrix was stale: Rust inheritance (`impl Trait for Type` →
+  INHERITS) has been shipped since the R16A panel — marked ✅.
+
+## [3.33.0] — 2026-07-04
+
+**The runtime-completeness release.** The remaining items from the POD/co-activation
+roadmap (`research/11-pod-roadmap.md` A5/B4/C3) ship. Notes:
+`docs/RELEASE_NOTES_v3.33.0.md`.
+
+### Added
+- **`audit_graph`** (C3): a standing precision audit of the call graph against runtime
+  ground truth. Per test: executed vs statically-reached function sets; global recall +
+  over-approximation ratio; `missed_functions` = executed on paths the graph cannot see
+  (dynamic dispatch, getattr, framework wiring) ranked by how many tests hit them — the
+  actionable resolver-gap list. Falsified in test: wiring the missing static edge takes
+  recall to 1.0 and empties the miss list.
+- **`co_change` anchored on a TEST** (A5): passing a test symbol flips the question to
+  "what does this test really cover" — its executed function union across
+  parametrized/phase rows (the test-intent audit).
+- **`find_coupling`: `common_callers` annotation + `scope` filter** (A5): every reported
+  pair carries the static callers shared by both sides — a populated list usually
+  *explains* the co-activation (siblings of one dispatcher), ranking truly-hidden
+  coupling above sibling noise; `scope="cross_file"/"same_file"` filters.
+- **`find_similar(mode="behavior")`** (B4): rank functions by nearness in the coverage
+  matrix's MODE space — the denoised runtime embedding (singular-value-scaled loadings,
+  cosine). Functions that *behave* alike even when lexically/structurally unrelated;
+  the SVD complement to `co_change`'s raw column cosine. numpy-gated, refuses honestly.
+
+## [3.32.0] — 2026-07-04
+
+**The purpose release.** The first capability from the parked IDEAS research
+(archetype/purpose, §2–3) ships, and the last hub metric picks up the provenance
+discount. Notes: `docs/RELEASE_NOTES_v3.32.0.md`.
+
+### Added
+- **`find_component(query)`** — purpose-aware component locator: "parse command line
+  options" → `Command`/`Option`. `find_similar`'s semantic ranking made navigational
+  by two structural facts the graph holds: test code is excluded (by role AND
+  test-file path) and exported/public API is boosted. Research ablation (17 labelled
+  queries × 17 packages, `research/05-archetype-purpose`): raw 53% P@1 → drop-tests
+  59% → +public-boost **76% P@1 / 0.80 MRR**. Advisory, INFERRED, boost visible in
+  the score; registry-registered so the CLI (`stitchgraph find-component`) and MCP
+  tool come for free.
+
+### Changed
+- **`transitive_fan_in` and `pagerank` rank over EXTRACTED edges by default**
+  (`confident_only=True`) — the same discount `confident_fan_in` has applied since
+  v3.29.0, closing the recorded follow-up: a homonym's AMBIGUOUS widening arms are
+  resolution artifacts, not dependency mass. Falsified both ways in tests (raw
+  matrices rank the homonym first; confident-only inverts). Liveness sweeps
+  deliberately stay raw — an ambiguous edge must keep its target alive.
+- `Store.iter_resolved(confident_only=True)` — the provenance-filtered lean stream
+  the matrices build from.
+
+## [3.31.0] — 2026-07-04
+
+**The fast-by-default release.** The remaining Python-adjacency sweeps move onto the
+sidecar, and the install default flips to full power. Notes:
+`docs/RELEASE_NOTES_v3.31.0.md`.
+
+### Changed
+- **`pip install stitchgraph` now installs the full tool** — CLI, MCP, tree-sitter
+  grammars, jedi, sqlglot, numpy (sidecar), GraphBLAS, scipy. Every accelerated path
+  is pinned byte-identical to its pure-Python reference, so fast-by-default costs
+  nothing in trust. The lean footprint stays supported: the library core remains
+  stdlib-only with guarded imports (`pip install --no-deps stitchgraph`, pinned by
+  the core-only CI job), the old extras still exist for selective installs, and
+  **`--pure`** (CLI + MCP) / `STITCHGRAPH_PURE=1` forces the reference paths at
+  runtime — identical results, for debugging or byte-reproducing old runs.
+- **SCC and articulation points now run on the CSR sidecar** (iterative int Tarjan +
+  articulation DFS emitting exactly the reference's component/visit order — the scan
+  differential is pinned identical with and without the cache). 16M-edge field graph:
+  `find_chokepoints` **216 s / 3.24 GB → 58.9 s / 2.42 GB**; `scan` 371 s → **307 s**
+  (its remaining time is per-candidate SQL shares and liveness logic, not adjacency).
+- **`orient`'s `confident_fan_in` fallback uses the sidecar bitmask** (0.06 s vs
+  4–61 s for the SQL GROUP BY on the field graph).
+
+### Added
+- **God-object review cap**: hedged (`needs_review`) god-object flags beyond the top
+  500 by confidence are suppressed with an explicit count in `meta` and a reason on
+  the envelope — the 16M-edge field graph emitted 11,117 hedged flags, individually
+  honest and collectively unusable. Confident flags are never dropped; small graphs
+  are unaffected.
+
+## [3.30.0] — 2026-07-04
+
+**The adjacency-sidecar release.** Every reachability sweep rebuilt its adjacency from
+SQLite into a dict of Python strings on each call — ~130 s / ~2 GB per op on the 16M-edge
+field graph, thrown away afterwards. Notes: `docs/RELEASE_NOTES_v3.30.0.md`.
+
+### Added
+- **Mmapped CSR adjacency sidecar** (`<db>.adjcache/`, `core/adjcache.py`): derived once,
+  lazily, by the first sweep after a (re)index; opened in milliseconds thereafter. CSR both
+  directions + uint8 relation codes + a **packed per-edge provenance bitmask** (2 MB for
+  16M edges) probed bitwise in the BFS inner loop, so the EXTRACTED-only closure reads one
+  bit per edge instead of constructing an `Edge` object per row. Serves `reachable_from`,
+  `reverse_reachable_from`, `fan_in`, `fan_out` (dispatch: sidecar → GraphBLAS → pure
+  Python; identical results pinned by equivalence tests). Measured on the 16M-edge field
+  graph: `find_stale` **119 s / 1.97 GB → 2.1 s / 516 MB** warm (cold first sweep 171 s
+  including the one-time build), `scan` **625 s → 371 s** (its SCC pass still builds the
+  Python adjacency — recorded follow-up), sidecar **161 MB** beside a 10 GB index, field
+  results byte-identical (1,703 stale candidates, 11,619 scan issues).
+- **Staleness contract**: a `generation` counter in `meta` (bumped by both `reindex`
+  paths, `replace_file`, and the invalid-root wipe) is recorded in the sidecar manifest;
+  any mismatch refuses the cache — a sweep can never read stale adjacency. SQLite remains
+  the sole source of truth; the sidecar is always safe to delete.
+- **Degrades to exactly the old behaviour** without numpy (guarded import — core stays
+  stdlib-only), on `:memory:` stores, on read-only index directories (failed builds are
+  memoised per generation), or with `[index] adjacency_cache = false`.
+- `scan`'s certainty pass is now `reachable_from(confident_only=True)` (was a per-Edge
+  provenance lambda), so the bitmask path serves it on all three dispatch tiers.
+
+## [3.29.0] — 2026-07-04
+
+**The field-analysis release.** v3.28.0's freshly-indexable Home Assistant graph (16M
+edges) was pointed at the full analysis battery (`research/16-ha-field-analysis.md`) —
+finding real dead code in HA and three scale defects/artifacts in our own query layer.
+
+### Fixed
+- **`scan` was Edge-object scale, twice**: its provenance-share step indexed every
+  resolved edge into Python dicts, and its EXTRACTED-only sweep materialised the same
+  list inside `_adjacency(edge_filter=...)` — MemoryError at a 6 GB cap on the 16M-edge
+  graph. Now per-component/per-candidate COUNT queries in SQLite + a streaming
+  `Store.iter_resolved_full()`. Byte-identical output (162-issue differential on our own
+  graph); **1,486 MB → 185 MB** and ~3× faster on the ~1.2M-edge gate corpus; the memory
+  gate now runs `scan` under a 400 MB cap that kills the pre-fix code.
+- **`orient`/`risk` hub ranking drowned in homonym artifacts** at scale (HA's top "hubs"
+  were `.hass`/`.data` attribute nodes with fan-in ~12,000 of pure AMBIGUOUS widening
+  arms). The fan-in fallback now counts CONFIDENT (EXTRACTED) edges only via one SQL
+  GROUP BY, reported as `confident_fan_in`. (GraphBLAS metrics unchanged; a
+  provenance-filtered matrix variant is recorded follow-up.)
+
+### Added
+- **`[entry_points] root_modules`** config: glob patterns over module file paths for
+  framework-loaded plugin/integration trees (e.g. `["components/*"]` for Home
+  Assistant). Roots the MODULE node — module-level wiring (schema validators, registered
+  hooks, dispatch tables) stops surfacing as dead-code candidates without
+  blanket-rescuing unreferenced functions. Proven on HA: rescues exactly the 33
+  module-level-rooted candidates.
+- `research/16-ha-field-analysis.md`: the full HA field analysis — verified dead code in
+  HA core (`rgbww_to_color_temperature` dead pair, `is_ipv6_address`, 4/5 deprecation
+  helpers, …), the POD feasibility verdict, and the query-layer scale profile.
+- `reindex` now finishes with an approximate `ANALYZE` (`analysis_limit=1000` —
+  0.03 s measured on the 16M-edge graph), so fresh indexes carry `sqlite_stat1`
+  planner statistics; measured on the field graph, the stats alone steer the planner
+  off the `idx_edges_rel` trap. The pinned query shapes remain the primary defense
+  (indexes built before this release stay stat-less until their next reindex); the
+  stats protect every non-pinned query — ad-hoc, future, user-issued — by default.
+
+## [3.28.0] — 2026-07-03
+
+**The constant-memory release.** A field report falsified the core scale claim: Home
+Assistant (pure Python, heavy homonym fan-out) OOM'd at ~7 GB with `streaming=True` while
+PHP repos twice its size validated at 269 MB. Notes: `docs/RELEASE_NOTES_v3.28.0.md`.
+
+### Fixed
+- **The Python extractor never streamed**: its edge list was drained to the sink only after
+  being fully materialised. It now drains per pass-2 file (INHERITS teed for the post-passes,
+  override widening delegated to the store twin). A/B at 610 files: 412 MB linear → 43 MB
+  flat; 8.64M edges peak at 50 MB.
+- **`Store._propagate_overrides` was O(edges) in Python** (fetchall of every resolved
+  CALLS/REFERENCES row + a seen-set) and re-OOM'd Home Assistant in the endgame after the
+  index had streamed at a flat ~113 MB. Now symbol-scale Python + SQL-side scan/insert,
+  byte-identical (streaming + incremental oracles). On HA's 16.15M-edge graph: ~160 s,
+  113 MB peak.
+- The streaming path's final holes tally used `len(unresolved_edges())` — an Edge object per
+  hole; now `Store.unresolved_count()` (COUNT twin).
+
+### Added
+- A hard memory-regression gate: 450-file homonym+inheritance corpus (~1.2M edges) indexed in
+  a subprocess under a 130 MB `RLIMIT_AS` cap, falsified in both directions against the
+  pre-fix code. Constant-memory is now a tested invariant, not a claim.
+
+### Validated
+- Home Assistant 2024.3.3 (6,728 files, 58,998 nodes, 16.0M edges) — the repo from the field
+  report — completes a clean end-to-end streaming reindex under a 4 GB address-space ulimit:
+  **34 min, 158 MB peak RSS**.
+
 ## [3.27.1] — 2026-07-03
 
 **The second dogfood patch** — v3.27.0 run on itself (`research/15-dogfood-v3.27.md`), the

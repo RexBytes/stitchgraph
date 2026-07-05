@@ -29,10 +29,12 @@ from .core import (
     registry,
 )
 from .core.operations import (
+    audit_graph,
     co_change,
     coverage_drift,
     feature_map,
     find_chokepoints,
+    find_component,
     find_core,
     find_coupling,
     find_gaps,
@@ -77,9 +79,10 @@ __all__ = [
     # operations (the public API)
     "find_symbol", "get_callers", "get_callees", "find_holes", "find_stale",
     "orient", "impact_of", "trace_path", "scan", "reindex", "get_matrix", "risk",
-    "ingest_trace", "find_similar", "summarize_subsystem", "graph_diff",
+    "ingest_trace", "find_similar", "find_component", "summarize_subsystem",
+    "graph_diff",
     "find_chokepoints", "find_subsystems", "find_modes", "scaffold_coverage",
-    "select_tests", "co_change", "find_coupling",
+    "select_tests", "co_change", "find_coupling", "audit_graph",
     "find_gaps", "test_order", "redundant_tests", "find_core",
     "feature_map", "find_outlier_tests", "runtime_risk", "coverage_drift",
 ]

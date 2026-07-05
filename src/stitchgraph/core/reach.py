@@ -15,8 +15,10 @@ from collections import defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
 
 from ._scc import tarjan_scc
-from .model import Edge, Relation
+from .model import Edge, Provenance, Relation
 from .store import Store
+
+_EXTRACTED = Provenance.EXTRACTED
 
 # Relations that propagate "liveness" — used by reachability / dead-code.
 # EMITS/HANDLES carry liveness across a pub/sub boundary: if an emit is reachable,
@@ -42,9 +44,11 @@ def _adjacency(store: Store, relations: Iterable[Relation],
                 adj[src].append(dst)
     else:
         # edge_filter inspects fields beyond (src,rel,dst) (e.g. provenance), so it needs the
-        # full Edge; this is the rarer EXTRACTED-only path.
+        # full Edge — but streamed one at a time, never the whole list: scan's EXTRACTED-only
+        # sweep through resolved_edges() was a second O(edges) Edge-object peak that
+        # MemoryError'd at 6 GB on Home Assistant (field analysis 2026-07-03).
         rels = set(relations)
-        for edge in store.resolved_edges():
+        for edge in store.iter_resolved_full():
             if edge.relation in rels and edge.dst_id in nodes and edge_filter(edge):
                 adj[edge.src].append(edge.dst_id)
     return adj
@@ -52,6 +56,9 @@ def _adjacency(store: Store, relations: Iterable[Relation],
 
 def _graphblas():
     """Return the GraphBLAS algebra module if available, else None."""
+    from .purity import pure_mode
+    if pure_mode():
+        return None
     try:
         from . import algebra
         return algebra if algebra.HAS_GRAPHBLAS else None
@@ -61,16 +68,29 @@ def _graphblas():
 
 def reachable_from(store: Store, seeds: Iterable[str],
                    relations: Iterable[Relation] = LIVENESS_RELATIONS,
-                   edge_filter: Callable[[Edge], bool] | None = None) -> set[str]:
+                   edge_filter: Callable[[Edge], bool] | None = None,
+                   confident_only: bool = False) -> set[str]:
     """Forward closure: every node reachable from any seed.
 
-    Uses the GraphBLAS sweep when available (design §2b), else this pure-Python
-    frontier BFS — identical results, the BFS is the reference implementation.
+    Dispatch, fastest first — all three produce identical results (the BFS is the
+    reference implementation, the others are pinned to it by tests):
+    1. the mmapped adjacency sidecar (adjcache.py) when fresh/buildable — it also
+       handles `confident_only` natively via its packed provenance bitmask;
+    2. the GraphBLAS sweep (design §2b) when installed;
+    3. this pure-Python frontier BFS.
 
-    `edge_filter` restricts which edges propagate liveness (e.g. EXTRACTED-only,
-    to tell a certain path from an inferred one); it forces the pure-Python sweep
-    since GraphBLAS works on the raw relation matrices.
+    `confident_only` restricts propagation to EXTRACTED edges (scan's certainty
+    pass). `edge_filter` is the general hook for anything else (arbitrary
+    per-Edge predicates); it forces the pure-Python sweep since neither the
+    sidecar nor GraphBLAS can evaluate an opaque callable per edge.
     """
+    if edge_filter is None:
+        from .adjcache import load_cache
+        cache = load_cache(store)
+        if cache is not None:
+            return cache.reachable(seeds, relations, confident_only)
+        if confident_only:
+            edge_filter = lambda e: e.provenance is _EXTRACTED  # noqa: E731
     gb = _graphblas()
     if gb is not None and edge_filter is None:
         return gb.reachable_from(store, seeds, relations)
@@ -103,6 +123,10 @@ def reverse_reachable_from(store: Store, targets: Iterable[str],
 
     This is the blast radius for impact_of (design §6.B): who depends on X.
     """
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.reverse_reachable(targets, relations)
     gb = _graphblas()
     if gb is not None:
         return gb.reverse_reachable_from(store, targets, relations)
@@ -125,13 +149,19 @@ def strongly_connected_components(
 ) -> list[list[str]]:
     """Tarjan SCC over the given relations. Components of size > 1 (or a self-loop)
     are cycles — circular dependencies / recursion (design §6.C/F)."""
-    adj = _adjacency(store, relations)
+    from .adjcache import load_cache
     nodes = store.all_node_ids()
-    out = tarjan_scc(adj, nodes, len(nodes))
+    cache = load_cache(store)
+    if cache is not None:
+        out = cache.scc(nodes, relations)
+        self_loops = cache.self_loops(relations)
+    else:
+        adj = _adjacency(store, relations)
+        out = tarjan_scc(adj, nodes, len(nodes))
+        _rels = {r.value for r in relations}
+        self_loops = {src for src, rel, dst, _w in store.iter_resolved()
+                      if dst == src and rel in _rels}
     # Keep only genuine cycles: multi-node components or self-loops.
-    _rels = {r.value for r in relations}
-    self_loops = {src for src, rel, dst, _w in store.iter_resolved()
-                  if dst == src and rel in _rels}
     return [c for c in out if len(c) > 1 or (c and c[0] in self_loops)]
 
 
@@ -151,6 +181,10 @@ def articulation_points(store: Store,
     `comp_total - 1 - sum(child subtrees)`). The largest surviving piece is the 'main body'; the
     blast radius is what is cut off from it, `(comp_total - 1) - max(piece sizes)`. (For the root the
     parent side is empty, so this reduces to sum-of-children minus the largest child.)"""
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.articulation(relations)
     directed = _adjacency(store, relations)
     undirected: dict[str, set[str]] = defaultdict(set)
     for u, vs in directed.items():
@@ -273,6 +307,10 @@ def fan_in(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS) -> 
 
     (Transitive fan-in / PageRank is the GraphBLAS upgrade, design §6.A.)
     """
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.fan_in(relations)
     counts: dict[str, int] = defaultdict(int)
     rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
@@ -284,6 +322,10 @@ def fan_in(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS) -> 
 
 def fan_out(store: Store, relations: Iterable[Relation] = (Relation.CALLS,)) -> dict[str, int]:
     """Direct out-degree per node (callees) — half of the god-object signal."""
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.fan_out(relations)
     counts: dict[str, int] = defaultdict(int)
     rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)

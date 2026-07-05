@@ -279,3 +279,125 @@ def test_streaming_orphan_edges_swept_after_extractor_failure(tmp_path, monkeypa
         assert orphans == 0, "phantom edges from the failed extractor must be swept"
         holes = sg.find_holes(store)
         assert holes.result == [], "no phantom holes from the failed extractor"
+
+
+def test_streaming_python_edges_bounded_memory(tmp_path):
+    """Constant-memory is a CORE claim and was never gated (field report 2026-07-03: Home
+    Assistant OOM'd at ~7 GB with streaming=True — the Python extractor materialised its whole
+    edge list before the sink drained it; only tree-sitter ever truly streamed). This pins the
+    fix black-box: index a homonym-fanout pure-Python corpus in a subprocess under a hard
+    address-space cap. CALIBRATED (2026-07-03, identical corpus shape at 610 files): pre-fix
+    peaks at ~190 B/edge linear (412 MB at 2.16M edges), post-fix is flat at ~43 MB. At this
+    test's ~1.2M edges the pre-fix code needs ~230 MB and dies at the 130 MB cap about a third
+    of the way through (verified); the streamed path passes with ~3x headroom.
+
+    The corpus MUST contain class inheritance with overrides: the endgame override widening
+    (`Store._propagate_overrides`) early-returns on an inheritance-free graph, and its first
+    cut fetchall'd the whole edge table — this gate passed while real Home Assistant still
+    OOM'd in that endgame (field report #2, same day). The Base/Impl pairs below keep that
+    path exercised, and the widened-edge assertion proves it ran rather than early-returned."""
+    import subprocess
+    import sys
+    import textwrap
+
+    for i in range(450):
+        d = tmp_path / "corpus" / f"pkg{i // 50}"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "__init__.py").write_text("")
+        (d / f"m{i}.py").write_text(textwrap.dedent(f"""
+            def work{i}(x):
+                a = get(); b = setup(); c = run()
+                d = load(); e = save(); f = mk()
+                return a, b, c, d, e, f, get(), setup(), run()
+            def get(): return 1
+            def setup(): return 2
+            def run(): return 3
+            def load(): return 4
+            def save(): return 5
+            def mk(): return 6
+            class Base{i}:
+                def start(self):
+                    return self.step()
+                def step(self):
+                    return 0
+            class Impl{i}(Base{i}):
+                def step(self):
+                    return get()
+            def boot{i}():
+                return Impl{i}().start()
+        """))
+    script = textwrap.dedent(f"""
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (130 * 1024 * 1024,) * 2)  # 130 MB hard cap
+        import stitchgraph as sg
+        with sg.Store({str(str(tmp_path / 'i.db'))!r}) as store:
+            r = sg.reindex(store, {str(str(tmp_path / 'corpus'))!r}, streaming=True)
+            assert r.ok and r.result["nodes"] > 3000, r.result
+            n = store.conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+            assert n > 1_000_000, f"fan-out corpus must produce bulk edges, got {{n}}"
+            w = store.conn.execute("SELECT COUNT(*) c FROM edges WHERE provenance = "
+                                   "'ambiguous' AND name_based = 0").fetchone()["c"]
+            assert w >= 400, f"override widening must run on this corpus, got {{w}} edges"
+        print("BOUNDED-OK")
+    """)
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                          env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"}, timeout=600)
+    assert "BOUNDED-OK" in proc.stdout, (
+        f"streaming reindex exceeded the 130 MB memory cap (rc={proc.returncode}):\n"
+        f"{proc.stderr[-800:]}")
+
+    # scan over the index it just built must stay at ADJACENCY scale (compact ints), never
+    # Edge-object scale: its provenance-share step indexed every resolved edge into Python
+    # dicts and MemoryError'd at a 6 GB cap on Home Assistant's 16M-edge graph (field
+    # analysis 2026-07-03). CALIBRATED on this corpus's ~1.2M edges: pre-fix scan peaks at
+    # 1,486 MB, the SQL-share rewrite at 185 MB — the 400 MB cap kills the former with the
+    # same margin it grants the latter. Separate subprocess so the caps stay independent.
+    scan_script = textwrap.dedent(f"""
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS, (400 * 1024 * 1024,) * 2)  # 400 MB hard cap
+        import stitchgraph as sg
+        with sg.Store({str(str(tmp_path / 'i.db'))!r}) as store:
+            r = sg.scan(store)
+            assert r.ok, r
+        print("SCAN-BOUNDED-OK")
+    """)
+    proc = subprocess.run([sys.executable, "-c", scan_script], capture_output=True,
+                          text=True, env={"PYTHONPATH": "src", "PATH": "/usr/bin:/bin"},
+                          timeout=600)
+    assert "SCAN-BOUNDED-OK" in proc.stdout, (
+        f"scan exceeded the 400 MB memory cap (rc={proc.returncode}):\n"
+        f"{proc.stderr[-800:]}")
+
+
+# ---------------------------------------------------------------------------
+# Planner statistics: reindex must leave approximate ANALYZE stats behind.
+
+
+def _stat1_indexes(store):
+    if not store.conn.execute(
+            "SELECT count(*) FROM sqlite_master WHERE name='sqlite_stat1'").fetchone()[0]:
+        return set()
+    return {r[0] for r in store.conn.execute("SELECT idx FROM sqlite_stat1")}
+
+
+def test_reindex_leaves_planner_stats_in_memory_path(tmp_path):
+    """Both reindex paths must end with `sqlite_stat1` covering the edge indexes. A
+    stat-less db lets the planner choose by schema order, not selectivity — on the
+    16M-edge field graph that walked idx_edges_rel (12.9M entries) per scan candidate
+    (v3.29.0 planner trap). The hot shipped queries are pinned by shape; the stats
+    protect every other query by default."""
+    _write(tmp_path, {"a.py": "def f():\n    return g()\n\ndef g():\n    return 1\n"})
+    with sg.Store(str(tmp_path / "idx.db")) as store:
+        assert sg.reindex(store, str(tmp_path), streaming=False).ok
+        idxs = _stat1_indexes(store)
+        assert {"idx_edges_src", "idx_edges_dst"} <= idxs, idxs
+
+
+def test_reindex_leaves_planner_stats_streaming_path(tmp_path):
+    _write(tmp_path, {"a.py": "def f():\n    return g()\n\ndef g():\n    return 1\n"})
+    with sg.Store(str(tmp_path / "idx.db")) as store:
+        assert sg.reindex(store, str(tmp_path), streaming=True).ok
+        idxs = _stat1_indexes(store)
+        assert {"idx_edges_src", "idx_edges_dst"} <= idxs, idxs
+        # The endgame's temporary covering index must not leak into the stats.
+        assert "idx_edges_dedup" not in idxs

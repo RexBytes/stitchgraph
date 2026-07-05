@@ -79,3 +79,48 @@ def test_reach_dispatch_uses_graphblas_consistently():
     with _chain_graph() as store:
         # reach.reachable_from should route through graphblas and still be correct
         assert reach.reachable_from(store, {"m.py::a"}) == _pure_reach(store, {"m.py::a"})
+
+
+def _homonym_graph() -> sg.Store:
+    """`hub` has 3 EXTRACTED dependers; `homonym` has 6 AMBIGUOUS widening arms.
+    Raw centrality ranks the homonym first; confident-only must invert that."""
+    from stitchgraph.core.envelope import Provenance
+
+    store = sg.Store(":memory:")
+    for name in ["hub", "homonym", *(f"c{i}" for i in range(6))]:
+        store.add_node(Node(f"m.py::{name}", NodeKind.FUNCTION, name))
+    for i in range(3):
+        store.add_edge(Edge(f"m.py::c{i}", Relation.CALLS, "hub",
+                            dst_id="m.py::hub", provenance=Provenance.EXTRACTED))
+    for i in range(6):
+        store.add_edge(Edge(f"m.py::c{i}", Relation.CALLS, "homonym",
+                            dst_id="m.py::homonym", provenance=Provenance.AMBIGUOUS))
+    store.commit()
+    return store
+
+
+def test_transitive_fan_in_confident_only_discounts_homonyms():
+    """v3.32.0: the hub metrics rank over EXTRACTED edges by default — the same
+    discount confident_fan_in applies. Falsified by the raw variant: with
+    confident_only=False the homonym's 6 ambiguous arms win."""
+    with _homonym_graph() as store:
+        confident = algebra.transitive_fan_in(store)
+        raw = algebra.transitive_fan_in(store, confident_only=False)
+        assert confident["m.py::hub"] > confident.get("m.py::homonym", 0)
+        assert raw["m.py::homonym"] > raw["m.py::hub"]
+
+
+def test_pagerank_confident_only_discounts_homonyms():
+    with _homonym_graph() as store:
+        confident = algebra.pagerank(store)
+        raw = algebra.pagerank(store, confident_only=False)
+        assert confident["m.py::hub"] > confident["m.py::homonym"]
+        assert raw["m.py::homonym"] > raw["m.py::hub"]
+
+
+def test_liveness_sweeps_stay_raw():
+    """An AMBIGUOUS edge must still propagate liveness — reachability never uses
+    the confident-only matrix (precision-over-recall on dead code)."""
+    with _homonym_graph() as store:
+        reached = algebra.reachable_from(store, {"m.py::c5"})
+        assert "m.py::homonym" in reached  # only an AMBIGUOUS edge leads there

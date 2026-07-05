@@ -238,6 +238,35 @@ class Store:
     def commit(self) -> None:
         self.conn.commit()
 
+    def analyze(self) -> None:
+        """Refresh approximate planner statistics (`sqlite_stat1`) after a rebuild.
+
+        Every stitchgraph index is otherwise stat-less, and on a stat-less db the
+        planner chooses by schema order, not selectivity — on the 16M-edge field graph
+        that turned one hot query into a 12.9M-entry idx_edges_rel walk per candidate
+        (v3.29.0 planner trap). The hot shipped queries are pinned by shape and never
+        rely on stats; this protects every OTHER query — ad-hoc, future, or
+        user-issued — by default. `analysis_limit` samples ~1000 rows per index
+        (measured 0.03 s on 16M edges, vs 13.8 s for a full ANALYZE) — imprecise
+        absolute counts, but it ranks index selectivity correctly, which is all the
+        planner needs. Existing indexes in the field stay stat-less until their next
+        reindex; readers must keep working without stats."""
+        self.conn.execute("PRAGMA analysis_limit=1000")
+        self.conn.execute("ANALYZE")
+        self.conn.commit()
+
+    def bump_generation(self) -> None:
+        """Advance the graph's generation counter (meta key `generation`).
+
+        The adjacency sidecar (adjcache.py) records the generation it was derived
+        from and is refused on mismatch — this bump is what makes it impossible for
+        a sweep to read a stale cache. Called by everything that mutates the edge
+        set through the official paths (`reindex` both ways, `replace_file`, the
+        invalid-root wipe); API users mutating a store directly via
+        `add_node`/`add_edge` must call it themselves before the next sweep."""
+        cur = int(self.get_meta("generation") or "0")
+        self.set_meta("generation", str(cur + 1))
+
     def set_meta(self, key: str, value: str) -> None:
         self.conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
                           (key, value))
@@ -313,6 +342,7 @@ class Store:
             self._dedup_resolved_edges()
             if exported_ids is not None:
                 self._set_exported_roles(exported_ids)
+        self.bump_generation()  # the adjacency sidecar must never survive this edit
 
     def _set_exported_roles(self, exported_ids: set[str]) -> None:
         """Make the cross-file `exported` role match `exported_ids` exactly — set on a node
@@ -426,7 +456,15 @@ class Store:
         R22A, cardinal). Re-derive those edges here from the store's INHERITS graph.
 
         Scoped to the inheritance subtree (not by name), so unrelated same-named members are
-        never linked; AMBIGUOUS, so it only adds reachability, never under-counts."""
+        never linked; AMBIGUOUS, so it only adds reachability, never under-counts.
+
+        Constant-memory (2026-07-03 HA field report): Python touches only SYMBOL-scale data
+        — class ids, the INHERITS closure, node ids, and the distinct edge *targets*. The
+        edge scan and the widened inserts run inside SQLite. The previous body fetchall'd
+        every resolved CALLS/REFERENCES row plus a seen-set of their key tuples — O(edges)
+        Python memory, the one allocation the streaming reindex's per-file drain didn't
+        remove, and it OOM'd Home Assistant's ~16M-edge graph in the endgame after the
+        whole index had streamed at a flat ~113 MB."""
         class_ids = {r["id"] for r in self.conn.execute(
             "SELECT id FROM nodes WHERE kind = ?", (NodeKind.CLASS.value,)).fetchall()}
         if not class_ids:
@@ -455,31 +493,58 @@ class Store:
             cache[base_id] = out
             return out
 
-        node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes").fetchall()}
-        edges = self.conn.execute(
-            """SELECT src, relation, dst_symbol, dst_id, location, source, file FROM edges
-                WHERE dst_id IS NOT NULL AND relation IN (?, ?)""",
-            (Relation.CALLS.value, Relation.REFERENCES.value)).fetchall()
-        seen = {(e["src"], e["relation"], e["dst_id"]) for e in edges}
-        for e in edges:
-            base_id = _owner_scope(e["dst_id"])
+        # Widening map at symbol scale: for each DISTINCT bound target that is a class
+        # member, every existing override of it below the class. (base, override, method)
+        # rows — O(actual overrides), never O(edges).
+        node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes")}
+        pairs: list[tuple[str, str, str]] = []
+        for r in self.conn.execute(
+                """SELECT DISTINCT dst_id FROM edges
+                    WHERE dst_id IS NOT NULL AND relation IN (?, ?)""",
+                (Relation.CALLS.value, Relation.REFERENCES.value)):
+            base_id = _owner_scope(r["dst_id"])
             if base_id is None or base_id not in class_ids:
                 continue
-            method = e["dst_id"].rsplit(".", 1)[1]
+            method = r["dst_id"].rsplit(".", 1)[1]
             for sub_id in descendants(base_id):
                 override = f"{sub_id}.{method}"
-                if override == e["dst_id"] or override not in node_ids:
-                    continue
-                key = (e["src"], e["relation"], override)
-                if key in seen:
-                    continue
-                seen.add(key)
-                self.conn.execute(
-                    """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
-                                         provenance, location, source, file, name_based)
-                       VALUES (?, ?, ?, ?, 1.0, 'ambiguous', ?, ?, ?, 0)""",
-                    (e["src"], e["relation"], method, override,
-                     e["location"], e["source"], e["file"]))
+                if override != r["dst_id"] and override in node_ids:
+                    pairs.append((r["dst_id"], override, method))
+        if not pairs:
+            return
+        self.conn.execute("DROP TABLE IF EXISTS temp._widen")
+        self.conn.execute("CREATE TEMP TABLE _widen (base TEXT, override TEXT, method TEXT)")
+        self.conn.executemany("INSERT INTO _widen VALUES (?, ?, ?)", pairs)
+        self.conn.execute("CREATE INDEX idx_widen_base ON _widen(base)")
+        # Materialise the candidates BEFORE inserting (the in-memory twin iterates a
+        # snapshot of the edge list — a widened edge must never seed further widening).
+        # rn = 1 keeps the first triggering edge per (src, relation, override) key in
+        # insertion (rowid) order, matching the twin's first-wins seen-set; NOT EXISTS
+        # skips keys that already exist as real edges, matching its seen-set seeding.
+        self.conn.execute("DROP TABLE IF EXISTS temp._widen_out")
+        self.conn.execute(
+            """CREATE TEMP TABLE _widen_out AS
+               SELECT src, relation, method, override, location, source, file
+                 FROM (SELECT e.src AS src, e.relation AS relation, w.method AS method,
+                              w.override AS override, e.location AS location,
+                              e.source AS source, e.file AS file,
+                              ROW_NUMBER() OVER (PARTITION BY e.src, e.relation, w.override
+                                                 ORDER BY e.id) AS rn
+                         FROM edges e JOIN _widen w ON w.base = e.dst_id
+                        WHERE e.relation IN (?, ?)
+                          AND NOT EXISTS (SELECT 1 FROM edges p
+                                           WHERE p.src = e.src AND p.relation = e.relation
+                                             AND p.dst_id = w.override))
+                WHERE rn = 1""",
+            (Relation.CALLS.value, Relation.REFERENCES.value))
+        self.conn.execute(
+            """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                 provenance, location, source, file, name_based)
+               SELECT src, relation, method, override, 1.0, 'ambiguous',
+                      location, source, file, 0
+                 FROM _widen_out""")
+        self.conn.execute("DROP TABLE temp._widen_out")
+        self.conn.execute("DROP TABLE temp._widen")
 
     def _dedup_resolved_edges(self) -> None:
         """Collapse duplicate resolved edges and drop redundant REFERENCES — the DB-level
@@ -729,6 +794,30 @@ class Store:
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
 
+    def unresolved_count(self) -> int:
+        """COUNT twin of `unresolved_edges` (same predicate, no row materialisation) for
+        callers that only need the tally — the streaming reindex's final holes count must
+        not undo its constant-memory work by building an Edge per hole (2026-07-03)."""
+        return self.conn.execute(
+            """SELECT COUNT(*) AS c FROM edges
+                WHERE dst_id IS NULL
+                   OR (dst_id NOT IN (SELECT id FROM nodes)
+                       AND NOT (provenance = 'ambiguous' AND name_based = 0))"""
+        ).fetchone()["c"]
+
+    def iter_resolved_full(self) -> Iterator[Edge]:
+        """Stream resolved edges as full `Edge` objects one at a time (cursor-iterated, no
+        fetchall) — for consumers that need fields beyond `iter_resolved`'s lean tuple
+        (provenance, weight) but must never hold the O(edges) list. `scan`'s
+        EXTRACTED-only liveness sweep on Home Assistant's 16M-edge graph MemoryError'd
+        at 6 GB through `resolved_edges()` (field analysis 2026-07-03); one-at-a-time
+        keeps that sweep at adjacency scale. Same row set + corrupt-row filtering as
+        `resolved_edges()`."""
+        for r in self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL"):
+            e = _row_to_edge(r)
+            if e is not None:
+                yield e
+
     def resolved_edges(self, relation: Relation | None = None) -> list[Edge]:
         if relation is None:
             rows = self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL").fetchall()
@@ -740,7 +829,7 @@ class Store:
         return [e for r in rows if (e := _row_to_edge(r))]
 
     def iter_resolved(
-        self, relation: Relation | None = None,
+        self, relation: Relation | None = None, *, confident_only: bool = False,
     ) -> Iterator[tuple[str, str, str, float]]:
         """Stream resolved edges as lean `(src, relation, dst_id, weight)` tuples, cursor-
         iterated (no `fetchall`, no `Edge` construction). The reachability / centrality sweeps
@@ -754,13 +843,20 @@ class Store:
         corrupt/bit-rotted index (no writer emits one), but it keeps parity with
         `resolved_edges()`'s `_row_to_edge` drop so an unfiltered consumer (`best_path`/
         `trace_path` with `relations=None`) can't traverse a garbage edge (panel R58, opus).
-        A non-finite `weight` from such an index is coerced to 1.0 (matches the Edge default)."""
+        A non-finite `weight` from such an index is coerced to 1.0 (matches the Edge default).
+
+        `confident_only` keeps EXTRACTED rows only — the provenance-filtered stream
+        the hub-ranking matrices build from (v3.32.0: homonym widening arms must not
+        rank as centrality; the same discount `confident_fan_in` already applies)."""
         valid = {r.value for r in Relation}
         sql = "SELECT src, relation, dst_id, weight FROM edges WHERE dst_id IS NOT NULL"
         params: tuple[str, ...] = ()
         if relation is not None:
             sql += " AND relation = ?"
             params = (relation.value,)
+        if confident_only:
+            sql += " AND provenance = ?"
+            params = (*params, Provenance.EXTRACTED.value)
         cur = self.conn.execute(sql, params)
         while True:
             rows = cur.fetchmany(20000)

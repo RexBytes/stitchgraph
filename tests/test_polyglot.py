@@ -141,3 +141,30 @@ def test_inheritance_imports_and_tests(tmp_path):
     assert "goDead" in stale and "used" not in stale and "TestSvc" not in stale
     assert "jsDead" in stale  # unused JS, not exported
     store.close()
+
+
+def test_c_ruby_bash_imports(tmp_path):
+    """v3.34.0: the three remaining import gaps. C/C++ quoted #include -> the header's
+    module (system <...> headers emit nothing); Ruby require/require_relative and Bash
+    source/. resolve their path argument's stem to the target module. External targets
+    ("json", <stdio.h>) must produce no edge at all — precision over recall."""
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "main.c").write_text(
+        '#include "util.h"\n#include <stdio.h>\nint main(void){ return helper(); }\n')
+    (tmp_path / "util.h").write_text("int helper(void);\n")
+    (tmp_path / "app.rb").write_text(
+        'require "json"\nrequire_relative "./lib/helper"\ndef run\n  Helper.new\nend\n')
+    (tmp_path / "lib" / "helper.rb").write_text("class Helper\nend\n")
+    (tmp_path / "run.sh").write_text("source ./lib/common.sh\nsetup_env\n")
+    (tmp_path / "lib" / "common.sh").write_text('setup_env() {\n  echo hi\n}\n')
+    from stitchgraph.core.model import Relation
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    imp = {(e.src, e.dst_id) for e in store.resolved_edges(Relation.IMPORTS)}
+    assert ("main.c::main", "util.h::util") in imp
+    assert ("app.rb::app", "lib/helper.rb::helper") in imp
+    assert ("run.sh::run", "lib/common.sh::common") in imp
+    # externals: no phantom targets minted for stdio / json
+    all_ids = set(store.all_node_ids())
+    assert not any("stdio" in i or "json" in i for i in all_ids)
+    store.close()

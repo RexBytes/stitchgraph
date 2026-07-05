@@ -28,15 +28,14 @@ def extract_project(root: str | Path,
     # `cache_asts=False` is the streaming (lower-peak-memory) mode for the Python extractor —
     # see python.extract_project. The result is identical; only peak RSS/CPU differ.
     #
-    # `edge_sink` (Phase 2b): when given, edges are streamed to it instead of accumulated and
-    # returned, so the bulk edge list never materialises in Python. The order is preserved
-    # exactly as the in-memory path's list — Python edges first, then tree-sitter — so a
-    # later store-side dedup breaks ties identically (lowest rowid == first inserted).
-    nodes, edges = _python.extract_project(root, ignore, cache_asts=cache_asts)
-    if edge_sink is not None:
-        for e in edges:
-            edge_sink.append(e)  # type: ignore[attr-defined]
-        edges = []
+    # `edge_sink` (Phase 2b): when given, BOTH extractors stream edges to it as they produce
+    # them, so the bulk edge list never materialises in Python. (Until the 2026-07-03 field
+    # report this drained the Python extractor's list only AFTER it fully materialised —
+    # zero memory reduction on the Python path; a large pure-Python repo (Home Assistant)
+    # OOM'd at ~7 GB despite streaming=True while PHP/tree-sitter repos validated fine.)
+    # Python edges reach the sink first, then tree-sitter's, mirroring the in-memory order.
+    nodes, edges = _python.extract_project(root, ignore, cache_asts=cache_asts,
+                                           edge_sink=edge_sink)
     try:
         from . import treesitter
         if treesitter.HAS_TREE_SITTER:

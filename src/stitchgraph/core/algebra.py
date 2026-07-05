@@ -30,9 +30,17 @@ from .reach import LIVENESS_RELATIONS
 
 
 class _Adjacency:
-    """A derived boolean adjacency matrix plus the node<->index mapping."""
+    """A derived boolean adjacency matrix plus the node<->index mapping.
 
-    def __init__(self, store: Store, relations: Iterable[Relation]) -> None:
+    `confident_only` builds from EXTRACTED edges only — the hub-ranking variant
+    (v3.32.0): a homonym's AMBIGUOUS widening arms are resolution artifacts, not
+    dependency mass, and at field scale they drown the centrality metrics exactly
+    as they drowned direct fan-in before `confident_fan_in` (v3.29.0). Liveness
+    sweeps stay RAW on purpose — an ambiguous edge must keep its target alive
+    (precision-over-recall: never flag possibly-live code dead)."""
+
+    def __init__(self, store: Store, relations: Iterable[Relation],
+                 confident_only: bool = False) -> None:
         rels = {r.value for r in relations}  # compare against raw stored strings (see iter_resolved)
         self.ids = store.all_node_ids()
         self.index = {nid: i for i, nid in enumerate(self.ids)}
@@ -43,7 +51,7 @@ class _Adjacency:
         # Stream lean (src, relation, dst, weight) tuples instead of materialising every Edge
         # object: a 16M-edge graph builds these three int/float columns directly, never a 16M-
         # element Edge list (which OOM'd find_stale on Home Assistant before v2.1).
-        for src, rel, dst, weight in store.iter_resolved():
+        for src, rel, dst, weight in store.iter_resolved(confident_only=confident_only):
             if rel in rels and dst in index and src in index:
                 rows.append(index[src])
                 cols.append(index[dst])
@@ -97,7 +105,8 @@ def _bfs(adj: _Adjacency, seeds: Iterable[str], transpose: bool) -> set[str]:
 
 def transitive_fan_in(store: Store,
                       relations: Iterable[Relation] = LIVENESS_RELATIONS,
-                      max_nodes: int = 4000) -> dict[str, int]:
+                      max_nodes: int = 4000,
+                      confident_only: bool = True) -> dict[str, int]:
     """For each node, how many *distinct* nodes can transitively reach it — the
     'most-depended-on, read these first' ranking (design §6.A).
 
@@ -105,8 +114,11 @@ def transitive_fan_in(store: Store,
     `reach·A` per round, linear in graph diameter rather than the log-rounds of
     true repeated squaring; any_pair semiring, frontier-free but still sparse)
     then a column count. Bounded by `max_nodes`; above it, callers should fall
-    back to direct fan-in (the closure densifies on big graphs)."""
-    adj = _Adjacency(store, relations)
+    back to direct fan-in (the closure densifies on big graphs).
+
+    `confident_only` (default True since v3.32.0): rank over EXTRACTED edges only,
+    matching `confident_fan_in` — see _Adjacency's rationale."""
+    adj = _Adjacency(store, relations, confident_only=confident_only)
     if adj.n == 0 or adj.n > max_nodes or not adj.rows:
         return {}
     A = adj.boolean()
@@ -128,11 +140,13 @@ def transitive_fan_in(store: Store,
 
 
 def pagerank(store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS,
-             damping: float = 0.85, iters: int = 40) -> dict[str, float]:
+             damping: float = 0.85, iters: int = 40,
+             confident_only: bool = True) -> dict[str, float]:
     """Transitive importance via PageRank — the 'read these first' hub ranking
     over the whole graph (design §6.A). GraphBLAS power iteration on the
-    out-degree-normalised matrix."""
-    adj = _Adjacency(store, relations)
+    out-degree-normalised matrix. `confident_only` (default True since v3.32.0):
+    rank over EXTRACTED edges only — see _Adjacency's rationale."""
+    adj = _Adjacency(store, relations, confident_only=confident_only)
     if adj.n == 0 or not adj.rows:
         return {}
     n = adj.n

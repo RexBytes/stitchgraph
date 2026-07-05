@@ -141,6 +141,10 @@ class LangSpec:
     arrow_decls: bool = False           # JS `const f = () => …`
     heritage: frozenset[str] = frozenset()          # child types holding base classes
     imports: frozenset[str] = frozenset()           # import statement node types
+    import_strings: bool = False        # spec.imports nodes carry a quoted PATH (C #include),
+    # not identifiers: emit the path's stem (matches the target module node's name)
+    import_calls: frozenset[str] = frozenset()      # call/command-shaped imports (Ruby
+    # `require`, Bash `source`): callee names whose first string/word argument is a module path
     bare_calls: bool = False            # Ruby: paren-less `foo` calls parse as identifier
     callable_strings: bool = False      # PHP: `[$this, 'method']` array callables
     attr_suffix: bool = False           # C#: `[Foo]` may resolve to class `FooAttribute`
@@ -170,6 +174,8 @@ SPECS: dict[str, LangSpec] = {
         defs={"function_definition": F, "struct_specifier": C},
         call_types={"call_expression": "function"},
         containers=frozenset({"struct_specifier", "field_declaration_list"}),
+        imports=frozenset({"preproc_include"}),
+        import_strings=True,  # #include "util.h" -> module `util`; <sys> headers skipped
     ),
     "cpp": LangSpec(
         defs={"function_definition": F, "class_specifier": C, "struct_specifier": C},
@@ -177,6 +183,8 @@ SPECS: dict[str, LangSpec] = {
         containers=frozenset({"class_specifier", "struct_specifier",
                               "field_declaration_list"}),
         heritage=frozenset({"base_class_clause"}),
+        imports=frozenset({"preproc_include"}),
+        import_strings=True,
     ),
     "csharp": LangSpec(
         defs={"method_declaration": M, "constructor_declaration": M,
@@ -193,6 +201,7 @@ SPECS: dict[str, LangSpec] = {
     "bash": LangSpec(
         defs={"function_definition": F},
         call_types={"command": None},
+        import_calls=frozenset({"source", "."}),  # `source lib.sh` / `. lib.sh`
     ),
     "go": LangSpec(
         defs={"function_declaration": F, "method_declaration": M, "type_spec": C},
@@ -216,6 +225,7 @@ SPECS: dict[str, LangSpec] = {
         containers=frozenset({"class", "module"}),
         heritage=frozenset({"superclass"}),
         bare_calls=True,  # `validate` (no parens/receiver) is an idiomatic Ruby call
+        import_calls=frozenset({"require", "require_relative"}),
     ),
     "php": LangSpec(
         defs={"function_definition": F, "method_declaration": M, "class_declaration": C,
@@ -2035,12 +2045,47 @@ def _reexport_names(root, src):
 
 
 def _import_names(root, src, spec):
-    if not spec.imports:
+    if not spec.imports and not spec.import_calls:
         return []
     names: list[str] = []
+
+    def _stem(text: str) -> str | None:
+        # "./lib/helper.rb" / "util.h" / "common.sh" -> the target MODULE node's name
+        # (module names are file stems). Quotes stripped by the caller.
+        leaf = text.strip().rsplit("/", 1)[-1]
+        leaf = leaf.split(".", 1)[0]
+        return leaf or None
+
     def rec(n):
         if n.type in spec.imports:
-            names.extend(_identifiers(n, src))
+            if spec.import_strings:
+                # C/C++ #include: only the QUOTED local form names a project file;
+                # <...> is a system header — external by definition, emitting it would
+                # only mint unresolvable references (precision over recall).
+                for c in n.children:
+                    if c.type == "string_literal":
+                        s = _stem(c.text.decode(errors="replace").strip('"'))
+                        if s:
+                            names.append(s)
+            else:
+                names.extend(_identifiers(n, src))
+        elif spec.import_calls and n.type in ("call", "command"):
+            if n.type == "call":  # Ruby: require "json" / require_relative "./lib/x"
+                m = n.child_by_field_name("method")
+                callee = m.text.decode(errors="replace") if m is not None else ""
+                args = next((c for c in n.children if c.type == "argument_list"), None)
+                arg_types = ("string",)
+            else:  # Bash: `source lib.sh` / `. lib.sh`
+                cn = next((c for c in n.children if c.type == "command_name"), None)
+                callee = cn.text.decode(errors="replace") if cn is not None else ""
+                args, arg_types = n, ("word", "string", "raw_string")
+            if callee in spec.import_calls and args is not None:
+                for c in args.children:
+                    if c.type in arg_types and c.type != "command_name":
+                        s = _stem(c.text.decode(errors="replace").strip("\"'"))
+                        if s and s not in spec.import_calls:  # skip the `.`/`source` word itself
+                            names.append(s)
+                        break
         for c in n.children:
             rec(c)
     rec(root)

@@ -7,6 +7,13 @@
 include = [
   # "myapp/plugins.py::register",
 ]
+# Glob patterns over module FILE paths for framework-loaded plugin/integration trees:
+# every matching module is a load root, so its module-level wiring (schema validators,
+# registered hooks, dispatch tables) is never flagged dead for lack of a static importer.
+# Example: Home Assistant loads every components/<domain>/* module dynamically by name.
+root_modules = [
+  # "components/*",
+]
 include_tests = true        # treat test functions as entry points
 
 [index]
@@ -15,6 +22,14 @@ ignore = [
   # "**/migrations/**",
   # "**/_vendor/**",
 ]
+# Derived mmapped adjacency sidecar (<db>.adjcache/) for the reachability sweeps.
+# Built lazily by the first sweep after a (re)index, refused automatically when
+# stale, always safe to delete. Needs numpy; without it the sweeps use their
+# pure-Python paths. Disable for read-only index locations.
+adjacency_cache = true
+# Token-vector sidecar (<db>.simcache/) for find_similar/find_component — same
+# contract (lazy, generation-gated, delete-safe). <0.1 s queries at 100k nodes.
+similarity_cache = true
 
 [review]
 threshold = 0.80            # results below this confidence are flagged needs_review

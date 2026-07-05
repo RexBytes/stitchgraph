@@ -61,8 +61,15 @@ def build_app():
         version: bool = typer.Option(
             False, "--version", callback=_version_callback, is_eager=True,
             help="Show the stitchgraph version (and active grammar line) and exit."),
+        pure: bool = typer.Option(
+            False, "--pure",
+            help="Run on the pure-Python reference paths only (disable the adjacency "
+                 "sidecar and GraphBLAS accelerators — identical results, stdlib "
+                 "footprint). Env: STITCHGRAPH_PURE=1."),
     ) -> None:
-        pass
+        if pure:
+            from ..core.purity import set_pure_mode
+            set_pure_mode(True)
 
     for op in registry():
         app.command(name=op.name.replace("_", "-"), help=op.summary)(_make_command(typer, op))

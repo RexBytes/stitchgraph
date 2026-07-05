@@ -84,16 +84,21 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
 def default_resolvers() -> list[Resolver]:
     from .events import EventResolver
     from .express import ExpressRouteResolver
+    from .grpcproto import GrpcProtoResolver
     from .html import HtmlRouteResolver
     from .jsfetch import JsFetchResolver
+    from .openapi import OpenApiResolver
     from .orm import OrmResolver
+    from .ormx import PrismaResolver, TypeOrmResolver
     from .routes import WebRouteResolver
     from .spring import SpringRouteResolver
     from .sql import SqlResolver
-    # Route producers first (HTML/JS-fetch link to the Route nodes they create).
+    # Route producers first (HTML/JS-fetch link to the Route nodes they create;
+    # the OpenAPI spec and gRPC proto resolvers are route producers too).
     return [WebRouteResolver(), ExpressRouteResolver(), SpringRouteResolver(),
+            OpenApiResolver(), GrpcProtoResolver(),
             HtmlRouteResolver(), JsFetchResolver(), EventResolver(),
-            OrmResolver(), SqlResolver()]
+            OrmResolver(), PrismaResolver(), TypeOrmResolver(), SqlResolver()]
 
 
 # -- shared helper: iterate function defs with their stable node ids ---------

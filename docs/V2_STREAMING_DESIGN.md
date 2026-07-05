@@ -1,5 +1,26 @@
 # v2: constant(-ish)-memory streaming indexer — design
 
+> **Correction (2026-07-03, fixed in v3.28.0):** until v3.28.0 the *Python* extractor did
+> not actually stream — `extract/__init__.py` drained its edge list to the sink only after
+> `python.extract_project` fully materialised it, so `edge_sink` bought zero memory
+> reduction on the Python path. Every large-scale validation below (Magento) happened to
+> route through tree-sitter, the one extractor with the sink wired in; a field report of
+> Home Assistant (~10k `.py` files, heavy homonym fan-out) OOMing at ~7 GB despite
+> `streaming=True` exposed the boundary. v3.28.0 makes the Python extractor drain per
+> pass-2 file (INHERITS teed for the post-passes; override widening delegated to the
+> store twin), measured at **8.6M edges / 50 MB peak**, and adds a hard-RLIMIT CI gate so
+> constant-memory is a *tested invariant*, not a claim — the pre-fix code demonstrably
+> dies at the gate's cap at the exact `_ref_edges` append the diagnosis named.
+>
+> **Second defect, same day:** the store twin's first cut (`Store._propagate_overrides`)
+> `fetchall()`'d every resolved CALLS/REFERENCES row — O(edges) Python memory in the
+> *endgame*, after the whole index had streamed at a flat ~113 MB; real Home Assistant
+> (16.15M edges) still died there under a 4 GB cap while the gate passed, because the gate
+> corpus had no inheritance and the widening early-returned. Now: symbol-scale Python +
+> SQL-side scan/insert (byte-identical, oracle-pinned), HA endgame ~160 s at 113 MB peak;
+> the gate corpus gained class hierarchies and a widened-edge assertion so the early-return
+> blind spot is itself gated.
+
 Goal: index a tens-of-thousands-of-file monorepo (Magento: 24k files) without holding the
 whole graph in RAM. Today `reindex` builds **all ASTs + all nodes + all edges** in memory,
 then runs **resolvers + role-seeds + dedup over those full lists**, so peak RAM scales with

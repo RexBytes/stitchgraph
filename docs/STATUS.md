@@ -56,6 +56,8 @@ spec and section references.
 | Operations | `runtime_risk` (churn × behaviour) | ✅ Done | git churn × behavioural centrality (§6); runtime companion to risk; no numpy |
 | Operations | `coverage_drift` (snapshots) | ✅ Done | functions gained/lost test exposure between two coverage snapshots (§6); no numpy |
 | Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
+| Operations | `find_component` (purpose locator) | ✅ Done | research-validated 76% P@1 (v3.32.0); test-excluded, public-boosted |
+| Operations | `audit_graph` (call-graph precision audit) | ✅ Done | static reach vs runtime ground truth; resolver-gap worklist (v3.33.0) |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
 | Algebra | GraphBLAS PageRank centrality | ✅ Done | alt hub metric via config |
@@ -66,6 +68,8 @@ spec and section references.
 | Cross-language | SQL resolver (sqlglot → table, READS/WRITES) | ✅ Done | query string literals |
 | Cross-language | ORM resolver (model → table/column, MAPS_TO) | ✅ Done | SQLAlchemy/Django; converges with SQL |
 | Cross-language | Full-stack trace (form/JS → route → handler → table) | ✅ Done | the "gem", end to end |
+| Cross-language | **OpenAPI/Swagger + gRPC proto contract resolvers** | ✅ Done | spec/proto → ROUTE nodes + handler/Servicer binding (v3.35.0) |
+| Cross-language | **Prisma + TypeORM** ORM resolvers | ✅ Done | schema.prisma / @Entity → DBTable MAPS_TO (v3.35.0) |
 | **Data flow** | Data-loop detection (🟡) | ✅ Done | mutable-global feedback; surfaced in `scan` |
 | **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`ingest_trace`) | ✅ Done | coverage.json → live seeds, +confidence |
@@ -75,7 +79,7 @@ spec and section references.
 
 ## Test coverage
 
-2298 tests (`tests/`): envelope, store + incremental + migration, polyglot
+2,380+ tests (`tests/`): envelope, store + incremental + migration, polyglot
 extraction (Python + 11 tree-sitter languages), operations, config, `get_matrix`,
 the body-matrix walkers + value-flow/PDG layers (all 12 languages), cross-language
 resolvers (routes/Django/Express/Spring/HTML/JS-fetch/events/SQL/ORM) + full-stack
@@ -90,11 +94,10 @@ file-watching, and a precision/recall eval harness.
 |---|---|---|
 | **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. |
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
-| gRPC/proto & OpenAPI contract resolvers | M | More service-boundary tracing. |
-| More ORMs (Prisma, TypeORM, …) and frameworks | M | Additive resolvers. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
-| ~100k-node scale validation; bound the `transitive_fan_in` closure | M | Needs a large real repo to stress-test. |
+| Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
 | True incremental reindex (wire `replace_file` to `watch`) | M | `watch` currently full-rebuilds (fast at personal scale). |
+| Persist DENSE-embedder vectors in the similarity sidecar | S | The token path is sidecar-served since v3.36.0 (<0.1 s at 106k nodes); a registered embedder still recomputes per query. |
 
 ## Known seams (honest)
 

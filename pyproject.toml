@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitchgraph"
-version = "3.27.1"
+version = "3.36.2"
 description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
 readme = "README.md"
 license = "MIT"
@@ -21,9 +21,27 @@ classifiers = [
   "Topic :: Software Development :: Quality Assurance",
 ]
 
-# Core is intentionally stdlib-only so `import stitchgraph` is light and always
-# runs. Interface and extraction deps are optional extras (see below).
-dependencies = []
+# The DEFAULT install is the full-power one (v3.31.0): CLI, MCP, polyglot
+# grammars, precise resolution, the adjacency sidecar (numpy), GraphBLAS and
+# sparse solvers — because every accelerated path is pinned byte-identical to
+# its pure-Python reference, defaulting to fast costs nothing in trust.
+# The CODE still treats every one of these as optional (guarded imports), so a
+# lean footprint remains fully supported: `pip install --no-deps stitchgraph`
+# gives the stdlib-only library core, and `--pure` / STITCHGRAPH_PURE=1 forces
+# the reference paths even with everything installed. The core-only CI job
+# pins that degradation story.
+dependencies = [
+  "typer>=0.12",
+  "mcp>=1.0",
+  "tree-sitter>=0.25.2,<1",
+  "tree-sitter-language-pack>=0.7,<1.0",
+  "jedi>=0.19",
+  "sqlglot>=20",
+  "numpy>=1.24",
+  "python-graphblas>=2023.0",
+  "scipy>=1.10",
+  "pyyaml>=6.0",   # OpenAPI YAML specs (guarded import; JSON specs work without)
+]
 
 [project.optional-dependencies]
 cli = ["typer>=0.12"]

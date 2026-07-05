@@ -12,7 +12,6 @@ only read the index, never mutate source (design §4 read-only invariant).
 from __future__ import annotations
 
 import inspect
-from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -304,7 +303,8 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
     # Config from the *indexed* root (stored at reindex), not the process cwd — an
     # operation run from another directory must still honour the project's config.
     metric = load_config(store.get_meta("root")).hub_metric
-    if algebra.HAS_GRAPHBLAS and metric != "fan_in":
+    from .purity import pure_mode
+    if algebra.HAS_GRAPHBLAS and not pure_mode() and metric != "fan_in":
         if metric == "pagerank":
             ranks = algebra.pagerank(store)
             if ranks:
@@ -313,7 +313,28 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
             tfi = algebra.transitive_fan_in(store)
             if tfi:
                 return {k: float(v) for k, v in tfi.items()}, "transitive_fan_in"
-    return {k: float(v) for k, v in fan_in(store).items()}, "fan_in"
+    # Fallback: direct fan-in over CONFIDENT (EXTRACTED) edges only. Counting every
+    # AMBIGUOUS widening arm at full weight let homonym attributes drown the hub list at
+    # scale — Home Assistant's top "hubs" were `.hass`/`.data` attribute nodes with
+    # fan-in ~12,000 across 8,600 classes, pure resolution artifact (field analysis
+    # 2026-07-03). Sidecar first (0.06 s vs 4–61 s for the GROUP BY on the field graph),
+    # else one SQL GROUP BY, O(nodes) output, never a Python edge sweep.
+    # (Since v3.32.0 the GraphBLAS metrics above also rank confident-only — every
+    # hub metric now applies the same provenance discount.)
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        counts = cache.fan_in(LIVENESS_RELATIONS, confident_only=True)
+        return {k: float(v) for k, v in counts.items()}, "confident_fan_in"
+    lv = tuple(r.value for r in LIVENESS_RELATIONS)
+    rows = store.conn.execute(
+        f"""SELECT dst_id, COUNT(*) AS c FROM edges
+             WHERE dst_id IS NOT NULL AND provenance = ?
+               AND relation IN ({",".join("?" * len(lv))})
+               AND dst_id IN (SELECT id FROM nodes)
+             GROUP BY dst_id""",
+        (Provenance.EXTRACTED.value, *lv)).fetchall()
+    return {r["dst_id"]: float(r["c"]) for r in rows}, "confident_fan_in"
 
 
 # --------------------------------------------------------------------------
@@ -437,16 +458,7 @@ def _path_edges(store: Store, path: list[str]) -> list[Edge]:
 _SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
 
 
-def _confident_share(edges: list[Edge]) -> tuple[float, int, int]:
-    """(confident_fraction, confident_count, total) over a bag of edges — the share
-    backed by type-certain `EXTRACTED` provenance vs heuristic (`INFERRED`) or
-    over-approximated (`AMBIGUOUS`) ones. Empty -> treated as fully confident (1.0),
-    so a finding with no qualifying edges is never spuriously demoted (issue #11)."""
-    total = len(edges)
-    if total == 0:
-        return 1.0, 0, 0
-    confident = sum(1 for e in edges if e.provenance is Provenance.EXTRACTED)
-    return confident / total, confident, total
+_GOD_REVIEW_CAP = 500  # hedged god-object flags kept per scan; see the cutoff comment below
 
 
 @operation("Ranked issue list with urgency (structural scan).")
@@ -463,8 +475,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # reachable only through an INFERRED/AMBIGUOUS hop (a heuristic route, an
     # ambiguous name) the liveness itself is uncertain, so the provenance ceiling
     # caps it at ORANGE (envelope §7: nothing low-confidence shouts red).
-    certain = (reachable_from(store, seeds,
-                              edge_filter=lambda e: e.provenance is Provenance.EXTRACTED)
+    certain = (reachable_from(store, seeds, confident_only=True)
                if seeds else set())
     issues: list[dict] = []
 
@@ -496,14 +507,16 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # Provenance of the participating edges decides whether a *structural* finding is
     # trustworthy or a resolution artifact (issue #11): a cycle / god object that exists
     # only because of AMBIGUOUS (over-approximated homonym) or INFERRED (heuristic) edges
-    # is mostly noise on a language without type resolution. Index edges once.
-    all_edges = store.resolved_edges()
-    edges_by_src: dict[str, list[Edge]] = defaultdict(list)
-    edges_by_dst: dict[str, list[Edge]] = defaultdict(list)
-    for e in all_edges:
-        edges_by_src[e.src].append(e)
-        if e.dst_id is not None:
-            edges_by_dst[e.dst_id].append(e)
+    # is mostly noise on a language without type resolution. The shares are per-component /
+    # per-candidate COUNT queries in SQLite, never a materialised edge list: indexing all
+    # edges into Python dicts here was scan's O(edges) peak — MemoryError at a 6 GB cap on
+    # Home Assistant's 16M-edge graph while every sweep around it ran at adjacency scale
+    # (field analysis 2026-07-03).
+    _extracted = Provenance.EXTRACTED.value
+
+    def _share_rows(total: int, confident: int) -> tuple[float, int, int]:
+        # same contract as _confident_share: empty -> fully confident (issue #11)
+        return (confident / total if total else 1.0), confident, total
 
     # Circular dependencies (SCC > 1). Single-node self-loops are ordinary
     # recursion, not a coupling smell, so they're excluded.
@@ -518,11 +531,25 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         if any((cn := store.get_node(m)) is None or cn.kind not in _CODE_KINDS
                for m in comp):
             continue
-        members = set(comp)
-        internal = [e for e in all_edges
-                    if e.src in members and e.dst_id in members
-                    and e.relation in _SCC_RELATIONS]
-        frac, conf_n, total = _confident_share(internal)
+        # CROSS JOIN pins the join order (SQLite honours it as a directive): drive from
+        # the small member table and probe edges via idx_edges_src per member. The
+        # relation/membership predicates live in the aggregates, NOT the WHERE — a
+        # `relation IN (...)` there invites a stat-less planner onto idx_edges_rel
+        # (a walk of every CALLS entry in the table, per component) instead.
+        store.conn.execute("DROP TABLE IF EXISTS temp._scan_comp")
+        store.conn.execute("CREATE TEMP TABLE _scan_comp (id TEXT PRIMARY KEY)")
+        store.conn.executemany("INSERT OR IGNORE INTO _scan_comp VALUES (?)",
+                               [(m,) for m in comp])
+        _srel = tuple(r.value for r in _SCC_RELATIONS)
+        row = store.conn.execute(
+            """SELECT COALESCE(SUM(e.relation IN (?, ?)
+                                   AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
+                      COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
+                                   AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
+                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id""",
+            (*_srel, *_srel, _extracted)).fetchone()
+        store.conn.execute("DROP TABLE temp._scan_comp")
+        frac, conf_n, total = _share_rows(row["t"], row["c"])
         artifact = frac < 0.5  # majority of the linking edges are guesses
         reason = (f"circular dependency among {len(comp)} symbols"
                   + ("; rests mostly on name-ambiguous/heuristic edges "
@@ -553,8 +580,9 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         })
 
     # God objects: high fan-in AND fan-out.
-    _LIVENESS = set(LIVENESS_RELATIONS)
+    _lv = tuple(r.value for r in LIVENESS_RELATIONS)
     fi, fo = fan_in(store), fan_out(store)
+    god_issues: list[dict] = []
     for nid in set(fi) & set(fo):
         if fi[nid] >= 5 and fo[nid] >= 5:
             # "God object" is a code-entity smell; a MODULE node with many importers
@@ -568,11 +596,26 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
             # coupling is mostly ambiguous/heuristic edges (homonym `new`/`build` calls
             # that edge to every same-named def), the god-object smell is an artifact.
-            in_edges = [e for e in edges_by_dst.get(nid, ()) if e.relation in _LIVENESS]
-            out_edges = [e for e in edges_by_src.get(nid, ())
-                         if e.relation is Relation.CALLS]
-            in_frac, c_in, _ = _confident_share(in_edges)
-            out_frac, c_out, _ = _confident_share(out_edges)
+            # Only the selective equality (dst_id / src) goes in the WHERE; relation and
+            # provenance are SUM aggregates. `WHERE src = ? AND relation = ?` let a
+            # stat-less planner pick idx_edges_rel — a 12.9M-entry index walk PER
+            # candidate on the 16M-edge field graph (~2 s each, hours in total) instead
+            # of an idx_edges_src probe (caught live by py-spy, 2026-07-04).
+            ph = ",".join("?" * len(_lv))
+            in_row = store.conn.execute(
+                f"""SELECT COALESCE(SUM(relation IN ({ph})), 0) AS t,
+                           COALESCE(SUM(relation IN ({ph}) AND provenance = ?), 0) AS c
+                     FROM edges WHERE dst_id = ?""",
+                (*_lv, *_lv, _extracted, nid)).fetchone()
+            out_row = store.conn.execute(
+                """SELECT COALESCE(SUM(relation = ? AND dst_id IS NOT NULL), 0) AS t,
+                          COALESCE(SUM(relation = ? AND dst_id IS NOT NULL
+                                       AND provenance = ?), 0) AS c
+                     FROM edges WHERE src = ?""",
+                (Relation.CALLS.value, Relation.CALLS.value, _extracted,
+                 nid)).fetchone()
+            in_frac, c_in, _ = _share_rows(in_row["t"], in_row["c"])
+            out_frac, c_out, _ = _share_rows(out_row["t"], out_row["c"])
             # An artifact needs BOTH halves to survive on confident edges; if either the
             # confident fan-in or fan-out falls below the threshold the coupling isn't
             # really there once the guesses are removed.
@@ -581,7 +624,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             reason = (f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
                       + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
                          f"fan-out {c_out}) — verify before acting" if artifact else ""))
-            issues.append({
+            god_issues.append({
                 "kind": "god_object", "node": nid,
                 "urgency": Urgency.GREEN.value if artifact else Urgency.ORANGE.value,
                 "confidence": round(0.3 + 0.6 * frac, 2),
@@ -590,6 +633,21 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
                 "reason": reason,
                 "review_reasons": [reason] if artifact else [],  # inner-item contract (panel R34B)
             })
+    # Scale cutoff: on the 16M-edge field graph the hedged (needs_review) god-object
+    # flags numbered 11,117 of 11,124 — individually honest, collectively unusable
+    # (field analysis 2026-07-04). Confident flags always survive; hedged ones are
+    # capped at the top _GOD_REVIEW_CAP by (confidence desc, node) — deterministic,
+    # and a no-op on any graph a human would read unfiltered. The suppression is
+    # reported, never silent.
+    god_suppressed = 0
+    hedged = [g for g in god_issues if g["needs_review"]]
+    if len(hedged) > _GOD_REVIEW_CAP:
+        keep = set(id(g) for g in sorted(
+            hedged, key=lambda g: (-g["confidence"], g["node"]))[:_GOD_REVIEW_CAP])
+        god_suppressed = len(hedged) - _GOD_REVIEW_CAP
+        god_issues = [g for g in god_issues
+                      if not g["needs_review"] or id(g) in keep]
+    issues.extend(god_issues)
 
     rank = {Urgency.RED.value: 0, Urgency.ORANGE.value: 1, Urgency.GREEN.value: 2}
     issues.sort(key=lambda i: rank[i["urgency"]])
@@ -599,6 +657,12 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
              red=sum(i["urgency"] == "red" for i in issues),
              orange=sum(i["urgency"] == "orange" for i in issues))
     res.urgency = Urgency(top) if issues else Urgency.GREEN
+    if god_suppressed:
+        res.meta["god_objects_suppressed"] = god_suppressed
+        res.add_reason(
+            f"{god_suppressed} low-confidence (needs_review) god-object flags beyond "
+            f"the top {_GOD_REVIEW_CAP} were suppressed — individually hedged, "
+            "collectively noise at this graph size; confident flags are never dropped")
     if not seeds:
         res.add_reason("no entry points found — liveness-ranked issues (stubs, "
                        "holes) are omitted; only structural issues are shown")
@@ -876,6 +940,27 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    if "test" in target.roles:
+        # Anchored on a TEST (v3.33.0, research/11 A5): the answer flips from "what
+        # co-moves with this function" to "what does this test REALLY cover" — its
+        # executed function set, the test-intent audit. Parametrized/phase rows are
+        # collapsed onto the base id, so one logical test reports one union.
+        from .modes import base_test_id
+        covered: set[str] = set()
+        rows = 0
+        for tid, funcs in cov.items():
+            if base_test_id(tid) == target.id:
+                covered.update(funcs)
+                rows += 1
+        if not rows:
+            res = ok({"test": target.id, "covers": []},
+                     provenance=Provenance.EXTRACTED, count=0)
+            res.needs_review = True
+            res.add_reason("this test has no row in the coverage artifact — it was not "
+                           "part of the recorded run")
+            return res
+        payload = {"test": target.id, "covers": sorted(covered), "coverage_rows": rows}
+        return ok(payload, provenance=Provenance.EXTRACTED, count=len(covered))
     neighbours = coverage_query.co_functions(cov, target.id, k=lim)
     if not neighbours:
         res = ok({"symbol": target.id, "co_changing": []}, provenance=Provenance.EXTRACTED, count=0)
@@ -890,19 +975,106 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
     return ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours))
 
 
+@operation("Audit the call graph against runtime ground truth (static reach vs executed, per test).")
+def audit_graph(store: Store, coverage: str = "coverage_modes.json",
+                limit: int = 20) -> Result:
+    """A standing precision/recall audit of the call graph, using runtime coverage as
+    ground truth (design §6 / research/11 C3). For every test that has both a coverage
+    row and a node in the graph, compare the functions it EXECUTED with the functions
+    it statically REACHES:
+
+    - executed ∧ reachable — the graph predicted reality (recall's numerator);
+    - executed ∧ ¬reachable — a path the graph MISSED (dynamic dispatch, getattr,
+      framework wiring): these aggregate into `missed_functions`, the actionable
+      resolver-gap list — each is a place the extractor/resolvers could improve;
+    - reachable ∧ ¬executed is NOT an error (static reach over-approximates by
+      design and the run may simply not exercise a branch), so it is reported only
+      as the over-approximation ratio, never as a defect list.
+
+    Advisory, read-only, no numpy — set math over the inert matrix plus one forward
+    closure per test (sidecar-fast). Only functions that exist as graph nodes are
+    compared, so id-scheme drift between the artifact and the index reads as
+    `unmatched`, not as fake misses."""
+    from . import coverage_query
+    from .modes import base_test_id
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                      "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+    nodes = set(store.all_node_ids())
+    # collapse parametrized/phase rows onto the base test id (one logical test, one row)
+    by_test: dict[str, set[str]] = {}
+    for tid, funcs in cov.items():
+        by_test.setdefault(base_test_id(tid), set()).update(funcs)
+
+    per_test: list[dict] = []
+    missed_count: dict[str, int] = {}
+    unmatched = 0
+    tot_exec = tot_hit = tot_reach = 0
+    for tid in sorted(by_test):
+        if tid not in nodes:
+            unmatched += 1
+            continue
+        executed = by_test[tid] & nodes
+        if not executed:
+            unmatched += 1
+            continue
+        reached = reachable_from(store, {tid})
+        hit = executed & reached
+        for f in sorted(executed - reached):
+            missed_count[f] = missed_count.get(f, 0) + 1
+        tot_exec += len(executed)
+        tot_hit += len(hit)
+        tot_reach += len(reached & nodes)
+        per_test.append({
+            "test": tid, "executed": len(executed), "reached": len(hit),
+            "recall": round(len(hit) / len(executed), 3),
+        })
+    if not per_test:
+        return refuse("no coverage row matched a test node in the graph — are the artifact "
+                      "and the index from the same tree?", confidence=0.0)
+    per_test.sort(key=lambda r: (r["recall"], r["test"]))
+    missed = sorted(missed_count.items(), key=lambda kv: (-kv[1], kv[0]))[:lim]
+    payload = {
+        "tests_audited": len(per_test), "tests_unmatched": unmatched,
+        "recall": round(tot_hit / tot_exec, 3) if tot_exec else 1.0,
+        "overapproximation": round(tot_reach / tot_exec, 2) if tot_exec else 0.0,
+        "worst_tests": per_test[:lim],
+        "missed_functions": [{"function": f, "tests_missing_it": n} for f, n in missed],
+    }
+    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(per_test))
+    if missed:
+        res.needs_review = True
+        res.add_reason("missed_functions are executed on paths the static graph cannot see "
+                       "(dynamic dispatch, getattr, framework wiring) — resolver-gap "
+                       "candidates, not necessarily bugs in the analyzed code")
+    return res
+
+
 @operation("Hidden coupling: functions that co-run but never statically call each other (implicit deps).")
 def find_coupling(store: Store, coverage: str = "coverage_modes.json",
-                  limit: int = 40, min_shared: int = 3) -> Result:
+                  limit: int = 40, min_shared: int = 3, scope: str = "all") -> Result:
     """Function pairs that **co-activate** strongly across the suite yet have **no static edge** between
     them (design §6) — the runtime∖structure gap. A high co-activation score with no call/inheritance
     edge flags *implicit* coupling the call graph cannot see: shared global state, event/dispatch, a
     protocol contract, or a common caller. Advisory, read-only; needs no numpy — pure set math over the
     inert coverage matrix. Each pair is a *candidate* (it also catches common-caller siblings — inspect
-    before acting); `cross_file` pairs are usually the more interesting ones."""
+    before acting); `cross_file` pairs are usually the more interesting ones.
+
+    `scope` filters to "cross_file" / "same_file" pairs ("all" default), and every reported
+    pair carries `common_callers` — static callers shared by both sides (v3.33.0, research/11
+    A5): a populated list usually *explains* the co-activation (siblings of one dispatcher),
+    ranking truly-hidden coupling (empty list) above sibling noise."""
     from . import coverage_query
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
+    if scope not in ("all", "cross_file", "same_file"):
+        return refuse("scope must be 'all', 'cross_file' or 'same_file'", confidence=0.0)
     cov = coverage_query.load_coverage(coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
@@ -922,15 +1094,28 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     def _file(fid: str) -> str:
         return fid.split("::", 1)[0]
 
+    if scope != "all":
+        want_cross = scope == "cross_file"
+        pairs = [p for p in pairs if (_file(p[0]) != _file(p[1])) == want_cross]
+
+    def _common_callers(a: str, b: str) -> list[str]:
+        ca = {e.src for e in store.callers_of(a)}
+        if not ca:
+            return []
+        return sorted(ca & {e.src for e in store.callers_of(b)})[:3]
+
     payload = {
-        "pairs": [{"a": a, "b": b, "score": s, "shared_tests": c, "cross_file": _file(a) != _file(b)}
+        "pairs": [{"a": a, "b": b, "score": s, "shared_tests": c,
+                   "cross_file": _file(a) != _file(b),
+                   "common_callers": _common_callers(a, b)}
                   for a, b, s, c in pairs],
         "count": len(pairs),
     }
     res = ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs))
     res.needs_review = True
-    res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — it "
-                   "also includes functions sharing a common caller; inspect before acting")
+    res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — "
+                   "populated common_callers usually explains it (siblings of one dispatcher); "
+                   "pairs with no common caller are the truly hidden ones")
     return res
 
 
@@ -1139,14 +1324,21 @@ def coverage_drift(store: Store, old: str = "coverage_old.json",
 
 @operation("Find code most similar to a snippet (where's the code that does X).")
 def find_similar(store: Store, snippet: str, limit: int = 10,
-                 mode: str = "semantic") -> Result:
+                 mode: str = "semantic",
+                 coverage: str = "coverage_modes.json") -> Result:
     """Semantic-ish retrieval over the graph (design §1). mode="semantic" (default) ranks
     functions/methods/classes by token similarity (name + docstring + callees) to the snippet;
     mode="structure" ranks stored functions by body-shape similarity to the snippet's function —
     name-agnostic, advisory. The snippet's language is auto-detected (Python, the JS/TS family, Go,
     Rust, C/C++, Java, C#, Ruby, PHP, or Bash) and ranked only against stored functions of the SAME
     language (a fingerprint's topology tracks its extractor, so cross-language scores aren't
-    comparable). Every language but Python needs the tree-sitter extra."""
+    comparable). Every language but Python needs the tree-sitter extra.
+
+    mode="behavior" (v3.33.0, research/11 B4): `snippet` names a SYMBOL, and the ranking is
+    nearest neighbours in the coverage matrix's MODE space — functions that *behave* like it
+    across the suite even when lexically/structurally unrelated (the denoised complement to
+    `co_change`'s raw column cosine). Needs numpy and the `coverage` artifact; only functions
+    the suite exercised can appear."""
     from . import similar
 
     # Guard arg types before the tokeniser/slice — a non-str snippet or non-int limit would
@@ -1157,8 +1349,32 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         return refuse("snippet must be a string", confidence=0.0)
     if not isinstance(limit, int) or isinstance(limit, bool):
         return refuse("limit must be an integer", confidence=0.0)
-    if mode not in ("semantic", "structure"):
-        return refuse("mode must be 'semantic' or 'structure'", confidence=0.0)
+    if mode not in ("semantic", "structure", "behavior"):
+        return refuse("mode must be 'semantic', 'structure' or 'behavior'", confidence=0.0)
+    if mode == "behavior":
+        from . import coverage_query, modes
+        target, candidates = _resolve_target(store, snippet)
+        if target is None:
+            if len(candidates) > 1:
+                res = refuse(
+                    f"'{snippet}' matches {len(candidates)} symbols — pass a qualified id "
+                    f"(e.g. {candidates[0].id!r})", confidence=0.0)
+                res.alternatives = [n.to_dict() for n in candidates]
+                return res
+            return refuse(f"'{snippet}' is not in the index", confidence=0.0)
+        cov = coverage_query.load_coverage(coverage)
+        if not cov:
+            return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
+                          "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
+        try:
+            neighbours = modes.behavioural_neighbours(cov, target.id, limit=max(0, limit))
+        except RuntimeError as exc:
+            return refuse(str(exc), confidence=0.0)
+        if not neighbours:
+            return refuse(f"'{target.id}' was never executed in this coverage artifact — "
+                          "no behavioural embedding to rank from", confidence=0.0)
+        return ok([{"id": nid, "score": s} for nid, s in neighbours],
+                  provenance=Provenance.INFERRED, count=len(neighbours))
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
         hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, "
@@ -1171,6 +1387,66 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     top = matches[0][1]
     return ok(payload, confidence=min(top + 0.3, 0.9),
               provenance=Provenance.INFERRED, count=len(payload))
+
+
+# Test-file path fragments for find_component's exclusion (mirrors the research spike):
+# the `test` role marks test FUNCTIONS, but helpers nested inside test files are
+# first-class nodes without the role — the path signal catches those.
+_TEST_PATH_HINTS = ("/test", "test_", "_test", "/tests/", "/spec", ".spec.", ".test.")
+
+
+def _is_test_path(node_id: str) -> bool:
+    rel = node_id.split("::", 1)[0].lower()
+    leaf = rel.rsplit("/", 1)[-1]
+    return any(h in rel for h in _TEST_PATH_HINTS) or leaf.startswith("test")
+
+
+@operation("Locate the public component that implements a described purpose.")
+def find_component(store: Store, query: str, limit: int = 5,
+                   public_boost: float = 0.15) -> Result:
+    """Purpose-aware component locator: "parse command line options" -> `Command` /
+    `Option`. `find_similar`'s semantic ranking (name + docstring + callees), made
+    navigational by two structural facts the graph already holds (design §1 /
+    IDEAS §3, quantified in research/05-archetype-purpose): TEST code is excluded
+    (by role and by test-file path), and EXPORTED / public-API symbols are boosted —
+    the answer to "where is the thing that does X" is almost always public surface,
+    not an internal helper. Ablation on 17 labelled queries x 17 packages: raw
+    find_similar 53% P@1 -> drop-tests 59% -> +public-boost **76% P@1 / 0.80 MRR**.
+
+    Advisory and INFERRED like find_similar: token/embedding similarity, not proof —
+    minified/bundled sources (single-char identifiers) defeat name search, and a
+    specific public function can drown under same-token siblings. The score carries
+    the boost explicitly so a consumer can see why something ranked."""
+    if not isinstance(query, str) or not query.strip():
+        return refuse("query must be a non-empty string", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        return refuse("limit must be a positive integer", confidence=0.0)
+    from . import similar
+
+    # Over-fetch so the post-filter can drop tests without starving the result;
+    # 80 matched the research eval and is plenty above any sane `limit`.
+    matches = similar.find_similar(store, query, max(80, limit))
+    if not matches:
+        return refuse("no similar code found (or query had no usable tokens)",
+                      confidence=0.0)
+    out = []
+    for nid, score in matches:
+        node = store.get_node(nid)
+        if node is None or "test" in node.roles or _is_test_path(nid):
+            continue
+        exported = "exported" in node.roles
+        out.append({
+            "id": nid, "name": node.name, "kind": node.kind.value,
+            "location": node.location, "exported": exported,
+            "score": round(score + (public_boost if exported else 0.0), 3),
+        })
+    if not out:
+        return refuse("every match was test code — no public component found",
+                      confidence=0.0)
+    out.sort(key=lambda r: (-float(r["score"]), str(r["id"])))
+    out = out[:limit]
+    return ok(out, confidence=min(float(out[0]["score"]) + 0.3, 0.9),
+              provenance=Provenance.INFERRED, count=len(out))
 
 
 @operation("Structurally diff this index against another (translation / plan-vs-actual).")
@@ -1722,6 +1998,7 @@ def reindex(store: Store, path: str, precise: bool = False,
         with store.conn:
             store.conn.execute("DELETE FROM nodes")
             store.conn.execute("DELETE FROM edges")
+        store.bump_generation()
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
 
@@ -1755,6 +2032,8 @@ def reindex(store: Store, path: str, precise: bool = False,
         for e in edges:
             store.add_edge(e)
 
+    store.analyze()
+    store.bump_generation()
     store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
@@ -1941,19 +2220,35 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
             """DELETE FROM edges WHERE
                    src NOT IN (SELECT id FROM nodes)
                 OR (dst_id IS NOT NULL AND dst_id NOT IN (SELECT id FROM nodes))""")
-    # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo. The
-    # dedup correlates rows by (src, relation, dst_id); a covering index makes its EXISTS
-    # subqueries index lookups instead of full scans. Temporary: dropped after, since the
+    # The store now holds the RAW (pre-dedup) edge set — millions of rows on a large repo.
+    # Both endgame passes below correlate rows by (src, relation, dst_id): the override
+    # widening's NOT-EXISTS probes and the dedup's EXISTS subqueries. A covering index makes
+    # those index lookups instead of full scans. Temporary: dropped after, since the
     # steady-state read indexes differ.
     with store.conn:
         store.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_edges_dedup ON edges(src, relation, dst_id, weight)")
+    # Override widening: the in-memory path runs the extractor's _propagate_overrides over
+    # the full edge list; the sink path never materialises that list (the HA constant-memory
+    # fix), so re-derive the same AMBIGUOUS subclass-override edges from the store — the DB
+    # twin already pinned equal to the extractor's by the incremental differential oracle,
+    # and itself constant-memory (symbol-scale Python + SQL-side scan/insert; its first cut
+    # fetchall'd the edge table and re-OOM'd HA in the endgame, 2026-07-03). Runs after nodes
+    # land (it reads class kinds + INHERITS rows) and before the global dedup, exactly where
+    # the in-memory path's override edges sit relative to dedup.
+    with store.conn:
+        store._propagate_overrides()
+    with store.conn:
         store._dedup_resolved_edges()
         store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
 
+    store.analyze()
+    store.bump_generation()
     store.set_meta("root", abs_root)
     files = {n.id.split("::", 1)[0] for n in nodes if "::" in n.id}
-    holes = len(store.unresolved_edges())
+    # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,
+    # an O(holes) allocation this path exists to avoid.
+    holes = store.unresolved_count()
     return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
               files=len(files), nodes=store.node_count())
 
@@ -2064,7 +2359,8 @@ def _default_detector(store: Store) -> PythonLibraryDetector:
     inclusion follow the project even when the operation runs from elsewhere."""
     from .config import load_config
     cfg = load_config(store.get_meta("root"))
-    return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests)
+    return PythonLibraryDetector(overrides=cfg.include, include_tests=cfg.include_tests,
+                                 root_modules=cfg.root_modules)
 
 
 _CODE_KINDS = {NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS}
