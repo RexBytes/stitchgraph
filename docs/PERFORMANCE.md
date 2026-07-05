@@ -72,7 +72,10 @@ Set-math ops (`select_tests`, `find_gaps`, `co_change`, …) are sub-second up t
 thousands of tests. SVD ops (`find_modes`, `feature_map`) depend on the matrix's
 smaller dimension: seconds below ~2k tests/functions dense; install `[spectral]`
 for the sparse path above that. `audit_graph` ≈ one reachability sweep per test —
-with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph.
+with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph — or
+use the bit-parallel batch path (v3.39.0, automatic in `audit_graph`):
+64 closures per sweep, 2,056 tests in **3.9 min** on the 27M-edge HA index
+(was 31.6 min; ~5.4 GB transient for the lane labels + edge gathers).
 
 Field anchors (HA repo-root index, 20.9 GB / 77.5k nodes, 2,056 base tests ×
 3,274 executed functions — research/18 round 3): `find_modes` ~7 s / 513 MB
@@ -81,11 +84,11 @@ Field anchors (HA repo-root index, 20.9 GB / 77.5k nodes, 2,056 base tests ×
 `find_outlier_tests` 6.9 s, `audit_graph` 31.6 min / 994 MB (~0.9 s per test —
 matches the budget above).
 
-**Known-cost op: `find_coupling`** — 251 s / **10.1 GB peak** on that run
-(979 s / 12.8 GB on the earlier 30M-edge over-inflated index). Its
-co-activation pass is coverage-cheap, but the `common_callers` explanation
-loads caller sets per candidate pair against the full edge table. Budget for it
-separately on 10M+-edge graphs, or run it on a subsystem-scoped index.
+**`find_coupling`** — fixed in v3.39.0: **17.8 s / 353 MB** on the 27M-edge
+HA index. The no-static-edge filter now probes the few hundred candidate
+pairs with indexed lookups instead of materialising a frozenset per resolved
+edge — the historical known-cost figures were 251 s / 10.1 GB (round 3) and
+979 s / 12.8 GB (the over-inflated 30M-edge round-1 index).
 
 ## When an estimate misses badly, suspect (in order)
 
@@ -100,3 +103,8 @@ separately on 10M+-edge graphs, or run it on a subsystem-scoped index.
    graph, and everything downstream, is 3–5× the typical-code estimate.
 4. **A pre-v3.29 index without planner stats** — reindex once; the ANALYZE
    safety net and pinned query shapes only fully protect fresh indexes.
+
+5. **Endgame disk headroom** — a reindex endgame (override widening, temp
+   dedup index, WAL) needs free disk ≈ 20% of the final db size on top of
+   the db itself; two field runs hit disk-full there. If it happens, the
+   edges are committed — the endgame steps can be run directly on the store.

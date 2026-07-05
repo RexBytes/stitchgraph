@@ -129,3 +129,32 @@ list.
 - The estimator holds: `docs/PERFORMANCE.md` anchors updated with all three
   rounds' costs; `find_coupling` documented as the one budget-separately op;
   `audit_graph` ≈ 0.9 s/test at 30M+ edges.
+
+## Addendum — round 4 (v3.39.0, the recall-tail release)
+
+Same artifact, same tree, re-indexed with the tail-targeted resolvers
+(protocol dunders, getattr dispatch, pytest fixtures, template variables) and
+re-measured with the bit-parallel audit path:
+
+| metric | round 3 (v3.37.1) | round 4 (v3.39.0) |
+|---|---|---|
+| recall | 0.991 | **0.995** (the tail halved) |
+| audit_graph wall | 31.6 min | **3.9 min** (bit-parallel BFS, 64 lanes/sweep; 5.4 GB peak) |
+| find_coupling | 251 s / 10.1 GB | **17.8 s / 353 MB** (probe replaces the per-edge frozenset set) |
+| resolved edges | 26.80M | 26.98M (+0.7% — the recall features are nearly free in size) |
+| index | 46 min / 20.9 GB | ~46 min / 21.0 GB |
+
+`TemplateContextManager.__exit__` — the single largest miss (389 of 2,056
+tests) — is GONE from `missed_functions`, as are the `__setitem__`-shaped
+misses: the protocol resolver did exactly what the tail predicted. What
+remains at 0.5% is dominated by **framework-internal invocation** (jinja2's
+sandbox calling `is_safe_callable`/`is_safe_attribute`, `LoggingUndefined`
+error hooks — called by third-party code our graph doesn't model), plus
+registry field default-factories and `_step_log`-style indirections whose
+dispatch string is built far from the getattr site. Diminishing, enumerable,
+honest.
+
+Operational note (now in PERFORMANCE.md): a reindex endgame needs free-disk
+headroom ≈ 20% of the final db size (temp dedup index + WAL) — round 4 hit
+disk-full in `_propagate_overrides` with 7 GB free against a 21 GB db and was
+recovered by running the endgame steps directly on the committed edge set.
