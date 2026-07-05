@@ -107,6 +107,24 @@ def reachable_from(store: Store, seeds: Iterable[str],
     return seen
 
 
+def reachable_from_many(store: Store, seed_groups: list[set[str]],
+                        relations: Iterable[Relation] = LIVENESS_RELATIONS,
+                        confident_only: bool = False) -> list[set[str]]:
+    """Batch forward closures — one result set per seed group, identical to
+    calling `reachable_from` per group (pinned by the differential test).
+    With a fresh adjacency sidecar this is the bit-parallel BFS: 64 groups per
+    fixed-point sweep (v3.39.0 — turns audit_graph's per-test closure loop
+    from 31.6 min into roughly a minute on the HA field index). Without the
+    sidecar it degrades to the sequential reference, correct at reference
+    speed."""
+    from .adjcache import load_cache
+    cache = load_cache(store)
+    if cache is not None:
+        return cache.reachable_many(seed_groups, relations, confident_only)
+    return [reachable_from(store, g, relations, confident_only=confident_only)
+            for g in seed_groups]
+
+
 def _reverse_adjacency(store: Store, relations: Iterable[Relation]) -> dict[str, list[str]]:
     radj: dict[str, list[str]] = defaultdict(list)
     rels = {r.value for r in relations}

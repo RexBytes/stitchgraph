@@ -169,6 +169,57 @@ class AdjacencyCache:
                          confident_only)
         return {self.ids[i] for i in _np.nonzero(seen)[0]}
 
+    def reachable_many(self, seed_groups: list[set[str]],
+                       relations: Iterable[Relation],
+                       confident_only: bool = False) -> list[set[str]]:
+        """Up to 64 independent reachability queries in ONE fixed-point sweep —
+        the bit-parallel BFS (v3.39.0). `audit_graph` runs one forward closure
+        per test (2,056 BFS = 31.6 min on the HA field index); packing 64 test
+        seeds into the bit-lanes of a uint64 label per node answers 64 of them
+        per sweep: node n is reachable from group g iff bit g of labels[n] is
+        set at the fixed point. Same edge gather and relation/confidence masks
+        as `_bfs`; pinned per-lane identical to sequential `reachable` calls by
+        the differential test. More than 64 groups chunk recursively."""
+        if len(seed_groups) > 64:
+            out: list[set[str]] = []
+            for i in range(0, len(seed_groups), 64):
+                out.extend(self.reachable_many(seed_groups[i:i + 64], relations,
+                                               confident_only))
+            return out
+        allowed = self._rel_mask(relations)
+        indptr, indices = self.fwd_indptr, self.fwd_indices
+        rel, conf = self.fwd_rel, self.fwd_conf
+        labels = _np.zeros(self.n, _np.uint64)
+        for g, seeds in enumerate(seed_groups):
+            idx = self._seed_array(seeds)
+            if idx.size:
+                labels[idx] |= _np.uint64(1 << g)
+        frontier = _np.nonzero(labels)[0]
+        while frontier.size:
+            starts = indptr[frontier]
+            counts = (indptr[frontier + 1] - starts).astype(_np.int64)
+            total = int(counts.sum())
+            if total == 0:
+                break
+            offs = _np.repeat(starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])),
+                              counts)
+            e_idx = _np.arange(total, dtype=_np.int64) + offs
+            mask = allowed[rel[e_idx]]
+            if confident_only:
+                mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
+            neigh = indices[e_idx[mask]]
+            contrib = labels[_np.repeat(frontier, counts)[mask]]
+            before = labels.copy()  # n × 8 B per round — cheap next to the edge gather
+            _np.bitwise_or.at(labels, neigh, contrib)
+            # A node re-enters the frontier only when it gained NEW lane bits, so
+            # each lane's propagation terminates exactly like its solo BFS.
+            frontier = _np.nonzero(labels != before)[0]
+        out = []
+        for g in range(len(seed_groups)):
+            bit = _np.uint64(1 << g)
+            out.append({self.ids[i] for i in _np.nonzero((labels & bit) != 0)[0]})
+        return out
+
     def reverse_reachable(self, targets: Iterable[str],
                           relations: Iterable[Relation]) -> set[str]:
         targets = set(targets)

@@ -1259,6 +1259,8 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             for expr, dunders, line in _direct_protocol_uses(child):
                 _protocol_dunder_edges(proj, rel, cid, local_types, expr,
                                        dunders, line, proto_seen)
+            # getattr(recv, f"_prefix_{x}") dispatch (v3.39.0, research/18-19).
+            _getattr_dispatch_edges(proj, rel, cid, child)
             # Nested defs keep the enclosing class context (for closed-over self).
             _walk_scope(proj, rel, child, parent=qual, class_qual=class_qual)
 
@@ -1495,6 +1497,85 @@ def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
             continue
         rec(stmt)
     return out
+
+
+def _getattr_pattern(arg: ast.AST) -> tuple[str, str] | None:
+    """(prefix, suffix) of a dynamic attribute-name expression with exactly one
+    variable part — the shapes real dispatch code uses (research/18 tail,
+    confirmed on Django in research/19):
+
+        getattr(self, f"_async_step_{action}")     # f-string
+        getattr(self, "as_%s" % connection.vendor)  # %-format
+        getattr(self, "_get_" + kind + "_perms")    # concat (single var)
+        getattr(obj, "handle_{}".format(kind))      # str.format
+
+    Returns None when the shape doesn't match or the literal anchor is too
+    short to select anything (len(prefix)+len(suffix) < 3 — a bare f"{x}"
+    matches every symbol and would fan the whole graph)."""
+    prefix = suffix = None
+    if isinstance(arg, ast.JoinedStr):
+        vals = arg.values
+        consts = [v for v in vals if isinstance(v, ast.Constant)]
+        holes = [v for v in vals if not isinstance(v, ast.Constant)]
+        if len(holes) == 1 and len(consts) == len(vals) - 1:
+            prefix = vals[0].value if isinstance(vals[0], ast.Constant) else ""
+            suffix = vals[-1].value if isinstance(vals[-1], ast.Constant) else ""
+    elif isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mod) \
+            and isinstance(arg.left, ast.Constant) and isinstance(arg.left.value, str) \
+            and arg.left.value.count("%s") == 1 and "%" not in arg.left.value.replace("%s", ""):
+        prefix, suffix = arg.left.value.split("%s")
+    elif isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
+        left, right = arg.left, arg.right
+        if isinstance(left, ast.Constant) and isinstance(left.value, str):
+            # "_get_" + kind  (or "_get_" + kind + "_perms": left-nested Add)
+            prefix, suffix = left.value, ""
+        elif isinstance(left, ast.BinOp) and isinstance(left.op, ast.Add) \
+                and isinstance(left.left, ast.Constant) and isinstance(left.left.value, str) \
+                and isinstance(right, ast.Constant) and isinstance(right.value, str):
+            prefix, suffix = left.left.value, right.value
+        elif isinstance(right, ast.Constant) and isinstance(right.value, str):
+            prefix, suffix = "", right.value
+    elif isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) \
+            and arg.func.attr == "format" and isinstance(arg.func.value, ast.Constant) \
+            and isinstance(arg.func.value.value, str) \
+            and arg.func.value.value.count("{}") == 1:
+        prefix, suffix = arg.func.value.value.split("{}")
+    if prefix is None or suffix is None:
+        return None
+    if not isinstance(prefix, str) or not isinstance(suffix, str):
+        return None
+    if len(prefix) + len(suffix) < 3:
+        return None
+    return prefix, suffix
+
+
+def _getattr_dispatch_edges(proj: _Project, rel: str, src_id: str,
+                            func: ast.AST) -> None:
+    """The getattr-dispatch heuristic (v3.39.0): `getattr(recv, f"_step_{x}")`
+    invokes SOME member matching `_step_*`, but no call pass can name it —
+    research/18 measured `_ScriptRun._async_step_*` handlers missed by dozens
+    of HA tests, and research/19 found the same shape twice in Django
+    (`as_%s` vendor methods, `_get_%s_permissions`). Reference every project
+    function/method matching the literal prefix+suffix through the standard
+    name-based rules (INFERRED/AMBIGUOUS). Deliberately NOT receiver-scoped:
+    the matching member routinely lives on a base class or mixin in another
+    file. Cardinal-safe — only ever adds reachability; a pattern with a
+    too-short anchor is rejected in `_getattr_pattern`."""
+    seen: set[tuple[str, str]] = set()
+    for node in ast.walk(func):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr" and len(node.args) >= 2):
+            continue
+        pat = _getattr_pattern(node.args[1])
+        if pat is None or pat in seen:
+            continue
+        seen.add(pat)
+        prefix, suffix = pat
+        for name in proj.by_name:
+            if (name.startswith(prefix) and name.endswith(suffix)
+                    and len(name) > len(prefix) + len(suffix)):
+                _ref_edges(proj, src_id, name, Relation.REFERENCES, rel,
+                           node.lineno, is_method=True)
 
 
 def _direct_protocol_uses(func: ast.AST) -> list[tuple[ast.AST, tuple[str, ...], int]]:

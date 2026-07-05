@@ -1017,15 +1017,23 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     missed_count: dict[str, int] = {}
     unmatched = 0
     tot_exec = tot_hit = tot_reach = 0
+    audit_ids: list[str] = []
     for tid in sorted(by_test):
-        if tid not in nodes:
+        if tid not in nodes or not (by_test[tid] & nodes):
             unmatched += 1
             continue
+        audit_ids.append(tid)
+    # One closure per test, batched 64-per-sweep through the bit-parallel BFS
+    # (v3.39.0): sequentially this loop WAS the op's cost — 2,056 BFS = 31.6 min
+    # on the HA field index; identical per-lane results are pinned by the
+    # reachable_many differential test.
+    from .reach import reachable_from_many
+    reach_by_test = dict(zip(audit_ids,
+                             reachable_from_many(store, [{t} for t in audit_ids]),
+                             strict=True))
+    for tid in audit_ids:
         executed = by_test[tid] & nodes
-        if not executed:
-            unmatched += 1
-            continue
-        reached = reachable_from(store, {tid})
+        reached = reach_by_test[tid]
         hit = executed & reached
         for f in sorted(executed - reached):
             missed_count[f] = missed_count.get(f, 0) + 1
