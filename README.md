@@ -263,7 +263,10 @@ PYTHONPATH=src python -m pytest -q
 CI runs the suite on Python 3.11/3.12 plus a no-extras job that guards the
 stdlib-only core. Design: [`docs/design.md`](docs/design.md) · capability map:
 [`docs/OVERVIEW.md`](docs/OVERVIEW.md) · status/roadmap: [`docs/STATUS.md`](docs/STATUS.md)
-· release history: [`CHANGELOG.md`](CHANGELOG.md) and `docs/RELEASE_NOTES_v*.md` ·
+· release history: [`CHANGELOG.md`](CHANGELOG.md) and `docs/RELEASE_NOTES_v*.md`
+(campaign overview: [`docs/RELEASE_SUMMARY_v3.28-v3.38.md`](docs/RELEASE_SUMMARY_v3.28-v3.38.md);
+field validation — the call graph measured at **99.1% recall** against Home Assistant's
+real test-run coverage: [`research/18`](research/18-ha-pod-field-validation.md)) ·
 review process: [`CONTRIBUTING.md`](CONTRIBUTING.md), [`REVIEW_HISTORY.md`](REVIEW_HISTORY.md).
 
 MIT licensed.
