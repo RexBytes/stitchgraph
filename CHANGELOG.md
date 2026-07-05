@@ -4,6 +4,36 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.38.0] — 2026-07-05
+
+### Added
+- **Incremental `watch`** (`reindex_incremental` + `core/watch.diff`): the watch
+  loop now applies changes differentially — whole-project extraction in memory
+  (identical resolution semantics to a full reindex, so every convergence oracle
+  keeps holding by construction) with store writes only for the owners whose
+  content can have changed: the mtime-added/modified files plus every pseudo
+  owner (`db`/`event` aggregates). Each goes through `Store.replace_file`, whose
+  re-widening/override/dangling machinery was already pinned to converge with a
+  full reindex — the edit loop now pays extraction only, skipping the full-table
+  rewrite that dominates reindex wall time. Automatic full-reindex fallbacks:
+  file deletions/renames (keeps the two documented non-cardinal deletion
+  residuals out of shipped surfaces) and AUTO-streaming-sized trees (in-memory
+  whole-project extraction is exactly what streaming exists to avoid).
+  `watch --full` forces the old behaviour. Convergence is pinned by a
+  byte-equality differential suite (modified/added-homonym/emptied/pseudo-owner/
+  re-export cases vs a fresh full reindex).
+- **Dense-embedder persistence in the similarity sidecar** (the roadmap's last
+  similarity gap): `set_embedder(fn, cache_key="model@rev")` — with a
+  `cache_key` naming the vector space (model2vec auto-wiring keys on the
+  configured model name), node embeddings persist once in
+  `<db>.simcache-dense/` (L2-normalised float32 rows) and a query embeds ONLY
+  the snippet: one embed call instead of one per stored node, scored in a
+  single matrix·vector product, and the per-query CALLS-edge materialisation is
+  skipped entirely. Same generation/config/pure gates as the token sidecar; the
+  manifest pins the model key, so switching models rebuilds and a keyless
+  (ad-hoc lambda) embedder keeps the recompute-per-query reference path —
+  persisting under an unstable identity would silently mix vector spaces.
+
 ## [3.37.1] — 2026-07-05
 
 ### Fixed

@@ -2045,6 +2045,76 @@ def reindex(store: Store, path: str, precise: bool = False,
     return res
 
 
+def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
+    """Differential re-index for `watch` (v3.38.0 — the roadmap's "wire replace_file
+    to watch"). Extraction runs WHOLE-PROJECT in memory — identical resolution
+    semantics to a full reindex, so every convergence oracle keeps holding by
+    construction — but store writes happen only for the owners whose graph content
+    can have changed: `changed` (root-relative posix paths of mtime-added/modified
+    files) plus every PSEUDO owner (aggregates like `db`/`event` whose nodes are
+    derived from many source files and can gain/lose members on any edit). Each
+    owner goes through `Store.replace_file`, whose worklist re-resolve, name-based
+    re-widening, override propagation and dangling invalidation are already pinned
+    to converge with a full reindex (LIMITATIONS "Incremental replace_file matches
+    a full reindex").
+
+    The win is skipping the full-table rewrite (delete + N-million-row insert +
+    dedup endgame), which dominates reindex wall time on mid-size repos — the edit
+    loop pays extraction only.
+
+    Callers own the fallback decisions (the CLI `watch` loop does): file DELETIONS
+    must full-reindex (the two documented non-cardinal deletion residuals stay out
+    of shipped surfaces), and trees big enough for AUTO-streaming must full-reindex
+    (in-memory whole-project extraction is exactly what streaming exists to avoid).
+    A store/root mismatch or an unusable root also belongs to the caller — this
+    function assumes the same validated root `reindex` would accept."""
+    import os
+
+    from .config import load_config
+    from .extract import extract_project
+    from .resolve import default_resolvers, run_resolvers
+
+    if not (isinstance(path, str) and os.path.isdir(path)):
+        return refuse(f"root {path!r} is not a readable directory — nothing was changed")
+    abs_root = os.path.abspath(path)
+
+    xreport: dict = {}
+    nodes, edges = extract_project(path, ignore=load_config(path).ignore, report=xreport)
+    nodes, edges = run_resolvers(path, nodes, edges, default_resolvers())
+    edges = _dedup_edges(edges)
+
+    nodes_by_owner: dict[str, list] = {}
+    for n in nodes:
+        nodes_by_owner.setdefault(n.id.split("::", 1)[0], []).append(n)
+    edges_by_owner: dict[str, list] = {}
+    for e in edges:
+        edges_by_owner.setdefault(e.src.split("::", 1)[0], []).append(e)
+    owners = set(nodes_by_owner) | set(edges_by_owner)
+    # Pseudo owners (`db`, `event`, spec aggregates): not real files, so mtime can't
+    # vouch for them — refresh unconditionally (their groups are tiny).
+    pseudo = {o for o in owners if not os.path.exists(os.path.join(abs_root, o))}
+    # A changed file that now produces nothing (emptied, or all defs removed) is not
+    # an owner in the fresh extract — replacing it with () clears its stale rows.
+    targets = sorted((changed & owners) | (changed - owners) | pseudo)
+
+    # The complete exported-role surface from the SAME whole-project extract, so an
+    # edit that changes a package __init__'s re-exports converges (panel R37A — the
+    # exact contract replace_file's docstring asks incremental callers to honour).
+    exported_ids = {n.id for n in nodes if "exported" in n.roles}
+    for owner in targets:
+        store.replace_file(owner, nodes_by_owner.get(owner, ()),
+                           edges_by_owner.get(owner, ()), exported_ids=exported_ids)
+
+    store.analyze()
+    store.set_meta("root", abs_root)  # replace_file bumped the generation per owner
+    res = ok({"files": len({n.id.split('::', 1)[0] for n in nodes if '::' in n.id}),
+              "nodes": store.node_count(), "replaced": len(targets),
+              "holes": store.unresolved_count()},
+             files=len(changed), nodes=store.node_count(), replaced=len(targets))
+    _annotate_extraction_gaps(res, xreport)
+    return res
+
+
 def _annotate_extraction_gaps(res: Result, xreport: dict) -> None:
     """Surface extraction gaps on the reindex Result — a file missing from the graph
     must NEVER be silent (research/18 bug 1: 880 PEP 695 files — 10% of Home Assistant,
