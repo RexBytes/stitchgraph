@@ -4,6 +4,15 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.36.1] — 2026-07-05
+
+### Fixed
+- **`find_chokepoints`/SCC memory at scale**: the sidecar traversals boxed every edge
+  id via `.tolist()` (~28 B/entry — the 4.1 GB peak recorded in the scale validation).
+  Now `array.array('q')` C-int storage plus explicit transient lifetimes in the
+  symmetrise/unique chain: **4.1 GB → 3.0 GB peak and 78.6 s → 58.5 s** on the
+  26.8M-edge megacorpus. Closes the scale-validation follow-up.
+
 ## [3.36.0] — 2026-07-05
 
 **The instant-search release.** The last genuinely slow query path — token

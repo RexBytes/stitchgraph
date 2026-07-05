@@ -96,7 +96,6 @@ file-watching, and a precision/recall eval harness.
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
 | Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
-| `find_chokepoints` memory at scale (4.1 GB peak at 26.8M edges) | S | The articulation symmetrised int lists; keep them as numpy arrays instead of .tolist(). |
 | True incremental reindex (wire `replace_file` to `watch`) | M | `watch` currently full-rebuilds (fast at personal scale). |
 | Persist DENSE-embedder vectors in the similarity sidecar | S | The token path is sidecar-served since v3.36.0 (<0.1 s at 106k nodes); a registered embedder still recomputes per query. |
 

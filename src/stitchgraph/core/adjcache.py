@@ -75,6 +75,17 @@ def current_generation(store: Store) -> str:
     return store.get_meta(_GENERATION_KEY) or "0"
 
 
+def _intarray(arr):
+    """int64 numpy array -> array.array('q'): C-int storage (8 B/entry) with fast
+    Python scalar indexing. `.tolist()` here boxed every edge id — ~28 B/entry,
+    the 4.1 GB find_chokepoints peak at 26.8M edges (scale validation follow-up);
+    this keeps the traversals' speed at ~1/3.5 the memory."""
+    import array
+    out = array.array("q")
+    out.frombytes(arr.astype(_np.int64).tobytes())
+    return out
+
+
 class AdjacencyCache:
     """Read handle over one sidecar directory. Query methods mirror the pure-Python
     `reach` functions exactly (same inputs, same result sets) — pinned by the
@@ -209,9 +220,9 @@ class AdjacencyCache:
         seeds visited in caller order, neighbours in stored-edge order, components
         in reverse-topological completion order, members in stack-pop order. The
         scan differential depends on this parity."""
-        indptr, indices, _ = self._filtered_csr(relations)
-        indptr = indptr.tolist()
-        indices = indices.tolist()
+        indptr_a, indices_a, _ = self._filtered_csr(relations)
+        indptr = _intarray(indptr_a)
+        indices = _intarray(indices_a)
         n = self.n
         index = [-1] * n
         low = [0] * n
@@ -270,16 +281,24 @@ class AdjacencyCache:
         _indptr_f, indices_f, rows = self._filtered_csr(relations, drop_self=True)
         n = self.n
         # symmetrise + dedup via packed 64-bit keys; unique() sorts, giving both the
-        # ascending root order and ascending per-row neighbour order the reference uses
+        # ascending root order and ascending per-row neighbour order the reference
+        # uses. Transients here dominated the op's memory at 26.8M edges (scale
+        # validation follow-up) — free each as soon as its successor exists.
         fwd_keys = rows.astype(_np.int64) * n + indices_f
         rev_keys = indices_f.astype(_np.int64) * n + rows
-        keys = _np.unique(_np.concatenate((fwd_keys, rev_keys)))
+        del indices_f, rows
+        both = _np.concatenate((fwd_keys, rev_keys))
+        del fwd_keys, rev_keys
+        keys = _np.unique(both)
+        del both
         uu = (keys // n).astype(_np.int64)
-        vv = (keys % n).astype(_np.int64)
-        indptr = _np.zeros(n + 1, _np.int64)
-        _np.cumsum(_np.bincount(uu, minlength=n), out=indptr[1:])
-        indptr = indptr.tolist()
-        neigh = vv.tolist()
+        vv = keys % n  # already int64; no copy
+        del keys
+        indptr_a = _np.zeros(n + 1, _np.int64)
+        _np.cumsum(_np.bincount(uu, minlength=n), out=indptr_a[1:])
+        indptr = _intarray(indptr_a)
+        neigh = _intarray(vv)
+        del vv
 
         disc = [-1] * n
         low = [0] * n

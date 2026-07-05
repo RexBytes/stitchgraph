@@ -56,7 +56,7 @@ after that opens the sidecar in milliseconds. Warm anchors on the 16M-edge graph
 |---|---|---|
 | `find_stale` | 2.1 s | reachability is effectively free now (1.8 s even at 26.8M edges / 106k nodes) |
 | `impact_of` | ~30 s | name resolution + rendering dominate |
-| `find_chokepoints` | 59 s | articulation DFS in Python over ints; **memory is its cost** — 4.1 GB peak at 26.8M edges (the symmetrised int lists; recorded follow-up) |
+| `find_chokepoints` | 59 s | articulation DFS in Python over ints; 3.0 GB peak at 26.8M edges (v3.36.1: C-int arrays + transient lifetime fixes; was 4.1 GB) |
 | `orient` (fallback) | <1 s | sidecar bitcount |
 | `scan` | ~5 min | per-candidate SQL shares dominate; scale ≈ linear in flagged candidates |
 | `find_component` / `find_similar` | **<0.1 s/query** warm | similarity sidecar (v3.36.0): one-time build ~5.6 min at 106k nodes, 12 MB on disk; was ~3 min/query |
