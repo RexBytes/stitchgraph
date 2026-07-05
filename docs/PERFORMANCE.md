@@ -24,6 +24,7 @@ Measured anchors:
 | homonym corpus | 1,212 | 8.6M | — | — | 50 MB |
 | Home Assistant 2024.3.3 | 6,728 | 16.0M | 10 GB | **34 min** | 158 MB |
 | megacorpus (HA + sympy + django + 21 pkgs) | 9,080 | **26.8M** | 17 GB | **61.6 min** | 228 MB |
+| Home Assistant 2026-01 repo root (incl. 883 PEP 695 fallback files) | 9,000 | 26.8M | 20.9 GB | **46 min** | 375 MB |
 
 Estimator check on the megacorpus (the first field test of this doc): edges/500k
 predicts 54 min vs 61.6 measured (−12%); 0.65 KB/edge predicts 17.4 GB vs 17
@@ -73,14 +74,16 @@ smaller dimension: seconds below ~2k tests/functions dense; install `[spectral]`
 for the sparse path above that. `audit_graph` ≈ one reachability sweep per test —
 with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph.
 
-Field anchors (HA repo-root index, 30M edges, 2,056 base tests × 3,274 executed
-functions — research/18): `find_modes` 10 s / 513 MB (first op pays the sidecar
-build), `find_gaps` 168 s / 1.1 GB, `feature_map` 7 s, `redundant_tests` 0.8 s,
-`test_order` 10 s, `find_core` 0.9 s, `find_outlier_tests` 6.7 s, `audit_graph`
-23 min / 879 MB (0.67 s per test at 30M edges — matches the budget above).
+Field anchors (HA repo-root index, 20.9 GB / 77.5k nodes, 2,056 base tests ×
+3,274 executed functions — research/18 round 3): `find_modes` ~7 s / 513 MB
+(first op pays the sidecar build), `find_gaps` 84 s / 821 MB, `feature_map`
+7 s, `redundant_tests` 0.8 s, `test_order` 10 s, `find_core` 0.8 s,
+`find_outlier_tests` 6.9 s, `audit_graph` 31.6 min / 994 MB (~0.9 s per test —
+matches the budget above).
 
-**Known-cost op: `find_coupling`** — 979 s and **12.8 GB peak** on the same run.
-Its co-activation pass is coverage-cheap, but the `common_callers` explanation
+**Known-cost op: `find_coupling`** — 251 s / **10.1 GB peak** on that run
+(979 s / 12.8 GB on the earlier 30M-edge over-inflated index). Its
+co-activation pass is coverage-cheap, but the `common_callers` explanation
 loads caller sets per candidate pair against the full edge table. Budget for it
 separately on 10M+-edge graphs, or run it on a subsystem-scoped index.
 
