@@ -100,6 +100,8 @@ file-watching, and a precision/recall eval harness.
 | **Protocol-method resolver** (`with X:` → `__enter__`/`__exit__`, `x[k]=v` → `__setitem__`, operator dunders) | M | The single largest slice of the 0.9% recall tail measured in research/18 (`TemplateContextManager.__exit__` missed by 389 of 2,056 HA tests). Evidence-ranked: re-measure with `audit_graph` after shipping. |
 | getattr-dispatch heuristic (`getattr(self, f"_prefix_{x}")` → `_prefix_*` members) | M | Second slice of the research/18 tail (`_ScriptRun._async_step_*`); cardinal-safe over-approximation by prefix match. |
 | Fixture-aware test rooting (pytest fixture graph) | M | The remaining zero-recall tests in research/18 reach all code through fixtures; rooting test→fixture edges closes them. |
+| Tuple-unpack module constants in `module_consts` | S | `HORIZONTAL, VERTICAL = 1, 2` isn't collected, so imports of such names surface as phantom holes (bulk of Django's find_holes noise — research/19). |
+| Django-template variable resolver (`{{ obj.prop }}` → property reference) | M | Template-boundary false-dead candidates on Django itself (admin inline properties — research/19); same shape as the HTML/JsFetch resolvers. |
 
 ## Known seams (honest)
 
