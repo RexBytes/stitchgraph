@@ -89,6 +89,41 @@ def test_extract_report_separates_skipped_from_rescued(tmp_path):
     assert report["skipped"] == []
 
 
+def test_cross_boundary_calls_stitch_both_directions(tmp_path):
+    """v3.37.1 (research/18 round 2): rescued symbols join the Python extractor's
+    table BEFORE reference resolution, so calls ACROSS the ast/fallback boundary
+    resolve in both directions — v3.37.0 bolted the rescued nodes on afterwards and
+    every cross-boundary call was silently dropped (audit_graph recall collapsed to
+    0.299 on HA because core.py is a rescued file). Also pins: an unresolved name in
+    a rescued file (a builtin like `print`) must NOT surface as a hole."""
+    pytest.importorskip("tree_sitter_language_pack")
+    if _parses_natively():
+        pytest.skip("indexing interpreter parses PEP 695 natively — fallback never fires")
+    (tmp_path / "modern.py").write_text(
+        "type Alias = dict[str, int]\n\n"
+        "def central_hub():\n"
+        "    print('x')\n"
+        "    return legacy_leaf()\n")
+    (tmp_path / "legacy.py").write_text(
+        "import modern\n\n"
+        "def legacy_leaf():\n    return 1\n\n"
+        "def entry():\n"
+        "    return modern.central_hub()\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        from stitchgraph.core.reach import reachable_from
+        reach = reachable_from(store, {"legacy.py::entry"})
+        assert "modern.py::central_hub" in reach      # ast -> fallback resolves
+        assert "legacy.py::legacy_leaf" in reach      # ...and back out again
+        # the rescued module node carries the ast id convention, so imports bind
+        mods = {row[0] for row in store.conn.execute(
+            "SELECT id FROM nodes WHERE kind='Module'")}
+        assert "modern.py::modern" in mods
+        holes = store.conn.execute(
+            "SELECT COUNT(*) FROM edges WHERE dst_id IS NULL").fetchone()[0]
+        assert holes == 0  # print()/builtins never become holes
+
+
 def test_normal_python_never_goes_through_treesitter(tmp_path):
     """.py is deliberately absent from EXT_LANG: the stdlib-ast extractor owns Python,
     and the tree-sitter grammar sees only explicit fallback files — otherwise every

@@ -74,7 +74,8 @@ def extract_project(root: str | Path,
                     ignore: list[str] | None = None, *,
                     cache_asts: bool = True,
                     edge_sink: object = None,
-                    skip_sink: list[tuple[str, str]] | None = None) -> tuple[list[Node], list[Edge]]:
+                    skip_sink: list[tuple[str, str]] | None = None,
+                    fallback: object = None) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
@@ -110,6 +111,7 @@ def extract_project(root: str | Path,
 
     parsed: dict[str, ast.Module] | None = {} if cache_asts else None
     ok_files: list[tuple[str, Path]] = []  # (rel, path) of files whose defs were collected
+    syntax_failed: list[str] = []  # rels ast.parse REJECTED (syntax newer than interpreter)
     for path in files:
         rel = path.relative_to(proj.root).as_posix()
         try:
@@ -127,6 +129,8 @@ def extract_project(root: str | Path,
             # tree-sitter Python fallback.
             if skip_sink is not None:
                 skip_sink.append((rel, type(exc).__name__))
+            if isinstance(exc, SyntaxError):
+                syntax_failed.append(rel)
             if parsed is not None:
                 parsed.pop(rel, None)
             continue
@@ -136,10 +140,44 @@ def extract_project(root: str | Path,
         # streaming (cache_asts=False): `tree` falls out of scope here and is freed, so the
         # ASTs are never all co-resident; pass 2 re-parses each ok_file below.
 
+    # Python-fallback stitching (research/18 round 2 — v3.37.1): a file ast.parse
+    # rejected (syntax newer than this interpreter) is re-extracted by the caller's
+    # `fallback` hook (the tree-sitter Python grammar). Its NODES must join the
+    # symbol table BEFORE `_index`, or every cross-boundary reference is invisible:
+    # v3.37.0 bolted the rescued files on AFTER this extractor finished, so a call
+    # from a normal file into a rescued one resolved against nothing and was
+    # DROPPED (not even a hole — `_ref_edges` drops unknown names as unreliable).
+    # On Home Assistant the rescued files include core.py — the hub everything
+    # calls through — and audit_graph recall collapsed from 0.975 to 0.299. With
+    # the nodes indexed here, attribute calls, receiver calls, imports and homonym
+    # widening all resolve into rescued files through the ordinary rules.
+    fallback_edges: list[Edge] = []
+    if syntax_failed and fallback is not None:
+        fnodes, fallback_edges = fallback(sorted(syntax_failed))  # type: ignore[operator]
+        proj.nodes.extend(fnodes)
+
     _index(proj)
     _apply_entrypoint_roles(proj)
     _apply_script_roles(proj)
     _seed_entrypoint_classes(proj)
+
+    # The rescued files' own edges: keep tree-sitter's in-bucket resolutions, but
+    # re-resolve its HOLES (calls/references/inherits into code it couldn't see)
+    # against the now-complete symbol table via the standard name-based rules
+    # (INFERRED single candidate / AMBIGUOUS homonym fan-out). A name still
+    # unknown stays a hole — find_holes semantics unchanged.
+    for e in fallback_edges:
+        if e.dst_id is None and e.dst_symbol and e.relation in (
+                Relation.CALLS, Relation.REFERENCES, Relation.INHERITS):
+            loc = e.location.rsplit(":", 2)
+            e_rel = loc[0] if len(loc) == 3 else e.src.split("::", 1)[0]
+            line = int(loc[1]) if len(loc) == 3 and loc[1].isdigit() else 0
+            # Resolves through the standard rules or is DROPPED — an unknown name
+            # here is a builtin/stdlib/external call, and both extractors' contract
+            # is that such call holes are unreliable and never emitted.
+            _ref_edges(proj, e.src, e.dst_symbol, e.relation, e_rel, line, is_method=True)
+        else:
+            proj.edges.append(e)
 
     def _drain() -> None:
         # Streaming: push accumulated edges to the sink and free them, tee-ing the INHERITS

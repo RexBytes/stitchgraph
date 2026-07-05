@@ -523,10 +523,11 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
 - **Concern:** `ast.parse` cannot read syntax newer than the running interpreter
   (PEP 695 `type X = ...` / `def f[T]()` under 3.11), so such files fall back to
   the tree-sitter Python grammar: defs/calls/imports/test-roles on the standard
-  id/kind conventions, but no decorator semantics, no `__all__`/entry-point
-  roles, no PDG/body matrix, no jedi precision — and the module node is named by
-  file stem, not dotted qualname. Without tree-sitter installed the file is
-  skipped outright (named in `skipped_files` + a review reason — never silent).
+  id/kind conventions, stitched into cross-file resolution in both directions
+  (v3.37.1) — but no decorator semantics, no `__all__`/entry-point roles, no
+  PDG/body matrix, no jedi precision, and cross-boundary bindings are name-based
+  (INFERRED/AMBIGUOUS, never EXTRACTED). Without tree-sitter installed the file
+  is skipped outright (named in `skipped_files` + a review reason — never silent).
 - **Decision:** structural extraction beats absence (the 2026-07-05 Home
   Assistant run lost 10% of the codebase — half its test-executed functions —
   to silent skips; `research/18`), but full fidelity needs the real parser.

@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.37.1] — 2026-07-05
+
+### Fixed
+- **Python-fallback files are now stitched into reference resolution** (research/18
+  round 2). v3.37.0's fallback bolted the rescued files onto the graph AFTER the
+  Python extractor finished, so a call from a normal file into a rescued one
+  resolved against nothing and was silently dropped — on Home Assistant the
+  rescued files include `core.py` (the hub everything calls through) and
+  audit_graph recall collapsed from 0.975 to 0.299 the moment the denominator
+  became honest. Now the rescued symbols join the extractor's table BEFORE its
+  reference pass (module nodes re-ided to the dotted-qualname convention so
+  imports bind), and the rescued files' own unresolved references re-resolve
+  against the full table through the standard name-based rules (INFERRED single /
+  AMBIGUOUS homonym fan-out; still-unknown names are dropped as call holes are,
+  never leaked as phantom holes). Cross-boundary reachability works in both
+  directions.
+
 ## [3.37.0] — 2026-07-05
 
 **The honest-indexer release.** The first real-coverage POD field run
