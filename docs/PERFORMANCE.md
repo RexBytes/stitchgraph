@@ -59,11 +59,11 @@ after that opens the sidecar in milliseconds. Warm anchors on the 16M-edge graph
 | `find_chokepoints` | 59 s | articulation DFS in Python over ints; **memory is its cost** — 4.1 GB peak at 26.8M edges (the symmetrised int lists; recorded follow-up) |
 | `orient` (fallback) | <1 s | sidecar bitcount |
 | `scan` | ~5 min | per-candidate SQL shares dominate; scale ≈ linear in flagged candidates |
-| `find_component` / `find_similar` | ~3 min/query | O(nodes) token scan — the recorded gap; a prebuilt embedder index is the fix |
+| `find_component` / `find_similar` | **<0.1 s/query** warm | similarity sidecar (v3.36.0): one-time build ~5.6 min at 106k nodes, 12 MB on disk; was ~3 min/query |
 
-Rule of thumb: reachability-shaped questions are interactive at any measured
-scale; `scan` is a coffee break at 16M edges; token-similarity search is the one
-op that is genuinely slow on huge graphs.
+Rule of thumb: reachability-shaped questions AND token-similarity search are
+interactive at any measured scale (both sidecar-served since v3.36.0); `scan` is
+a coffee break at 16M edges.
 
 ## POD / coverage ops
 

@@ -27,6 +27,9 @@ ignore = [
 # stale, always safe to delete. Needs numpy; without it the sweeps use their
 # pure-Python paths. Disable for read-only index locations.
 adjacency_cache = true
+# Token-vector sidecar (<db>.simcache/) for find_similar/find_component — same
+# contract (lazy, generation-gated, delete-safe). <0.1 s queries at 100k nodes.
+similarity_cache = true
 
 [review]
 threshold = 0.80            # results below this confidence are flagged needs_review

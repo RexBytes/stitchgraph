@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.36.0] — 2026-07-05
+
+**The instant-search release.** The last genuinely slow query path — token
+similarity — becomes sidecar-served. Notes: `docs/RELEASE_NOTES_v3.36.0.md`.
+
+### Added
+- **Similarity sidecar** (`<db>.simcache/`, `core/simcache.py`): the token path of
+  `find_similar`/`find_component` re-materialised every CALLS edge *per query*
+  (26.8M Edge objects ≈ 3 min/query on the 106k-node field corpus). The sidecar
+  bakes it once — an exact-vocabulary sparse TF matrix (CSR, L2-normalised rows,
+  callee tokens baked in) — and a query becomes one CSR·vector product. Measured
+  on the 106k-node megacorpus: **<0.1 s warm** (was ~3 min, >1000×), identical
+  results, one-time build 335 s, **12 MB** beside the 17 GB index. Inherits every
+  adjacency-sidecar contract: generation-gated staleness, lazy build, numpy-gated,
+  `[index] similarity_cache = false` / `--pure` opt-outs, delete-safe. The
+  dense-embedder path bypasses it (persisting embeddings: recorded follow-up).
+
 ## [3.35.0] — 2026-07-05
 
 **The contract-resolvers release.** The service boundary gets spec-first coverage;
