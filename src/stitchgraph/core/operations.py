@@ -12,6 +12,8 @@ only read the index, never mutate source (design §4 read-only invariant).
 from __future__ import annotations
 
 import inspect
+import sqlite3
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -2013,8 +2015,9 @@ def reindex(store: Store, path: str, precise: bool = False,
     if streaming:
         return _reindex_streaming(store, path, abs_root, load_config(path).ignore, resolvers)
 
+    xreport: dict = {}
     nodes, edges = extract_project(path, ignore=load_config(path).ignore,
-                                   cache_asts=not streaming)
+                                   cache_asts=not streaming, report=xreport)
     # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
     # optional jedi precision pass.
     nodes, edges = run_resolvers(path, nodes, edges, resolvers)
@@ -2036,8 +2039,34 @@ def reindex(store: Store, path: str, precise: bool = False,
     store.bump_generation()
     store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
-    return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
-              files=len(files), nodes=store.node_count())
+    res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
+             files=len(files), nodes=store.node_count())
+    _annotate_extraction_gaps(res, xreport)
+    return res
+
+
+def _annotate_extraction_gaps(res: Result, xreport: dict) -> None:
+    """Surface extraction gaps on the reindex Result — a file missing from the graph
+    must NEVER be silent (research/18 bug 1: 880 PEP 695 files — 10% of Home Assistant,
+    half its test-executed functions — vanished without a count, a warning, or a meta
+    key; every downstream answer quietly excluded them). `skipped` files are absent
+    from the graph: name them and flag review. `fallback` files were rescued by the
+    tree-sitter Python grammar at structural fidelity — a count, not a review flag."""
+    skipped = xreport.get("skipped") or []
+    fallback = xreport.get("fallback") or []
+    if fallback:
+        res.meta["python_fallback_files"] = len(fallback)
+    if skipped:
+        res.meta["skipped_files"] = len(skipped)
+        shown = ", ".join(f"{rel} ({why})" for rel, why in skipped[:5])
+        more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+        res.needs_review = True
+        res.add_reason(
+            f"{len(skipped)} file(s) could not be parsed and are MISSING from the graph: "
+            f"{shown}{more}. A SyntaxError under an interpreter older than the code's "
+            f"syntax level is the common cause — reindex with a newer Python or install "
+            f"tree-sitter for the fallback grammar. Every answer from this index silently "
+            f"excludes these files.")
 
 
 _EDGE_INSERT_SQL = (
@@ -2198,7 +2227,9 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     sink = _StoreEdgeSink(store)
     try:
         # Pass 1/2: nodes resident, edges streamed (deduped per-source, committed in batches).
-        nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink)
+        xreport: dict = {}
+        nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink,
+                                   report=xreport)
         # Resolvers enrich from the node list + source only; their (few) extra edges stream to
         # the store after the extractor's, preserving the full path's append order.
         nodes, res_edges = run_resolvers(path, nodes, [], resolvers)
@@ -2240,7 +2271,18 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         store._propagate_overrides()
     with store.conn:
         store._dedup_resolved_edges()
-        store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
+    # OWN transaction, tolerated on failure: on the 2026-07-05 HA run a disk-full
+    # during this DROP rolled back the whole enclosing transaction — dedup included —
+    # and aborted before ANALYZE / generation / root meta, leaving a silently
+    # duplicate-edged index (research/18 bug 3). A leftover temp index only costs
+    # disk; a lost dedup + missing endgame costs correctness of degree metrics.
+    try:
+        with store.conn:
+            store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
+    except sqlite3.OperationalError as exc:
+        warnings.warn(f"could not drop the temporary dedup index ({exc}); the index is "
+                      f"correct but larger on disk until the next reindex",
+                      RuntimeWarning, stacklevel=2)
 
     store.analyze()
     store.bump_generation()
@@ -2249,8 +2291,10 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,
     # an O(holes) allocation this path exists to avoid.
     holes = store.unresolved_count()
-    return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
-              files=len(files), nodes=store.node_count())
+    res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
+             files=len(files), nodes=store.node_count())
+    _annotate_extraction_gaps(res, xreport)
+    return res
 
 
 # --------------------------------------------------------------------------

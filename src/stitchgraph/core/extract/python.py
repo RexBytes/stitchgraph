@@ -73,7 +73,8 @@ _PLAIN_BASES = {
 def extract_project(root: str | Path,
                     ignore: list[str] | None = None, *,
                     cache_asts: bool = True,
-                    edge_sink: object = None) -> tuple[list[Node], list[Edge]]:
+                    edge_sink: object = None,
+                    skip_sink: list[tuple[str, str]] | None = None) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
@@ -114,12 +115,18 @@ def extract_project(root: str | Path,
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             _collect_defs(proj, rel, path, tree)
-        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError) as exc:
             # Skip the one file, never abort the whole reindex (panel DDD/OOO).
             # OSError: a broken symlink / unreadable file (submodules, races).
             # RecursionError: a pathologically deep AST — a huge flat expression
             # (generated SQL/HTML/string builders) overflows ast.parse or the walk;
             # one bad file must not leave the entire DB empty.
+            # But NEVER skip silently (research/18 bug 1: 880 PEP 695 files — 10% of
+            # Home Assistant — vanished with no signal): report every skip to the
+            # caller so it can surface the gap and/or hand SyntaxError files to the
+            # tree-sitter Python fallback.
+            if skip_sink is not None:
+                skip_sink.append((rel, type(exc).__name__))
             if parsed is not None:
                 parsed.pop(rel, None)
             continue
@@ -1843,10 +1850,8 @@ def _wanted(path: Path, root: Path) -> bool:
 
 
 def _ignored(path: Path, root: Path, ignore: list[str] | None) -> bool:
-    if not ignore:
-        return False
-    rel = path.relative_to(root)
-    # Skip empty patterns: PurePath.match("") raises ValueError("empty pattern"), so a
-    # hand-edited stitchgraph.toml with `ignore = [""]` (or a direct extract_project call)
-    # would crash reindex with a raw traceback instead of returning a Result (panel R33B).
-    return any(rel.match(pattern) for pattern in ignore if pattern)
+    # Root-anchored gitignore-style semantics live in core/globs.py — PurePath.match's
+    # right-anchored, non-recursive-** behaviour mis-ignored in BOTH directions on the
+    # 2026-07-05 Home Assistant field run (research/18 bug 2).
+    from ..globs import ignored
+    return ignored(path.relative_to(root), ignore)

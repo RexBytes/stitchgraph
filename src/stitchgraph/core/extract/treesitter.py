@@ -238,6 +238,22 @@ SPECS: dict[str, LangSpec] = {
         imports=frozenset({"namespace_use_declaration"}),
         callable_strings=True,  # `[$this, 'm']` / `[self::class, 'm']` array callables
     ),
+    # FALLBACK ONLY — deliberately absent from EXT_LANG, so a normal reindex never
+    # tree-sitter-parses .py (the stdlib-ast extractor owns Python). Used solely for
+    # files ast.parse REJECTS because their syntax is newer than the indexing
+    # interpreter (PEP 695 `type X = ...` / `def f[T]()` under 3.11, PEP 701 f-strings
+    # under 3.11): the 2026-07-05 Home Assistant field run silently dropped 880 such
+    # files — 10% of the codebase, half the test-executed functions (research/18
+    # bug 1). The tree-sitter grammar tracks current Python syntax independently of
+    # the running interpreter, so these files degrade to structural extraction
+    # (defs/calls/inherits/imports) instead of vanishing. Methods are re-kinded
+    # M in _collect (function_definition is the same node type at class scope).
+    "python": LangSpec(
+        defs={"function_definition": F, "class_definition": C},
+        call_types={"call": "function"},
+        heritage=frozenset({"argument_list"}),  # class_definition's superclasses field
+        imports=frozenset({"import_statement", "import_from_statement"}),
+    ),
 }
 EXT_LANG = {
     ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
@@ -329,7 +345,8 @@ def _precompute_def(body, src, lang) -> _DefInfo:
 
 
 def extract(root: str | Path, ignore: list[str] | None = None, *,
-            cache_trees: bool = True, edge_sink: Any = None) -> tuple[list[Node], list[Edge]]:
+            cache_trees: bool = True, edge_sink: Any = None,
+            py_fallback_files: list[Path] | None = None) -> tuple[list[Node], list[Edge]]:
     # `cache_trees=False` is the streaming (lower-peak-memory) mode: each file's parse tree
     # and source are dropped after pass 1 (its defs' body refs are swapped for precomputed
     # `_DefInfo` records), so peak memory tracks symbol count, not total parse-tree size.
@@ -366,9 +383,15 @@ def extract(root: str | Path, ignore: list[str] | None = None, *,
                  if p.suffix in EXT_LANG and p.is_file() and _wanted(p, root, ignore)]
     except OSError:
         files = []  # unwalkable root (over-long path / permission) -> empty, not a crash
+    # Python files the stdlib-ast extractor could not parse (syntax newer than the
+    # running interpreter — research/18 bug 1). Their `.py` suffix is NOT in EXT_LANG,
+    # so they only ever arrive through this explicit list; the caller (the package
+    # dispatcher) has already applied SKIP_DIRS + ignore globs to them.
+    py_fallback = frozenset(py_fallback_files or ())
+    files += sorted(py_fallback)
     grammar_failed: dict[str, int] = {}  # lang -> files skipped (grammar unavailable)
     for path in files:
-        lang = EXT_LANG[path.suffix]
+        lang = "python" if path in py_fallback else EXT_LANG[path.suffix]
         if path.suffix == ".h":
             lang = _header_lang(path)  # .h is C or C++; the C grammar mis-parses C++ classes
         if lang not in SPECS:
@@ -1415,6 +1438,17 @@ def _collect(node, src, rel, spec, lang, parent, nodes, defs, inherits, exported
             if dyn_key:
                 roles.add("callback")
             kind = spec.defs[t]
+            # Python (fallback files only): function_definition is one node type at
+            # every scope, so re-kind class-body defs as METHOD to match the stdlib-ast
+            # extractor's kinds for the same code. Parent chain: function_definition
+            # (possibly wrapped in decorated_definition) -> block -> class_definition.
+            if lang == "python" and kind is F:
+                _p = child.parent
+                if _p is not None and _p.type == "decorated_definition":
+                    _p = _p.parent
+                if _p is not None and _p.type == "block" and _p.parent is not None \
+                        and _p.parent.type == "class_definition":
+                    kind = M
             cid = f"{rel}::{qual}"
             nodes.append(Node(id=cid, kind=kind, name=name, location=_loc(rel, child),
                               end_line=child.end_point[0] + 1, roles=frozenset(roles)))
@@ -3074,8 +3108,10 @@ def _wanted(path, root, ignore):
     rel = path.relative_to(root)
     if any(p in _SKIP for p in rel.parts):
         return False
-    # Skip empty patterns: rel.match("") raises ValueError("empty pattern") (panel R33B).
-    return not (ignore and any(rel.match(pat) for pat in ignore if pat))
+    # Root-anchored gitignore-style semantics — shared with the Python extractor
+    # (core/globs.py; research/18 bug 2).
+    from ..globs import ignored
+    return not ignored(rel, ignore)
 
 
 def grammar_status() -> tuple[bool, list[tuple[str, bool, str]]]:

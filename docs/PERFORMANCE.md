@@ -73,6 +73,17 @@ smaller dimension: seconds below ~2k tests/functions dense; install `[spectral]`
 for the sparse path above that. `audit_graph` ≈ one reachability sweep per test —
 with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph.
 
+Field anchors (HA repo-root index, 30M edges, 2,056 base tests × 3,274 executed
+functions — research/18): `find_modes` 10 s / 513 MB (first op pays the sidecar
+build), `find_gaps` 168 s / 1.1 GB, `feature_map` 7 s, `redundant_tests` 0.8 s,
+`test_order` 10 s, `find_core` 0.9 s, `find_outlier_tests` 6.7 s, `audit_graph`
+23 min / 879 MB (0.67 s per test at 30M edges — matches the budget above).
+
+**Known-cost op: `find_coupling`** — 979 s and **12.8 GB peak** on the same run.
+Its co-activation pass is coverage-cheap, but the `common_callers` explanation
+loads caller sets per candidate pair against the full edge table. Budget for it
+separately on 10M+-edge graphs, or run it on a subsystem-scoped index.
+
 ## When an estimate misses badly, suspect (in order)
 
 1. **Near-duplicate trees in one indexed root** — N copies of similar code make

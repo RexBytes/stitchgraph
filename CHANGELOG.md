@@ -4,6 +4,46 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.37.0] — 2026-07-05
+
+**The honest-indexer release.** The first real-coverage POD field run
+(Home Assistant helpers suite vs a repo-root index — `research/18`) turned
+`audit_graph` on the indexer itself and caught three bugs. All three fixed.
+
+### Fixed
+- **Ignore globs are now root-anchored gitignore-style** (`core/globs.py`,
+  shared by both extractors). The old `PurePath.match` semantics were wrong in
+  both directions: right-anchored (`script/**` also swallowed any nested
+  `**/script/*` — 6 Home Assistant files wrongly dropped) and, before Python
+  3.13, `**` matched a single segment (`tests/components/**` ignored nothing
+  below one level — 6,627 files wrongly indexed, inflating the index to 23 GB).
+  Now: patterns with `/` anchor at the indexed root, `**` is recursive, `*`/`?`
+  never cross a segment, a bare name still matches a basename/dir anywhere, and
+  a directory match covers its subtree. **Migration:** a pattern relying on
+  right-anchoring (`vendor/*` meaning "any vendor dir") becomes `**/vendor/*`.
+- **A file the extractor cannot parse is never skipped silently** (research/18
+  bug 1: 880 PEP 695 files — 10% of Home Assistant, *half its test-executed
+  functions* — vanished with no signal). Every skip is now counted and named on
+  the reindex Result (`skipped_files` meta + a review reason); nothing missing
+  from the graph goes unreported.
+- **Streaming reindex endgame survives a failing cleanup**: on the field run a
+  disk-full during the final `DROP INDEX` rolled back the enclosing transaction
+  — edge-dedup included — and skipped ANALYZE/generation/root-meta, leaving a
+  silently duplicate-edged index. The dedup now commits in its own transaction
+  and a failed temp-index drop degrades to a warning (disk cost, never a
+  correctness cost).
+
+### Added
+- **tree-sitter Python fallback for newer-than-interpreter syntax**: a `.py`
+  file whose syntax the indexing interpreter's `ast` rejects (PEP 695
+  `type X = ...` / `def f[T]()` under 3.11, PEP 701 f-strings) is re-parsed with
+  the tree-sitter Python grammar — which tracks current syntax independently of
+  the running interpreter — and extracted at structural fidelity on the same
+  id/kind conventions (module/class/METHOD re-kinding, call edges, imports,
+  test roles). Rescued files are counted in `python_fallback_files` meta.
+  `.py` stays out of the tree-sitter extension map: the stdlib-ast extractor
+  owns Python; the grammar sees only the explicit fallback list.
+
 ## [3.36.2] — 2026-07-05
 
 ### Fixed
