@@ -68,6 +68,8 @@ spec and section references.
 | Cross-language | SQL resolver (sqlglot → table, READS/WRITES) | ✅ Done | query string literals |
 | Cross-language | ORM resolver (model → table/column, MAPS_TO) | ✅ Done | SQLAlchemy/Django; converges with SQL |
 | Cross-language | Full-stack trace (form/JS → route → handler → table) | ✅ Done | the "gem", end to end |
+| Cross-language | **OpenAPI/Swagger + gRPC proto contract resolvers** | ✅ Done | spec/proto → ROUTE nodes + handler/Servicer binding (v3.35.0) |
+| Cross-language | **Prisma + TypeORM** ORM resolvers | ✅ Done | schema.prisma / @Entity → DBTable MAPS_TO (v3.35.0) |
 | **Data flow** | Data-loop detection (🟡) | ✅ Done | mutable-global feedback; surfaced in `scan` |
 | **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`ingest_trace`) | ✅ Done | coverage.json → live seeds, +confidence |
@@ -92,8 +94,6 @@ file-watching, and a precision/recall eval harness.
 |---|---|---|
 | **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. |
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
-| gRPC/proto & OpenAPI contract resolvers | M | More service-boundary tracing. |
-| More ORMs (Prisma, TypeORM, …) and frameworks | M | Additive resolvers. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
 | Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
 | `find_chokepoints` memory at scale (4.1 GB peak at 26.8M edges) | S | The articulation symmetrised int lists; keep them as numpy arrays instead of .tolist(). |

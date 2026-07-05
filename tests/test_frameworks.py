@@ -75,3 +75,73 @@ def test_callback_methods_not_dead(tmp_path):
         sg.reindex(store, str(tmp_path))
         stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
         assert "MyParser.handle_starttag" not in stale
+
+
+def test_openapi_spec_routes_and_handlers(tmp_path):
+    """v3.35.0: an OpenAPI spec is a routing table — paths become ROUTE nodes on the
+    code-first id convention, operationId links the handler, and the spec-wired
+    handler stops being dead. YAML and JSON both."""
+    (tmp_path / "openapi.yaml").write_text(
+        "openapi: 3.0.0\n"
+        "paths:\n"
+        "  /users:\n"
+        "    get:\n"
+        "      operationId: list_users\n"
+        "  /users/{id}:\n"
+        "    delete: {}\n")  # no operationId -> route node only, no edge
+    (tmp_path / "api.json").write_text(
+        '{"swagger": "2.0", "paths": {"/ping": {"get": {"operationId": "ping"}}}}')
+    (tmp_path / "handlers.py").write_text(
+        "def list_users():\n    return fetch_all()\n\n"
+        "def fetch_all():\n    return []\n\n"
+        "def ping():\n    return 'pong'\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert {"GET /users", "DELETE /users/{id}", "GET /ping"} <= _routes(store)
+        rt = _routes_to(store)
+        assert ("route:GET /users", "list_users") in rt
+        assert ("route:GET /ping", "ping") in rt
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "list_users" not in stale and "fetch_all" not in stale
+
+
+def test_grpc_proto_binds_servicer(tmp_path):
+    """v3.35.0: rpc definitions become ROUTE nodes bound to the conventional
+    Servicer implementation, so servicer methods stop surfacing as dead code."""
+    (tmp_path / "greeter.proto").write_text(
+        'syntax = "proto3";\n'
+        "service Greeter {\n"
+        "  rpc SayHello (HelloRequest) returns (HelloReply);\n"
+        "  rpc SayGoodbye (HelloRequest) returns (HelloReply);\n"
+        "}\n"
+        "message HelloRequest { string name = 1; }\n")
+    (tmp_path / "server.py").write_text(
+        "class GreeterServicer:\n"
+        "    def SayHello(self, request, context):\n"
+        "        return make_reply()\n\n"
+        "def make_reply():\n    return 1\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        assert {"rpc Greeter.SayHello", "rpc Greeter.SayGoodbye"} <= _routes(store)
+        assert ("rpc:Greeter.SayHello", "GreeterServicer.SayHello") in _routes_to(store)
+        stale = {c["id"].split("::")[-1] for c in sg.find_stale(store).result}
+        assert "GreeterServicer.SayHello" not in stale
+        assert "make_reply" not in stale  # reached THROUGH the rpc root
+
+
+def test_prisma_and_typeorm_map_tables(tmp_path):
+    pytest.importorskip("tree_sitter_language_pack")
+    (tmp_path / "schema.prisma").write_text(
+        "model User {\n  id Int @id\n  @@map(\"users\")\n}\n"
+        "model Post {\n  id Int @id\n}\n")
+    (tmp_path / "user.py").write_text("class User:\n    pass\n")
+    (tmp_path / "photo.ts").write_text(
+        "@Entity()\nexport class Photo {\n  render() { return 1 }\n}\n")
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        tables = {n.id for n in store.nodes_by_kind(NodeKind.DB_TABLE)}
+        assert {"db::users", "db::Post", "db::Photo"} <= tables
+        maps = {(e.src.split("::")[-1], e.dst_id)
+                for e in store.resolved_edges(Relation.MAPS_TO)}
+        assert ("User", "db::users") in maps      # prisma @@map + same-named class
+        assert ("Photo", "db::Photo") in maps     # typeorm @Entity class node

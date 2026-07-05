@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "stitchgraph"
-version = "3.34.0"
+version = "3.35.0"
 description = "Local-first, MCP-native code-intelligence: dead code, holes, orientation, impact — ranked by what's live, every answer carrying confidence."
 readme = "README.md"
 license = "MIT"
@@ -40,6 +40,7 @@ dependencies = [
   "numpy>=1.24",
   "python-graphblas>=2023.0",
   "scipy>=1.10",
+  "pyyaml>=6.0",   # OpenAPI YAML specs (guarded import; JSON specs work without)
 ]
 
 [project.optional-dependencies]

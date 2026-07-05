@@ -4,6 +4,32 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.35.0] — 2026-07-05
+
+**The contract-resolvers release.** The service boundary gets spec-first coverage;
+the ORM family gains its JS/TS twins. Closes the two remaining "additive resolvers"
+roadmap rows.
+
+### Added
+- **OpenAPI/Swagger resolver**: spec files (`openapi`/`swagger` + `paths`; JSON via
+  stdlib, YAML via pyyaml — guarded import, YAML skipped without it) become ROUTE
+  nodes on the code-first id convention, so `<form action>` and JS `fetch` links
+  converge on them; `operationId` links the same-named handler(s) — spec-wired
+  handlers stop being flagged dead. No operationId → the route node still roots the
+  path; several candidates → AMBIGUOUS edges, recorded.
+- **gRPC proto resolver**: `rpc` definitions in `.proto` services become ROUTE nodes
+  (`{rel}::rpc:{Service}.{Method}`) bound to conventional implementations
+  (`{Service}Servicer`/`Base`/`Impl` methods) — servicer methods, which nothing in
+  the static call graph calls, stop surfacing as dead code. Deliberately small
+  regex/brace parse; no protobuf dependency.
+- **Prisma resolver**: `schema.prisma` models → `db::<table>` DBTable nodes
+  (honouring `@@map`), MAPS_TO from same-named hand-written domain classes.
+- **TypeORM resolver**: `@Entity()`/`@Entity("name")` classes in TS/TSX → MAPS_TO
+  onto `db::<table>`, converging with the SQL resolver's table keys (byte-gated
+  text pass; the class node itself comes from the tree-sitter extractor).
+- pyyaml joins the default (full-power) install; the lean `--no-deps` story is
+  unchanged.
+
 ## [3.34.0] — 2026-07-04
 
 **The import-completeness release.** The last ⬜ cells in the language matrix's
