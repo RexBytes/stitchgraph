@@ -1131,6 +1131,7 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
     _walk_scope(proj, rel, tree, parent="", class_qual=None)
     _module_scope_edges(proj, rel, tree, mod_id)
     _global_state(proj, rel, tree)
+    _instance_state(proj, rel, tree)
 
 
 def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str) -> None:
@@ -1309,6 +1310,92 @@ def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,
                                    location=f"{rel}:{line}:0", source="ast"))
+
+
+def _instance_state(proj: _Project, rel: str, tree: ast.Module) -> None:
+    """Instance/class-attribute data loops (research/22 deliverable 2): methods
+    of ONE class reading and writing the same `self.<attr>` form the classic
+    non-global feedback shape (a worker that appends to `self.queue` and a
+    drain method that consumes it and re-triggers the worker). Emits
+    `var::<rel>::<Class>.<attr>` VARIABLE nodes with WRITES from methods that
+    assign or in-place-mutate the attribute and READS from methods that load
+    it — `self` receivers only (no alias chasing), class-scoped ids (never
+    cross-class), and a node only when some method WRITES and another reads
+    (a write-only or read-only attribute is not feedback state). Advisory as
+    ever: READS/WRITES stay outside liveness."""
+
+    def scan_class(cls: ast.ClassDef, class_qual: str) -> None:
+        per_method: list[tuple[str, int, set[str], set[str]]] = []
+        for stmt in cls.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            mid = Node.make_id(rel, f"{class_qual}.{stmt.name}")
+            writes: set[str] = set()
+            reads: set[str] = set()
+            receivers: set[int] = set()
+            for child in _direct_nodes(stmt):
+                # self.attr = ... / self.attr[k] = ... / del self.attr[k]
+                if (isinstance(child, (ast.Attribute, ast.Subscript))
+                        and isinstance(child.ctx, (ast.Store, ast.Del))):
+                    n: ast.AST = child
+                    while isinstance(n, ast.Subscript):
+                        n = n.value
+                    if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                            and n.value.id == "self"):
+                        writes.add(n.attr)
+                        receivers.add(id(n))
+                # self.attr.append(...) — in-place mutation via the allowlist
+                elif (isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr in _MUTATING_METHODS
+                        and isinstance(child.func.value, ast.Attribute)
+                        and isinstance(child.func.value.value, ast.Name)
+                        and child.func.value.value.id == "self"):
+                    writes.add(child.func.value.attr)
+                    receivers.add(id(child.func.value))
+            for child in _direct_nodes(stmt):
+                if (isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load)
+                        and isinstance(child.value, ast.Name) and child.value.id == "self"
+                        and id(child) not in receivers):
+                    reads.add(child.attr)
+            if writes or reads:
+                per_method.append((mid, stmt.lineno, writes, reads))
+        written = {a for _, _, w, _ in per_method for a in w}
+        read = {a for _, _, _, r in per_method for a in r}
+        # __init__'s seeding write alone is not feedback; require a writer AND a
+        # reader among the methods (they may be the same method — that IS a loop).
+        feedback = written & read
+        for attr in sorted(feedback):
+            proj.nodes.append(Node(
+                id=f"var::{rel}::{class_qual}.{attr}", kind=NodeKind.VARIABLE,
+                name=f"{class_qual}.{attr}", location=f"{rel}:{cls.lineno}:0"))
+        for mid, line, writes, reads in per_method:
+            for attr in sorted(writes & feedback):
+                proj.edges.append(Edge(
+                    src=mid, relation=Relation.WRITES, dst_symbol=attr,
+                    dst_id=f"var::{rel}::{class_qual}.{attr}", weight=1.0,
+                    provenance=Provenance.EXTRACTED,
+                    location=f"{rel}:{line}:0", source="ast"))
+            for attr in sorted(reads & feedback):
+                proj.edges.append(Edge(
+                    src=mid, relation=Relation.READS, dst_symbol=attr,
+                    dst_id=f"var::{rel}::{class_qual}.{attr}", weight=1.0,
+                    provenance=Provenance.EXTRACTED,
+                    location=f"{rel}:{line}:0", source="ast"))
+
+    def walk(node: ast.AST, parent: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                qual = f"{parent}.{child.name}" if parent else child.name
+                scan_class(child, qual)
+                walk(child, qual)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qual = f"{parent}.{child.name}" if parent else child.name
+                walk(child, qual)
+            else:
+                walk(child, parent)  # control-flow blocks aren't a scope
+
+    walk(tree, "")
 
 
 def _iter_funcs(tree: ast.Module, rel: str):

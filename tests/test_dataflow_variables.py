@@ -139,6 +139,73 @@ def test_declared_global_slice_unchanged(tmp_path):
     store.close()
 
 
+def test_instance_attribute_loop_detected(tmp_path):
+    """research/22 deliverable 2: methods of one class reading and writing the
+    same self.attr — the classic non-global feedback shape."""
+    store = _index(tmp_path, {"worker.py": """
+        class Worker:
+            def __init__(self):
+                self.queue = []
+
+            def enqueue(self, item):
+                self.queue.append(item)
+
+            def drain(self):
+                while self.queue:
+                    item = self.queue.pop()
+                    if needs_retry(item):
+                        self.enqueue(item)
+
+        def needs_retry(item):
+            return False
+    """})
+    vid = "var::worker.py::Worker.queue"
+    assert vid in _var_ids(store)
+    loops = find_data_loops(store)
+    assert any(vid in comp for comp in loops), loops
+    store.close()
+
+
+def test_write_only_attribute_emits_nothing(tmp_path):
+    """__init__ seeding + a setter with no reader is not feedback state."""
+    store = _index(tmp_path, {"m.py": """
+        class Box:
+            def __init__(self):
+                self.value = None
+
+            def set(self, v):
+                self.value = v
+    """})
+    assert not any(v.startswith("var::m.py::Box.") for v in _var_ids(store))
+    store.close()
+
+
+def test_attribute_ids_are_class_scoped(tmp_path):
+    """Two classes with the same attribute name must never share a var node."""
+    store = _index(tmp_path, {"m.py": """
+        class A:
+            def put(self, x):
+                self.buf = x
+
+            def get(self):
+                return self.buf
+
+        class B:
+            def put(self, x):
+                self.buf = x
+
+            def get(self):
+                return self.buf
+    """})
+    vids = _var_ids(store)
+    assert "var::m.py::A.buf" in vids
+    assert "var::m.py::B.buf" in vids
+    for e in store.resolved_edges():
+        if e.dst_id == "var::m.py::A.buf":
+            assert e.src.startswith("m.py::A.")
+    store.close()
+
+
 def test_incremental_converges_and_zombie_var_cleared(tmp_path):
     """Removing the last mutation must remove the var node on the incremental
     path exactly as a fresh reindex would (the replace_file var-row sweep)."""
