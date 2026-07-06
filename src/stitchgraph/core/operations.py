@@ -29,6 +29,7 @@ from .reach import (
     reachable_from,
     reverse_reachable_from,
     strongly_connected_components,
+    transitive_fan_in_estimate,
 )
 from .store import Store
 
@@ -315,6 +316,17 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
             tfi = algebra.transitive_fan_in(store)
             if tfi:
                 return {k: float(v) for k, v in tfi.items()}, "transitive_fan_in"
+    if metric not in ("fan_in", "pagerank"):
+        # Past the exact closure's node cap (or without GraphBLAS at all), the
+        # sidecar estimator keeps the TRANSITIVE ranking: sampled distinct-
+        # ancestor counts, exact when the graph fits inside the sample budget
+        # (v3.42.0, reach.transitive_fan_in_estimate). Only below the sampled
+        # tier does orient degrade to direct confident fan-in.
+        est = transitive_fan_in_estimate(store)
+        if est is not None and est[0]:
+            est_counts, exact = est
+            return est_counts, ("transitive_fan_in" if exact
+                                else "transitive_fan_in_sampled")
     # Fallback: direct fan-in over CONFIDENT (EXTRACTED) edges only. Counting every
     # AMBIGUOUS widening arm at full weight let homonym attributes drown the hub list at
     # scale — Home Assistant's top "hubs" were `.hass`/`.data` attribute nodes with
