@@ -261,7 +261,16 @@ first-sweep sidecar build — and serving the **sampled transitive fan-in**
 (v3.42.0) at 59k nodes, ranking `HomeAssistant` / `ConfigEntries` /
 `AuthManager` / `HomeAssistantHTTP` as the top hubs: the true transitive
 "read these first" list, previously unavailable past the exact closure's
-4,000-node cap.
+4,000-node cap. `scan`: 155.5 s, 1,005 issues.
+
+**And the field run found a real bug before release** (the reason field
+validation is part of every arc): scan's per-component cycle-confidence
+aggregate joined against `edges_all`, and SQLite cannot flatten a UNION-ALL
+view inside a join — it MATERIALISED all 16M logical rows per component
+(>1 h, py-spy-pinned; Django's view was too small to hurt). Fixed by driving
+the flat and group branches directly (indexed probes, summed in Python);
+plan-checked that the simple-WHERE view probes (god objects, find_coupling)
+push down correctly and were never affected.
 
 ## Risks
 
