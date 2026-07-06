@@ -555,15 +555,32 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         store.conn.executemany("INSERT OR IGNORE INTO _scan_comp VALUES (?)",
                                [(m,) for m in comp])
         _srel = tuple(r.value for r in _SCC_RELATIONS)
+        # TWO branch queries, summed in Python — NOT one query over `edges_all`:
+        # SQLite cannot flatten a UNION-ALL view that sits inside a join, so the
+        # single-view form MATERIALISES all 16M logical rows (plus an automatic
+        # index over them) PER COMPONENT — observed live as a >1 h scan on the
+        # HA field index (py-spy, 2026-07-06) where the flat-table original took
+        # minutes. Driving each branch directly keeps idx_edges_src /
+        # idx_groups_src probes per member, exactly the plan the CROSS JOIN
+        # directive was written to pin.
         row = store.conn.execute(
             """SELECT COALESCE(SUM(e.relation IN (?, ?)
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
                       COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
-                 FROM _scan_comp s CROSS JOIN edges_all e ON e.src = s.id""",
+                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id
+                WHERE e.dst_id IS NOT NULL""",
+            (*_srel, *_srel, _extracted)).fetchone()
+        grow = store.conn.execute(
+            """SELECT COALESCE(SUM(g.relation IN (?, ?)
+                                   AND m.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
+                      COALESCE(SUM(g.relation IN (?, ?) AND g.provenance = ?
+                                   AND m.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
+                 FROM _scan_comp s CROSS JOIN edge_groups g ON g.src = s.id
+                 JOIN cand_members m ON m.set_id = g.set_id""",
             (*_srel, *_srel, _extracted)).fetchone()
         store.conn.execute("DROP TABLE temp._scan_comp")
-        frac, conf_n, total = _share_rows(row["t"], row["c"])
+        frac, conf_n, total = _share_rows(row["t"] + grow["t"], row["c"] + grow["c"])
         artifact = frac < 0.5  # majority of the linking edges are guesses
         reason = (f"circular dependency among {len(comp)} symbols"
                   + ("; rests mostly on name-ambiguous/heuristic edges "
