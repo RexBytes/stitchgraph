@@ -191,6 +191,13 @@ class Store:
         # Per-language name resolution: keeps the incremental resolver from binding a bare
         # name across languages (Rust helper -> Go helper), matching full reindex (panel R34A).
         self.conn.create_function("same_lang", 2, _same_lang, deterministic=True)
+        # Homonym-group edge compression gate (research/20). The env kill switch wins
+        # unconditionally; `reindex` further ANDs in `[index] edge_compression`. Off
+        # means no NEW compression — existing groups still expand/read correctly.
+        import os as _os
+        self._compression_env_ok = _os.environ.get(
+            "STITCHGRAPH_NO_EDGE_COMPRESSION") != "1"
+        self.edge_compression = self._compression_env_ok
         with closing(self.conn.cursor()) as cur:
             cur.executescript(_SCHEMA)   # tables (IF NOT EXISTS)
         self._migrate()                  # add columns an older file is missing
@@ -926,6 +933,8 @@ class Store:
         widening share one call site — but VERIFIED here so a hand-built store
         or a future emitter that violates it simply stays flat). `srcs` scopes
         the pass (None = whole table). Returns the number of groups created."""
+        if not self.edge_compression:
+            return 0
         where = ""
         if srcs is not None:
             srcs = sorted(set(srcs))
@@ -1008,6 +1017,92 @@ class Store:
             self.conn.execute("DELETE FROM edge_groups WHERE id = ?", (g["id"],))
             keys.append((g["src"], g["relation"], g["dst_symbol"]))
         return keys
+
+    @staticmethod
+    def partition_compressible(edges: list[Edge]) -> tuple[list[Edge], list[tuple[Edge, list[str]]]]:
+        """Split an already-deduped edge list whose every source's rows are COMPLETE
+        within it into (flat, groups): `groups` is [(template_arm, member_dst_ids)]
+        for each interned-representation-eligible widened fan-out, `flat` is
+        everything else in original order. Pure function — the ingest paths use it
+        to write groups directly instead of inserting arms they'd only re-delete.
+        Eligibility mirrors `_compress_edges` exactly: >= 2 resolved AMBIGUOUS arms
+        per (src, relation, dst_symbol), uniform weight/location/source/name_based,
+        distinct targets, and no non-ambiguous resolved row on the same key (the
+        mixed-key guard that keeps `_rewiden_resolved` sound)."""
+        amb: dict[tuple, list[Edge]] = {}
+        blocked: set[tuple] = set()
+        for e in edges:
+            if e.dst_id is None:
+                continue
+            key = (e.src, e.relation, e.dst_symbol)
+            if e.provenance is Provenance.AMBIGUOUS:
+                amb.setdefault(key, []).append(e)
+            else:
+                blocked.add(key)
+        groups: list[tuple[Edge, list[str]]] = []
+        grouped_keys: set[tuple] = set()
+        for key, arms in amb.items():
+            if key in blocked or len(arms) < 2:
+                continue
+            first = arms[0]
+            dsts = [a.dst_id for a in arms if a.dst_id is not None]
+            if (len(set(dsts)) != len(arms)
+                    or any(a.weight != first.weight or a.location != first.location
+                           or a.source != first.source
+                           or a.name_based != first.name_based for a in arms[1:])):
+                continue
+            groups.append((first, dsts))
+            grouped_keys.add(key)
+        flat = [e for e in edges
+                if e.dst_id is None
+                or (e.src, e.relation, e.dst_symbol) not in grouped_keys
+                or e.provenance is not Provenance.AMBIGUOUS]
+        return flat, groups
+
+    def insert_edge_group(self, template: Edge, dst_ids: list[str],
+                          memo: dict[str, int] | None = None) -> None:
+        """Write one compressed group row (interning its candidate set; `memo` maps
+        sig -> set_id across a bulk ingest so repeated sets cost nothing). Falls
+        back to flat `add_edge` arms on an unstorable id, mirroring add_edge."""
+        try:
+            sig = self._SET_SIG_SEP.join(sorted(dst_ids))
+            set_id = memo.get(sig) if memo is not None else None
+            if set_id is None:
+                set_id = self._intern_set(dst_ids)
+                if memo is not None:
+                    memo[sig] = set_id
+            self.conn.execute(
+                """INSERT INTO edge_groups(src, relation, dst_symbol, set_id,
+                                           weight, provenance, location, source,
+                                           file, name_based)
+                   VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?, ?)""",
+                (template.src, template.relation.value, template.dst_symbol,
+                 set_id, template.weight, template.location, template.source,
+                 _file_of(template.src), int(template.name_based)))
+        except (UnicodeEncodeError, ValueError):
+            for dst in dst_ids:
+                self.add_edge(Edge(
+                    src=template.src, relation=template.relation,
+                    dst_symbol=template.dst_symbol, dst_id=dst,
+                    weight=template.weight, provenance=template.provenance,
+                    location=template.location, source=template.source,
+                    name_based=template.name_based))
+
+    def insert_edges_compressed(self, edges: list[Edge]) -> None:
+        """Bulk insert with ingest-time compression: eligible widened fan-outs go
+        straight to `edge_groups`/`cand_sets`, never touching the flat table. The
+        in-memory reindex path calls this on its final (post-dedup, post-override)
+        edge list; with the gate off every edge takes the flat path."""
+        if not self.edge_compression:
+            for e in edges:
+                self.add_edge(e)
+            return
+        flat, groups = self.partition_compressible(edges)
+        memo: dict[str, int] = {}
+        for e in flat:
+            self.add_edge(e)
+        for template, dsts in groups:
+            self.insert_edge_group(template, dsts, memo)
 
     def _expand_affected(self, names: set[str], ids: set[str]) -> list[tuple[str, str, str]]:
         """Expand-affected, step 1 (research/20): before the resolve pipeline runs,
@@ -1130,15 +1225,20 @@ class Store:
         return [n for r in rows if (n := _row_to_node(r))]
 
     def callers_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
+        # ORDER BY: `edges_all` interleaves the flat and compressed branches in an
+        # arbitrary (plan-dependent) order, so the output order is pinned here —
+        # deterministic and representation-blind (research/20 read-path rule).
         rows = self.conn.execute(
-            "SELECT * FROM edges_all WHERE dst_id = ? AND relation = ?",
+            "SELECT * FROM edges_all WHERE dst_id = ? AND relation = ? "
+            "ORDER BY src, weight, location",
             (node_id, relation.value),
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
 
     def callees_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
         rows = self.conn.execute(
-            "SELECT * FROM edges_all WHERE src = ? AND relation = ?",
+            "SELECT * FROM edges_all WHERE src = ? AND relation = ? "
+            "ORDER BY dst_id, weight, location",
             (node_id, relation.value),
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]

@@ -85,6 +85,10 @@ def _ambiguous_flat_count(store):
 
 def test_compress_expand_round_trip(tmp_path):
     store = _index(tmp_path)
+    # reindex compresses at ingest now — flatten everything first so this test
+    # exercises the primitives' full round trip from the flat representation
+    store._expand_groups("1=1")
+    store.commit()
     before_rows = _multiset(store)
     before_api = _api_snapshot(store)
     assert _ambiguous_flat_count(store) >= 2, "corpus must have a widened group"
