@@ -71,12 +71,86 @@ _PLAIN_BASES = {
 }
 
 
+# -- parallel extraction (v3.40.0) ------------------------------------------
+# Parsing dominates index wall time and is single-core; a fork-based pool runs the
+# per-file work of BOTH passes on all cores. Fork (Linux) is required: pass-2
+# workers read the fully-built symbol table via copy-on-write, and results merge
+# in sorted-file order, so output is byte-identical to the serial reference
+# (pinned by tests/oracles). Serial remains the reference implementation and the
+# automatic fallback (no fork, tiny trees, pure mode, or parallel=False).
+_PARALLEL_MIN_FILES = 64
+_WPROJ: _Project | None = None  # set pre-fork; inherited read-only by pass-2 workers
+
+
+def _parallel_workers(n_files: int, parallel: bool | None, sink_mode: bool) -> int:
+    if parallel is False:
+        return 0
+    import os as _os
+    import sys as _sys
+
+    from ..purity import pure_mode
+    # Linux-only: pass-2 workers depend on fork's copy-on-write snapshot of the
+    # symbol table, and fork on macOS is unsafe with threads. Pure mode forces
+    # the serial reference path like every other accelerated twin.
+    if _sys.platform != "linux" or pure_mode():
+        return 0
+    # AUTO stays OFF in sink (streaming) mode: measured on Django 5.2 (2,873
+    # files, 3.7M edges), the streaming reindex is bounded by edge
+    # materialisation + SQLite insertion — both parent-side — so the parse pool
+    # only adds IPC overhead (181 s serial vs 190 s parallel end-to-end). The
+    # in-memory path, where edges stay objects, wins 67 s -> 50 s. The true
+    # index-time lever at scale is edge VOLUME (the homonym-compression arc),
+    # not parse parallelism. `parallel=True` still forces the pool on for the
+    # differential oracle and for callers who know their tree is parse-heavy.
+    if parallel is None and (sink_mode or n_files < _PARALLEL_MIN_FILES):
+        return 0
+    cpus = _os.cpu_count() or 1
+    return min(cpus, 8) if cpus > 1 else 0
+
+
+def _p1_worker(item: tuple[str, str]):
+    """Pass 1 for one file: parse + collect defs into a fresh container and return
+    the exact five fields `_collect_defs` mutates (all picklable)."""
+    rel, path_str = item
+    try:
+        tree = ast.parse(Path(path_str).read_text(encoding="utf-8"))
+        mini = _Project(root=Path("."))
+        _collect_defs(mini, rel, Path(path_str), tree)
+        return ("ok", rel, mini.nodes, mini.exported_names, mini.main_calls,
+                mini.module_consts, mini.fixture_names)
+    except (SyntaxError, UnicodeDecodeError, OSError, RecursionError) as exc:
+        return ("skip", rel, type(exc).__name__)
+
+
+def _p2_worker(item: tuple[str, str]):
+    """Pass 2 for one file against the fork-inherited symbol table. Returns the
+    exact deltas the serial pass produces: edges, pass-2 nodes (`_global_state`'s
+    VARIABLE nodes), and framework-base class ids (`_walk_scope`). A mid-file
+    RecursionError keeps the partial edges, matching the serial guard."""
+    proj = _WPROJ
+    assert proj is not None
+    rel, path_str = item
+    try:
+        tree = ast.parse(Path(path_str).read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+        return [], [], set()  # vanished/changed since pass 1 (race) — serial parity
+    proj.edges = []           # process-local (COW): collect this file's edges only
+    n0 = len(proj.nodes)
+    ebc0 = set(proj.external_base_classes)
+    try:
+        _collect_edges(proj, rel, tree)
+    except RecursionError:
+        pass  # keep the partial edges, exactly like the serial except-branch
+    return proj.edges, proj.nodes[n0:], proj.external_base_classes - ebc0
+
+
 def extract_project(root: str | Path,
                     ignore: list[str] | None = None, *,
                     cache_asts: bool = True,
                     edge_sink: object = None,
                     skip_sink: list[tuple[str, str]] | None = None,
-                    fallback: object = None) -> tuple[list[Node], list[Edge]]:
+                    fallback: object = None,
+                    parallel: bool | None = None) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
@@ -110,9 +184,34 @@ def extract_project(root: str | Path,
     proj.source_prefix = _detect_source_prefix(files, proj.root)
     proj.packages = _project_packages(files, proj.root, proj.source_prefix)
 
-    parsed: dict[str, ast.Module] | None = {} if cache_asts else None
+    workers = _parallel_workers(len(files), parallel, edge_sink is not None)
+    # Parallel mode never caches ASTs (trees can't cross process boundaries);
+    # pass 2 re-parses, exactly like the streaming path — result identical.
+    parsed: dict[str, ast.Module] | None = {} if (cache_asts and not workers) else None
     ok_files: list[tuple[str, Path]] = []  # (rel, path) of files whose defs were collected
     syntax_failed: list[str] = []  # rels ast.parse REJECTED (syntax newer than interpreter)
+    if workers:
+        import multiprocessing as mp
+        items = [(p.relative_to(proj.root).as_posix(), str(p)) for p in files]
+        with mp.get_context("fork").Pool(workers) as pool:
+            # imap preserves submission order, so every merge below happens in
+            # sorted-file order — byte-identical to the serial loop.
+            for res in pool.imap(_p1_worker, items, chunksize=16):
+                if res[0] == "skip":
+                    _, rel, why = res
+                    if skip_sink is not None:
+                        skip_sink.append((rel, why))
+                    if why == "SyntaxError":
+                        syntax_failed.append(rel)
+                    continue
+                _, rel, f_nodes, f_exported, f_mains, f_consts, f_fixtures = res
+                proj.nodes.extend(f_nodes)
+                proj.exported_names.update(f_exported)
+                proj.main_calls.update(f_mains)
+                proj.module_consts.update(f_consts)
+                proj.fixture_names.update(f_fixtures)
+                ok_files.append((rel, proj.root / rel))
+        files = []  # consumed; the serial loop below is skipped
     for path in files:
         rel = path.relative_to(proj.root).as_posix()
         try:
@@ -193,7 +292,28 @@ def extract_project(root: str | Path,
         proj.edges.clear()
 
     _drain()  # edges emitted between the passes (entry-point / script-role seeds)
-    for rel, path in ok_files:
+    if workers:
+        # Fork NOW: children snapshot the fully-built symbol table (post-_index,
+        # post-seeds, post-fallback-stitching) copy-on-write. The parent merges
+        # each file's (edges, pass-2 nodes, framework-base ids) in submission
+        # order, draining to the sink per file exactly like the serial loop.
+        # No cross-file pass-2 dependency exists: `var::` VARIABLE nodes never
+        # enter the symbol table even serially.
+        import multiprocessing as mp
+        global _WPROJ
+        _WPROJ = proj
+        try:
+            with mp.get_context("fork").Pool(workers) as pool:
+                for f_edges, f_nodes, f_ebc in pool.imap(
+                        _p2_worker, [(rel, str(p)) for rel, p in ok_files],
+                        chunksize=8):
+                    proj.nodes.extend(f_nodes)
+                    proj.external_base_classes.update(f_ebc)
+                    proj.edges.extend(f_edges)
+                    _drain()
+        finally:
+            _WPROJ = None
+    for rel, path in (ok_files if not workers else ()):
         if parsed is not None:
             tree = parsed[rel]
         else:

@@ -4,6 +4,23 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.40.0] — 2026-07-06
+
+### Added
+- **Parallel extraction** (`extract_project(parallel=...)`, Linux/fork only): a
+  process pool runs both per-file passes on all cores — pass 2 forks AFTER the
+  symbol table is built, reading it copy-on-write; results merge in sorted-file
+  order, so output is byte-identical to the serial reference (pinned by a new
+  differential oracle covering skips, the PEP 695 fallback, pass-2 VARIABLE
+  nodes, framework bases, and sink mode). AUTO enables it for in-memory
+  extraction of 64+ files, where it measures **67 s → 50 s on Django 5.2**;
+  AUTO keeps it OFF for the streaming (sink) path, where end-to-end measurement
+  showed edge materialisation + SQLite insertion — both parent-side — dominate
+  and the pool only adds IPC overhead (181 s vs 190 s). That measurement is the
+  release's real finding: at framework-Python edge density, index time is
+  bounded by edge VOLUME, not parsing — the homonym-compression arc is the
+  true lever, and this is recorded in `docs/PERFORMANCE.md`.
+
 ## [3.39.0] — 2026-07-05
 
 **The recall-tail release.** Every item is an evidence-ranked entry from the
