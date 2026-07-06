@@ -330,8 +330,8 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
         return {k: float(v) for k, v in counts.items()}, "confident_fan_in"
     lv = tuple(r.value for r in LIVENESS_RELATIONS)
     rows = store.conn.execute(
-        f"""SELECT dst_id, COUNT(*) AS c FROM edges
-             WHERE dst_id IS NOT NULL AND provenance = ?
+        f"""SELECT dst_id, COUNT(*) AS c FROM edges_all
+             WHERE provenance = ?
                AND relation IN ({",".join("?" * len(lv))})
                AND dst_id IN (SELECT id FROM nodes)
              GROUP BY dst_id""",
@@ -386,7 +386,7 @@ def impact_of(store: Store, name: str) -> Result:
     n_backing = n_conf = 0
     any_ambiguous = False
     cur = store.conn.execute(
-        "SELECT src, relation, dst_id, provenance FROM edges WHERE dst_id IS NOT NULL")
+        "SELECT src, relation, dst_id, provenance FROM edges_all")
     for src, rel, dst_id, prov_s in cur:
         if rel in liveness and src in dependents and dst_id in radius:
             n_backing += 1
@@ -548,7 +548,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
                       COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
-                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id""",
+                 FROM _scan_comp s CROSS JOIN edges_all e ON e.src = s.id""",
             (*_srel, *_srel, _extracted)).fetchone()
         store.conn.execute("DROP TABLE temp._scan_comp")
         frac, conf_n, total = _share_rows(row["t"], row["c"])
@@ -607,13 +607,12 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             in_row = store.conn.execute(
                 f"""SELECT COALESCE(SUM(relation IN ({ph})), 0) AS t,
                            COALESCE(SUM(relation IN ({ph}) AND provenance = ?), 0) AS c
-                     FROM edges WHERE dst_id = ?""",
+                     FROM edges_all WHERE dst_id = ?""",
                 (*_lv, *_lv, _extracted, nid)).fetchone()
             out_row = store.conn.execute(
-                """SELECT COALESCE(SUM(relation = ? AND dst_id IS NOT NULL), 0) AS t,
-                          COALESCE(SUM(relation = ? AND dst_id IS NOT NULL
-                                       AND provenance = ?), 0) AS c
-                     FROM edges WHERE src = ?""",
+                """SELECT COALESCE(SUM(relation = ?), 0) AS t,
+                          COALESCE(SUM(relation = ? AND provenance = ?), 0) AS c
+                     FROM edges_all WHERE src = ?""",
                 (Relation.CALLS.value, Relation.CALLS.value, _extracted,
                  nid)).fetchone()
             in_frac, c_in, _ = _share_rows(in_row["t"], in_row["c"])
@@ -1097,7 +1096,7 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     # materialising a frozenset per resolved edge (v3.39.0: that set was the op's
     # entire 10-12 GB peak at 27-30M edges — the recorded known-cost-op hazard —
     # while only the few hundred co-activation candidates are ever checked).
-    _q = "SELECT 1 FROM edges WHERE src=? AND dst_id=? LIMIT 1"
+    _q = "SELECT 1 FROM edges_all WHERE src=? AND dst_id=? LIMIT 1"
 
     def _linked(a: str, b: str) -> bool:
         return (store.conn.execute(_q, (a, b)).fetchone() is not None
@@ -2015,7 +2014,7 @@ def reindex(store: Store, path: str, precise: bool = False,
                 "was left untouched; pass a valid project root to rebuild it")
         with store.conn:
             store.conn.execute("DELETE FROM nodes")
-            store.conn.execute("DELETE FROM edges")
+            store.wipe_edges()
         store.bump_generation()
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
@@ -2027,6 +2026,11 @@ def reindex(store: Store, path: str, precise: bool = False,
     if precise:
         from .resolve.jedi_resolver import JediResolver
         resolvers.append(JediResolver())
+
+    # [index] edge_compression gates NEW compression for this rebuild and every
+    # later replace_file on the store; the env kill switch always wins.
+    store.edge_compression = (store._compression_env_ok
+                              and load_config(path).edge_compression)
 
     if streaming:
         return _reindex_streaming(store, path, abs_root, load_config(path).ignore, resolvers)
@@ -2045,11 +2049,14 @@ def reindex(store: Store, path: str, precise: bool = False,
     # incremental updates, design §4.)
     with store.conn:
         store.conn.execute("DELETE FROM nodes")
-        store.conn.execute("DELETE FROM edges")
+        store.wipe_edges()
         for n in nodes:
             store.add_node(n)
-        for e in edges:
-            store.add_edge(e)
+        # Ingest-time compression (research/20): this list is final (deduped,
+        # override-propagated), so eligible widened fan-outs are written as
+        # interned groups directly — at framework-Python density that is >90%
+        # of the rows this loop used to insert.
+        store.insert_edges_compressed(edges)
 
     store.analyze()
     store.bump_generation()
@@ -2232,7 +2239,8 @@ class _StoreEdgeSink:
     and re-applied per-row so only the bad edge is skipped, exactly as `add_edge` does.
     """
 
-    __slots__ = ("_store", "_conn", "_group", "_cur_src", "_wbuf", "count")
+    __slots__ = ("_store", "_conn", "_group", "_cur_src", "_wbuf", "_gbuf",
+                 "_memo", "count")
     _BATCH = 20000
 
     def __init__(self, store: Store) -> None:
@@ -2241,6 +2249,8 @@ class _StoreEdgeSink:
         self._group: list[Any] = []      # edges of the current source, awaiting per-src dedup
         self._cur_src: Any = None
         self._wbuf: list[Any] = []       # deduped edges awaiting a batched write
+        self._gbuf: list[Any] = []       # (template, dst_ids) compressed groups awaiting write
+        self._memo: dict[str, int] = {}  # candidate-set sig -> set_id across the whole stream
         self.count = 0
 
     @staticmethod
@@ -2257,15 +2267,23 @@ class _StoreEdgeSink:
 
     def _finalize_group(self) -> None:
         # Per-source dedup, identical to the in-memory full path applied to this source's
-        # edges. Survivors are queued for a batched write.
-        for e in _dedup_edges(self._group):
-            self._wbuf.append(e)
+        # edges. Survivors are queued for a batched write — eligible widened fan-outs as
+        # compressed groups (research/20; a source's rows are complete in this group, the
+        # rare cross-group/resolver same-src additions are reconciled by the endgame's
+        # collision expansion), everything else flat.
+        survivors = _dedup_edges(self._group)
+        if self._store.edge_compression:
+            flat, groups = self._store.partition_compressible(survivors)
+            self._wbuf.extend(flat)
+            self._gbuf.extend(groups)
+        else:
+            self._wbuf.extend(survivors)
         self._group.clear()
-        if len(self._wbuf) >= self._BATCH:
+        if len(self._wbuf) + len(self._gbuf) >= self._BATCH:
             self._write()
 
     def _write(self) -> None:
-        if not self._wbuf:
+        if not self._wbuf and not self._gbuf:
             return
         try:
             with self._conn:  # atomic batch: COMMIT on success, ROLLBACK on a bind error
@@ -2276,6 +2294,15 @@ class _StoreEdgeSink:
                     self._store.add_edge(e)
         self.count += len(self._wbuf)
         self._wbuf.clear()
+        if self._gbuf:
+            # Group rows write inside one transaction; insert_edge_group guards
+            # unstorable ids per group (falling back to flat arms) so one bad id
+            # never rolls back the batch.
+            with self._conn:
+                for template, dsts in self._gbuf:
+                    self._store.insert_edge_group(template, dsts, self._memo)
+                    self.count += len(dsts)
+            self._gbuf.clear()
 
     def flush(self) -> None:
         if self._group:
@@ -2309,7 +2336,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     # in-memory alternative is an OOM. The clear, node write, and dedup are each a transaction.
     with store.conn:
         store.conn.execute("DELETE FROM nodes")
-        store.conn.execute("DELETE FROM edges")
+        store.wipe_edges()
     sink = _StoreEdgeSink(store)
     try:
         # Pass 1/2: nodes resident, edges streamed (deduped per-source, committed in batches).
@@ -2333,6 +2360,14 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         # references. Drop any edge whose src or resolved dst has no node. On a clean run this
         # deletes nothing (every extractor edge resolves against the full symbol table), so the
         # streamed index stays byte-identical to the in-memory path.
+        # Compressed groups first (research/20): a phantom-src group row just
+        # drops; a group whose SET contains a phantom member expands so the flat
+        # sweep below prunes exactly the phantom arms (clean runs expand nothing).
+        store.conn.execute(
+            "DELETE FROM edge_groups WHERE src NOT IN (SELECT id FROM nodes)")
+        orphan_keys = store._expand_groups(
+            """set_id IN (SELECT set_id FROM cand_members
+                           WHERE dst_id NOT IN (SELECT id FROM nodes))""")
         store.conn.execute(
             """DELETE FROM edges WHERE
                    src NOT IN (SELECT id FROM nodes)
@@ -2356,7 +2391,16 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     with store.conn:
         store._propagate_overrides()
     with store.conn:
+        # Sink-compressed groups vs same-src flat rows that arrived in a LATER
+        # stream group (resolver edges, non-adjacent extractor seeds): flatten
+        # the colliding groups (unbounded probe — one-off per rebuild) so the
+        # global dedup below applies today's exact semantics to every duplicate.
+        collision_keys = store._expand_collisions(None)
         store._dedup_resolved_edges()
+        store._compress_edges(
+            srcs={k[0] for k in orphan_keys} | {k[0] for k in collision_keys})
+        if orphan_keys or collision_keys:
+            store._gc_cand_sets()
     # OWN transaction, tolerated on failure: on the 2026-07-05 HA run a disk-full
     # during this DROP rolled back the whole enclosing transaction — dedup included —
     # and aborted before ANALYZE / generation / root meta, leaving a silently

@@ -131,7 +131,7 @@ def build_cache(store: Store) -> bool:
     gen = current_generation(store)
     callees: dict[str, list[str]] = {}
     cur = store.conn.execute(
-        "SELECT src, dst_symbol FROM edges WHERE dst_id IS NOT NULL AND relation = ?",
+        "SELECT src, dst_symbol FROM edges_all WHERE relation = ?",
         (Relation.CALLS.value,))
     while True:
         rows = cur.fetchmany(50_000)
@@ -237,7 +237,7 @@ def build_dense(store: Store, key: str, embed) -> bool:
     gen = current_generation(store)
     callees: dict[str, list[str]] = {}
     cur = store.conn.execute(
-        "SELECT src, dst_symbol FROM edges WHERE dst_id IS NOT NULL AND relation = ?",
+        "SELECT src, dst_symbol FROM edges_all WHERE relation = ?",
         (Relation.CALLS.value,))
     while True:
         rows = cur.fetchmany(50_000)

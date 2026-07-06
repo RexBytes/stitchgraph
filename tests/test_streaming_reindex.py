@@ -333,9 +333,11 @@ def test_streaming_python_edges_bounded_memory(tmp_path):
         with sg.Store({str(str(tmp_path / 'i.db'))!r}) as store:
             r = sg.reindex(store, {str(str(tmp_path / 'corpus'))!r}, streaming=True)
             assert r.ok and r.result["nodes"] > 3000, r.result
-            n = store.conn.execute("SELECT COUNT(*) c FROM edges").fetchone()["c"]
+            # counts through edges_all: the fan-out is stored COMPRESSED now
+            # (research/20) — the graph content is unchanged, the flat table is not
+            n = store.conn.execute("SELECT COUNT(*) c FROM edges_all").fetchone()["c"]
             assert n > 1_000_000, f"fan-out corpus must produce bulk edges, got {{n}}"
-            w = store.conn.execute("SELECT COUNT(*) c FROM edges WHERE provenance = "
+            w = store.conn.execute("SELECT COUNT(*) c FROM edges_all WHERE provenance = "
                                    "'ambiguous' AND name_based = 0").fetchone()["c"]
             assert w >= 400, f"override widening must run on this corpus, got {{w}} edges"
         print("BOUNDED-OK")

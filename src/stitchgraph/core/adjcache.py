@@ -141,8 +141,8 @@ class AdjacencyCache:
             other = "dst_id" if by_src else "src"
             for i in range(0, len(id_list), 500):
                 chunk = id_list[i:i + 500]
-                q = (f"SELECT {col}, {other}, relation, provenance FROM edges "
-                     f"WHERE dst_id IS NOT NULL AND {col} IN "
+                q = (f"SELECT {col}, {other}, relation, provenance FROM edges_all "
+                     f"WHERE {col} IN "
                      f"({','.join('?' * len(chunk))})")
                 grouped: dict[str, list] = {c: [] for c in chunk}
                 for key, nbr, rel, prov in store.conn.execute(q, chunk):
@@ -587,15 +587,14 @@ def build_cache(store: Store) -> bool:
     idx = {nid: i for i, nid in enumerate(ids)}
     n_nodes = len(ids)
 
-    cap = store.conn.execute(
-        "SELECT COUNT(*) FROM edges WHERE dst_id IS NOT NULL").fetchone()[0]
+    cap = store.conn.execute("SELECT COUNT(*) FROM edges_all").fetchone()[0]
     src = _np.empty(cap, _np.int32)
     dst = _np.empty(cap, _np.int32)
     rel = _np.empty(cap, _np.uint8)
     conf = _np.empty(cap, _np.uint8)
     cur = store.conn.execute(
         "SELECT src, dst_id, relation, provenance = 'extracted' "
-        "FROM edges WHERE dst_id IS NOT NULL")
+        "FROM edges_all")
     n = 0
     while True:
         rows = cur.fetchmany(100_000)

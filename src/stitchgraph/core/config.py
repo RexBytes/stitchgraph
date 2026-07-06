@@ -36,6 +36,12 @@ class Config:
     # Derived token-vector sidecar for find_similar/find_component (simcache.py).
     # Same contract: lazy, generation-gated, delete-safe.
     similarity_cache: bool = True
+    # Homonym-group edge compression (research/20): store each widened AMBIGUOUS
+    # fan-out as one interned candidate-set reference instead of one row per
+    # candidate. Pure representation change (edges_all serves the identical row
+    # multiset); off = the flat-only layout, the differential campaign's control
+    # arm and the escape hatch. STITCHGRAPH_NO_EDGE_COMPRESSION=1 also disables.
+    edge_compression: bool = True
     # [review]
     threshold: float = 0.80
     # [orient]
@@ -114,6 +120,7 @@ def _load(start: str | Path | None) -> Config:
         ignore=_str_list(idx.get("ignore")),
         adjacency_cache=bool(idx.get("adjacency_cache", True)),
         similarity_cache=bool(idx.get("similarity_cache", True)),
+        edge_compression=bool(idx.get("edge_compression", True)),
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,

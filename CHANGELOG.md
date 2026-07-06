@@ -4,6 +4,49 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.41.0] — 2026-07-06
+
+### Added
+- **Homonym-group edge compression** (research/20) — the step-change v3.40.0's
+  benchmark pointed at. At framework-Python density >95% of resolved edge rows
+  are AMBIGUOUS homonym fan-out (one row per candidate per call site) whose
+  candidate SETS repeat across thousands of sites. The store now interns each
+  distinct set once (content-addressed: `cand_sets`/`cand_members`) and writes
+  one `edge_groups` row per widened source-site; the `edges_all` view serves
+  every consumer the identical row multiset regardless of representation.
+  Both reindex paths compress at ingest (the in-memory bulk insert partitions
+  its final list; the streaming sink compresses each source's deduped fan-out
+  on the fly with a memoised interner). **Django 5.2 measured: index 41.6 s →
+  24.0 s, db 278 MB → 25 MB, 669,944 rows stored as 63,867 (10.5×) — with the
+  full operation battery byte-identical and scan/orient/find_stale timings
+  unchanged.**
+- `replace_file` speaks the compressed representation via the *expand-affected*
+  discipline: groups whose candidate set the edit provably touches (name
+  added/removed, member id owned by the file, collision with a new flat row)
+  are flattened first, the battle-tested flat-row resolve pipeline runs
+  UNCHANGED, and eligible survivors re-compress in the same transaction. The
+  v3.40.0 sidecar delta capture gains `edge_groups` triggers (src + every
+  member dst), so incremental sidecar patching keeps working over compressed
+  edits.
+- Config gate: `[index] edge_compression = false` (or env
+  `STITCHGRAPH_NO_EDGE_COMPRESSION=1`) keeps ingest flat — the differential
+  campaign's control arm and the escape hatch. Existing groups always remain
+  readable.
+- Differential oracle (`tests/oracles/test_compression_differential.py`):
+  compression on-vs-off row-multiset + full battery equality on both reindex
+  paths, streaming-vs-in-memory with both compressing, incremental
+  convergence through the expand/narrow/re-compress round trip, and adjacency
+  sidecar structural identity (per-node neighbour multisets).
+
+### Changed
+- `get_callers`/`get_callees` output order is now deterministic (sorted by
+  caller/callee id): the view's branch order is plan-dependent, so order is
+  pinned at the consumer instead of inherited from row layout.
+- Older index files open unchanged (new tables/view created on open; empty
+  groups behave exactly as before). Compressed indexes require ≥ 3.41.0
+  readers — older stitchgraph versions would not see group rows; reindex
+  with `edge_compression = false` if an old reader must consume the db.
+
 ## [3.40.0] — 2026-07-06
 
 ### Added

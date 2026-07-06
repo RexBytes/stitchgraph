@@ -39,6 +39,17 @@ with edge VOLUME; the standing route to a step-change is homonym-group edge
 compression (see STATUS), not more cores. Parallel extraction therefore
 auto-enables only for the in-memory path.
 
+**The volume lever, delivered (v3.41.0):** homonym-group edge compression
+(research/20) stores each widened fan-out as one interned candidate-set
+reference — Django 5.2: index 41.6 s → 24.0 s, db 278 MB → 25 MB, 10.5×
+fewer stored rows, answers byte-identical (differential-oracle-gated). NOTE
+for the estimates in this file: the per-edge constants above (0.6–0.7 KB/edge
+db growth, edges/500k minutes) describe the FLAT representation and now
+OVERESTIMATE a default (compressed) index by roughly the compression factor
+of the corpus's ambiguous share — Django lands at ~0.04 KB per logical edge.
+The `edges ≈ files × density` planning rule still holds for LOGICAL edges
+(what `edges_all` serves and the sidecar materialises).
+
 Estimation method, in order of increasing accuracy:
 
 1. **Before starting**: `edges ≈ files × density` (see above), then

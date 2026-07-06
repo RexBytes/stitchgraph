@@ -4317,7 +4317,7 @@ def test_rewiden_renormalizes_weight_when_fanout_narrows():
         bp = best_path(store, "a.py::caller", "b.py::foo")
         assert bp is not None and bp[1] == 1.0          # confidence restored, not 0.5
         rows = store.conn.execute(
-            "SELECT weight FROM edges WHERE dst_symbol = 'foo' AND dst_id IS NOT NULL"
+            "SELECT weight FROM edges_all WHERE dst_symbol = 'foo'"
         ).fetchall()
         assert [r["weight"] for r in rows] == [1.0]
 
@@ -4331,7 +4331,7 @@ def test_rewiden_renormalizes_weight_when_fanout_narrows():
             store.replace_file(f, [_n(f"{f}::m")], [])
         store.replace_file("z.py", [], [])              # drop one arm
         rows = store.conn.execute(
-            "SELECT weight FROM edges WHERE dst_symbol = 'm' AND dst_id IS NOT NULL"
+            "SELECT weight FROM edges_all WHERE dst_symbol = 'm'"
         ).fetchall()
         assert sorted(r["weight"] for r in rows) == [0.5, 0.5]
 

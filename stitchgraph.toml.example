@@ -30,6 +30,12 @@ adjacency_cache = true
 # Token-vector sidecar (<db>.simcache/) for find_similar/find_component — same
 # contract (lazy, generation-gated, delete-safe). <0.1 s queries at 100k nodes.
 similarity_cache = true
+# Homonym-group edge compression (v3.41.0): store each widened name fan-out as
+# one interned candidate-set reference instead of one row per candidate —
+# Django 5.2: index 41.6s -> 24.0s, db 278MB -> 25MB, identical answers. Off =
+# flat-only rows (readable by older stitchgraph versions); existing compressed
+# groups always stay readable. Env override: STITCHGRAPH_NO_EDGE_COMPRESSION=1.
+edge_compression = true
 
 [review]
 threshold = 0.80            # results below this confidence are flagged needs_review
