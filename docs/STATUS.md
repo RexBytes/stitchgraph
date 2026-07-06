@@ -104,7 +104,6 @@ Completing both phases closes everything currently known.
 |---|---|---|
 | **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. |
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
-| Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
 | Module-level use attribution (decorator/constructor applied at import) | S/M | The one Known-seams residual: module-level-only symbols can surface as needs_review stale candidates because their uses aren't attributed to a caller. Folded into the dependency-free batch (2026-07-06 plan). |
 | Scope `_propagate_overrides` on the incremental path | M | The one remaining whole-graph pass per replace_file (~half of the 13.6s HA edit latency, research/21); its scoping semantics (changed subtrees/members/bound targets) are the subtlest of the three and reserved for a careful dedicated pass. |
 | Sidecar CSR group-sharing (store an interned candidate set once in the mmap instead of expanding it per call site) | M | v3.41.0 compressed the STORE 10.5× (homonym-group interning, research/20); the adjacency sidecar still materialises the full expansion — correct and structurally pinned, but the same sharing would shrink the CSR and its build. Deferred: sidecar size hasn't been the bottleneck. |
@@ -114,8 +113,10 @@ Completing both phases closes everything currently known.
 - `find_stale` is `needs_review` at 0.6 (0.78 with a runtime trace) — resolution
   is name/scope-based, not type-grade. `--precise` (jedi) and a future LSP raise
   this further. This is the single biggest accuracy lever left.
-- Module-level uses (a decorator/constructor applied at import, not inside a
-  function) aren't attributed, so a few module-level-only symbols can surface as
-  `needs_review` stale candidates.
-- Context managers (`with`), property/attribute reads, and framework-callback
-  overrides are now modelled, so those no longer false-flag as stale.
+- Context managers (`with`), property/attribute reads, framework-callback
+  overrides, AND module-level / class-body uses (a decorator or constructor
+  applied at import) are now modelled, so those no longer false-flag as stale.
+  (The module-level seam was verified closed 2026-07-06: `_module_scope_edges`
+  attributes module-level executable code to the module node, decorator refs
+  run in the enclosing scope, and class-body statements are walked — empirical
+  corpora with live roots flag only genuinely-dead symbols.)
