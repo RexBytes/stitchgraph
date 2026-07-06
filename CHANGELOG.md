@@ -4,6 +4,43 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.43.0] — 2026-07-06
+
+### Added
+- **Persistent symbol table + single-file extraction** (research/21) — the
+  incremental `watch` fast path at any scale. Pass 1's four raw name-sets
+  (module constants, pytest fixtures, export surface, `__main__` calls) now
+  persist per file in a `symtab` table (maintained by both reindex paths and
+  `replace_file`); `extract_single_file` runs the extractor's OWN two passes
+  over one changed file against store-backed views of the whole-project
+  symbol tables; `reindex_singlefile` dispatches it with honest gates
+  (declines on resolver-relevant content — each check mirrors that
+  resolver's exact firing shape — pre-symtab indexes, deletions, unparseable
+  files) and recomputes the complete post-edit exported surface store-side
+  (incl. the exported-class ancestor-closure rule). The watch loop tries it
+  first; the whole-project incremental and full-rebuild fallbacks are
+  unchanged. **Home Assistant field measurement: the per-edit cost on a
+  6,725-file tree drops from ~4 min (full streaming reindex) to 13.6 s.**
+  Convergence pinned by an 11-shape oracle matrix (body edits, homonym
+  add/remove, constants/imports, fixtures, cross-file subclassing, `__all__`
+  surface changes) — single-file end state == whole-project incremental ==
+  fresh reindex.
+
+### Fixed / Performance (all field-found at HA scale, all paths benefit)
+- `replace_file`'s expand-affected universe is now the edit's DELTA (names
+  whose defining-id set changed; ids removed/re-kinded), not every name the
+  file defines — a one-function edit to a file defining hot homonyms
+  previously tried to flatten 11.5M rows and could fill the disk.
+- `_dedup_resolved_edges` and `_rewiden_resolved` are scoped to the
+  transaction's touched srcs / affected names on the incremental path
+  (whole-table on reindex endgames, unchanged) — they were whole-graph
+  sweeps per edit (26 s of the old latency). The scoped dedup drives access
+  from the src set explicitly, sidestepping the stat-less-planner
+  idx_edges_rel walk.
+- Known remaining cost, documented in research/21: `_propagate_overrides`
+  still derives the full override map per edit (~half the residual
+  latency); its scoping is deliberately reserved for its own pass.
+
 ## [3.42.0] — 2026-07-06
 
 ### Added

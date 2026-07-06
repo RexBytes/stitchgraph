@@ -107,18 +107,31 @@ def build_app():
                     if not (added or removed or modified):
                         continue
                     state = new
-                    # Differential apply (v3.38.0) for the common edit loop. Full
-                    # reindex when: forced; a file was DELETED/renamed (keeps the two
-                    # documented non-cardinal replace_file-deletion residuals out of
-                    # shipped surfaces); or the tree is AUTO-streaming-sized (the
-                    # incremental path's whole-project in-memory extract is exactly
-                    # what streaming exists to avoid).
-                    if full or removed or ops._auto_stream(path, store):
+                    # Edit-loop dispatch, fastest applicable first. Full reindex
+                    # when forced or a file was DELETED/renamed (the documented
+                    # deletion residuals stay out of shipped surfaces). Otherwise
+                    # try the SINGLE-FILE fast path (research/21: per-file
+                    # extraction against the persisted symbol table — the only
+                    # mode that stays fast past the AUTO-streaming threshold); it
+                    # declines conservatively (returns None) on resolver-relevant
+                    # content, pre-symtab indexes, or unparseable files, and the
+                    # v3.38.0 whole-project incremental (or the full streaming
+                    # rebuild, for AUTO-streaming-sized trees) takes over.
+                    if full or removed:
                         typer.echo(f"change detected — reindexing… "
                                    f"{ops.reindex(store, path).meta}")
                         continue
                     rel = {os.path.relpath(p, path).replace(os.sep, "/")
                            for p in added | modified}
+                    fast = ops.reindex_singlefile(store, path, rel)
+                    if fast is not None:
+                        typer.echo(f"change detected — refreshed {len(rel)} file(s) "
+                                   f"(single-file)… {fast.meta}")
+                        continue
+                    if ops._auto_stream(path, store):
+                        typer.echo(f"change detected — reindexing… "
+                                   f"{ops.reindex(store, path).meta}")
+                        continue
                     typer.echo(f"change detected — refreshing {len(rel)} file(s)… "
                                f"{ops.reindex_incremental(store, path, rel).meta}")
             except KeyboardInterrupt:

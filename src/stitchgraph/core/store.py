@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS edges (
 -- by its sorted member ids) and one `edge_groups` row per widened source-site.
 -- Compression is OPPORTUNISTIC: any group that fails the uniformity gates stays
 -- as flat `edges` rows, and correctness never depends on coverage.
+-- Persisted per-file symbol-table inputs (research/21): the four raw pass-1
+-- name-sets that never become graph objects but that pass-2 / role assignment
+-- read ACROSS files (module constants, pytest fixtures, export surface,
+-- __main__ calls). Single-file re-extraction rebuilds each cross-file union
+-- with one file's contribution swapped; kinds: const | fixture | export | main.
+CREATE TABLE IF NOT EXISTS symtab (
+    file TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (file, kind, name)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS cand_sets (
     set_id INTEGER PRIMARY KEY AUTOINCREMENT,
     sig    TEXT UNIQUE NOT NULL               -- unit-separator-joined sorted member ids
@@ -94,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_dst    ON edges(dst_id);
 CREATE INDEX IF NOT EXISTS idx_edges_symbol ON edges(dst_symbol);
 CREATE INDEX IF NOT EXISTS idx_edges_file   ON edges(file);
 CREATE INDEX IF NOT EXISTS idx_edges_rel    ON edges(relation);
+CREATE INDEX IF NOT EXISTS idx_symtab_kind  ON symtab(kind, name);
 CREATE INDEX IF NOT EXISTS idx_members_dst  ON cand_members(dst_id);
 CREATE INDEX IF NOT EXISTS idx_groups_src    ON edge_groups(src);
 CREATE INDEX IF NOT EXISTS idx_groups_set    ON edge_groups(set_id);
@@ -299,6 +312,39 @@ class Store:
     def commit(self) -> None:
         self.conn.commit()
 
+    def replace_symtab(self, file: str, contribution: dict[str, set[str]] | None) -> None:
+        """Replace one file's persisted symbol-table contribution (research/21).
+        `contribution` maps kind -> names for THIS file (the extractor's per-file
+        record); None just clears — the conservative choice when a caller has no
+        extraction data, since stale rows would mis-suppress holes or mis-root
+        tests after the file changed."""
+        try:
+            self.conn.execute("DELETE FROM symtab WHERE file = ?", (file,))
+            if contribution:
+                self.conn.executemany(
+                    "INSERT OR IGNORE INTO symtab(file, kind, name) VALUES (?, ?, ?)",
+                    [(file, kind, name) for kind, names in contribution.items()
+                     for name in names])
+        except (UnicodeEncodeError, ValueError):
+            return  # unstorable file/name (non-UTF-8 / NUL): skip, as add_node does
+
+    def replace_symtab_all(self, symtab: dict[str, dict[str, set[str]]]) -> None:
+        """Full-rebuild twin of `replace_symtab`: wipe and write every file's
+        contribution (both reindex paths call this after nodes land)."""
+        self.conn.execute("DELETE FROM symtab")
+        for file, contribution in symtab.items():
+            self.replace_symtab(file, contribution)
+
+    def symtab_names(self, kind: str, *, exclude_file: str | None = None) -> set[str]:
+        """The project-wide union of one kind's names, optionally with a file's
+        contribution excluded (the single-file re-extraction swap)."""
+        sql = "SELECT DISTINCT name FROM symtab WHERE kind = ?"
+        params: list[object] = [kind]
+        if exclude_file is not None:
+            sql += " AND file != ?"
+            params.append(exclude_file)
+        return {r["name"] for r in self.conn.execute(sql, params)}
+
     def wipe_edges(self) -> None:
         """Clear every edge representation — the flat table AND the compressed
         group/set tables (research/20). Full-rebuild paths must call this instead
@@ -353,7 +399,8 @@ class Store:
         return val if isinstance(val, str) else None
 
     def replace_file(self, file: str, nodes: Iterable[Node], edges: Iterable[Edge],
-                     *, exported_ids: set[str] | None = None) -> None:
+                     *, exported_ids: set[str] | None = None,
+                     symtab: dict[str, set[str]] | None = None) -> None:
         """Incremental update for one file (design §4, Store & incremental updates).
 
         1. Delete nodes/edges owned by this file.
@@ -386,17 +433,35 @@ class Store:
         # find_stale's confidence to 0.78 (panel R33A). Carry the role across for every
         # id that survives the re-extraction (add_role no-ops on a vanished id).
         old_rows = self.conn.execute(
-            "SELECT id, name, roles FROM nodes WHERE file = ?", (file,)).fetchall()
+            "SELECT id, kind, name, roles FROM nodes WHERE file = ?", (file,)).fetchall()
         runtime_ids = {
             row["id"] for row in old_rows
             if "runtime" in (row["roles"] or "").split(",")
         }
-        # Expand-affected universe (research/20): every node name/id this update
-        # adds OR removes. A compressed group is only touched by this edit if its
-        # dst_symbol is one of these names or its candidate set contains one of
-        # these ids — everything else keeps a provably-unchanged set.
-        affected_names = ({r["name"] for r in old_rows} | {n.name for n in nodes})
-        affected_ids = ({r["id"] for r in old_rows} | {n.id for n in nodes})
+        # Expand-affected universe (research/20/21): only what this edit actually
+        # CHANGES about the symbol universe. The first cut used every name/id the
+        # file defines (old ∪ new) — at Home Assistant scale a component file
+        # defines the graph's hottest homonyms (`async_setup`, `name`, …), so a
+        # one-function edit tried to flatten 3,651 groups into 11.5M rows and
+        # filled the disk (field probe, 2026-07-06). A group's candidate set can
+        # only change when a NAME's defining-id set changes (add/remove/re-id) or
+        # an ID it contains is removed or changes kind (dangling / the
+        # module-retarget case) — names and ids the edit leaves untouched keep
+        # provably-identical sets and stay compressed.
+        old_by_name: dict[str, set[str]] = {}
+        old_kind: dict[str, set[str]] = {}
+        for r in old_rows:
+            old_by_name.setdefault(r["name"], set()).add(r["id"])
+            old_kind.setdefault(r["id"], set()).add(r["kind"])
+        new_by_name: dict[str, set[str]] = {}
+        new_kind: dict[str, set[str]] = {}
+        for n in nodes:
+            new_by_name.setdefault(n.name, set()).add(n.id)
+            new_kind.setdefault(n.id, set()).add(n.kind.value)
+        affected_names = {nm for nm in (old_by_name.keys() | new_by_name.keys())
+                          if old_by_name.get(nm, set()) != new_by_name.get(nm, set())}
+        affected_ids = ({i for i in (old_kind.keys() | new_kind.keys())
+                         if old_kind.get(i, set()) != new_kind.get(i, set())})
         # Sidecar-delta capture (v3.40.0): TEMP TRIGGERS record every edge row this
         # update touches — src AND dst_id, across the worklist/dangling/rewiden/
         # override side effects, complete by construction — so the adjacency
@@ -412,6 +477,10 @@ class Store:
             # extract; other files' affected groups flatten so the resolve
             # pipeline below runs on flat rows exactly as it always has.
             self.conn.execute("DELETE FROM edge_groups WHERE file = ?", (file,))
+            # Persisted symbol-table maintenance (research/21): this file's raw
+            # name-set contribution is replaced with the fresh extract's (or
+            # cleared when the caller has none — stale rows are never kept).
+            self.replace_symtab(file, symtab)
             expanded = self._expand_affected(affected_names, affected_ids)
             for n in nodes:
                 self.add_node(n, file=file)
@@ -428,14 +497,20 @@ class Store:
             # then re-resolve any genuine hole the deletion may have disambiguated.
             self._drop_redundant_holes()
             self._resolve_worklist()
-            self._rewiden_resolved()
+            self._rewiden_resolved(affected_names)
             self._propagate_overrides()
             touched = None
             if capture:
                 touched = [r[0] for r in self.conn.execute(
                     "SELECT DISTINCT src FROM _adj_touched WHERE src IS NOT NULL")]
             expanded += self._expand_collisions(touched)
-            self._dedup_resolved_edges()
+            # Scoped dedup: only srcs this transaction wrote can hold a fresh
+            # duplicate (dedup keys are src-local; the pre-edit state is clean).
+            # No capture -> unscoped full pass, correct at reference speed.
+            dedup_scope = None
+            if touched is not None:
+                dedup_scope = set(touched) | {k[0] for k in expanded}
+            self._dedup_resolved_edges(dedup_scope)
             if exported_ids is not None:
                 self._set_exported_roles(exported_ids)
             # Re-compress the survivors: exactly the groups we flattened, plus
@@ -538,7 +613,7 @@ class Store:
             self.conn.execute("UPDATE nodes SET roles = ? WHERE id = ?",
                               (",".join(sorted(roles)), row["id"]))
 
-    def _rewiden_resolved(self) -> None:
+    def _rewiden_resolved(self, names: set[str] | None = None) -> None:
         """Re-normalize NAME-BASED resolved edges so an incremental update matches a full
         reindex of the same final state. `_resolve_worklist` only revisits holes (dst_id
         IS NULL); resolved edges are never reconsidered, so a name-based group drifts:
@@ -557,11 +632,32 @@ class Store:
         of unrelated classes (panels R21A/R21B/R22A/R22B). On narrowing to one candidate
         the rebuilt edge is INFERRED, not EXTRACTED: the pre-widen provenance is not
         recoverable at the store layer, and under-claiming is the safe direction (issue #10).
+
+        `names` scopes the pass to groups whose dst_symbol is in it: a group can
+        only drift when its NAME's candidate universe changed, which is exactly
+        `replace_file`'s affected_names set — every other group's "already the
+        correct fan-out" check is a foregone conclusion this pass used to pay a
+        per-group query to confirm (the 19 s edit-loop residual at HA field
+        scale, py-spy 2026-07-06). None = every group (correct, reference speed).
         """
-        groups = self.conn.execute(
-            """SELECT DISTINCT src, relation, dst_symbol FROM edges
-                WHERE dst_id IS NOT NULL AND name_based = 1"""
-        ).fetchall()
+        if names is not None and not names:
+            return
+        if names is None:
+            groups = self.conn.execute(
+                """SELECT DISTINCT src, relation, dst_symbol FROM edges
+                    WHERE dst_id IS NOT NULL AND name_based = 1"""
+            ).fetchall()
+        else:
+            self.conn.execute("DROP TABLE IF EXISTS temp._rw_names")
+            self.conn.execute("CREATE TEMP TABLE _rw_names (name TEXT PRIMARY KEY)")
+            self.conn.executemany("INSERT OR IGNORE INTO _rw_names VALUES (?)",
+                                  [(n,) for n in names])
+            groups = self.conn.execute(
+                """SELECT DISTINCT src, relation, dst_symbol FROM edges
+                    WHERE dst_id IS NOT NULL AND name_based = 1
+                      AND dst_symbol IN (SELECT name FROM _rw_names)"""
+            ).fetchall()
+            self.conn.execute("DROP TABLE IF EXISTS temp._rw_names")
         for g in groups:
             nb = self.conn.execute(
                 """SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
@@ -728,14 +824,67 @@ class Store:
         self.conn.execute("DROP TABLE temp._widen_out")
         self.conn.execute("DROP TABLE temp._widen")
 
-    def _dedup_resolved_edges(self) -> None:
+    def _dedup_resolved_edges(self, srcs: Iterable[str] | None = None) -> None:
         """Collapse duplicate resolved edges and drop redundant REFERENCES — the DB-level
         twin of reindex's in-memory `_dedup_edges`. The incremental path bulk-inserts and
         resolves edges without that pass, so it could leave parallel rows that inflate
         fan_in / pagerank (panel R12B): a function named like its module collapses to one
         node yet keeps two outbound edges per call site, and resolving a hole whose symbol
         already has a resolved sibling adds a second row. Holes (dst_id IS NULL) are
-        distinct reference sites and are left untouched."""
+        distinct reference sites and are left untouched.
+
+        `srcs` scopes the OUTER row set (None = whole table, the reindex endgame).
+        Every dedup key is src-local and a post-replace_file state is dedup-clean,
+        so only srcs this transaction wrote can hold a fresh duplicate —
+        `replace_file` passes its touched-src set, which turned this pass from
+        26 s (a correlated sweep of the whole flat table per edit) into
+        milliseconds on the HA field index (py-spy, 2026-07-06). The inner
+        EXISTS probes stay unscoped: a new row's better sibling may be an old
+        row, and vice versa — only the candidate ROWS are bounded."""
+        # The scoped variants pre-select candidate row ids by DRIVING from the
+        # src set (`FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src`,
+        # idx_edges_src per member): a bare `AND src IN (SELECT ...)` left the
+        # stat-less planner walking idx_edges_rel — every REFERENCES row per
+        # edit, the v3.29 planner-trap shape re-observed live via py-spy on the
+        # HA field index (2026-07-06). Steps and predicates are otherwise
+        # IDENTICAL to the unscoped forms below them.
+        if srcs is not None:
+            srcs = sorted(set(srcs))
+            if not srcs:
+                return
+            self.conn.execute("DROP TABLE IF EXISTS temp._dedup_srcs")
+            self.conn.execute("CREATE TEMP TABLE _dedup_srcs (src TEXT PRIMARY KEY)")
+            self.conn.executemany("INSERT OR IGNORE INTO _dedup_srcs VALUES (?)",
+                                  [(s,) for s in srcs])
+            self.conn.execute(
+                """UPDATE edges SET name_based = 1 WHERE id IN
+                   (SELECT e.id FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src
+                     WHERE e.dst_id IS NOT NULL AND e.name_based = 0
+                       AND EXISTS (SELECT 1 FROM edges b
+                                    WHERE b.dst_id IS NOT NULL AND b.name_based = 1
+                                      AND b.src = e.src AND b.relation = e.relation
+                                      AND b.dst_id = e.dst_id))""")
+            self.conn.execute(
+                """DELETE FROM edges WHERE id IN
+                   (SELECT e.id FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src
+                     WHERE e.dst_id IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM edges b
+                                    WHERE b.dst_id IS NOT NULL
+                                      AND b.src = e.src AND b.relation = e.relation
+                                      AND b.dst_id = e.dst_id
+                                      AND (b.weight > e.weight
+                                           OR (b.weight = e.weight AND b.id < e.id))))""")
+            self.conn.execute(
+                """DELETE FROM edges WHERE id IN
+                   (SELECT e.id FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src
+                     WHERE e.relation = ? AND e.dst_id IS NOT NULL
+                       AND (e.src = e.dst_id
+                            OR EXISTS (SELECT 1 FROM edges c
+                                        WHERE c.relation = ? AND c.src = e.src
+                                          AND c.dst_id = e.dst_id)))""",
+                (Relation.REFERENCES.value, Relation.CALLS.value))
+            self.conn.execute("DROP TABLE IF EXISTS temp._dedup_srcs")
+            return
         # 0. Preserve name-based-ness across duplicates BEFORE collapsing them. A declared-
         #    type call emits both a precise (name_based=0) and a widening (name_based=1) edge
         #    to its declared target; step 1 keeps the higher-weight (precise) row and would

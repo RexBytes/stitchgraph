@@ -87,9 +87,11 @@ def extract_project(root: str | Path,
         rescued.update({n.id.split("::", 1)[0] for n in fnodes} & set(rels))
         return fnodes, fedges
 
+    psink: dict = {}
     nodes, edges = _python.extract_project(root, ignore, cache_asts=cache_asts,
                                            edge_sink=edge_sink, skip_sink=skips,
-                                           fallback=_py_fallback, parallel=parallel)
+                                           fallback=_py_fallback, parallel=parallel,
+                                           project_sink=psink)
     try:
         from . import treesitter
         if treesitter.HAS_TREE_SITTER:
@@ -110,6 +112,12 @@ def extract_project(root: str | Path,
     if report is not None:
         report["skipped"] = [(rel, why) for rel, why in skips if rel not in rescued]
         report["fallback"] = sorted(rescued)
+        # Persisted-symbol-table inputs (research/21): reindex writes these to the
+        # store so single-file re-extraction can rebuild each cross-file union
+        # with one file's contribution swapped.
+        report["symtab"] = psink.get("symtab", {})
+        report["packages"] = psink.get("packages", [])
+        report["source_prefix"] = psink.get("source_prefix", "")
     return nodes, edges
 
 

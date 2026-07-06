@@ -60,6 +60,7 @@ spec and section references.
 | Operations | `audit_graph` (call-graph precision audit) | ✅ Done | static reach vs runtime ground truth; resolver-gap worklist (v3.33.0) |
 | **Storage** | **Homonym-group edge compression** | ✅ Done | v3.41.0: content-addressed candidate-set interning + `edges_all` view; Django index 41.6s→24.0s, 278MB→25MB, byte-identical answers; HA field: 4 min / 317MB for 16.1M logical edges (research/20) |
 | Algebra | **Sampled transitive fan-in past the closure cap** | ✅ Done | v3.42.0: deterministic source sampling over the bit-parallel sidecar sweep; exact within budget, honestly named when sampled; orient's transitive ranking at any scale |
+| Core | **Persistent symbol table + single-file extraction** | ✅ Done | v3.43.0: symtab table + store-backed _Project views; watch fast path at any scale (HA edit loop 4min→13.6s, research/21); honest resolver gating |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
 | Algebra | GraphBLAS PageRank centrality | ✅ Done | alt hub metric via config |
@@ -105,7 +106,7 @@ Completing both phases closes everything currently known.
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
 | Module-level use attribution (decorator/constructor applied at import) | S/M | The one Known-seams residual: module-level-only symbols can surface as needs_review stale candidates because their uses aren't attributed to a caller. Folded into the dependency-free batch (2026-07-06 plan). |
-| Single-file extraction against a persistent symbol table | L | Would extend v3.38.0's incremental watch past the AUTO-streaming threshold (~2k files), where the differential apply currently falls back to a full streaming reindex; needs store-backed by_name/module tables with the extractor's exact resolution semantics. |
+| Scope `_propagate_overrides` on the incremental path | M | The one remaining whole-graph pass per replace_file (~half of the 13.6s HA edit latency, research/21); its scoping semantics (changed subtrees/members/bound targets) are the subtlest of the three and reserved for a careful dedicated pass. |
 | Sidecar CSR group-sharing (store an interned candidate set once in the mmap instead of expanding it per call site) | M | v3.41.0 compressed the STORE 10.5× (homonym-group interning, research/20); the adjacency sidecar still materialises the full expansion — correct and structurally pinned, but the same sharing would shrink the CSR and its build. Deferred: sidecar size hasn't been the bottleneck. |
 
 ## Known seams (honest)
