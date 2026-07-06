@@ -498,7 +498,17 @@ class Store:
             self._drop_redundant_holes()
             self._resolve_worklist()
             self._rewiden_resolved(affected_names)
-            self._propagate_overrides()
+            # Scoped override derivation (research/21): touched srcs so far cover
+            # every edge written this transaction (file inserts, worklist,
+            # rewiden); added ids cover new members. Without capture: full pass.
+            if capture:
+                pre_ov_touched = [r[0] for r in self.conn.execute(
+                    "SELECT DISTINCT src FROM _adj_touched WHERE src IS NOT NULL")]
+                self._propagate_overrides(
+                    {"srcs": pre_ov_touched,
+                     "new_ids": sorted(new_kind.keys() - old_kind.keys())})
+            else:
+                self._propagate_overrides()
             touched = None
             if capture:
                 touched = [r[0] for r in self.conn.execute(
@@ -719,7 +729,7 @@ class Store:
                 (g["src"], g["relation"], g["dst_symbol"], dst, w, prov,
                  tmpl["location"], tmpl["source"], tmpl["file"]))
 
-    def _propagate_overrides(self) -> None:
+    def _propagate_overrides(self, scope: dict | None = None) -> None:
         """Inheritance-aware override propagation, the store twin of the extractor's
         `_propagate_overrides`. A full reindex widens a CALLS/REFERENCES edge bound to a
         base-class member `B.m` (e.g. a `self.m()` dispatch, or a declared-type call) to the
@@ -738,17 +748,31 @@ class Store:
         every resolved CALLS/REFERENCES row plus a seen-set of their key tuples — O(edges)
         Python memory, the one allocation the streaming reindex's per-file drain didn't
         remove, and it OOM'd Home Assistant's ~16M-edge graph in the endgame after the
-        whole index had streamed at a flat ~113 MB."""
+        whole index had streamed at a flat ~113 MB.
+
+        `scope` (research/21, the last per-edit whole-graph pass): the pass is
+        ADDITIVE and NOT-EXISTS-guarded, and a post-replace_file state is
+        override-complete — so an edit can only create MISSING override rows
+        through three doors: a newly BOUND target (an edge written this
+        transaction), a NEW member (an added node id that overrides an ancestor's
+        member), or a NEW INHERITS link (a subtree gaining descendants). Scoped
+        mode derives pairs from exactly those doors — `{"srcs": touched_srcs,
+        "new_ids": added_node_ids}` — instead of scanning every distinct bound
+        target in the graph; the triggering-edge join, first-wins attribution,
+        and existence guards below are IDENTICAL either way. None = the full
+        derivation (reindex endgames, capture-less fallback)."""
         class_ids = {r["id"] for r in self.conn.execute(
             "SELECT id FROM nodes WHERE kind = ?", (NodeKind.CLASS.value,)).fetchall()}
         if not class_ids:
             return
         subclasses: dict[str, set[str]] = {}
+        bases_of: dict[str, set[str]] = {}
         for e in self.conn.execute(
                 "SELECT src, dst_id FROM edges WHERE relation = ? AND dst_id IS NOT NULL",
                 (Relation.INHERITS.value,)).fetchall():
             if e["src"] in class_ids and e["dst_id"] in class_ids and e["src"] != e["dst_id"]:
                 subclasses.setdefault(e["dst_id"], set()).add(e["src"])
+                bases_of.setdefault(e["src"], set()).add(e["dst_id"])
         if not subclasses:
             return
         cache: dict[str, set[str]] = {}
@@ -767,23 +791,90 @@ class Store:
             cache[base_id] = out
             return out
 
-        # Widening map at symbol scale: for each DISTINCT bound target that is a class
-        # member, every existing override of it below the class. (base, override, method)
-        # rows — O(actual overrides), never O(edges).
-        node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes")}
-        pairs: list[tuple[str, str, str]] = []
-        for r in self.conn.execute(
+        def ancestors(class_id: str) -> set[str]:
+            out: set[str] = set()
+            stack = list(bases_of.get(class_id, ()))
+            while stack:
+                a = stack.pop()
+                if a not in out:
+                    out.add(a)
+                    stack.extend(bases_of.get(a, ()))
+            return out
+
+        # The candidate TARGETS whose override pairs this run derives.
+        if scope is None:
+            target_rows = self.conn.execute(
                 """SELECT DISTINCT dst_id FROM edges
                     WHERE dst_id IS NOT NULL AND relation IN (?, ?)""",
-                (Relation.CALLS.value, Relation.REFERENCES.value)):
-            base_id = _owner_scope(r["dst_id"])
+                (Relation.CALLS.value, Relation.REFERENCES.value))
+            targets = {r["dst_id"] for r in target_rows}
+        else:
+            targets = set()
+            # Door 1: targets newly bound this transaction (touched srcs' edges).
+            srcs = sorted(set(scope.get("srcs") or ()))
+            if srcs:
+                self.conn.execute("DROP TABLE IF EXISTS temp._ov_srcs")
+                self.conn.execute("CREATE TEMP TABLE _ov_srcs (src TEXT PRIMARY KEY)")
+                self.conn.executemany("INSERT OR IGNORE INTO _ov_srcs VALUES (?)",
+                                      [(s,) for s in srcs])
+                targets |= {r["dst_id"] for r in self.conn.execute(
+                    """SELECT DISTINCT e.dst_id
+                         FROM _ov_srcs s CROSS JOIN edges e ON e.src = s.src
+                        WHERE e.dst_id IS NOT NULL AND e.relation IN (?, ?)""",
+                    (Relation.CALLS.value, Relation.REFERENCES.value))}
+                # Door 3: a touched INHERITS link grafts an EXISTING subtree
+                # under new ancestors (`class C(A)` added to an existing class —
+                # no new ids, no new bound targets). Every member of the base
+                # chain becomes a candidate target so the subtree's overrides of
+                # OLD-targeted members get their pairs. Member enumeration is a
+                # primary-key range per ancestor.
+                inh_bases = {r["dst_id"] for r in self.conn.execute(
+                    """SELECT DISTINCT e.dst_id
+                         FROM _ov_srcs s CROSS JOIN edges e ON e.src = s.src
+                        WHERE e.relation = ? AND e.dst_id IS NOT NULL""",
+                    (Relation.INHERITS.value,)) if r["dst_id"] in class_ids}
+                for base in inh_bases:
+                    for anc in ({base} | ancestors(base)):
+                        targets |= {r["id"] for r in self.conn.execute(
+                            "SELECT id FROM nodes WHERE id > ? AND id < ?",
+                            (anc + ".", anc + ".￿"))}
+                self.conn.execute("DROP TABLE IF EXISTS temp._ov_srcs")
+            # Doors 2+3: a new member Sub.m (or a class with new INHERITS links —
+            # its ids are new or its file's edges are in srcs) may override an
+            # ANCESTOR's member that OLD edges already target: include those
+            # ancestor members as candidate targets. An untargeted candidate just
+            # finds no triggering edge in the join below — harmless.
+            for nid in scope.get("new_ids") or ():
+                owner = _owner_scope(nid)
+                if owner is None or owner not in class_ids:
+                    continue
+                method = nid.rsplit(".", 1)[1]
+                for anc in ancestors(owner):
+                    targets.add(f"{anc}.{method}")
+
+        # Widening map at symbol scale: for each candidate target that is a class
+        # member, every existing override of it below the class. (base, override,
+        # method) rows — O(actual overrides), never O(edges).
+        pairs: list[tuple[str, str, str]] = []
+        exists_node = ("SELECT 1 FROM nodes WHERE id = ? LIMIT 1")
+        node_ids: set[str] | None = None
+        if scope is None:  # full mode amortises one set build over many probes
+            node_ids = {r["id"] for r in self.conn.execute("SELECT id FROM nodes")}
+        for dst in targets:
+            base_id = _owner_scope(dst)
             if base_id is None or base_id not in class_ids:
                 continue
-            method = r["dst_id"].rsplit(".", 1)[1]
+            method = dst.rsplit(".", 1)[1]
             for sub_id in descendants(base_id):
                 override = f"{sub_id}.{method}"
-                if override != r["dst_id"] and override in node_ids:
-                    pairs.append((r["dst_id"], override, method))
+                if override == dst:
+                    continue
+                if node_ids is not None:
+                    if override not in node_ids:
+                        continue
+                elif not self.conn.execute(exists_node, (override,)).fetchone():
+                    continue
+                pairs.append((dst, override, method))
         if not pairs:
             return
         self.conn.execute("DROP TABLE IF EXISTS temp._widen")
