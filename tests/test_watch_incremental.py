@@ -16,10 +16,16 @@ from stitchgraph.core.watch import diff
 def _graph(store):
     nodes = {tuple(r) for r in store.conn.execute(
         "SELECT id, kind, name, roles FROM nodes")}
+    # Resolved edges through `edges_all` (research/20: a widened fan-out may be
+    # stored compressed — the convergence contract is CONTENT equality, blind to
+    # representation); holes only ever live in the flat table.
     edges = {tuple(r) for r in store.conn.execute(
         "SELECT src, relation, dst_symbol, dst_id, weight, provenance, name_based "
-        "FROM edges")}
-    return nodes, edges
+        "FROM edges_all")}
+    holes = {tuple(r) for r in store.conn.execute(
+        "SELECT src, relation, dst_symbol, dst_id, weight, provenance, name_based "
+        "FROM edges WHERE dst_id IS NULL")}
+    return nodes, edges | holes
 
 
 def _converges(tmp_path, mutate, changed):
