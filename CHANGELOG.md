@@ -4,6 +4,30 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.42.0] — 2026-07-06
+
+### Added
+- **Sampled transitive fan-in** (`reach.transitive_fan_in_estimate`): `orient`'s
+  "most-depended-on, read these first" hub metric now works past the exact
+  GraphBLAS closure's 4,000-node cap. A node's transitive fan-in is its
+  distinct-ancestor count, estimated by sweeping forward from a deterministic
+  sample of sources and counting per-node hits (`E[hits × n/S] = |ancestors|`);
+  the bit-parallel sweep answers 64 sources per fixed point over the mmapped
+  CSR sidecar (a new `reach_hits` popcounts lanes instead of materialising id
+  sets), so the default 1,024 samples cost 16 sweeps — seconds at the scale
+  the closure cannot touch at all. EXACT when the budget covers the graph
+  (which also gives small no-GraphBLAS installs the true transitive ranking);
+  when sampling, the metric is named honestly (`transitive_fan_in_sampled`)
+  and relative error is ~1/√hits — tightest on the top hubs, which is where
+  ranking matters. Field: Home Assistant (59k nodes, 16.1M logical edges)
+  orient now ranks `HomeAssistant`/`ConfigEntries`/`AuthManager`/
+  `HomeAssistantHTTP` as top hubs; the transitive ranking previously degraded
+  to direct confident fan-in at this scale.
+- research/20 addendum: HA-scale field validation of v3.41.0's compression on
+  a 6.8 GB-free-disk machine that could not hold the flat representation —
+  index 4.0 min (vs ~32 predicted flat), db 317 MB (vs ~10.5 GB), 16.1M
+  logical edges stored as 666K rows.
+
 ## [3.41.0] — 2026-07-06
 
 ### Added
