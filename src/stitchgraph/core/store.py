@@ -841,7 +841,13 @@ class Store:
         milliseconds on the HA field index (py-spy, 2026-07-06). The inner
         EXISTS probes stay unscoped: a new row's better sibling may be an old
         row, and vice versa — only the candidate ROWS are bounded."""
-        scope = ""
+        # The scoped variants pre-select candidate row ids by DRIVING from the
+        # src set (`FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src`,
+        # idx_edges_src per member): a bare `AND src IN (SELECT ...)` left the
+        # stat-less planner walking idx_edges_rel — every REFERENCES row per
+        # edit, the v3.29 planner-trap shape re-observed live via py-spy on the
+        # HA field index (2026-07-06). Steps and predicates are otherwise
+        # IDENTICAL to the unscoped forms below them.
         if srcs is not None:
             srcs = sorted(set(srcs))
             if not srcs:
@@ -850,7 +856,35 @@ class Store:
             self.conn.execute("CREATE TEMP TABLE _dedup_srcs (src TEXT PRIMARY KEY)")
             self.conn.executemany("INSERT OR IGNORE INTO _dedup_srcs VALUES (?)",
                                   [(s,) for s in srcs])
-            scope = " AND edges.src IN (SELECT src FROM _dedup_srcs)"
+            self.conn.execute(
+                """UPDATE edges SET name_based = 1 WHERE id IN
+                   (SELECT e.id FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src
+                     WHERE e.dst_id IS NOT NULL AND e.name_based = 0
+                       AND EXISTS (SELECT 1 FROM edges b
+                                    WHERE b.dst_id IS NOT NULL AND b.name_based = 1
+                                      AND b.src = e.src AND b.relation = e.relation
+                                      AND b.dst_id = e.dst_id))""")
+            self.conn.execute(
+                """DELETE FROM edges WHERE id IN
+                   (SELECT e.id FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src
+                     WHERE e.dst_id IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM edges b
+                                    WHERE b.dst_id IS NOT NULL
+                                      AND b.src = e.src AND b.relation = e.relation
+                                      AND b.dst_id = e.dst_id
+                                      AND (b.weight > e.weight
+                                           OR (b.weight = e.weight AND b.id < e.id))))""")
+            self.conn.execute(
+                """DELETE FROM edges WHERE id IN
+                   (SELECT e.id FROM _dedup_srcs s CROSS JOIN edges e ON e.src = s.src
+                     WHERE e.relation = ? AND e.dst_id IS NOT NULL
+                       AND (e.src = e.dst_id
+                            OR EXISTS (SELECT 1 FROM edges c
+                                        WHERE c.relation = ? AND c.src = e.src
+                                          AND c.dst_id = e.dst_id)))""",
+                (Relation.REFERENCES.value, Relation.CALLS.value))
+            self.conn.execute("DROP TABLE IF EXISTS temp._dedup_srcs")
+            return
         # 0. Preserve name-based-ness across duplicates BEFORE collapsing them. A declared-
         #    type call emits both a precise (name_based=0) and a widening (name_based=1) edge
         #    to its declared target; step 1 keeps the higher-weight (precise) row and would
@@ -858,8 +892,8 @@ class Store:
         #    later, flagging it dead (panel R23A, cardinal). OR the flag onto every row of a
         #    (src, relation, dst_id) group so the survivor stays re-widenable.
         self.conn.execute(
-            f"""UPDATE edges SET name_based = 1
-                WHERE dst_id IS NOT NULL AND name_based = 0{scope}
+            """UPDATE edges SET name_based = 1
+                WHERE dst_id IS NOT NULL AND name_based = 0
                   AND EXISTS (SELECT 1 FROM edges b
                                WHERE b.dst_id IS NOT NULL AND b.name_based = 1
                                  AND b.src = edges.src AND b.relation = edges.relation
@@ -868,8 +902,8 @@ class Store:
         # 1. one row per (src, relation, dst_id): drop any that has a strictly-better
         #    sibling (higher weight, or equal weight with a lower id), keeping one best row.
         self.conn.execute(
-            f"""DELETE FROM edges
-                WHERE dst_id IS NOT NULL{scope}
+            """DELETE FROM edges
+                WHERE dst_id IS NOT NULL
                   AND EXISTS (SELECT 1 FROM edges b
                                WHERE b.dst_id IS NOT NULL
                                  AND b.src = edges.src AND b.relation = edges.relation
@@ -881,16 +915,14 @@ class Store:
         #    self-loop carries no liveness/impact meaning — both only inflate degree metrics
         #    (a recursive CALLS self-loop is meaningful and kept). Mirrors `_dedup_edges`.
         self.conn.execute(
-            f"""DELETE FROM edges
-                WHERE relation = ? AND dst_id IS NOT NULL{scope}
+            """DELETE FROM edges
+                WHERE relation = ? AND dst_id IS NOT NULL
                   AND (src = dst_id
                        OR EXISTS (SELECT 1 FROM edges c
                                    WHERE c.relation = ? AND c.src = edges.src
                                      AND c.dst_id = edges.dst_id))""",
             (Relation.REFERENCES.value, Relation.CALLS.value),
         )
-        if srcs is not None:
-            self.conn.execute("DROP TABLE IF EXISTS temp._dedup_srcs")
 
     def _drop_redundant_holes(self) -> None:
         """Delete unresolved edges that already have a resolved sibling OF THE SAME KIND.
