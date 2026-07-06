@@ -238,6 +238,31 @@ through the expand/narrow/re-compress round trip, sidecar structural
 identity — plus the 130 MB bounded-memory streaming gate still passing with
 the sink's partition + interning memo in the loop.
 
+## Field validation at Home Assistant scale (post-release, same day)
+
+Home Assistant 2024.3.3 (6,725 Python files), indexed with released v3.41.0 on
+a machine with **6.8 GB free disk — which could not have held the flat
+representation at all** (~10.5 GB by the validated 0.65 KB/edge constant).
+That impossibility is itself the headline: the machine class that can run
+stitchgraph on a framework-scale codebase just changed.
+
+| metric | flat (predicted from validated constants) | compressed (measured) | factor |
+|---|---|---|---|
+| index time | ~32 min (16.1M edges / 500k per min) | **4.0 min** | ~8× |
+| db size | ~10.5 GB | **317 MB** | ~33× |
+| stored rows | 16,114,928 | 665,942 (309,050 flat + 157,288 groups + 199,604 members) | 24× |
+| logical edges via `edges_all` | — | 16,114,928 | exact |
+
+Honest caveat: no same-corpus flat control run was possible (the disk is the
+point), so the flat column is the PERFORMANCE.md estimation constants — which
+this corpus class originally calibrated. Query battery on the compressed
+index: `find_stale` 1.3 s (287 candidates), `orient` 54.8 s including the
+first-sweep sidecar build — and serving the **sampled transitive fan-in**
+(v3.42.0) at 59k nodes, ranking `HomeAssistant` / `ConfigEntries` /
+`AuthManager` / `HomeAssistantHTTP` as the top hubs: the true transitive
+"read these first" list, previously unavailable past the exact closure's
+4,000-node cap.
+
 ## Risks
 
 - **Write-pass drift**: any store pass touching a group without expansion
