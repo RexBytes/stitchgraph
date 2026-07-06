@@ -1,0 +1,113 @@
+# 21 — Persistent symbol table: single-file extraction at any scale
+
+*2026-07-06 · dependency-free batch ① · the design for extending the v3.38
+incremental watch past the AUTO-streaming threshold.*
+
+## The gap
+
+`reindex_incremental` extracts the WHOLE project in memory — that is what
+guarantees resolution semantics identical to a full reindex (the v3.38
+convergence contract) — and writes only the changed owners via
+`replace_file`. On trees big enough for AUTO-streaming (~2k files), that
+in-memory whole-project extract is exactly what streaming exists to avoid, so
+the watch loop falls back to a FULL reindex per change: 4 minutes at Home
+Assistant scale post-compression. An edit loop wants seconds.
+
+## What single-file extraction actually needs (survey result)
+
+Pass 2 of the Python extractor resolves one file's references against
+cross-file state assembled between passes. The complete inventory, by where
+the data lives today:
+
+**Already in the store (derivable by SQL):**
+- `by_name` (name → node ids): `nodes.name` + `idx_nodes_name`
+- `class_by_name`: `nodes WHERE kind='class' AND name=?`
+- `ids`: the `nodes` primary key
+- `module_by_qual` / `module_ids`: `nodes WHERE kind='module'` (+ the
+  source-prefix alias, reconstructable)
+- the INHERITS tee (subclass maps for override/role propagation): `edges
+  WHERE relation='inherits'` — the store's `_propagate_overrides` twin
+  already rebuilds exactly this
+- `external_base_classes`: recomputable from INHERITS rows with no
+  first-party target (treesitter's `_framework_classes` pattern)
+- `packages` / `source_prefix`: derivable from `nodes.file` paths; cheap to
+  persist as meta at reindex time instead of re-deriving
+
+**Missing — the four raw pass-1 name-sets that never become graph objects:**
+
+| set | pass-2 / post-edge consumer | why it must persist |
+|---|---|---|
+| `module_consts` | `_import_edge` phantom-hole suppression | file A's import of B's tuple-unpack constant needs B's set |
+| `fixture_names` | fixture-aware test rooting (param binding) | a conftest fixture roots tests in OTHER files |
+| `exported_names` | `exported` role assignment + inherited-method seeding | an `__init__`'s `__all__` tags nodes in OTHER files by name |
+| `main_calls` | `main` role assignment + entrypoint-class seeding | same cross-file name matching |
+
+The role OUTCOMES persist in `nodes.roles`, but recomputing roles after an
+edit needs the raw per-file sets (the union changes when one file's
+contribution changes).
+
+## Design
+
+**New store state — one table, four kinds:**
+
+```sql
+CREATE TABLE IF NOT EXISTS symtab (
+    file TEXT NOT NULL,      -- owning source file (replace_file's delete key)
+    kind TEXT NOT NULL,      -- 'const' | 'fixture' | 'export' | 'main'
+    name TEXT NOT NULL,
+    PRIMARY KEY (file, kind, name)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_symtab_kind ON symtab(kind, name);
+```
+
+Populated by both reindex paths (pass 1 already computes every entry) and
+maintained by `replace_file` (delete `file=?`, insert the fresh extract's
+contribution). Plus two meta keys: `packages`, `source_prefix`.
+
+**A store-backed `_Project` shim.** For a changed Python file F:
+1. Pass 1 on F alone (`_collect_defs`) → F's nodes + its four name-set
+   contributions.
+2. Assemble a `_Project` whose symbol tables are LAZY store views: `by_name`
+   et al. answer from SQL over `nodes` — minus F's OLD rows, plus F's fresh
+   pass-1 nodes — and the four name-sets are `symtab` unions with F's row
+   replaced. A dict-like wrapper keeps `_ref_edges`/`_resolve_member`
+   untouched (they only `.get()` names, a handful per reference; each is one
+   indexed lookup, memoised per run).
+3. Pass 2 on F alone (`_collect_edges`) → F's edges, resolved with the exact
+   semantics of the whole-project run by construction (same code, same
+   tables, same filters).
+4. `replace_file(F, ...)` — whose worklist / re-widening / override /
+   dangling machinery already handles every cross-file EDGE consequence and
+   is pinned by the v3.38 convergence oracles.
+5. Role recomputation: rebuild the four unions from `symtab` and re-apply
+   `_apply_entrypoint_roles`-equivalent tagging in the store (the
+   `exported_ids` contract `replace_file` already honours, extended to
+   `main`/`fixture`-derived tags), so a changed `__all__` re-tags other
+   files' nodes exactly as a full reindex would.
+
+**Scope: Python first, honestly gated.** Tree-sitter files keep the current
+whole-project incremental path (their `by_lang` buckets follow the same
+pattern later; `same_lang` is already a store function). `reindex_incremental`
+gains the single-file mode only when every changed file is Python and the
+tree is past the in-memory comfort threshold; everything else keeps today's
+behaviour. Deletions keep the documented full-reindex fallback.
+
+**The oracle (the release gate).** For a matrix of edits (add/remove
+function, add/remove homonym, change `__all__`, add fixture, add subclass of
+another file's class, add import of a module constant) on a multi-file
+corpus: single-file-mode end state == `reindex_incremental` end state ==
+fresh full reindex, through rows (`edges_all`), holes, roles, and the
+operation battery. Field measurement: watch-loop edit latency on the HA
+index (target: seconds, from 4 minutes).
+
+## Known seams to carry honestly
+
+- Cross-file effects that today's `reindex_incremental` itself does not
+  propagate (its contract is "changed owners only") stay as they are: the
+  oracle is equality with the CURRENT incremental path first, full-reindex
+  convergence second — any pre-existing gap found gets documented, not
+  silently widened.
+- `_getattr_dispatch_edges` scans by_name KEYS by prefix/suffix — a lazy
+  view can't answer that from a `.get()`; it needs one `SELECT name FROM
+  nodes WHERE name LIKE ?` per dispatch site (indexed prefix form) or a
+  bounded key materialisation. Sized in implementation.
