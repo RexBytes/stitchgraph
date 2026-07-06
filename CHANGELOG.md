@@ -4,6 +4,28 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.44.0] — 2026-07-06
+
+### Performance
+- **The edit loop lands at 3.7 s on Home Assistant** (from v3.43.0's 13.6 s;
+  65× from the pre-v3.43 4-minute full rebuild), steady across repeated
+  edits. Two changes, both convergence-ring-gated (research/21 addendum):
+  - `replace_file` now **ingest-compresses the fresh file's batch** (in-memory
+    file-local dedup, then groups written directly) — a hot-homonym
+    component's widened fan-out is tens of thousands of arms at field scale,
+    and inserting them flat made every pipeline pass wade through rows that
+    were about to be interned anyway. This was the actual bottleneck.
+  - **Scoped override derivation**: the additive, NOT-EXISTS-guarded pass now
+    derives pairs only through the three doors an edit can open (newly bound
+    targets, new members overriding ancestor members, new INHERITS links
+    grafting an existing subtree) instead of re-scanning every distinct bound
+    target; the triggering-edge join, first-wins attribution, and existence
+    guards are identical. Full derivation kept for reindex endgames and the
+    capture-less fallback.
+- Side effect of the same work: stitchgraph's own 2,480-test suite runs ~3×
+  faster than this morning (10 min → 3:13) with zero test changes — the
+  store operations the tests exercise simply got cheaper.
+
 ## [3.43.0] — 2026-07-06
 
 ### Added
