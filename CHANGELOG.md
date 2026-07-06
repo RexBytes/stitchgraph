@@ -4,6 +4,37 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.40.0] — 2026-07-06
+
+### Added
+- **Incremental sidecar refresh**: after a `replace_file` (the incremental
+  `watch` path), the adjacency sidecar is PATCHED instead of fully rebuilt
+  (~2 min at HA scale). Capture: temp SQL triggers during `replace_file`
+  record every touched edge row — src and dst, across the worklist/dangling/
+  rewiden/override side effects, complete by construction — into a bounded
+  `adj_delta:{generation}` meta. Load: on a stale sidecar, the loader walks
+  the delta chain (≤64 generations, ≤2,048 touched nodes) and installs a
+  per-node ROW OVERLAY consulted by the BFS family (`reachable`,
+  `reachable_many`, `reverse_reachable`, `fan_in`/`fan_out`); new nodes
+  extend the id space and live only in the overlay. SCC/articulation refuse a
+  patched cache and fall back to the reference path; any chain gap,
+  tombstone, oversize, or node-count drift (deletions) degrades to the full
+  rebuild — the overlay can serve *stale-safe or not at all*. Byte-equality
+  with a fresh rebuild is pinned by tests.
+- **Parallel extraction** (`extract_project(parallel=...)`, Linux/fork only): a
+  process pool runs both per-file passes on all cores — pass 2 forks AFTER the
+  symbol table is built, reading it copy-on-write; results merge in sorted-file
+  order, so output is byte-identical to the serial reference (pinned by a new
+  differential oracle covering skips, the PEP 695 fallback, pass-2 VARIABLE
+  nodes, framework bases, and sink mode). AUTO enables it for in-memory
+  extraction of 64+ files, where it measures **67 s → 50 s on Django 5.2**;
+  AUTO keeps it OFF for the streaming (sink) path, where end-to-end measurement
+  showed edge materialisation + SQLite insertion — both parent-side — dominate
+  and the pool only adds IPC overhead (181 s vs 190 s). That measurement is the
+  release's real finding: at framework-Python edge density, index time is
+  bounded by edge VOLUME, not parsing — the homonym-compression arc is the
+  true lever, and this is recorded in `docs/PERFORMANCE.md`.
+
 ## [3.39.0] — 2026-07-05
 
 **The recall-tail release.** Every item is an evidence-ranked entry from the

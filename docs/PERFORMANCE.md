@@ -30,6 +30,15 @@ Estimator check on the megacorpus (the first field test of this doc): edges/500k
 predicts 54 min vs 61.6 measured (−12%); 0.65 KB/edge predicts 17.4 GB vs 17
 measured. Good enough to plan around.
 
+**Why parsing is not the lever (v3.40.0 measurement):** a fork-pool over both
+per-file passes speeds the in-memory extraction of Django 5.2 from 67 s to
+50 s — but the end-to-end STREAMING reindex is *unmoved* (181 s serial vs
+190 s parallel): at framework-Python edge density, edge materialisation +
+SQLite insertion dominate, and both are inherently serial. Index time scales
+with edge VOLUME; the standing route to a step-change is homonym-group edge
+compression (see STATUS), not more cores. Parallel extraction therefore
+auto-enables only for the in-memory path.
+
 Estimation method, in order of increasing accuracy:
 
 1. **Before starting**: `edges ≈ files × density` (see above), then

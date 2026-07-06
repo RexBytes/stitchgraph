@@ -25,7 +25,8 @@ def extract_project(root: str | Path,
                     ignore: list[str] | None = None, *,
                     cache_asts: bool = True,
                     edge_sink: object = None,
-                    report: dict | None = None) -> tuple[list[Node], list[Edge]]:
+                    report: dict | None = None,
+                    parallel: bool | None = None) -> tuple[list[Node], list[Edge]]:
     # `cache_asts=False` is the streaming (lower-peak-memory) mode for the Python extractor —
     # see python.extract_project. The result is identical; only peak RSS/CPU differ.
     #
@@ -88,7 +89,7 @@ def extract_project(root: str | Path,
 
     nodes, edges = _python.extract_project(root, ignore, cache_asts=cache_asts,
                                            edge_sink=edge_sink, skip_sink=skips,
-                                           fallback=_py_fallback)
+                                           fallback=_py_fallback, parallel=parallel)
     try:
         from . import treesitter
         if treesitter.HAS_TREE_SITTER:

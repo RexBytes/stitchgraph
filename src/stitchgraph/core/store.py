@@ -319,6 +319,14 @@ class Store:
                 "SELECT id, roles FROM nodes WHERE file = ?", (file,))
             if "runtime" in (row["roles"] or "").split(",")
         }
+        # Sidecar-delta capture (v3.40.0): TEMP TRIGGERS record every edge row this
+        # update touches — src AND dst_id, across the worklist/dangling/rewiden/
+        # override side effects, complete by construction — so the adjacency
+        # sidecar can be PATCHED (a per-node row overlay) instead of fully rebuilt
+        # (~2 min at HA scale) on the next query. Best-effort: any failure in the
+        # capture path degrades to the plain generation bump (full rebuild).
+        prev_gen = self.get_meta("generation") or "0"
+        capture = self._delta_capture_start()
         with self.conn:  # single transaction
             self.conn.execute("DELETE FROM nodes WHERE file = ?", (file,))
             self.conn.execute("DELETE FROM edges WHERE file = ?", (file,))
@@ -343,6 +351,61 @@ class Store:
             if exported_ids is not None:
                 self._set_exported_roles(exported_ids)
         self.bump_generation()  # the adjacency sidecar must never survive this edit
+        if capture:
+            self._delta_capture_finish(prev_gen, [n.id for n in nodes])
+
+    def _delta_capture_start(self) -> bool:
+        """Arm the temp triggers + table for one replace_file. Returns False (and
+        leaves nothing armed) on any failure — capture is an optimisation only."""
+        try:
+            self.conn.execute("CREATE TEMP TABLE IF NOT EXISTS _adj_touched"
+                              "(src TEXT, dst TEXT)")
+            self.conn.execute("DELETE FROM _adj_touched")
+            self.conn.execute(
+                "CREATE TEMP TRIGGER IF NOT EXISTS _adj_ins AFTER INSERT ON edges "
+                "BEGIN INSERT INTO _adj_touched VALUES (new.src, new.dst_id); END")
+            self.conn.execute(
+                "CREATE TEMP TRIGGER IF NOT EXISTS _adj_upd AFTER UPDATE ON edges "
+                "BEGIN INSERT INTO _adj_touched VALUES (new.src, new.dst_id);"
+                "      INSERT INTO _adj_touched VALUES (old.src, old.dst_id); END")
+            self.conn.execute(
+                "CREATE TEMP TRIGGER IF NOT EXISTS _adj_del AFTER DELETE ON edges "
+                "BEGIN INSERT INTO _adj_touched VALUES (old.src, old.dst_id); END")
+            return True
+        except sqlite3.Error:
+            for t in ("_adj_ins", "_adj_upd", "_adj_del"):
+                try:
+                    self.conn.execute(f"DROP TRIGGER IF EXISTS temp.{t}")
+                except sqlite3.Error:
+                    pass
+            return False
+
+    def _delta_capture_finish(self, prev_gen: str, new_node_ids: list[str]) -> None:
+        """Persist the touched-row delta for the generation step prev_gen -> current,
+        then disarm. The adjacency sidecar's loader consumes `adj_delta:{gen}` metas to
+        patch a one-or-few-generations-stale mmap instead of rebuilding (adjcache.py)."""
+        import json as _json
+        try:
+            srcs = sorted({r[0] for r in self.conn.execute(
+                "SELECT DISTINCT src FROM _adj_touched") if r[0]})
+            dsts = sorted({r[0] for r in self.conn.execute(
+                "SELECT DISTINCT dst FROM _adj_touched WHERE dst IS NOT NULL")})
+            gen = self.get_meta("generation") or "0"
+            # Bounded: a delta bigger than the patch threshold is useless — record a
+            # tombstone so the loader rebuilds rather than parsing a huge blob.
+            payload = ("FULL" if len(srcs) + len(dsts) > 4096 else _json.dumps(
+                {"prev": prev_gen, "srcs": srcs, "dsts": dsts,
+                 "new_ids": sorted(set(new_node_ids))}))
+            with self.conn:
+                self.set_meta(f"adj_delta:{gen}", payload)
+        except sqlite3.Error:
+            pass
+        finally:
+            for t in ("_adj_ins", "_adj_upd", "_adj_del"):
+                try:
+                    self.conn.execute(f"DROP TRIGGER IF EXISTS temp.{t}")
+                except sqlite3.Error:
+                    pass
 
     def _set_exported_roles(self, exported_ids: set[str]) -> None:
         """Make the cross-file `exported` role match `exported_ids` exactly — set on a node

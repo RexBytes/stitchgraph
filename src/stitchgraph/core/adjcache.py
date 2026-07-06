@@ -106,6 +106,88 @@ class AdjacencyCache:
                 os.path.join(path, "nodes.txt")) else []
         self.idx = {nid: i for i, nid in enumerate(self.ids)}
         self.n = len(self.ids)
+        # Row overlay (v3.40.0): after a replace_file, the loader PATCHES a stale
+        # mmap instead of rebuilding — per-node replacement rows for every node the
+        # edit touched (node_idx -> (dst_idx int64[], rel uint8[], conf bool[])),
+        # consulted by the BFS family and _degrees; the base arrays are never
+        # written. New nodes extend ids/idx past base_n and live only here.
+        self.base_n = self.n
+        self.overlay_fwd: dict[int, tuple] = {}
+        self.overlay_rev: dict[int, tuple] = {}
+        # sorted int64 key arrays for vectorized isin (None until a delta lands)
+        self._ov_fwd_keys: object = None
+        self._ov_rev_keys: object = None
+
+    @property
+    def has_overlay(self) -> bool:
+        return bool(self.overlay_fwd) or bool(self.overlay_rev)
+
+    def apply_delta(self, store: Store, srcs: list[str], dsts: list[str],
+                    new_ids: list[str]) -> bool:
+        """Patch this cache to the store's CURRENT state given the union of touched
+        rows from the adj_delta chain. Returns False (leave the cache unused) on
+        anything unrepresentable — the caller then falls back to a full rebuild."""
+        rel_code = {name: i for i, name in enumerate(self.manifest["relations"])}
+        from .envelope import Provenance
+        extracted = Provenance.EXTRACTED.value
+        for nid in sorted(set(new_ids) - set(self.idx)):
+            self.idx[nid] = len(self.ids)
+            self.ids.append(nid)
+        self.n = len(self.ids)
+
+        def _rows(id_list: list[str], by_src: bool) -> dict[int, tuple] | None:
+            out: dict[int, tuple] = {}
+            col = "src" if by_src else "dst_id"
+            other = "dst_id" if by_src else "src"
+            for i in range(0, len(id_list), 500):
+                chunk = id_list[i:i + 500]
+                q = (f"SELECT {col}, {other}, relation, provenance FROM edges "
+                     f"WHERE dst_id IS NOT NULL AND {col} IN "
+                     f"({','.join('?' * len(chunk))})")
+                grouped: dict[str, list] = {c: [] for c in chunk}
+                for key, nbr, rel, prov in store.conn.execute(q, chunk):
+                    grouped.setdefault(key, []).append((nbr, rel, prov))
+                for key, rows in grouped.items():
+                    ki = self.idx.get(key)
+                    if ki is None:
+                        continue  # touched then deleted and never re-added: no row
+                    nbrs, rels, confs = [], [], []
+                    for nbr, rel, prov in rows:
+                        ni = self.idx.get(nbr)
+                        if ni is None:
+                            continue  # edge to a node outside the graph (defensive)
+                        code = rel_code.get(rel)
+                        if code is None:
+                            return None  # relation unknown to this manifest: rebuild
+                        nbrs.append(ni)
+                        rels.append(code)
+                        confs.append(prov == extracted)
+                    out[ki] = (_np.array(nbrs, _np.int64),
+                               _np.array(rels, _np.uint8),
+                               _np.array(confs, bool))
+            return out
+
+        # Every touched src needs a fwd row (empty if all its edges vanished); every
+        # touched dst needs a rev row; NEW nodes need both (they may be only-ever
+        # targets or only-ever sources).
+        fwd_ids = sorted(set(srcs) | set(new_ids))
+        rev_ids = sorted(set(dsts) | set(new_ids))
+        fwd = _rows(fwd_ids, by_src=True)
+        rev = _rows(rev_ids, by_src=False)
+        if fwd is None or rev is None:
+            return False
+        empty = (_np.empty(0, _np.int64), _np.empty(0, _np.uint8), _np.empty(0, bool))
+        for nid in fwd_ids:
+            ki = self.idx.get(nid)
+            if ki is not None:
+                self.overlay_fwd[ki] = fwd.get(ki, empty)
+        for nid in rev_ids:
+            ki = self.idx.get(nid)
+            if ki is not None:
+                self.overlay_rev[ki] = rev.get(ki, empty)
+        self._ov_fwd_keys = _np.array(sorted(self.overlay_fwd), _np.int64)
+        self._ov_rev_keys = _np.array(sorted(self.overlay_rev), _np.int64)
+        return True
 
     # -- helpers -------------------------------------------------------------
     def _rel_mask(self, relations: Iterable[Relation]):
@@ -122,51 +204,103 @@ class AdjacencyCache:
         found = sorted({i for s in seeds if (i := self.idx.get(s)) is not None})
         return _np.array(found, _np.int64)
 
-    def _bfs(self, indptr, indices, rel, conf, seeds, allowed, confident_only):
+    def _split_frontier(self, frontier, ov_keys):
+        """(base_frontier, overlay_frontier): overlay rows — and NEW nodes past
+        base_n, which have no base indptr slot at all — must never reach the
+        vectorized base gather."""
+        if ov_keys is not None and ov_keys.size:
+            m = _np.isin(frontier, ov_keys)
+            if self.n > self.base_n:
+                m |= frontier >= self.base_n
+            if m.any():
+                return frontier[~m], frontier[m]
+        elif self.n > self.base_n:
+            m = frontier >= self.base_n
+            if m.any():
+                return frontier[~m], frontier[m]
+        return frontier, None
+
+    def _ov_neighbours(self, node, overlay, allowed, confident_only):
+        row = overlay.get(int(node))
+        if row is None:
+            return None  # a new node with no overlay row: no edges
+        nbrs, rels, confs = row
+        if not nbrs.size:
+            return None
+        m = allowed[rels]
+        if confident_only:
+            m = m & confs
+        return nbrs[m]
+
+    def _bfs(self, indptr, indices, rel, conf, seeds, allowed, confident_only,
+             overlay=None, ov_keys=None):
         seen = _np.zeros(self.n, bool)
         seed_arr = self._seed_array(seeds)
         seen[seed_arr] = True
         frontier = seed_arr
         while frontier.size:
+            frontier, ov_front = self._split_frontier(frontier, ov_keys)
             starts = indptr[frontier]
             counts = (indptr[frontier + 1] - starts).astype(_np.int64)
             total = int(counts.sum())
-            if total == 0:
+            parts = []
+            if total:
+                # Gather every neighbour slice of the frontier in one shot (the SpMV
+                # step): e_idx enumerates each row's [start, start+count) back to back.
+                offs = _np.repeat(
+                    starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])), counts)
+                e_idx = _np.arange(total, dtype=_np.int64) + offs
+                mask = allowed[rel[e_idx]]
+                if confident_only:
+                    # packed-bit probe: bit i of the conf mask, no unpacking
+                    mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
+                parts.append(indices[e_idx[mask]])
+            if ov_front is not None:
+                for f in ov_front.tolist():  # overlay is small (<= patch threshold)
+                    nb = self._ov_neighbours(f, overlay or {}, allowed, confident_only)
+                    if nb is not None:
+                        parts.append(nb)
+            if not parts:
                 break
-            # Gather every neighbour slice of the frontier in one shot (the SpMV step):
-            # e_idx enumerates each row's [start, start+count) range back to back.
-            offs = _np.repeat(starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])),
-                              counts)
-            e_idx = _np.arange(total, dtype=_np.int64) + offs
-            mask = allowed[rel[e_idx]]
-            if confident_only:
-                # packed-bit probe: bit i of the conf mask, no unpacking
-                mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
-            neigh = indices[e_idx[mask]]
+            neigh = parts[0] if len(parts) == 1 else _np.concatenate(parts)
             new = neigh[~seen[neigh]]
             seen[new] = True
             frontier = _np.unique(new)
         return seen
 
-    def _degrees(self, indptr, rel, conf, relations, confident_only=False):
+    def _degrees(self, indptr, rel, conf, relations, confident_only=False,
+                 overlay=None):
         allowed = self._rel_mask(relations)
         mask = allowed[_np.asarray(rel)]
         if confident_only:
             e = _np.arange(len(mask), dtype=_np.int64)
             mask &= ((conf[e >> 3] >> (7 - (e & 7))) & 1).astype(bool)
-        if not len(mask):
-            return {}
-        starts = _np.minimum(indptr[:-1], len(mask) - 1)  # reduceat needs in-range
-        counts = _np.add.reduceat(mask.astype(_np.int64), starts)
-        counts[indptr[:-1] == indptr[1:]] = 0  # empty rows: reduceat repeats next value
-        return {self.ids[i]: int(counts[i]) for i in _np.nonzero(counts)[0]}
+        out: dict[str, int] = {}
+        if len(mask):
+            starts = _np.minimum(indptr[:-1], len(mask) - 1)  # reduceat needs in-range
+            counts = _np.add.reduceat(mask.astype(_np.int64), starts)
+            counts[indptr[:-1] == indptr[1:]] = 0  # empty rows: reduceat repeats next
+            out = {self.ids[i]: int(counts[i]) for i in _np.nonzero(counts)[0]}
+        # Overlay rows REPLACE their base counts (v3.40.0 incremental refresh);
+        # new nodes past base_n exist only here.
+        for k, (_nbrs, rels, confs) in (overlay or {}).items():
+            m = allowed[rels]
+            if confident_only:
+                m = m & confs
+            c = int(m.sum())
+            if c:
+                out[self.ids[k]] = c
+            else:
+                out.pop(self.ids[k], None)
+        return out
 
     # -- the reach.py mirrors ------------------------------------------------
     def reachable(self, seeds: Iterable[str], relations: Iterable[Relation],
                   confident_only: bool = False) -> set[str]:
         seen = self._bfs(self.fwd_indptr, self.fwd_indices, self.fwd_rel,
                          self.fwd_conf, seeds, self._rel_mask(relations),
-                         confident_only)
+                         confident_only, overlay=self.overlay_fwd,
+                         ov_keys=self._ov_fwd_keys)
         return {self.ids[i] for i in _np.nonzero(seen)[0]}
 
     def reachable_many(self, seed_groups: list[set[str]],
@@ -196,19 +330,33 @@ class AdjacencyCache:
                 labels[idx] |= _np.uint64(1 << g)
         frontier = _np.nonzero(labels)[0]
         while frontier.size:
+            frontier, ov_front = self._split_frontier(frontier, self._ov_fwd_keys)
             starts = indptr[frontier]
             counts = (indptr[frontier + 1] - starts).astype(_np.int64)
             total = int(counts.sum())
-            if total == 0:
+            neigh_parts, contrib_parts = [], []
+            if total:
+                offs = _np.repeat(
+                    starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])), counts)
+                e_idx = _np.arange(total, dtype=_np.int64) + offs
+                mask = allowed[rel[e_idx]]
+                if confident_only:
+                    mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
+                neigh_parts.append(indices[e_idx[mask]])
+                contrib_parts.append(labels[_np.repeat(frontier, counts)[mask]])
+            if ov_front is not None:
+                for f in ov_front.tolist():
+                    nb = self._ov_neighbours(f, self.overlay_fwd, allowed,
+                                             confident_only)
+                    if nb is not None:
+                        neigh_parts.append(nb)
+                        contrib_parts.append(_np.full(nb.size, labels[f], _np.uint64))
+            if not neigh_parts:
                 break
-            offs = _np.repeat(starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])),
-                              counts)
-            e_idx = _np.arange(total, dtype=_np.int64) + offs
-            mask = allowed[rel[e_idx]]
-            if confident_only:
-                mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
-            neigh = indices[e_idx[mask]]
-            contrib = labels[_np.repeat(frontier, counts)[mask]]
+            neigh = (neigh_parts[0] if len(neigh_parts) == 1
+                     else _np.concatenate(neigh_parts))
+            contrib = (contrib_parts[0] if len(contrib_parts) == 1
+                       else _np.concatenate(contrib_parts))
             before = labels.copy()  # n × 8 B per round — cheap next to the edge gather
             _np.bitwise_or.at(labels, neigh, contrib)
             # A node re-enters the frontier only when it gained NEW lane bits, so
@@ -224,7 +372,8 @@ class AdjacencyCache:
                           relations: Iterable[Relation]) -> set[str]:
         targets = set(targets)
         seen = self._bfs(self.rev_indptr, self.rev_indices, self.rev_rel,
-                         self.rev_conf, targets, self._rel_mask(relations), False)
+                         self.rev_conf, targets, self._rel_mask(relations), False,
+                         overlay=self.overlay_rev, ov_keys=self._ov_rev_keys)
         out = {self.ids[i] for i in _np.nonzero(seen)[0]}
         out.difference_update(targets)  # blast radius excludes the targets themselves
         return out
@@ -232,12 +381,12 @@ class AdjacencyCache:
     def fan_in(self, relations: Iterable[Relation],
                confident_only: bool = False) -> dict[str, int]:
         return self._degrees(self.rev_indptr, self.rev_rel, self.rev_conf, relations,
-                             confident_only)
+                             confident_only, overlay=self.overlay_rev)
 
     def fan_out(self, relations: Iterable[Relation],
                 confident_only: bool = False) -> dict[str, int]:
         return self._degrees(self.fwd_indptr, self.fwd_rel, self.fwd_conf, relations,
-                             confident_only)
+                             confident_only, overlay=self.overlay_fwd)
 
     def _filtered_csr(self, relations: Iterable[Relation], *, drop_self: bool = False):
         """Materialise a relation-filtered forward CSR (indptr, indices, rows) so the
@@ -524,6 +673,46 @@ def load_cache(store: Store, *, build: bool = True) -> AdjacencyCache | None:
         return None
 
     cache = _try_open()
+    if cache is not None:
+        return cache
+
+    def _try_patch() -> AdjacencyCache | None:
+        """Incremental refresh (v3.40.0): when the sidecar is stale by a chain of
+        replace_file edits whose touched rows were captured (adj_delta:{g} metas),
+        patch a row overlay instead of paying the full rebuild (~2 min at HA
+        scale). Any gap, tombstone, oversize, or error -> None (full rebuild)."""
+        import json as _json
+        try:
+            mtime = os.path.getmtime(os.path.join(target, "manifest.json"))
+            cache = AdjacencyCache(target)
+            cg = int(cache.manifest.get("generation", "-1"))
+            cur = int(gen)
+            if not (0 <= cg < cur) or cur - cg > 64:
+                return None
+            srcs: set[str] = set()
+            dsts: set[str] = set()
+            new_ids: set[str] = set()
+            for g in range(cg + 1, cur + 1):
+                raw = store.get_meta(f"adj_delta:{g}")
+                if not raw or raw == "FULL":
+                    return None
+                d = _json.loads(raw)
+                srcs.update(d.get("srcs", ()))
+                dsts.update(d.get("dsts", ()))
+                new_ids.update(d.get("new_ids", ()))
+            if len(srcs) + len(dsts) + len(new_ids) > 2048:
+                return None
+            if not cache.apply_delta(store, sorted(srcs), sorted(dsts),
+                                     sorted(new_ids)):
+                return None
+            if cache.n != n_nodes:
+                return None  # id drift the delta chain didn't explain: rebuild
+            _loaded[target] = ((gen, n_nodes, mtime), cache)
+            return cache
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            return None
+
+    cache = _try_patch()
     if cache is not None:
         return cache
     if not build or _build_failed.get(target) == gen or not _config_allows(store):
