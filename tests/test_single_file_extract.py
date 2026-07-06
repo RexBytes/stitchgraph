@@ -159,3 +159,88 @@ def test_subclass_of_other_file_converges(tmp_path):
         def main():
             return helper(None) or LIMIT
     """))
+
+
+# -- the shipped dispatcher (reindex_singlefile) ------------------------------
+
+def _converge_dispatch(tmp_path, edit_rel, new_content):
+    """Same edit through the SHIPPED fast path vs whole-project incremental."""
+    from stitchgraph.core.operations import reindex_singlefile
+    ra, rb = _tree(tmp_path, "a"), _tree(tmp_path, "b")
+    sa = sg.Store(str(tmp_path / "a.db"))
+    sb = sg.Store(str(tmp_path / "b.db"))
+    assert sg.reindex(sa, str(ra), streaming=False).ok
+    assert sg.reindex(sb, str(rb), streaming=False).ok
+    (ra / edit_rel).write_text(new_content)
+    (rb / edit_rel).write_text(new_content)
+    r = reindex_singlefile(sa, str(ra), {edit_rel})
+    assert r is not None and r.ok, "the fast path must apply to this edit"
+    assert reindex_incremental(sb, str(rb), {edit_rel}).ok
+    ga, gb = _graph(sa), _graph(sb)
+    sa.close()
+    sb.close()
+    for part, a, b in zip(("nodes", "edges", "holes", "symtab"), ga, gb, strict=True):
+        assert a == b, (f"{part} diverge:\n  single-only: {sorted(a - b)}\n"
+                        f"  incremental-only: {sorted(b - a)}")
+
+
+def test_dispatch_export_surface_edit_converges(tmp_path):
+    """The cross-file role direction: changing an __init__'s __all__ must re-tag
+    OTHER files' nodes exactly as the whole-project path does (the store-side
+    exported_ids recomputation, incl. the ancestor-closure rule)."""
+    _converge_dispatch(tmp_path, "pkg/__init__.py",
+                       "from .svc import Service, helper\n"
+                       "__all__ = ['Service', 'helper']\n")
+
+
+def test_dispatch_body_edit_converges(tmp_path):
+    _converge_dispatch(tmp_path, "pkg/app.py", textwrap.dedent("""
+        from .svc import helper, LIMIT
+
+        def main():
+            return helper(2) or LIMIT
+
+        def work():
+            return 3
+    """))
+
+
+def test_dispatch_declines_resolver_shapes(tmp_path):
+    """The honest gate: route/event/ORM/SQL shapes must decline the fast path
+    (returns None) so the whole-project resolvers keep running."""
+    from stitchgraph.core.operations import reindex_singlefile
+    root = _tree(tmp_path, "a")
+    store = sg.Store(str(tmp_path / "a.db"))
+    assert sg.reindex(store, str(root), streaming=False).ok
+    for content in (
+        "def h(request):\n    return 1\n\nurlpatterns = [path('u/', h)]\n",
+        "class M:\n    def go(self, sig, cb):\n        sig.connect(cb)\n",
+        "Q = \"SELECT * FROM users\"\n",
+    ):
+        (root / "pkg" / "app.py").write_text(content)
+        assert reindex_singlefile(store, str(root), {"pkg/app.py"}) is None, content
+    store.close()
+
+
+def test_dispatch_declines_pre_symtab_index(tmp_path):
+    from stitchgraph.core.operations import reindex_singlefile
+    root = _tree(tmp_path, "a")
+    store = sg.Store(str(tmp_path / "a.db"))
+    assert sg.reindex(store, str(root), streaming=False).ok
+    store.conn.execute("DELETE FROM meta WHERE key = 'packages'")  # old index
+    store.commit()
+    (root / "pkg" / "app.py").write_text("def main():\n    return 1\n")
+    assert reindex_singlefile(store, str(root), {"pkg/app.py"}) is None
+    store.close()
+
+
+def test_dispatch_declines_non_python_and_syntax_error(tmp_path):
+    from stitchgraph.core.operations import reindex_singlefile
+    root = _tree(tmp_path, "a")
+    store = sg.Store(str(tmp_path / "a.db"))
+    assert sg.reindex(store, str(root), streaming=False).ok
+    (root / "notes.txt").write_text("hello")
+    assert reindex_singlefile(store, str(root), {"notes.txt"}) is None
+    (root / "pkg" / "app.py").write_text("def broken(:\n")
+    assert reindex_singlefile(store, str(root), {"pkg/app.py"}) is None
+    store.close()

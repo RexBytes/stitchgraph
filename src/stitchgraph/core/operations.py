@@ -2170,6 +2170,169 @@ def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
     return res
 
 
+def reindex_singlefile(store: Store, path: str, changed: set[str]) -> Result | None:
+    """The single-file fast path (research/21 stage C): extract ONLY the changed
+    Python files against the persisted symbol table and land them via
+    `replace_file`. Returns None when NOT APPLICABLE — the caller falls back to
+    `reindex_incremental` / full reindex — so every gate here is conservative:
+
+    * every changed file must be an existing, parseable `.py` file;
+    * the index must carry the persisted symbol table (a pre-3.43 index doesn't);
+    * neither the file's OLD graph rows nor its NEW content may involve the
+      cross-language resolvers (route/event/ORM/SQL shapes, spec-derived
+      artifacts) — those still need whole-project context, and a missed
+      resolver edge would silently diverge from a full reindex.
+    """
+    import ast
+    import os
+
+    from .extract.single import extract_single_file
+
+    if not (isinstance(path, str) and os.path.isdir(path)):
+        return None
+    if not changed or any(not rel.endswith(".py") for rel in changed):
+        return None
+    if store.get_meta("packages") is None:
+        return None  # index predates the persisted symbol table: full path only
+    abs_root = os.path.abspath(path)
+    parsed: list[tuple[str, ast.Module]] = []
+    for rel in sorted(changed):
+        p = os.path.join(abs_root, rel)
+        if not os.path.isfile(p):
+            return None  # deletions/renames keep the documented full fallback
+        try:
+            with open(p, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+            return None  # let the whole-project path apply its skip machinery
+        if _resolver_sensitive(tree) or _resolver_artifacts_touch(store, rel):
+            return None
+        parsed.append((rel, tree))
+
+    for rel, _tree in parsed:
+        try:
+            nodes, edges, contribution = extract_single_file(store, abs_root, rel)
+        except (SyntaxError, OSError, RecursionError):
+            return None
+        exported_ids = _exported_ids_for_single(store, rel, nodes, edges,
+                                                contribution)
+        store.replace_file(rel, nodes, edges, exported_ids=exported_ids,
+                           symtab=contribution)
+    store.analyze()
+    store.set_meta("root", abs_root)
+    return ok({"replaced": len(parsed), "nodes": store.node_count(),
+               "holes": store.unresolved_count(), "mode": "single-file"},
+              files=len(parsed), nodes=store.node_count(), replaced=len(parsed))
+
+
+def _resolver_sensitive(tree) -> bool:
+    """Conservative AST gate: True when the file contains ANY shape one of the
+    Python-relevant cross-language resolvers scans for (routes' verb/URLconf
+    calls, events' emit/handle/connect methods, ORM model bases, SQL string
+    literals). False positives just cost the fast path; a false negative would
+    silently diverge — so every set here is a SUPERSET of its resolver's."""
+    import ast
+    verbs = {"get", "post", "put", "delete", "patch", "head", "options", "route"}
+    events = {"emit", "publish", "send", "dispatch", "fire",
+              "on", "subscribe", "addEventListener", "add_listener", "connect"}
+    urlconf = {"path", "re_path", "url", "add_url_rule"}
+    orm_bases = {"Model", "Base", "DeclarativeBase"}
+    sql_heads = ("SELECT", "INSERT", "UPDATE", "DELETE", "CREATE")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Attribute) and f.attr in (verbs | events):
+                return True
+            if isinstance(f, ast.Name) and f.id in urlconf and len(node.args) >= 2:
+                return True
+        elif isinstance(node, ast.ClassDef):
+            for b in node.bases:
+                nm = b.attr if isinstance(b, ast.Attribute) else (
+                    b.id if isinstance(b, ast.Name) else None)
+                if nm in orm_bases:
+                    return True
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and node.value.lstrip()[:6].upper().startswith(sql_heads)):
+            return True
+    return False
+
+
+def _resolver_artifacts_touch(store: Store, rel: str) -> bool:
+    """True when resolver-derived rows (source beyond the two extractors) are
+    attributed to this file or point into it — re-deriving those needs the
+    whole-project resolver pass, so the fast path must decline."""
+    row = store.conn.execute(
+        """SELECT 1 FROM edges
+            WHERE source NOT IN ('ast', 'tree-sitter')
+              AND (file = ? OR (dst_id IS NOT NULL AND dst_id IN
+                   (SELECT id FROM nodes WHERE file = ?))) LIMIT 1""",
+        (rel, rel)).fetchone()
+    if row:
+        return True
+    return store.conn.execute(
+        """SELECT 1 FROM edge_groups g
+            WHERE g.source NOT IN ('ast', 'tree-sitter')
+              AND (g.file = ? OR EXISTS
+                   (SELECT 1 FROM cand_members m JOIN nodes n ON n.id = m.dst_id
+                     WHERE m.set_id = g.set_id AND n.file = ?)) LIMIT 1""",
+        (rel, rel)).fetchone() is not None
+
+
+def _exported_ids_for_single(store: Store, rel: str, fresh_nodes: list,
+                             fresh_edges: list,
+                             contribution: dict[str, set[str]]) -> set[str]:
+    """The COMPLETE post-edit `exported` surface for replace_file's exact-match
+    contract, from the store + the fresh extract: `_apply_entrypoint_roles`'s
+    name/kind rule, public methods of exported classes, and
+    `_seed_exported_inherited_methods`'s first-party ancestor closure."""
+    from .model import Relation
+    union = store.symtab_names("export", exclude_file=rel)
+    union |= contribution.get("export", set())
+    fn, mth, cls = (NodeKind.FUNCTION.value, NodeKind.METHOD.value,
+                    NodeKind.CLASS.value)
+    universe = [(r["id"], r["kind"], r["name"]) for r in store.conn.execute(
+        "SELECT id, kind, name FROM nodes WHERE file != ?", (rel,))
+        if isinstance(r["id"], str) and isinstance(r["name"], str)]
+    universe += [(n.id, n.kind.value, n.name) for n in fresh_nodes]
+    ids: set[str] = set()
+    class_ids: set[str] = set()
+    exported_classes: set[str] = set()
+    for nid, kind, name in universe:
+        if kind == cls:
+            class_ids.add(nid)
+            if name in union:
+                exported_classes.add(nid)
+        if name in union and kind in (fn, mth, cls):
+            ids.add(nid)
+    # First-party ancestor closure of exported classes (INHERITS, both sides
+    # resolved to known classes) — store rows for other files + fresh edges.
+    bases: dict[str, set[str]] = {}
+    inh = Relation.INHERITS.value
+    for src, dst in store.conn.execute(
+            """SELECT src, dst_id FROM edges_all
+                WHERE relation = ? AND file != ?""", (inh, rel)):
+        if src in class_ids and dst in class_ids and src != dst:
+            bases.setdefault(src, set()).add(dst)
+    for e in fresh_edges:
+        if (e.relation is Relation.INHERITS and e.dst_id
+                and e.src in class_ids and e.dst_id in class_ids
+                and e.src != e.dst_id):
+            bases.setdefault(e.src, set()).add(e.dst_id)
+    ancestors: set[str] = set()
+    stack = [b for cid in exported_classes for b in bases.get(cid, ())]
+    while stack:
+        a = stack.pop()
+        if a not in ancestors:
+            ancestors.add(a)
+            stack.extend(bases.get(a, ()))
+    owner_ok = exported_classes | ancestors
+    for nid, kind, name in universe:
+        if (kind == mth and "." in nid and not name.startswith("_")
+                and nid.rsplit(".", 1)[0] in owner_ok):
+            ids.add(nid)
+    return ids
+
+
 def _persist_symtab(store: Store, xreport: dict) -> None:
     """Write the extractor's per-file symbol-table record + the import-internality
     meta (research/21). Both reindex paths call this after nodes land, so a later
