@@ -433,17 +433,35 @@ class Store:
         # find_stale's confidence to 0.78 (panel R33A). Carry the role across for every
         # id that survives the re-extraction (add_role no-ops on a vanished id).
         old_rows = self.conn.execute(
-            "SELECT id, name, roles FROM nodes WHERE file = ?", (file,)).fetchall()
+            "SELECT id, kind, name, roles FROM nodes WHERE file = ?", (file,)).fetchall()
         runtime_ids = {
             row["id"] for row in old_rows
             if "runtime" in (row["roles"] or "").split(",")
         }
-        # Expand-affected universe (research/20): every node name/id this update
-        # adds OR removes. A compressed group is only touched by this edit if its
-        # dst_symbol is one of these names or its candidate set contains one of
-        # these ids — everything else keeps a provably-unchanged set.
-        affected_names = ({r["name"] for r in old_rows} | {n.name for n in nodes})
-        affected_ids = ({r["id"] for r in old_rows} | {n.id for n in nodes})
+        # Expand-affected universe (research/20/21): only what this edit actually
+        # CHANGES about the symbol universe. The first cut used every name/id the
+        # file defines (old ∪ new) — at Home Assistant scale a component file
+        # defines the graph's hottest homonyms (`async_setup`, `name`, …), so a
+        # one-function edit tried to flatten 3,651 groups into 11.5M rows and
+        # filled the disk (field probe, 2026-07-06). A group's candidate set can
+        # only change when a NAME's defining-id set changes (add/remove/re-id) or
+        # an ID it contains is removed or changes kind (dangling / the
+        # module-retarget case) — names and ids the edit leaves untouched keep
+        # provably-identical sets and stay compressed.
+        old_by_name: dict[str, set[str]] = {}
+        old_kind: dict[str, set[str]] = {}
+        for r in old_rows:
+            old_by_name.setdefault(r["name"], set()).add(r["id"])
+            old_kind.setdefault(r["id"], set()).add(r["kind"])
+        new_by_name: dict[str, set[str]] = {}
+        new_kind: dict[str, set[str]] = {}
+        for n in nodes:
+            new_by_name.setdefault(n.name, set()).add(n.id)
+            new_kind.setdefault(n.id, set()).add(n.kind.value)
+        affected_names = {nm for nm in (old_by_name.keys() | new_by_name.keys())
+                          if old_by_name.get(nm, set()) != new_by_name.get(nm, set())}
+        affected_ids = ({i for i in (old_kind.keys() | new_kind.keys())
+                         if old_kind.get(i, set()) != new_kind.get(i, set())})
         # Sidecar-delta capture (v3.40.0): TEMP TRIGGERS record every edge row this
         # update touches — src AND dst_id, across the worklist/dangling/rewiden/
         # override side effects, complete by construction — so the adjacency
