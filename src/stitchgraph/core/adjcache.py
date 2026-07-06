@@ -7,14 +7,27 @@ This module derives that adjacency ONCE into a compact binary sidecar next to th
 index (`<db>.adjcache/`) and memory-maps it thereafter: 137 MB on disk for the same
 16M-edge graph, 0.03 s to open, full liveness BFS in <1 s at ~350 MB RSS.
 
-Layout (one little-endian .npy per array, `np.load(mmap_mode="r")`-able):
+Layout v2 (one little-endian .npy per array, `np.load(mmap_mode="r")`-able):
   manifest.json  {version, generation, node_count, edge_count, relations}
   nodes.txt      node ids, newline-separated; line number == int id (sorted ids)
-  fwd_indptr.npy int64[N+1]  CSR over ALL resolved edges, rows = src
-  fwd_indices.npy int32[E]
-  fwd_rel.npy    uint8[E]    relation code = index into manifest["relations"]
-  fwd_conf.npy   uint8[ceil(E/8)]  packed per-edge `provenance == extracted` bit
+  fwd_indptr.npy int64[N+1]  CSR over the FLAT resolved edges, rows = src
+  fwd_indices.npy int32[F]
+  fwd_rel.npy    uint8[F]    relation code = index into manifest["relations"]
+  fwd_conf.npy   uint8[ceil(F/8)]  packed per-edge `provenance == extracted` bit
   rev_*          the same four, rows = dst (for fan-in / blast radius)
+  -- compressed groups (research/20), stored SHARED instead of expanded: a group
+  -- row is (src, relation, candidate set); the interned set's members live once.
+  grp_indptr.npy int64[N+1]  group rows per src   grp_set/grp_rel/grp_conf[G]
+  set_indptr.npy int64[S+1]  members per set      set_members.npy int32[M]
+  setuse_*       the group rows re-sorted by set (indptr[S+1], src/rel/conf[G])
+  mem_*          set ids containing each node     (indptr[N+1], mem_set int32[M])
+
+The v1 sidecar expanded every group into per-member rows: at Home Assistant
+scale that is 16.1M CSR rows (~290 MB of edge arrays, ~74 s of per-row build
+loop) for a graph whose shared form is 175k flat rows + 161k group rows + 201k
+member entries (~8 MB). The sweeps do the expansion where it is free — the BFS
+family deduplicates candidate sets per frontier before touching members, so a
+64-arm homonym set referenced by 900 frontier sites is gathered once, not 900×.
 
 The provenance bitmask is the 0/1-matrix idea in its right place: 2 MB for 16M
 edges, probed in the BFS inner loop with a shift-and-mask — it is what makes the
@@ -59,7 +72,7 @@ if TYPE_CHECKING:
     from .model import Relation
     from .store import Store
 
-_VERSION = 1
+_VERSION = 2  # v2 = group-sharing layout; v1 sidecars are refused and rebuilt
 _SUFFIX = ".adjcache"
 _GENERATION_KEY = "generation"
 
@@ -73,6 +86,20 @@ _build_failed: dict[str, str] = {}  # store path -> generation that failed
 
 def current_generation(store: Store) -> str:
     return store.get_meta(_GENERATION_KEY) or "0"
+
+
+def _gather_rows(indptr, frontier):
+    """Enumerate every entry index of the CSR rows in `frontier`, back to back
+    (the SpMV gather all sweeps share): row r contributes [indptr[r], indptr[r+1]).
+    Returns (entry_indices int64[T], per-row counts int64[len(frontier)]); the
+    entry array is None when the frontier's rows are all empty."""
+    starts = indptr[frontier]
+    counts = (indptr[frontier + 1] - starts).astype(_np.int64)
+    total = int(counts.sum())
+    if not total:
+        return None, counts
+    offs = _np.repeat(starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])), counts)
+    return _np.arange(total, dtype=_np.int64) + offs, counts
 
 
 def _intarray(arr):
@@ -101,6 +128,19 @@ class AdjacencyCache:
         self.fwd_rel, self.fwd_conf = ld("fwd_rel.npy"), ld("fwd_conf.npy")
         self.rev_indptr, self.rev_indices = ld("rev_indptr.npy"), ld("rev_indices.npy")
         self.rev_rel, self.rev_conf = ld("rev_rel.npy"), ld("rev_conf.npy")
+        # group-sharing arrays (v2): per-src group rows, the interned sets they
+        # reference, the same rows re-sorted by set (the reverse hop), and the
+        # per-node containing-sets transpose. All possibly empty.
+        self.grp_indptr, self.grp_set = ld("grp_indptr.npy"), ld("grp_set.npy")
+        self.grp_rel, self.grp_conf = ld("grp_rel.npy"), ld("grp_conf.npy")
+        self.set_indptr, self.set_members = ld("set_indptr.npy"), ld("set_members.npy")
+        self.setuse_indptr, self.setuse_src = (ld("setuse_indptr.npy"),
+                                               ld("setuse_src.npy"))
+        self.setuse_rel, self.setuse_conf = ld("setuse_rel.npy"), ld("setuse_conf.npy")
+        self.mem_indptr, self.mem_set = ld("mem_indptr.npy"), ld("mem_set.npy")
+        self.set_sizes = _np.diff(self.set_indptr)
+        self.n_sets = len(self.set_indptr) - 1
+        self._mem_keys_cache = None  # lazy sorted (node,set) membership keys
         with open(os.path.join(path, "nodes.txt"), encoding="utf-8") as f:
             self.ids = f.read().split("\n") if os.path.getsize(
                 os.path.join(path, "nodes.txt")) else []
@@ -232,29 +272,88 @@ class AdjacencyCache:
             m = m & confs
         return nbrs[m]
 
+    # -- group gathers (v2): the two-level hop that keeps sets shared ---------
+    def _grp_rows(self, frontier, allowed, confident_only):
+        """Hop one of every forward group gather: the frontier's group rows,
+        masked exactly like flat edges. Returns (kept row indices, the frontier
+        node each came from), or (None, None)."""
+        g_idx, counts = _gather_rows(self.grp_indptr, frontier)
+        if g_idx is None:
+            return None, None
+        mask = allowed[self.grp_rel[g_idx]]
+        if confident_only:
+            mask &= ((self.grp_conf[g_idx >> 3] >> (7 - (g_idx & 7))) & 1).astype(bool)
+        if not mask.any():
+            return None, None
+        return g_idx[mask], _np.repeat(frontier, counts)[mask]
+
+    def _set_slices(self, set_ids):
+        """Concatenated members of `set_ids` (dups allowed) + per-set counts."""
+        m_idx, counts = _gather_rows(self.set_indptr, set_ids)
+        if m_idx is None:
+            return _np.empty(0, _np.int64), counts
+        return _np.asarray(self.set_members)[m_idx].astype(_np.int64), counts
+
+    def _fwd_grp_neighbours(self, frontier, allowed, confident_only):
+        """Frontier -> masked group rows -> UNIQUE candidate sets -> members.
+        Deduplicating sets before expansion is the point of the shared layout: a
+        64-arm homonym set referenced by 900 frontier sites expands once."""
+        g_idx, _rows = self._grp_rows(frontier, allowed, confident_only)
+        if g_idx is None:
+            return None
+        members, _counts = self._set_slices(
+            _np.unique(_np.asarray(self.grp_set)[g_idx]))
+        return members if members.size else None
+
+    def _rev_grp_neighbours(self, frontier, allowed, confident_only):
+        """Dst frontier -> sets CONTAINING each node (membership is
+        relation-free) -> masked group rows using those sets -> their srcs."""
+        m_idx, _counts = _gather_rows(self.mem_indptr, frontier)
+        if m_idx is None:
+            return None
+        us = _np.unique(_np.asarray(self.mem_set)[m_idx])
+        su_idx, _su_counts = _gather_rows(self.setuse_indptr, us)
+        if su_idx is None:
+            return None
+        mask = allowed[self.setuse_rel[su_idx]]
+        if confident_only:
+            mask &= ((self.setuse_conf[su_idx >> 3] >> (7 - (su_idx & 7)))
+                     & 1).astype(bool)
+        out = _np.asarray(self.setuse_src)[su_idx[mask]]
+        return out.astype(_np.int64) if out.size else None
+
+    def _member_keys(self):
+        """Sorted packed (node * n_sets + set) membership keys, built lazily once
+        per handle — the vectorised `src in its own candidate set?` probe."""
+        if self._mem_keys_cache is None:
+            mem_nodes = _np.repeat(_np.arange(self.base_n, dtype=_np.int64),
+                                   _np.diff(self.mem_indptr))
+            self._mem_keys_cache = _np.sort(
+                mem_nodes * max(self.n_sets, 1) + _np.asarray(self.mem_set))
+        return self._mem_keys_cache
+
     def _bfs(self, indptr, indices, rel, conf, seeds, allowed, confident_only,
-             overlay=None, ov_keys=None):
+             overlay=None, ov_keys=None, grp=None):
         seen = _np.zeros(self.n, bool)
         seed_arr = self._seed_array(seeds)
         seen[seed_arr] = True
         frontier = seed_arr
         while frontier.size:
             frontier, ov_front = self._split_frontier(frontier, ov_keys)
-            starts = indptr[frontier]
-            counts = (indptr[frontier + 1] - starts).astype(_np.int64)
-            total = int(counts.sum())
             parts = []
-            if total:
-                # Gather every neighbour slice of the frontier in one shot (the SpMV
-                # step): e_idx enumerates each row's [start, start+count) back to back.
-                offs = _np.repeat(
-                    starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])), counts)
-                e_idx = _np.arange(total, dtype=_np.int64) + offs
+            # Gather every neighbour slice of the frontier in one shot (the SpMV
+            # step): e_idx enumerates each row's [start, start+count) back to back.
+            e_idx, _counts = _gather_rows(indptr, frontier)
+            if e_idx is not None:
                 mask = allowed[rel[e_idx]]
                 if confident_only:
                     # packed-bit probe: bit i of the conf mask, no unpacking
                     mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
                 parts.append(indices[e_idx[mask]])
+            if grp is not None:
+                nb = grp(frontier, allowed, confident_only)
+                if nb is not None:
+                    parts.append(nb)
             if ov_front is not None:
                 for f in ov_front.tolist():  # overlay is small (<= patch threshold)
                     nb = self._ov_neighbours(f, overlay or {}, allowed, confident_only)
@@ -268,19 +367,53 @@ class AdjacencyCache:
             frontier = _np.unique(new)
         return seen
 
-    def _degrees(self, indptr, rel, conf, relations, confident_only=False,
-                 overlay=None):
-        allowed = self._rel_mask(relations)
+    @staticmethod
+    def _row_sums(indptr, weights):
+        """Per-row sums of an entry-aligned weight vector (the reduceat idiom
+        with the empty-row and out-of-range guards every caller needs)."""
+        sums = _np.zeros(len(indptr) - 1, _np.int64)
+        if len(weights):
+            starts = _np.minimum(indptr[:-1], len(weights) - 1)  # reduceat in-range
+            sums = _np.add.reduceat(weights.astype(_np.int64), starts)
+            sums[indptr[:-1] == indptr[1:]] = 0  # empty rows: reduceat repeats next
+        return sums
+
+    def _entry_mask(self, rel, conf, allowed, confident_only):
         mask = allowed[_np.asarray(rel)]
-        if confident_only:
+        if confident_only and len(mask):
             e = _np.arange(len(mask), dtype=_np.int64)
             mask &= ((conf[e >> 3] >> (7 - (e & 7))) & 1).astype(bool)
-        out: dict[str, int] = {}
-        if len(mask):
-            starts = _np.minimum(indptr[:-1], len(mask) - 1)  # reduceat needs in-range
-            counts = _np.add.reduceat(mask.astype(_np.int64), starts)
-            counts[indptr[:-1] == indptr[1:]] = 0  # empty rows: reduceat repeats next
-            out = {self.ids[i]: int(counts[i]) for i in _np.nonzero(counts)[0]}
+        return mask
+
+    def _fwd_grp_degrees(self, allowed, confident_only):
+        """Per-src count contributed by group rows: each masked row weighs its
+        whole candidate set."""
+        mask = self._entry_mask(self.grp_rel, self.grp_conf, allowed,
+                                confident_only)
+        if not len(mask):
+            return _np.zeros(self.base_n, _np.int64)
+        w = _np.asarray(self.set_sizes)[_np.asarray(self.grp_set)] * mask
+        return self._row_sums(self.grp_indptr, w)
+
+    def _rev_grp_degrees(self, allowed, confident_only):
+        """Per-dst count from groups: node v gains one edge per masked group row
+        whose set contains v — computed set-first (masked row count per set),
+        then summed over each node's containing sets."""
+        mask = self._entry_mask(self.setuse_rel, self.setuse_conf, allowed,
+                                confident_only)
+        if not len(mask) or not len(self.mem_set):
+            return _np.zeros(self.base_n, _np.int64)
+        per_set = self._row_sums(self.setuse_indptr, mask)
+        return self._row_sums(self.mem_indptr, per_set[_np.asarray(self.mem_set)])
+
+    def _degrees(self, indptr, rel, conf, relations, confident_only=False,
+                 overlay=None, grp_degrees=None):
+        allowed = self._rel_mask(relations)
+        counts = self._row_sums(
+            indptr, self._entry_mask(rel, conf, allowed, confident_only))
+        if grp_degrees is not None:
+            counts = counts + grp_degrees(allowed, confident_only)
+        out = {self.ids[i]: int(counts[i]) for i in _np.nonzero(counts)[0]}
         # Overlay rows REPLACE their base counts (v3.40.0 incremental refresh);
         # new nodes past base_n exist only here.
         for k, (_nbrs, rels, confs) in (overlay or {}).items():
@@ -300,7 +433,7 @@ class AdjacencyCache:
         seen = self._bfs(self.fwd_indptr, self.fwd_indices, self.fwd_rel,
                          self.fwd_conf, seeds, self._rel_mask(relations),
                          confident_only, overlay=self.overlay_fwd,
-                         ov_keys=self._ov_fwd_keys)
+                         ov_keys=self._ov_fwd_keys, grp=self._fwd_grp_neighbours)
         return {self.ids[i] for i in _np.nonzero(seen)[0]}
 
     def reachable_many(self, seed_groups: list[set[str]],
@@ -344,19 +477,27 @@ class AdjacencyCache:
         frontier = _np.nonzero(labels)[0]
         while frontier.size:
             frontier, ov_front = self._split_frontier(frontier, self._ov_fwd_keys)
-            starts = indptr[frontier]
-            counts = (indptr[frontier + 1] - starts).astype(_np.int64)
-            total = int(counts.sum())
             neigh_parts, contrib_parts = [], []
-            if total:
-                offs = _np.repeat(
-                    starts - _np.concatenate(([0], _np.cumsum(counts)[:-1])), counts)
-                e_idx = _np.arange(total, dtype=_np.int64) + offs
+            e_idx, counts = _gather_rows(indptr, frontier)
+            if e_idx is not None:
                 mask = allowed[rel[e_idx]]
                 if confident_only:
                     mask &= ((conf[e_idx >> 3] >> (7 - (e_idx & 7))) & 1).astype(bool)
                 neigh_parts.append(indices[e_idx[mask]])
                 contrib_parts.append(labels[_np.repeat(frontier, counts)[mask]])
+            # group hop, two-level like the BFS but label-carrying: OR the
+            # frontier labels into each touched SET, then broadcast the set's
+            # accumulated label to its members — one expansion per unique set.
+            g_idx, g_rows = self._grp_rows(frontier, allowed, confident_only)
+            if g_idx is not None:
+                sets = _np.asarray(self.grp_set)[g_idx]
+                set_label = _np.zeros(self.n_sets, _np.uint64)
+                _np.bitwise_or.at(set_label, sets, labels[g_rows])
+                us = _np.unique(sets)
+                members, m_counts = self._set_slices(us)
+                if members.size:
+                    neigh_parts.append(members)
+                    contrib_parts.append(_np.repeat(set_label[us], m_counts))
             if ov_front is not None:
                 for f in ov_front.tolist():
                     nb = self._ov_neighbours(f, self.overlay_fwd, allowed,
@@ -399,7 +540,8 @@ class AdjacencyCache:
         targets = set(targets)
         seen = self._bfs(self.rev_indptr, self.rev_indices, self.rev_rel,
                          self.rev_conf, targets, self._rel_mask(relations), False,
-                         overlay=self.overlay_rev, ov_keys=self._ov_rev_keys)
+                         overlay=self.overlay_rev, ov_keys=self._ov_rev_keys,
+                         grp=self._rev_grp_neighbours)
         out = {self.ids[i] for i in _np.nonzero(seen)[0]}
         out.difference_update(targets)  # blast radius excludes the targets themselves
         return out
@@ -407,25 +549,44 @@ class AdjacencyCache:
     def fan_in(self, relations: Iterable[Relation],
                confident_only: bool = False) -> dict[str, int]:
         return self._degrees(self.rev_indptr, self.rev_rel, self.rev_conf, relations,
-                             confident_only, overlay=self.overlay_rev)
+                             confident_only, overlay=self.overlay_rev,
+                             grp_degrees=self._rev_grp_degrees)
 
     def fan_out(self, relations: Iterable[Relation],
                 confident_only: bool = False) -> dict[str, int]:
         return self._degrees(self.fwd_indptr, self.fwd_rel, self.fwd_conf, relations,
-                             confident_only, overlay=self.overlay_fwd)
+                             confident_only, overlay=self.overlay_fwd,
+                             grp_degrees=self._fwd_grp_degrees)
 
     def _filtered_csr(self, relations: Iterable[Relation], *, drop_self: bool = False):
         """Materialise a relation-filtered forward CSR (indptr, indices, rows) so the
         Python traversals below touch only kept edges with no per-edge relation test.
-        Vectorised; the transient row array is int32[E]."""
+        Group rows are EXPANDED here — the per-edge walkers pay logical size
+        transiently while the disk stays shared. Within a row the order is flat
+        edges then group expansions in stored order: the edges_all UNION ALL
+        order the scan differential pins."""
         allowed = self._rel_mask(relations)
         mask = allowed[_np.asarray(self.fwd_rel)]
-        rows = _np.repeat(_np.arange(self.n, dtype=_np.int32),
+        rows = _np.repeat(_np.arange(self.base_n, dtype=_np.int32),
                           _np.diff(self.fwd_indptr))
         if drop_self:
             mask &= rows != _np.asarray(self.fwd_indices)
         rows = rows[mask]
         indices = _np.asarray(self.fwd_indices)[mask]
+        gmask = self._entry_mask(self.grp_rel, self.grp_conf, allowed, False)
+        kept = _np.nonzero(gmask)[0]
+        if kept.size:
+            g_rows = _np.repeat(_np.arange(self.base_n, dtype=_np.int32),
+                                _np.diff(self.grp_indptr))[kept]
+            members, counts = self._set_slices(_np.asarray(self.grp_set)[kept])
+            rows_g = _np.repeat(g_rows, counts)
+            indices_g = members.astype(_np.int32)
+            if drop_self:
+                keep2 = rows_g != indices_g
+                rows_g, indices_g = rows_g[keep2], indices_g[keep2]
+            order = _np.argsort(_np.concatenate((rows, rows_g)), kind="stable")
+            rows = _np.concatenate((rows, rows_g))[order]
+            indices = _np.concatenate((indices, indices_g))[order]
         indptr = _np.zeros(self.n + 1, _np.int64)
         _np.cumsum(_np.bincount(rows, minlength=self.n), out=indptr[1:])
         return indptr, indices, rows
@@ -433,11 +594,25 @@ class AdjacencyCache:
     def self_loops(self, relations: Iterable[Relation]) -> set[str]:
         """Node ids with a self-edge under `relations` (recursion markers for SCC)."""
         allowed = self._rel_mask(relations)
-        rows = _np.repeat(_np.arange(self.n, dtype=_np.int32),
+        rows = _np.repeat(_np.arange(self.base_n, dtype=_np.int32),
                           _np.diff(self.fwd_indptr))
         hit = rows[(rows == _np.asarray(self.fwd_indices))
                    & allowed[_np.asarray(self.fwd_rel)]]
-        return {self.ids[i] for i in _np.unique(hit)}
+        out = {self.ids[i] for i in _np.unique(hit)}
+        # A group self-loop is a src inside its own candidate set — probed via
+        # the packed (node, set) membership keys, no expansion.
+        gmask = allowed[_np.asarray(self.grp_rel)]
+        if gmask.any():
+            keys = self._member_keys()
+            if len(keys):
+                g_rows = _np.repeat(_np.arange(self.base_n, dtype=_np.int64),
+                                    _np.diff(self.grp_indptr))
+                q = (g_rows * max(self.n_sets, 1)
+                     + _np.asarray(self.grp_set, dtype=_np.int64))
+                pos = _np.minimum(_np.searchsorted(keys, q), len(keys) - 1)
+                found = gmask & (keys[pos] == q)
+                out |= {self.ids[i] for i in _np.unique(g_rows[found])}
+        return out
 
     def scc(self, seeds: Iterable[str],
             relations: Iterable[Relation]) -> list[list[str]]:
@@ -613,52 +788,100 @@ def build_cache(store: Store) -> bool:
     idx = {nid: i for i, nid in enumerate(ids)}
     n_nodes = len(ids)
 
-    cap = store.conn.execute("SELECT COUNT(*) FROM edges_all").fetchone()[0]
-    src = _np.empty(cap, _np.int32)
-    dst = _np.empty(cap, _np.int32)
-    rel = _np.empty(cap, _np.uint8)
-    conf = _np.empty(cap, _np.uint8)
-    cur = store.conn.execute(
+    def _read(query, cap, kinds):
+        """Fetch `query` rows into parallel arrays, translating each column
+        through the (idx | code | set_index | passthrough) map for its kind;
+        rows with any untranslatable key are skipped (R29A / corrupt-row
+        parity — an edge to a missing node or unknown relation contributes
+        nothing, flat or grouped)."""
+        arrs = [_np.empty(cap, _np.int32 if k is not int else _np.uint8)
+                for k in kinds]
+        cur = store.conn.execute(query)
+        n = 0
+        while True:
+            rows = cur.fetchmany(100_000)
+            if not rows:
+                break
+            for row in rows:
+                vals = []
+                for v, k in zip(row, kinds, strict=True):
+                    t = v if k is int else k.get(v)
+                    if t is None:
+                        break
+                    vals.append(t)
+                else:
+                    for a, t in zip(arrs, vals, strict=True):
+                        a[n] = t
+                    n += 1
+        return [a[:n] for a in arrs]
+
+    # flat edges (branch 1 of edges_all)
+    fcap = store.conn.execute(
+        "SELECT COUNT(*) FROM edges WHERE dst_id IS NOT NULL").fetchone()[0]
+    src, dst, rel, conf = _read(
         "SELECT src, dst_id, relation, provenance = 'extracted' "
-        "FROM edges_all")
-    n = 0
-    while True:
-        rows = cur.fetchmany(100_000)
-        if not rows:
-            break
-        for s, d, r, c in rows:
-            si, di, ri = idx.get(s), idx.get(d), code.get(r)
-            if si is None or di is None or ri is None:  # R29A / corrupt-row parity
-                continue
-            src[n], dst[n], rel[n], conf[n] = si, di, ri, c
-            n += 1
-    src, dst, rel, conf = src[:n], dst[:n], rel[:n], conf[:n]
+        "FROM edges WHERE dst_id IS NOT NULL", fcap, (idx, idx, code, int))
+    rel = rel.astype(_np.uint8)
+
+    # interned candidate sets: dense index in set_id order; members in PK order
+    # (set_id, dst_id) — the probe order of the edges_all join branch.
+    set_index = {sid: i for i, (sid,) in enumerate(store.conn.execute(
+        "SELECT set_id FROM cand_sets ORDER BY set_id"))}
+    n_sets = len(set_index)
+    mcap = store.conn.execute("SELECT COUNT(*) FROM cand_members").fetchone()[0]
+    m_set, m_dst = _read(
+        "SELECT set_id, dst_id FROM cand_members ORDER BY set_id, dst_id",
+        mcap, (set_index, idx))
+
+    # group rows in rowid order (the join branch's outer scan order)
+    gcap = store.conn.execute("SELECT COUNT(*) FROM edge_groups").fetchone()[0]
+    gsrc, gset, grel, gconf = _read(
+        "SELECT src, set_id, relation, provenance = 'extracted' "
+        "FROM edge_groups ORDER BY id", gcap, (idx, set_index, code, int))
 
     if current_generation(store) != gen:
         return False  # graph changed under us; don't persist a torn snapshot
+
+    set_indptr = _np.zeros(n_sets + 1, _np.int64)
+    _np.cumsum(_np.bincount(m_set, minlength=n_sets), out=set_indptr[1:])
+    logical = len(src) + int(_np.diff(set_indptr)[gset].sum()) if len(gset) \
+        else len(src)
 
     tmp = f"{target}.tmp{os.getpid()}"
     try:
         os.makedirs(tmp, exist_ok=True)
 
-        def csr(key, prefix):
+        def csr(key, n_rows, prefix, cols):
+            """Stable-sort the entry arrays by `key` and save them CSR-shaped:
+            within a row, stored scan order survives — the view-order parity
+            the scan differential pins."""
             order = _np.argsort(key, kind="stable")
-            _np.save(f"{tmp}/{prefix}_indices.npy",
-                     (dst if prefix == "fwd" else src)[order])
-            _np.save(f"{tmp}/{prefix}_rel.npy", rel[order])
-            _np.save(f"{tmp}/{prefix}_conf.npy", _np.packbits(conf[order]))
-            indptr = _np.zeros(n_nodes + 1, _np.int64)
-            _np.cumsum(_np.bincount(key, minlength=n_nodes), out=indptr[1:])
+            for name, arr, packed in cols:
+                arr = arr[order]
+                _np.save(f"{tmp}/{prefix}_{name}.npy",
+                         _np.packbits(arr) if packed else arr)
+            indptr = _np.zeros(n_rows + 1, _np.int64)
+            _np.cumsum(_np.bincount(key, minlength=n_rows), out=indptr[1:])
             _np.save(f"{tmp}/{prefix}_indptr.npy", indptr)
 
-        csr(src, "fwd")
-        csr(dst, "rev")
+        csr(src, n_nodes, "fwd", [("indices", dst, False), ("rel", rel, False),
+                                  ("conf", conf, True)])
+        csr(dst, n_nodes, "rev", [("indices", src, False), ("rel", rel, False),
+                                  ("conf", conf, True)])
+        csr(gsrc, n_nodes, "grp", [("set", gset, False), ("rel", grel, False),
+                                   ("conf", gconf, True)])
+        csr(gset, n_sets, "setuse", [("src", gsrc, False), ("rel", grel, False),
+                                     ("conf", gconf, True)])
+        csr(m_dst, n_nodes, "mem", [("set", m_set, False)])
+        _np.save(f"{tmp}/set_indptr.npy", set_indptr)
+        _np.save(f"{tmp}/set_members.npy", m_dst)  # already (set, dst)-ordered
         with open(f"{tmp}/nodes.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(ids))
         with open(f"{tmp}/manifest.json", "w", encoding="utf-8") as f:
             json.dump({"version": _VERSION, "generation": gen,
-                       "node_count": n_nodes, "edge_count": n,
-                       "relations": rel_names}, f)
+                       "node_count": n_nodes, "edge_count": logical,
+                       "flat_count": len(src), "group_count": len(gsrc),
+                       "set_count": n_sets, "relations": rel_names}, f)
         shutil.rmtree(target, ignore_errors=True)
         os.rename(tmp, target)
         return True

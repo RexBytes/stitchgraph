@@ -214,16 +214,36 @@ def test_adjcache_structurally_identical(tmp_path):
     assert c_on.ids == c_off.ids
 
     def segments(cache, prefix):
+        """Per-node LOGICAL neighbour triples: the flat CSR segment plus the v2
+        shared group arrays expanded (empty on the flat twin — same code runs
+        on both caches, so the comparison is representation-blind)."""
         indptr = getattr(cache, f"{prefix}_indptr")
         idxs = getattr(cache, f"{prefix}_indices")
         rel = getattr(cache, f"{prefix}_rel")
         conf = np.unpackbits(getattr(cache, f"{prefix}_conf"),
                              count=idxs.size).astype(bool)
-        return [sorted(zip(idxs[a:b].tolist(), rel[a:b].tolist(),
-                           conf[a:b].tolist(), strict=True))
-                for a, b in zip(indptr[:-1].tolist(), indptr[1:].tolist(), strict=True)]
+        segs = [list(zip(idxs[a:b].tolist(), rel[a:b].tolist(),
+                         conf[a:b].tolist(), strict=True))
+                for a, b in zip(indptr[:-1].tolist(), indptr[1:].tolist(),
+                                strict=True)]
+        gconf = np.unpackbits(cache.grp_conf, count=cache.grp_set.size).astype(bool)
+        members = [cache.set_members[a:b].tolist()
+                   for a, b in zip(cache.set_indptr[:-1].tolist(),
+                                   cache.set_indptr[1:].tolist(), strict=True)]
+        for src, (a, b) in enumerate(zip(cache.grp_indptr[:-1].tolist(),
+                                         cache.grp_indptr[1:].tolist(),
+                                         strict=True)):
+            for g in range(a, b):
+                s, r, c = (int(cache.grp_set[g]), int(cache.grp_rel[g]),
+                           bool(gconf[g]))
+                for m in members[s]:
+                    segs[src if prefix == "fwd" else m].append(
+                        (m, r, c) if prefix == "fwd" else (src, r, c))
+        return [sorted(s) for s in segs]
 
     for prefix in ("fwd", "rev"):
         assert segments(c_on, prefix) == segments(c_off, prefix), prefix
+    assert int(c_on.grp_set.size) > 0, \
+        "compression-on sidecar must actually exercise the shared group arrays"
     on.close()
     off.close()

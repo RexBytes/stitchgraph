@@ -4,6 +4,40 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.45.0] — 2026-07-06
+
+### Added
+- **Variable-granularity data flow** (research/22) — three advisory slices,
+  Python-first, none of them liveness-bearing:
+  - **Mutation-aware module state**: a module-level container mutated in
+    place (`CACHE[k] = v`, `REGISTRY.append(fn)`) needs no `global` and was
+    invisible; it now emits the same `var::` node and READS/WRITES slice as
+    declared globals, so `find_data_loops`/`scan` light up for the dominant
+    shared-state idiom. Precision-biased: a closed mutating-method allowlist,
+    subscript/attribute chains walked to their root name, receiver loads not
+    double-counted as reads, and read-only tables emit nothing.
+  - **Instance-attribute data loops**: methods of one class reading AND
+    writing the same `self.attr` get class-scoped
+    `var::<file>::<Class>.<attr>` nodes (written∩read feedback gate; `self`
+    receivers only, no alias chasing) — the classic worker-queue feedback
+    shape `find_data_loops` could not see.
+  - **Unused-parameter advisory**: a parameter never loaded in its function's
+    body surfaces as a GREEN scan issue, computed from source at scan time —
+    deliberately not persisted as param nodes. `self`/`cls`, `_`-prefixed,
+    `*args/**kwargs`, stubs, abstract/overload signatures, callback-role
+    functions, and first-party overrides are excluded by design.
+
+### Performance
+- **Sidecar CSR group-sharing** (research/23) — the adjacency sidecar's v2
+  layout stores each interned candidate set once (mmapped member arrays +
+  per-src group rows + their transposes) instead of expanding every widening
+  arm per site. Home Assistant field index (16.1M logical edges): build
+  74 s → 2.5 s, on-disk 162 MB → 12 MB. The BFS family gathers each touched
+  set once per frontier round; degrees are computed set-first with no
+  expansion; only Tarjan/articulation still materialise logical edges, and
+  only transiently. v1 sidecar directories are refused by version and
+  rebuilt automatically (the sidecar is disposable by contract).
+
 ## [3.44.0] — 2026-07-06
 
 ### Performance
