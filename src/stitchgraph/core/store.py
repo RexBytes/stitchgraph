@@ -497,7 +497,7 @@ class Store:
             # then re-resolve any genuine hole the deletion may have disambiguated.
             self._drop_redundant_holes()
             self._resolve_worklist()
-            self._rewiden_resolved()
+            self._rewiden_resolved(affected_names)
             self._propagate_overrides()
             touched = None
             if capture:
@@ -613,7 +613,7 @@ class Store:
             self.conn.execute("UPDATE nodes SET roles = ? WHERE id = ?",
                               (",".join(sorted(roles)), row["id"]))
 
-    def _rewiden_resolved(self) -> None:
+    def _rewiden_resolved(self, names: set[str] | None = None) -> None:
         """Re-normalize NAME-BASED resolved edges so an incremental update matches a full
         reindex of the same final state. `_resolve_worklist` only revisits holes (dst_id
         IS NULL); resolved edges are never reconsidered, so a name-based group drifts:
@@ -632,11 +632,32 @@ class Store:
         of unrelated classes (panels R21A/R21B/R22A/R22B). On narrowing to one candidate
         the rebuilt edge is INFERRED, not EXTRACTED: the pre-widen provenance is not
         recoverable at the store layer, and under-claiming is the safe direction (issue #10).
+
+        `names` scopes the pass to groups whose dst_symbol is in it: a group can
+        only drift when its NAME's candidate universe changed, which is exactly
+        `replace_file`'s affected_names set — every other group's "already the
+        correct fan-out" check is a foregone conclusion this pass used to pay a
+        per-group query to confirm (the 19 s edit-loop residual at HA field
+        scale, py-spy 2026-07-06). None = every group (correct, reference speed).
         """
-        groups = self.conn.execute(
-            """SELECT DISTINCT src, relation, dst_symbol FROM edges
-                WHERE dst_id IS NOT NULL AND name_based = 1"""
-        ).fetchall()
+        if names is not None and not names:
+            return
+        if names is None:
+            groups = self.conn.execute(
+                """SELECT DISTINCT src, relation, dst_symbol FROM edges
+                    WHERE dst_id IS NOT NULL AND name_based = 1"""
+            ).fetchall()
+        else:
+            self.conn.execute("DROP TABLE IF EXISTS temp._rw_names")
+            self.conn.execute("CREATE TEMP TABLE _rw_names (name TEXT PRIMARY KEY)")
+            self.conn.executemany("INSERT OR IGNORE INTO _rw_names VALUES (?)",
+                                  [(n,) for n in names])
+            groups = self.conn.execute(
+                """SELECT DISTINCT src, relation, dst_symbol FROM edges
+                    WHERE dst_id IS NOT NULL AND name_based = 1
+                      AND dst_symbol IN (SELECT name FROM _rw_names)"""
+            ).fetchall()
+            self.conn.execute("DROP TABLE IF EXISTS temp._rw_names")
         for g in groups:
             nb = self.conn.execute(
                 """SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_symbol = ?
