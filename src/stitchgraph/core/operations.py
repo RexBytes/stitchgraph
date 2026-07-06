@@ -2226,24 +2226,58 @@ def reindex_singlefile(store: Store, path: str, changed: set[str]) -> Result | N
 
 
 def _resolver_sensitive(tree) -> bool:
-    """Conservative AST gate: True when the file contains ANY shape one of the
-    Python-relevant cross-language resolvers scans for (routes' verb/URLconf
-    calls, events' emit/handle/connect methods, ORM model bases, SQL string
-    literals). False positives just cost the fast path; a false negative would
-    silently diverge — so every set here is a SUPERSET of its resolver's."""
+    """AST gate mirroring each Python-relevant resolver's OWN trigger shape —
+    faithful supersets, not keyword soup (an earlier draft gated on any `.get(`
+    call, which is every Python file). False positives only cost the fast path;
+    a false negative would silently diverge, so each check re-states the
+    resolver's firing condition:
+
+    * routes `_route_of`: a DECORATOR that is an attribute call on a verb with
+      a string-literal first argument (`@app.get("/x")`); plus Django URLconf
+      `path/re_path/url(...)` calls and Flask `.add_url_rule(...)`.
+    * events `_handle_call`: an attribute call WITH args whose attr is an emit
+      verb (any arg shape — receiver-keyed emits fire too), or a handle verb
+      with a string event + handler, or a signal-connect with a callback.
+    * sql `_sql_literals`: a string literal matching the resolver's `_SQL_RE`
+      (reused verbatim); skipped entirely when sqlglot is absent (the resolver
+      is a no-op then).
+    * orm: a class with a Model/Base/DeclarativeBase-named base (superset of
+      the SQLAlchemy/Django model detection)."""
     import ast
-    verbs = {"get", "post", "put", "delete", "patch", "head", "options", "route"}
-    events = {"emit", "publish", "send", "dispatch", "fire",
-              "on", "subscribe", "addEventListener", "add_listener", "connect"}
-    urlconf = {"path", "re_path", "url", "add_url_rule"}
+    import re
+
+    from .resolve.events import _EMIT, _HANDLE, _SIGNAL_CONNECT
+    from .resolve.routes import _VERBS
+    try:
+        from .resolve.sql import _HAVE_SQLGLOT, _SQL_RE
+    except ImportError:  # pragma: no cover - sql module always importable
+        _HAVE_SQLGLOT = False
+        _SQL_RE: re.Pattern[str] | None = None  # type: ignore[no-redef]
+    urlconf = {"path", "re_path", "url"}
     orm_bases = {"Model", "Base", "DeclarativeBase"}
-    sql_heads = ("SELECT", "INSERT", "UPDATE", "DELETE", "CREATE")
+
+    def _is_str(a) -> bool:
+        return isinstance(a, ast.Constant) and isinstance(a.value, str)
+
     for node in ast.walk(tree):
-        if isinstance(node, ast.Call):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for dec in node.decorator_list:
+                if (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr in _VERBS
+                        and dec.args and _is_str(dec.args[0])):
+                    return True
+        elif isinstance(node, ast.Call):
             f = node.func
-            if isinstance(f, ast.Attribute) and f.attr in (verbs | events):
-                return True
-            if isinstance(f, ast.Name) and f.id in urlconf and len(node.args) >= 2:
+            if isinstance(f, ast.Attribute):
+                if f.attr == "add_url_rule":
+                    return True
+                if node.args and f.attr in _EMIT:
+                    return True
+                if node.args and f.attr in _HANDLE and (
+                        (len(node.args) >= 2 and _is_str(node.args[0]))
+                        or f.attr in _SIGNAL_CONNECT):
+                    return True
+            elif isinstance(f, ast.Name) and f.id in urlconf and len(node.args) >= 2:
                 return True
         elif isinstance(node, ast.ClassDef):
             for b in node.bases:
@@ -2251,8 +2285,9 @@ def _resolver_sensitive(tree) -> bool:
                     b.id if isinstance(b, ast.Name) else None)
                 if nm in orm_bases:
                     return True
-        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
-                and node.value.lstrip()[:6].upper().startswith(sql_heads)):
+        elif (_HAVE_SQLGLOT and _SQL_RE is not None
+                and isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and _SQL_RE.match(node.value)):
             return True
     return False
 
