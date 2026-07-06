@@ -472,6 +472,12 @@ class Store:
         capture = self._delta_capture_start()
         with self.conn:  # single transaction
             self.conn.execute("DELETE FROM nodes WHERE file = ?", (file,))
+            # This file's VARIABLE pseudo-nodes (`var::<file>::<name>`) live under
+            # the pseudo owner "var", not under `file` — clear them here so a
+            # mutation that vanished from the edit doesn't leave a zombie var node
+            # (research/22; the fresh extract re-adds the live ones below).
+            self.conn.execute("DELETE FROM nodes WHERE id LIKE ? ESCAPE '\\'",
+                              (f"var::{_like_escape(file)}::%",))
             self.conn.execute("DELETE FROM edges WHERE file = ?", (file,))
             # The file's own compressed groups are re-derived from the fresh
             # extract; other files' affected groups flatten so the resolve
@@ -483,7 +489,10 @@ class Store:
             self.replace_symtab(file, symtab)
             expanded = self._expand_affected(affected_names, affected_ids)
             for n in nodes:
-                self.add_node(n, file=file)
+                # var:: pseudo-nodes keep their derived pseudo owner ("var"), so
+                # both incremental paths and the full reindex agree on the file
+                # column (the incremental pseudo-owner refresh keys on it).
+                self.add_node(n, file="" if n.id.startswith("var::") else file)
             # Ingest-time compression for the file's fresh batch (research/21):
             # a hot-homonym file's widened fan-out is tens of thousands of arms
             # at field scale, and inserting them FLAT made every pipeline pass
@@ -1688,6 +1697,11 @@ def _row_to_edge(row: sqlite3.Row) -> Edge | None:
         weight=weight, provenance=provenance, location=location, source=source,
         name_based=bool(row["name_based"]) if "name_based" in keys else False,
     )
+
+
+def _like_escape(s: str) -> str:
+    """Escape LIKE metacharacters in a literal (used with ESCAPE '\\\\')."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _file_of(node_id: str) -> str:
