@@ -24,6 +24,7 @@ Measured anchors:
 | homonym corpus | 1,212 | 8.6M | — | — | 50 MB |
 | Home Assistant 2024.3.3 | 6,728 | 16.0M | 10 GB | **34 min** | 158 MB |
 | megacorpus (HA + sympy + django + 21 pkgs) | 9,080 | **26.8M** | 17 GB | **61.6 min** | 228 MB |
+| Home Assistant 2026-01 repo root (incl. 883 PEP 695 fallback files) | 9,000 | 26.8M | 20.9 GB | **46 min** | 375 MB |
 
 Estimator check on the megacorpus (the first field test of this doc): edges/500k
 predicts 54 min vs 61.6 measured (−12%); 0.65 KB/edge predicts 17.4 GB vs 17
@@ -71,7 +72,23 @@ Set-math ops (`select_tests`, `find_gaps`, `co_change`, …) are sub-second up t
 thousands of tests. SVD ops (`find_modes`, `feature_map`) depend on the matrix's
 smaller dimension: seconds below ~2k tests/functions dense; install `[spectral]`
 for the sparse path above that. `audit_graph` ≈ one reachability sweep per test —
-with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph.
+with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph — or
+use the bit-parallel batch path (v3.39.0, automatic in `audit_graph`):
+64 closures per sweep, 2,056 tests in **3.9 min** on the 27M-edge HA index
+(was 31.6 min; ~5.4 GB transient for the lane labels + edge gathers).
+
+Field anchors (HA repo-root index, 20.9 GB / 77.5k nodes, 2,056 base tests ×
+3,274 executed functions — research/18 round 3): `find_modes` ~7 s / 513 MB
+(first op pays the sidecar build), `find_gaps` 84 s / 821 MB, `feature_map`
+7 s, `redundant_tests` 0.8 s, `test_order` 10 s, `find_core` 0.8 s,
+`find_outlier_tests` 6.9 s, `audit_graph` 31.6 min / 994 MB (~0.9 s per test —
+matches the budget above).
+
+**`find_coupling`** — fixed in v3.39.0: **17.8 s / 353 MB** on the 27M-edge
+HA index. The no-static-edge filter now probes the few hundred candidate
+pairs with indexed lookups instead of materialising a frozenset per resolved
+edge — the historical known-cost figures were 251 s / 10.1 GB (round 3) and
+979 s / 12.8 GB (the over-inflated 30M-edge round-1 index).
 
 ## When an estimate misses badly, suspect (in order)
 
@@ -86,3 +103,8 @@ with the sidecar warm, budget ~1 s per 10 tests on a 16M-edge graph.
    graph, and everything downstream, is 3–5× the typical-code estimate.
 4. **A pre-v3.29 index without planner stats** — reindex once; the ANALYZE
    safety net and pinned query shapes only fully protect fresh indexes.
+
+5. **Endgame disk headroom** — a reindex endgame (override widening, temp
+   dedup index, WAL) needs free disk ≈ 20% of the final db size on top of
+   the db itself; two field runs hit disk-full there. If it happens, the
+   edges are committed — the endgame steps can be run directly on the store.

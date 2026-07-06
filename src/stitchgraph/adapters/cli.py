@@ -79,11 +79,16 @@ def build_app():
         path: str = typer.Argument(".", help="repo root to watch"),
         db: str = typer.Option("stitchgraph.db", help="index database path"),
         interval: float = typer.Option(2.0, help="poll interval (seconds)"),
+        full: bool = typer.Option(
+            False, "--full",
+            help="full reindex on every change (pre-v3.38 behaviour) instead of the "
+                 "differential apply"),
     ) -> None:
+        import os
         import time
 
         from ..core import operations as ops
-        from ..core.watch import changed, snapshot
+        from ..core.watch import diff, snapshot
 
         try:
             store = Store(db)
@@ -98,9 +103,24 @@ def build_app():
                 while True:
                     time.sleep(interval)
                     new = snapshot(path)
-                    if changed(state, new):
-                        state = new
-                        typer.echo(f"change detected — reindexing… {ops.reindex(store, path).meta}")
+                    added, removed, modified = diff(state, new)
+                    if not (added or removed or modified):
+                        continue
+                    state = new
+                    # Differential apply (v3.38.0) for the common edit loop. Full
+                    # reindex when: forced; a file was DELETED/renamed (keeps the two
+                    # documented non-cardinal replace_file-deletion residuals out of
+                    # shipped surfaces); or the tree is AUTO-streaming-sized (the
+                    # incremental path's whole-project in-memory extract is exactly
+                    # what streaming exists to avoid).
+                    if full or removed or ops._auto_stream(path, store):
+                        typer.echo(f"change detected — reindexing… "
+                                   f"{ops.reindex(store, path).meta}")
+                        continue
+                    rel = {os.path.relpath(p, path).replace(os.sep, "/")
+                           for p in added | modified}
+                    typer.echo(f"change detected — refreshing {len(rel)} file(s)… "
+                               f"{ops.reindex_incremental(store, path, rel).meta}")
             except KeyboardInterrupt:
                 typer.echo("stopped")
 

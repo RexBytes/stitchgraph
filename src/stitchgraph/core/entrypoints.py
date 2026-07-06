@@ -93,8 +93,13 @@ class PythonLibraryDetector:
             roots.update(n.id for n in store.nodes_with_role(role))
         if self.include_tests:
             roots.update(n.id for n in store.nodes_with_role("test"))
-        # HTTP routes / endpoints are entry points (external callers).
-        for kind in (NodeKind.ROUTE, NodeKind.ENDPOINT):
+        # HTTP routes / endpoints are entry points (external callers). TEMPLATE
+        # nodes too (v3.39.0): a template is rendered BY NAME by the framework
+        # (`render(request, "edit_inline/tabular.html")`), so the properties it
+        # references ({{ obj.prop }} — the django-template resolver's edges) are
+        # live even when no in-tree call chain reaches the template — the same
+        # external-invocation logic as routes. Cardinal-safe: only ever adds roots.
+        for kind in (NodeKind.ROUTE, NodeKind.ENDPOINT, NodeKind.TEMPLATE):
             roots.update(n.id for n in store.nodes_by_kind(kind))
         roots.update(nid for nid in self.overrides if store.get_node(nid) is not None)
         # Framework-loaded module trees (`[entry_points] root_modules` globs): modules a

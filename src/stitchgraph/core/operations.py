@@ -12,6 +12,8 @@ only read the index, never mutate source (design §4 read-only invariant).
 from __future__ import annotations
 
 import inspect
+import sqlite3
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -1015,15 +1017,23 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     missed_count: dict[str, int] = {}
     unmatched = 0
     tot_exec = tot_hit = tot_reach = 0
+    audit_ids: list[str] = []
     for tid in sorted(by_test):
-        if tid not in nodes:
+        if tid not in nodes or not (by_test[tid] & nodes):
             unmatched += 1
             continue
+        audit_ids.append(tid)
+    # One closure per test, batched 64-per-sweep through the bit-parallel BFS
+    # (v3.39.0): sequentially this loop WAS the op's cost — 2,056 BFS = 31.6 min
+    # on the HA field index; identical per-lane results are pinned by the
+    # reachable_many differential test.
+    from .reach import reachable_from_many
+    reach_by_test = dict(zip(audit_ids,
+                             reachable_from_many(store, [{t} for t in audit_ids]),
+                             strict=True))
+    for tid in audit_ids:
         executed = by_test[tid] & nodes
-        if not executed:
-            unmatched += 1
-            continue
-        reached = reachable_from(store, {tid})
+        reached = reach_by_test[tid]
         hit = executed & reached
         for f in sorted(executed - reached):
             missed_count[f] = missed_count.get(f, 0) + 1
@@ -1082,11 +1092,19 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
     ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
         min_shared > 0 else 3
-    # every structurally-linked function pair (any resolved edge) is "visible" — exclude those.
-    # Streamed tuples, not materialized Edge objects (review 2026-07-03, F11a).
-    connected = {frozenset((src, dst_id)) for src, _rel, dst_id, _w in store.iter_resolved()}
+    # Every structurally-linked function pair (any resolved edge) is "visible" —
+    # exclude those. Probed per CANDIDATE pair via two indexed lookups instead of
+    # materialising a frozenset per resolved edge (v3.39.0: that set was the op's
+    # entire 10-12 GB peak at 27-30M edges — the recorded known-cost-op hazard —
+    # while only the few hundred co-activation candidates are ever checked).
+    _q = "SELECT 1 FROM edges WHERE src=? AND dst_id=? LIMIT 1"
+
+    def _linked(a: str, b: str) -> bool:
+        return (store.conn.execute(_q, (a, b)).fetchone() is not None
+                or store.conn.execute(_q, (b, a)).fetchone() is not None)
+
     try:
-        pairs = coverage_query.hidden_coupling(cov, connected, min_shared=ms, limit=lim)
+        pairs = coverage_query.hidden_coupling(cov, _linked, min_shared=ms, limit=lim)
     except MemoryError:
         return refuse("coverage matrix too large to correlate in memory; raise min_shared or reduce "
                       "the suite", confidence=0.0)
@@ -2013,8 +2031,9 @@ def reindex(store: Store, path: str, precise: bool = False,
     if streaming:
         return _reindex_streaming(store, path, abs_root, load_config(path).ignore, resolvers)
 
+    xreport: dict = {}
     nodes, edges = extract_project(path, ignore=load_config(path).ignore,
-                                   cache_asts=not streaming)
+                                   cache_asts=not streaming, report=xreport)
     # Cross-language / framework enrichment (routes, SQL — design §2a), plus the
     # optional jedi precision pass.
     nodes, edges = run_resolvers(path, nodes, edges, resolvers)
@@ -2036,8 +2055,104 @@ def reindex(store: Store, path: str, precise: bool = False,
     store.bump_generation()
     store.set_meta("root", abs_root)
     holes = len(store.unresolved_edges())
-    return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
-              files=len(files), nodes=store.node_count())
+    res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
+             files=len(files), nodes=store.node_count())
+    _annotate_extraction_gaps(res, xreport)
+    return res
+
+
+def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
+    """Differential re-index for `watch` (v3.38.0 — the roadmap's "wire replace_file
+    to watch"). Extraction runs WHOLE-PROJECT in memory — identical resolution
+    semantics to a full reindex, so every convergence oracle keeps holding by
+    construction — but store writes happen only for the owners whose graph content
+    can have changed: `changed` (root-relative posix paths of mtime-added/modified
+    files) plus every PSEUDO owner (aggregates like `db`/`event` whose nodes are
+    derived from many source files and can gain/lose members on any edit). Each
+    owner goes through `Store.replace_file`, whose worklist re-resolve, name-based
+    re-widening, override propagation and dangling invalidation are already pinned
+    to converge with a full reindex (LIMITATIONS "Incremental replace_file matches
+    a full reindex").
+
+    The win is skipping the full-table rewrite (delete + N-million-row insert +
+    dedup endgame), which dominates reindex wall time on mid-size repos — the edit
+    loop pays extraction only.
+
+    Callers own the fallback decisions (the CLI `watch` loop does): file DELETIONS
+    must full-reindex (the two documented non-cardinal deletion residuals stay out
+    of shipped surfaces), and trees big enough for AUTO-streaming must full-reindex
+    (in-memory whole-project extraction is exactly what streaming exists to avoid).
+    A store/root mismatch or an unusable root also belongs to the caller — this
+    function assumes the same validated root `reindex` would accept."""
+    import os
+
+    from .config import load_config
+    from .extract import extract_project
+    from .resolve import default_resolvers, run_resolvers
+
+    if not (isinstance(path, str) and os.path.isdir(path)):
+        return refuse(f"root {path!r} is not a readable directory — nothing was changed")
+    abs_root = os.path.abspath(path)
+
+    xreport: dict = {}
+    nodes, edges = extract_project(path, ignore=load_config(path).ignore, report=xreport)
+    nodes, edges = run_resolvers(path, nodes, edges, default_resolvers())
+    edges = _dedup_edges(edges)
+
+    nodes_by_owner: dict[str, list] = {}
+    for n in nodes:
+        nodes_by_owner.setdefault(n.id.split("::", 1)[0], []).append(n)
+    edges_by_owner: dict[str, list] = {}
+    for e in edges:
+        edges_by_owner.setdefault(e.src.split("::", 1)[0], []).append(e)
+    owners = set(nodes_by_owner) | set(edges_by_owner)
+    # Pseudo owners (`db`, `event`, spec aggregates): not real files, so mtime can't
+    # vouch for them — refresh unconditionally (their groups are tiny).
+    pseudo = {o for o in owners if not os.path.exists(os.path.join(abs_root, o))}
+    # A changed file that now produces nothing (emptied, or all defs removed) is not
+    # an owner in the fresh extract — replacing it with () clears its stale rows.
+    targets = sorted((changed & owners) | (changed - owners) | pseudo)
+
+    # The complete exported-role surface from the SAME whole-project extract, so an
+    # edit that changes a package __init__'s re-exports converges (panel R37A — the
+    # exact contract replace_file's docstring asks incremental callers to honour).
+    exported_ids = {n.id for n in nodes if "exported" in n.roles}
+    for owner in targets:
+        store.replace_file(owner, nodes_by_owner.get(owner, ()),
+                           edges_by_owner.get(owner, ()), exported_ids=exported_ids)
+
+    store.analyze()
+    store.set_meta("root", abs_root)  # replace_file bumped the generation per owner
+    res = ok({"files": len({n.id.split('::', 1)[0] for n in nodes if '::' in n.id}),
+              "nodes": store.node_count(), "replaced": len(targets),
+              "holes": store.unresolved_count()},
+             files=len(changed), nodes=store.node_count(), replaced=len(targets))
+    _annotate_extraction_gaps(res, xreport)
+    return res
+
+
+def _annotate_extraction_gaps(res: Result, xreport: dict) -> None:
+    """Surface extraction gaps on the reindex Result — a file missing from the graph
+    must NEVER be silent (research/18 bug 1: 880 PEP 695 files — 10% of Home Assistant,
+    half its test-executed functions — vanished without a count, a warning, or a meta
+    key; every downstream answer quietly excluded them). `skipped` files are absent
+    from the graph: name them and flag review. `fallback` files were rescued by the
+    tree-sitter Python grammar at structural fidelity — a count, not a review flag."""
+    skipped = xreport.get("skipped") or []
+    fallback = xreport.get("fallback") or []
+    if fallback:
+        res.meta["python_fallback_files"] = len(fallback)
+    if skipped:
+        res.meta["skipped_files"] = len(skipped)
+        shown = ", ".join(f"{rel} ({why})" for rel, why in skipped[:5])
+        more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+        res.needs_review = True
+        res.add_reason(
+            f"{len(skipped)} file(s) could not be parsed and are MISSING from the graph: "
+            f"{shown}{more}. A SyntaxError under an interpreter older than the code's "
+            f"syntax level is the common cause — reindex with a newer Python or install "
+            f"tree-sitter for the fallback grammar. Every answer from this index silently "
+            f"excludes these files.")
 
 
 _EDGE_INSERT_SQL = (
@@ -2198,7 +2313,9 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     sink = _StoreEdgeSink(store)
     try:
         # Pass 1/2: nodes resident, edges streamed (deduped per-source, committed in batches).
-        nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink)
+        xreport: dict = {}
+        nodes, _ = extract_project(path, ignore=ignore, cache_asts=False, edge_sink=sink,
+                                   report=xreport)
         # Resolvers enrich from the node list + source only; their (few) extra edges stream to
         # the store after the extractor's, preserving the full path's append order.
         nodes, res_edges = run_resolvers(path, nodes, [], resolvers)
@@ -2240,7 +2357,18 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         store._propagate_overrides()
     with store.conn:
         store._dedup_resolved_edges()
-        store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
+    # OWN transaction, tolerated on failure: on the 2026-07-05 HA run a disk-full
+    # during this DROP rolled back the whole enclosing transaction — dedup included —
+    # and aborted before ANALYZE / generation / root meta, leaving a silently
+    # duplicate-edged index (research/18 bug 3). A leftover temp index only costs
+    # disk; a lost dedup + missing endgame costs correctness of degree metrics.
+    try:
+        with store.conn:
+            store.conn.execute("DROP INDEX IF EXISTS idx_edges_dedup")
+    except sqlite3.OperationalError as exc:
+        warnings.warn(f"could not drop the temporary dedup index ({exc}); the index is "
+                      f"correct but larger on disk until the next reindex",
+                      RuntimeWarning, stacklevel=2)
 
     store.analyze()
     store.bump_generation()
@@ -2249,8 +2377,10 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     # COUNT, not len(unresolved_edges()) — the latter builds an Edge object per hole,
     # an O(holes) allocation this path exists to avoid.
     holes = store.unresolved_count()
-    return ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
-              files=len(files), nodes=store.node_count())
+    res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
+             files=len(files), nodes=store.node_count())
+    _annotate_extraction_gaps(res, xreport)
+    return res
 
 
 # --------------------------------------------------------------------------

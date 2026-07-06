@@ -19,8 +19,15 @@ Contracts (all inherited from the adjacency sidecar, adjcache.py):
   sidecar is refused and lazily rebuilt by the next query.
 - numpy-gated (guarded import); config `[index] similarity_cache = false` or
   pure mode disables it; every absence falls back to the reference path.
-- The DENSE-embedder path bypasses this sidecar entirely (a registered embedder
-  changes the vector space; persisting embeddings is the recorded follow-up).
+
+DENSE side (v3.38.0, the recorded follow-up): when an embedder is registered
+WITH a `cache_key` (its vector-space identity — model2vec auto-wiring keys on
+the configured model name), node embeddings persist in `<db>.simcache-dense/`
+as one L2-normalised float32 row per code node. A query then embeds ONLY the
+snippet — one embed call instead of one per stored node — and scores in a
+single matrix·vector product. Same generation/config/pure gates as the token
+side, plus the manifest pins the `model` key: switching models rebuilds, and a
+keyless (ad-hoc) embedder never persists.
 """
 
 from __future__ import annotations
@@ -175,6 +182,156 @@ def build_cache(store: Store) -> bool:
     except OSError:
         shutil.rmtree(tmp, ignore_errors=True)
         return False
+
+
+_DENSE_SUFFIX = ".simcache-dense"
+_dense_loaded: dict[str, tuple[tuple, DenseCache]] = {}
+_dense_build_failed: dict[str, str] = {}
+_EMBED_BATCH = 256  # bound the per-call text list handed to the embedder
+
+
+class DenseCache:
+    def __init__(self, path: str) -> None:
+        with open(os.path.join(path, "manifest.json"), encoding="utf-8") as f:
+            self.manifest = json.load(f)
+        if self.manifest.get("version") != _VERSION:
+            raise ValueError(f"dense simcache version {self.manifest.get('version')}")
+        self.matrix = _np.load(os.path.join(path, "matrix.npy"), mmap_mode="r")
+        with open(os.path.join(path, "ids.txt"), encoding="utf-8") as f:
+            self.ids = f.read().split("\n") if os.path.getsize(
+                os.path.join(path, "ids.txt")) else []
+
+    def query(self, qvec, limit: int) -> list[tuple[str, float]]:
+        """Cosine of the snippet embedding against every stored row — same maths
+        as the reference `_dot_cos` (rows are pre-normalised at build)."""
+        q = _np.asarray(qvec, _np.float32)
+        qn = float(_np.sqrt((q * q).sum())) or 1.0
+        scores = (self.matrix @ q) / qn
+        order = _np.argsort(-scores)
+        out = []
+        for i in order[: max(0, limit)]:
+            s = float(scores[i])
+            if s <= 0.0:
+                break
+            out.append((self.ids[i], s))
+        return out
+
+
+def dense_path(store: Store) -> str | None:
+    path = getattr(store, "path", ":memory:")
+    return None if str(path) == ":memory:" else f"{path}{_DENSE_SUFFIX}"
+
+
+def build_dense(store: Store, key: str, embed) -> bool:
+    """Embed every code node's similarity text once and persist the matrix.
+    Returns False, never raises — the sidecar contract."""
+    if _np is None:
+        return False
+    target = dense_path(store)
+    if target is None:
+        return False
+    from .adjcache import current_generation
+    from .model import NodeKind, Relation
+    from .similar import _node_tokens  # single source of text truth
+
+    gen = current_generation(store)
+    callees: dict[str, list[str]] = {}
+    cur = store.conn.execute(
+        "SELECT src, dst_symbol FROM edges WHERE dst_id IS NOT NULL AND relation = ?",
+        (Relation.CALLS.value,))
+    while True:
+        rows = cur.fetchmany(50_000)
+        if not rows:
+            break
+        for src, sym in rows:
+            if isinstance(src, str) and isinstance(sym, str):
+                callees.setdefault(src, []).append(sym)
+    code = [n for n in store.all_nodes_full()
+            if n.kind in (NodeKind.FUNCTION, NodeKind.METHOD, NodeKind.CLASS)]
+    ids = [n.id for n in code]
+    if not ids or any("\n" in i for i in ids):
+        return False
+    # Identical text derivation to the reference `_dense` path, so the persisted
+    # vectors ARE the vectors the per-query path would have computed.
+    texts = [" ".join(_node_tokens(store, n, callees)) or n.name for n in code]
+    del callees
+    try:
+        vecs: list = []
+        for i in range(0, len(texts), _EMBED_BATCH):
+            vecs.extend(embed(texts[i:i + _EMBED_BATCH]))
+        matrix = _np.asarray(vecs, _np.float32)
+        if matrix.ndim != 2 or matrix.shape[0] != len(ids):
+            return False
+        norms = _np.sqrt((matrix * matrix).sum(axis=1))
+        norms[norms == 0.0] = 1.0
+        matrix = matrix / norms[:, None]
+    except Exception:  # noqa: BLE001 — a failing embedder must never break the op
+        return False
+    if current_generation(store) != gen:
+        return False  # graph changed mid-read — don't persist a torn snapshot
+    tmp = f"{target}.tmp{os.getpid()}"
+    try:
+        os.makedirs(tmp, exist_ok=True)
+        _np.save(f"{tmp}/matrix.npy", matrix)
+        with open(f"{tmp}/ids.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(ids))
+        with open(f"{tmp}/manifest.json", "w", encoding="utf-8") as f:
+            json.dump({"version": _VERSION, "generation": gen,
+                       "node_count": store.node_count(), "rows": len(ids),
+                       "model": key}, f)
+        shutil.rmtree(target, ignore_errors=True)
+        os.rename(tmp, target)
+        return True
+    except OSError:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return False
+
+
+def load_dense(store: Store, key: str, *, embed=None, build: bool = True) -> DenseCache | None:
+    """Fresh dense cache for THIS vector space (`key`) or None, never an error."""
+    from .adjcache import current_generation
+    from .purity import pure_mode
+    if _np is None or pure_mode() or not key:
+        return None
+    target = dense_path(store)
+    if target is None:
+        return None
+    from .config import load_config
+    gen = current_generation(store)
+    n_nodes = store.node_count()
+
+    def _try_open() -> DenseCache | None:
+        try:
+            mtime = os.path.getmtime(os.path.join(target, "manifest.json"))
+            cache_key = (gen, n_nodes, key, mtime)
+            hit = _dense_loaded.get(target)
+            if hit and hit[0] == cache_key:
+                return hit[1]
+            cache = DenseCache(target)
+            if (cache.manifest.get("generation") == gen
+                    and cache.manifest.get("node_count") == n_nodes
+                    and cache.manifest.get("model") == key):
+                _dense_loaded[target] = (cache_key, cache)
+                return cache
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            pass
+        return None
+
+    cache = _try_open()
+    if cache is not None:
+        return cache
+    if not build or embed is None or _dense_build_failed.get(target) == f"{gen}:{key}":
+        return None
+    try:
+        allowed = load_config(store.get_meta("root")).similarity_cache
+    except Exception:  # noqa: BLE001
+        allowed = True
+    if not allowed:
+        return None
+    if not build_dense(store, key, embed):
+        _dense_build_failed[target] = f"{gen}:{key}"
+        return None
+    return _try_open()
 
 
 def load_cache(store: Store, *, build: bool = True) -> SimilarityCache | None:

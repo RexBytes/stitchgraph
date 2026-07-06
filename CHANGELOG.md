@@ -4,6 +4,141 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.39.0] — 2026-07-05
+
+**The recall-tail release.** Every item is an evidence-ranked entry from the
+HA field validation (research/18) or the Django run (research/19) — the
+dynamic-dispatch patterns static analysis missed, plus the instrumentation to
+re-measure them cheaply.
+
+### Added
+- **Protocol-method resolver**: dunders the source never names — `with` /
+  `async with` → `__enter__`/`__exit__`/`__aenter__`/`__aexit__`, `for` /
+  `async for` / comprehensions → `__iter__`/`__next__`/`__aiter__`/`__anext__`,
+  subscripts → `__getitem__`/`__setitem__`/`__delitem__` — now resolve exactly
+  when the receiver is known (constructor call / declared local type) and via
+  the standard name-based fallback (INFERRED/AMBIGUOUS) when it isn't, with a
+  per-function fan dedup. Builtin receivers resolve to no project symbol —
+  zero noise. (research/18: `TemplateContextManager.__exit__` executed by 389
+  of 2,056 tests, statically reached by none.)
+- **getattr-dispatch heuristic**: `getattr(recv, f"_step_{x}")` (also
+  `"as_%s" %`, `"a_" + x + "_b"`, `"h_{}".format(x)` — single-hole shapes)
+  references every member matching the literal anchor; anchorless patterns
+  rejected. (research/18 `_async_step_*`; research/19 `as_%s` vendor methods,
+  `_get_%s_permissions`.)
+- **Fixture-aware test rooting**: pytest injects fixtures BY PARAMETER NAME —
+  test/fixture parameters naming a known `@pytest.fixture` def (pass-1
+  registry, conftest chains included) now bind through the name-based rules,
+  closing research/18's zero-recall fixture-blind tests.
+- **Django/Jinja template-variable resolver** (`resolve/djangotpl.py`):
+  `{{ obj.prop }}` / `{% if obj.prop %}` member segments reference matching
+  functions/methods (stoplisted, dotted-paths only); TEMPLATE nodes are now
+  entry-point ROOTS (frameworks render templates by name — an external entry
+  surface like a route). Kills research/19's admin-property false-dead bucket.
+- **Bit-parallel multi-source BFS** (`AdjacencyCache.reachable_many` /
+  `reach.reachable_from_many`): 64 reachability queries per fixed-point sweep
+  via uint64 lane labels; `audit_graph`'s per-test closure loop batches
+  through it (was 31.6 min for 2,056 tests on the HA field index).
+  Lane-equality with sequential BFS pinned by differential tests.
+
+### Fixed
+- **`find_coupling` 10-12 GB peak eliminated**: the "no static edge between
+  the pair" filter materialised a frozenset per resolved edge; it now probes
+  the few hundred candidate pairs with two indexed lookups each.
+- **Latent `with`-collector gap**: a `with` statement that was a DIRECT
+  function-body statement (the most common shape) was never collected — only
+  withs nested inside other blocks got their `__enter__`/`__exit__` edges.
+- **Tuple-unpack module constants** (`HORIZONTAL, VERTICAL = 1, 2`) now join
+  `module_consts`, so imports of the unpacked names stop surfacing as phantom
+  holes (the bulk of Django's find_holes noise — research/19).
+
+## [3.38.0] — 2026-07-05
+
+### Added
+- **Incremental `watch`** (`reindex_incremental` + `core/watch.diff`): the watch
+  loop now applies changes differentially — whole-project extraction in memory
+  (identical resolution semantics to a full reindex, so every convergence oracle
+  keeps holding by construction) with store writes only for the owners whose
+  content can have changed: the mtime-added/modified files plus every pseudo
+  owner (`db`/`event` aggregates). Each goes through `Store.replace_file`, whose
+  re-widening/override/dangling machinery was already pinned to converge with a
+  full reindex — the edit loop now pays extraction only, skipping the full-table
+  rewrite that dominates reindex wall time. Automatic full-reindex fallbacks:
+  file deletions/renames (keeps the two documented non-cardinal deletion
+  residuals out of shipped surfaces) and AUTO-streaming-sized trees (in-memory
+  whole-project extraction is exactly what streaming exists to avoid).
+  `watch --full` forces the old behaviour. Convergence is pinned by a
+  byte-equality differential suite (modified/added-homonym/emptied/pseudo-owner/
+  re-export cases vs a fresh full reindex).
+- **Dense-embedder persistence in the similarity sidecar** (the roadmap's last
+  similarity gap): `set_embedder(fn, cache_key="model@rev")` — with a
+  `cache_key` naming the vector space (model2vec auto-wiring keys on the
+  configured model name), node embeddings persist once in
+  `<db>.simcache-dense/` (L2-normalised float32 rows) and a query embeds ONLY
+  the snippet: one embed call instead of one per stored node, scored in a
+  single matrix·vector product, and the per-query CALLS-edge materialisation is
+  skipped entirely. Same generation/config/pure gates as the token sidecar; the
+  manifest pins the model key, so switching models rebuilds and a keyless
+  (ad-hoc lambda) embedder keeps the recompute-per-query reference path —
+  persisting under an unstable identity would silently mix vector spaces.
+
+## [3.37.1] — 2026-07-05
+
+### Fixed
+- **Python-fallback files are now stitched into reference resolution** (research/18
+  round 2). v3.37.0's fallback bolted the rescued files onto the graph AFTER the
+  Python extractor finished, so a call from a normal file into a rescued one
+  resolved against nothing and was silently dropped — on Home Assistant the
+  rescued files include `core.py` (the hub everything calls through) and
+  audit_graph recall collapsed from 0.975 to 0.299 the moment the denominator
+  became honest. Now the rescued symbols join the extractor's table BEFORE its
+  reference pass (module nodes re-ided to the dotted-qualname convention so
+  imports bind), and the rescued files' own unresolved references re-resolve
+  against the full table through the standard name-based rules (INFERRED single /
+  AMBIGUOUS homonym fan-out; still-unknown names are dropped as call holes are,
+  never leaked as phantom holes). Cross-boundary reachability works in both
+  directions.
+
+## [3.37.0] — 2026-07-05
+
+**The honest-indexer release.** The first real-coverage POD field run
+(Home Assistant helpers suite vs a repo-root index — `research/18`) turned
+`audit_graph` on the indexer itself and caught three bugs. All three fixed.
+
+### Fixed
+- **Ignore globs are now root-anchored gitignore-style** (`core/globs.py`,
+  shared by both extractors). The old `PurePath.match` semantics were wrong in
+  both directions: right-anchored (`script/**` also swallowed any nested
+  `**/script/*` — 6 Home Assistant files wrongly dropped) and, before Python
+  3.13, `**` matched a single segment (`tests/components/**` ignored nothing
+  below one level — 6,627 files wrongly indexed, inflating the index to 23 GB).
+  Now: patterns with `/` anchor at the indexed root, `**` is recursive, `*`/`?`
+  never cross a segment, a bare name still matches a basename/dir anywhere, and
+  a directory match covers its subtree. **Migration:** a pattern relying on
+  right-anchoring (`vendor/*` meaning "any vendor dir") becomes `**/vendor/*`.
+- **A file the extractor cannot parse is never skipped silently** (research/18
+  bug 1: 880 PEP 695 files — 10% of Home Assistant, *half its test-executed
+  functions* — vanished with no signal). Every skip is now counted and named on
+  the reindex Result (`skipped_files` meta + a review reason); nothing missing
+  from the graph goes unreported.
+- **Streaming reindex endgame survives a failing cleanup**: on the field run a
+  disk-full during the final `DROP INDEX` rolled back the enclosing transaction
+  — edge-dedup included — and skipped ANALYZE/generation/root-meta, leaving a
+  silently duplicate-edged index. The dedup now commits in its own transaction
+  and a failed temp-index drop degrades to a warning (disk cost, never a
+  correctness cost).
+
+### Added
+- **tree-sitter Python fallback for newer-than-interpreter syntax**: a `.py`
+  file whose syntax the indexing interpreter's `ast` rejects (PEP 695
+  `type X = ...` / `def f[T]()` under 3.11, PEP 701 f-strings) is re-parsed with
+  the tree-sitter Python grammar — which tracks current syntax independently of
+  the running interpreter — and extracted at structural fidelity on the same
+  id/kind conventions (module/class/METHOD re-kinding, call edges, imports,
+  test roles). Rescued files are counted in `python_fallback_files` meta.
+  `.py` stays out of the tree-sitter extension map: the stdlib-ast extractor
+  owns Python; the grammar sees only the explicit fallback list.
+
 ## [3.36.2] — 2026-07-05
 
 ### Fixed

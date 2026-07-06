@@ -54,6 +54,7 @@ class _Project:
     exported_names: set[str] = field(default_factory=set)
     main_calls: set[str] = field(default_factory=set)
     module_consts: set[str] = field(default_factory=set)  # module-level assigned names
+    fixture_names: set[str] = field(default_factory=set)  # @pytest.fixture def names
     external_base_classes: set[str] = field(default_factory=set)  # subclass framework bases
     module_by_qual: dict[str, str] = field(default_factory=dict)  # module qualname -> node id
     module_ids: set[str] = field(default_factory=set)  # all MODULE node ids
@@ -73,7 +74,9 @@ _PLAIN_BASES = {
 def extract_project(root: str | Path,
                     ignore: list[str] | None = None, *,
                     cache_asts: bool = True,
-                    edge_sink: object = None) -> tuple[list[Node], list[Edge]]:
+                    edge_sink: object = None,
+                    skip_sink: list[tuple[str, str]] | None = None,
+                    fallback: object = None) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
@@ -109,17 +112,26 @@ def extract_project(root: str | Path,
 
     parsed: dict[str, ast.Module] | None = {} if cache_asts else None
     ok_files: list[tuple[str, Path]] = []  # (rel, path) of files whose defs were collected
+    syntax_failed: list[str] = []  # rels ast.parse REJECTED (syntax newer than interpreter)
     for path in files:
         rel = path.relative_to(proj.root).as_posix()
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             _collect_defs(proj, rel, path, tree)
-        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError):
+        except (SyntaxError, UnicodeDecodeError, OSError, RecursionError) as exc:
             # Skip the one file, never abort the whole reindex (panel DDD/OOO).
             # OSError: a broken symlink / unreadable file (submodules, races).
             # RecursionError: a pathologically deep AST — a huge flat expression
             # (generated SQL/HTML/string builders) overflows ast.parse or the walk;
             # one bad file must not leave the entire DB empty.
+            # But NEVER skip silently (research/18 bug 1: 880 PEP 695 files — 10% of
+            # Home Assistant — vanished with no signal): report every skip to the
+            # caller so it can surface the gap and/or hand SyntaxError files to the
+            # tree-sitter Python fallback.
+            if skip_sink is not None:
+                skip_sink.append((rel, type(exc).__name__))
+            if isinstance(exc, SyntaxError):
+                syntax_failed.append(rel)
             if parsed is not None:
                 parsed.pop(rel, None)
             continue
@@ -129,10 +141,44 @@ def extract_project(root: str | Path,
         # streaming (cache_asts=False): `tree` falls out of scope here and is freed, so the
         # ASTs are never all co-resident; pass 2 re-parses each ok_file below.
 
+    # Python-fallback stitching (research/18 round 2 — v3.37.1): a file ast.parse
+    # rejected (syntax newer than this interpreter) is re-extracted by the caller's
+    # `fallback` hook (the tree-sitter Python grammar). Its NODES must join the
+    # symbol table BEFORE `_index`, or every cross-boundary reference is invisible:
+    # v3.37.0 bolted the rescued files on AFTER this extractor finished, so a call
+    # from a normal file into a rescued one resolved against nothing and was
+    # DROPPED (not even a hole — `_ref_edges` drops unknown names as unreliable).
+    # On Home Assistant the rescued files include core.py — the hub everything
+    # calls through — and audit_graph recall collapsed from 0.975 to 0.299. With
+    # the nodes indexed here, attribute calls, receiver calls, imports and homonym
+    # widening all resolve into rescued files through the ordinary rules.
+    fallback_edges: list[Edge] = []
+    if syntax_failed and fallback is not None:
+        fnodes, fallback_edges = fallback(sorted(syntax_failed))  # type: ignore[operator]
+        proj.nodes.extend(fnodes)
+
     _index(proj)
     _apply_entrypoint_roles(proj)
     _apply_script_roles(proj)
     _seed_entrypoint_classes(proj)
+
+    # The rescued files' own edges: keep tree-sitter's in-bucket resolutions, but
+    # re-resolve its HOLES (calls/references/inherits into code it couldn't see)
+    # against the now-complete symbol table via the standard name-based rules
+    # (INFERRED single candidate / AMBIGUOUS homonym fan-out). A name still
+    # unknown stays a hole — find_holes semantics unchanged.
+    for e in fallback_edges:
+        if e.dst_id is None and e.dst_symbol and e.relation in (
+                Relation.CALLS, Relation.REFERENCES, Relation.INHERITS):
+            loc = e.location.rsplit(":", 2)
+            e_rel = loc[0] if len(loc) == 3 else e.src.split("::", 1)[0]
+            line = int(loc[1]) if len(loc) == 3 and loc[1].isdigit() else 0
+            # Resolves through the standard rules or is DROPPED — an unknown name
+            # here is a builtin/stdlib/external call, and both extractors' contract
+            # is that such call holes are unreliable and never emitted.
+            _ref_edges(proj, e.src, e.dst_symbol, e.relation, e_rel, line, is_method=True)
+        else:
+            proj.edges.append(e)
 
     def _drain() -> None:
         # Streaming: push accumulated edges to the sink and free them, tee-ing the INHERITS
@@ -459,7 +505,21 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     proj.main_calls.update(_main_block_calls(tree))
     for stmt in tree.body:  # module-level constants (not graphed as nodes)
         if isinstance(stmt, ast.Assign):
-            proj.module_consts.update(t.id for t in stmt.targets if isinstance(t, ast.Name))
+            for t in stmt.targets:
+                # Flatten tuple/list unpacking (incl. starred): `HORIZONTAL, VERTICAL
+                # = 1, 2` (django.contrib.admin.options) defines two module constants,
+                # but only bare-Name targets were collected — imports of the unpacked
+                # names then surfaced as phantom holes (the bulk of Django's
+                # find_holes noise, research/19).
+                stack = [t]
+                while stack:
+                    n = stack.pop()
+                    if isinstance(n, ast.Name):
+                        proj.module_consts.add(n.id)
+                    elif isinstance(n, (ast.Tuple, ast.List)):
+                        stack.extend(n.elts)
+                    elif isinstance(n, ast.Starred):
+                        stack.append(n.value)
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
             proj.module_consts.add(stmt.target.id)
     has_main = _has_main_block(tree)
@@ -580,6 +640,16 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         qual = f"{parent}.{node.name}" if parent else node.name
         kind = NodeKind.METHOD if parent_is_class else NodeKind.FUNCTION
+        # Pytest fixture registry (v3.39.0, fixture-aware test rooting): a def
+        # decorated @pytest.fixture / @fixture / @pytest_asyncio.fixture is
+        # injected BY PARAMETER NAME into tests — record the name in pass 1 so
+        # pass 2 can bind test/fixture parameters project-wide regardless of
+        # file visit order (fixtures live in conftest.py up the tree).
+        for dec in node.decorator_list:
+            target = dec.func if isinstance(dec, ast.Call) else dec
+            if _name_of(target) == "fixture":
+                proj.fixture_names.add(node.name)
+                break
         roles: set[str] = set()
         if is_test_file and node.name.startswith("test"):
             roles.add("test")
@@ -1188,9 +1258,36 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # by walking the whole def node).
             for ann_name in _annotation_names(child):
                 _ref_edges(proj, cid, ann_name, Relation.REFERENCES, rel, child.lineno)
-            # `with EXPR as ...` exercises the context manager's __enter__/__exit__.
-            for cm in _direct_withs(child):
-                _with_edges(proj, rel, cid, class_qual, local_types, cm)
+            # Protocol dunders the source never NAMES (v3.39.0, research/18's recall
+            # tail): `with` -> __enter__/__exit__ (async: __aenter__/__aexit__),
+            # `for .. in` -> __iter__/__next__ (async: __aiter__/__anext__),
+            # subscripts -> __getitem__/__setitem__/__delitem__. One shared `seen`
+            # set bounds the per-function fan to one fallback per dunder.
+            proto_seen: set[str] = set()
+            for cm, is_async in _direct_withs(child):
+                _with_edges(proj, rel, cid, class_qual, local_types, cm,
+                            is_async=is_async, seen=proto_seen)
+            for expr, dunders, line in _direct_protocol_uses(child):
+                _protocol_dunder_edges(proj, rel, cid, local_types, expr,
+                                       dunders, line, proto_seen)
+            # getattr(recv, f"_prefix_{x}") dispatch (v3.39.0, research/18-19).
+            _getattr_dispatch_edges(proj, rel, cid, child)
+            # Fixture-aware test rooting (v3.39.0 — research/18's zero-recall
+            # tests): pytest injects fixtures BY PARAMETER NAME, so a test whose
+            # only static edges point at its own nested helpers reaches ALL its
+            # real setup through parameters. Bind each parameter that names a
+            # known @pytest.fixture def (pass-1 registry — conftest chains
+            # included by construction) through the standard name-based rules;
+            # fixtures request other fixtures the same way, so fixture defs get
+            # the same binding. Builtin fixtures (tmp_path, monkeypatch, …) are
+            # not project defs and bind to nothing.
+            if proj.fixture_names and (
+                    child.name.startswith("test") or child.name in proj.fixture_names):
+                args = child.args
+                for a in (*args.posonlyargs, *args.args, *args.kwonlyargs):
+                    if a.arg in proj.fixture_names:
+                        _ref_edges(proj, cid, a.arg, Relation.CALLS, rel,
+                                   child.lineno, is_method=True)
             # Nested defs keep the enclosing class context (for closed-over self).
             _walk_scope(proj, rel, child, parent=qual, class_qual=class_qual)
 
@@ -1281,24 +1378,67 @@ def _add_ref(proj: _Project, src_id: str, symbol: str, dst_id: str, rel: str,
                            location=f"{rel}:{line}:0", source="ast"))
 
 
-def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
-                local_types: dict[str, str], item: ast.withitem) -> None:
-    """A `with` context manager uses __enter__/__exit__ — reference them so they
-    aren't flagged dead, and the cleanup they call (e.g. close) stays live."""
-    expr = item.context_expr
-    cls_ids: list[str] = []
+def _protocol_receiver_classes(proj: _Project, local_types: dict[str, str],
+                               expr: ast.AST) -> list[str]:
+    """Class node ids a protocol receiver expression resolves to: a direct
+    constructor call (`with Lock():`) or a name with a declared local type."""
     if isinstance(expr, ast.Call):
         ctor = _name_of(expr.func)
         if ctor:
-            cls_ids = proj.class_by_name.get(ctor, [])
+            return proj.class_by_name.get(ctor, [])
     elif isinstance(expr, ast.Name) and expr.id in local_types:
-        cls_ids = proj.class_by_name.get(local_types[expr.id], [])
-    for cid in cls_ids:
-        for dunder in ("__enter__", "__exit__"):
-            mid = f"{cid}.{dunder}"
-            if mid in proj.ids:
-                _add_ref(proj, src_id, dunder, mid, rel,
-                         getattr(expr, "lineno", 0))
+        return proj.class_by_name.get(local_types[expr.id], [])
+    return []
+
+
+def _protocol_dunder_edges(proj: _Project, rel: str, src_id: str,
+                           local_types: dict[str, str], expr: ast.AST,
+                           dunders: tuple[str, ...], line: int,
+                           seen: set[str]) -> None:
+    """The protocol-method resolver core (v3.39.0 — the largest slice of the
+    recall tail measured in research/18: `TemplateContextManager.__exit__` was
+    executed by 389 of 2,056 HA tests and statically reached by none). A `with`
+    block, a `for` loop, or a subscript runs a dunder the source never names,
+    so no call pass can see it. Resolution follows the house two-tier pattern:
+
+    - receiver resolvable (constructor call / declared local type) -> EXACT
+      references to that class's dunders (the pre-v3.39 `_with_edges` path);
+    - receiver unknown -> the same name-based fallback every unknown-receiver
+      call/read gets (`_ref_edges`, is_method=True): INFERRED single candidate,
+      AMBIGUOUS homonym fan across the classes that define the dunder.
+      Cardinal-safe (only ever adds reachability); a builtin receiver (dict/
+      list subscripts — the overwhelmingly common case) resolves to no project
+      symbol and adds nothing.
+
+    `seen` dedupes per (function, dunder): fifty dict lookups in one function
+    emit ONE `__getitem__` fan, not fifty (`_dedup_edges` would collapse the
+    final rows anyway; this bounds the transient list)."""
+    cls_ids = _protocol_receiver_classes(proj, local_types, expr)
+    if cls_ids:
+        for cid in cls_ids:
+            for dunder in dunders:
+                mid = f"{cid}.{dunder}"
+                if mid in proj.ids and f"exact:{mid}" not in seen:
+                    seen.add(f"exact:{mid}")
+                    _add_ref(proj, src_id, dunder, mid, rel, line)
+        return
+    for dunder in dunders:
+        if dunder not in seen:
+            seen.add(dunder)
+            _ref_edges(proj, src_id, dunder, Relation.REFERENCES, rel, line,
+                       is_method=True)
+
+
+def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
+                local_types: dict[str, str], item: ast.withitem,
+                is_async: bool = False, seen: set[str] | None = None) -> None:
+    """A `with` context manager uses __enter__/__exit__ (`async with`:
+    __aenter__/__aexit__) — reference them so they aren't flagged dead, and the
+    cleanup they call (e.g. close) stays live."""
+    dunders = ("__aenter__", "__aexit__") if is_async else ("__enter__", "__exit__")
+    _protocol_dunder_edges(proj, rel, src_id, local_types, item.context_expr,
+                           dunders, getattr(item.context_expr, "lineno", 0),
+                           seen if seen is not None else set())
 
 
 def _direct_attr_reads(func: ast.AST, call_funcs: set[int]) -> list[ast.Attribute]:
@@ -1386,15 +1526,140 @@ def _direct_names(func: ast.AST, call_funcs: set[int]) -> list[ast.Name]:
     return out
 
 
-def _direct_withs(func: ast.AST) -> list[ast.withitem]:
-    out: list[ast.withitem] = []
+def _getattr_pattern(arg: ast.AST) -> tuple[str, str] | None:
+    """(prefix, suffix) of a dynamic attribute-name expression with exactly one
+    variable part — the shapes real dispatch code uses (research/18 tail,
+    confirmed on Django in research/19):
 
+        getattr(self, f"_async_step_{action}")     # f-string
+        getattr(self, "as_%s" % connection.vendor)  # %-format
+        getattr(self, "_get_" + kind + "_perms")    # concat (single var)
+        getattr(obj, "handle_{}".format(kind))      # str.format
+
+    Returns None when the shape doesn't match or the literal anchor is too
+    short to select anything (len(prefix)+len(suffix) < 3 — a bare f"{x}"
+    matches every symbol and would fan the whole graph)."""
+    prefix = suffix = None
+    if isinstance(arg, ast.JoinedStr):
+        vals = arg.values
+        consts = [v for v in vals if isinstance(v, ast.Constant)]
+        holes = [v for v in vals if not isinstance(v, ast.Constant)]
+        if len(holes) == 1 and len(consts) == len(vals) - 1:
+            prefix = vals[0].value if isinstance(vals[0], ast.Constant) else ""
+            suffix = vals[-1].value if isinstance(vals[-1], ast.Constant) else ""
+    elif isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Mod) \
+            and isinstance(arg.left, ast.Constant) and isinstance(arg.left.value, str) \
+            and arg.left.value.count("%s") == 1 and "%" not in arg.left.value.replace("%s", ""):
+        prefix, suffix = arg.left.value.split("%s")
+    elif isinstance(arg, ast.BinOp) and isinstance(arg.op, ast.Add):
+        left, right = arg.left, arg.right
+        if isinstance(left, ast.Constant) and isinstance(left.value, str):
+            # "_get_" + kind  (or "_get_" + kind + "_perms": left-nested Add)
+            prefix, suffix = left.value, ""
+        elif isinstance(left, ast.BinOp) and isinstance(left.op, ast.Add) \
+                and isinstance(left.left, ast.Constant) and isinstance(left.left.value, str) \
+                and isinstance(right, ast.Constant) and isinstance(right.value, str):
+            prefix, suffix = left.left.value, right.value
+        elif isinstance(right, ast.Constant) and isinstance(right.value, str):
+            prefix, suffix = "", right.value
+    elif isinstance(arg, ast.Call) and isinstance(arg.func, ast.Attribute) \
+            and arg.func.attr == "format" and isinstance(arg.func.value, ast.Constant) \
+            and isinstance(arg.func.value.value, str) \
+            and arg.func.value.value.count("{}") == 1:
+        prefix, suffix = arg.func.value.value.split("{}")
+    if prefix is None or suffix is None:
+        return None
+    if not isinstance(prefix, str) or not isinstance(suffix, str):
+        return None
+    if len(prefix) + len(suffix) < 3:
+        return None
+    return prefix, suffix
+
+
+def _getattr_dispatch_edges(proj: _Project, rel: str, src_id: str,
+                            func: ast.AST) -> None:
+    """The getattr-dispatch heuristic (v3.39.0): `getattr(recv, f"_step_{x}")`
+    invokes SOME member matching `_step_*`, but no call pass can name it —
+    research/18 measured `_ScriptRun._async_step_*` handlers missed by dozens
+    of HA tests, and research/19 found the same shape twice in Django
+    (`as_%s` vendor methods, `_get_%s_permissions`). Reference every project
+    function/method matching the literal prefix+suffix through the standard
+    name-based rules (INFERRED/AMBIGUOUS). Deliberately NOT receiver-scoped:
+    the matching member routinely lives on a base class or mixin in another
+    file. Cardinal-safe — only ever adds reachability; a pattern with a
+    too-short anchor is rejected in `_getattr_pattern`."""
+    seen: set[tuple[str, str]] = set()
+    for node in ast.walk(func):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr" and len(node.args) >= 2):
+            continue
+        pat = _getattr_pattern(node.args[1])
+        if pat is None or pat in seen:
+            continue
+        seen.add(pat)
+        prefix, suffix = pat
+        for name in proj.by_name:
+            if (name.startswith(prefix) and name.endswith(suffix)
+                    and len(name) > len(prefix) + len(suffix)):
+                _ref_edges(proj, src_id, name, Relation.REFERENCES, rel,
+                           node.lineno, is_method=True)
+
+
+def _direct_protocol_uses(func: ast.AST) -> list[tuple[ast.AST, tuple[str, ...], int]]:
+    """(receiver_expr, dunders, line) for the implicit-dispatch sites in a
+    function body other than `with` (which `_direct_withs` collects): `for`
+    loops (incl. comprehension iterables) and subscript load/store/delete.
+    Skips nested defs exactly like the other _direct_* collectors."""
+    out: list[tuple[ast.AST, tuple[str, ...], int]] = []
+
+    # Checks NODE ITSELF, then recurses — the check-children-only shape misses a
+    # statement that is itself the match (`for x in reg:` as a direct body stmt),
+    # the same latent gap fixed in _direct_withs (v3.39.0).
     def rec(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        if isinstance(node, ast.For):
+            out.append((node.iter, ("__iter__", "__next__"), node.lineno))
+        elif isinstance(node, ast.AsyncFor):
+            out.append((node.iter, ("__aiter__", "__anext__"), node.lineno))
+        elif isinstance(node, ast.comprehension):
+            dunders: tuple[str, ...] = (("__aiter__", "__anext__") if node.is_async
+                                        else ("__iter__", "__next__"))
+            out.append((node.iter, dunders, getattr(node.iter, "lineno", 0)))
+        elif isinstance(node, ast.Subscript):
+            sub: tuple[str, ...]
+            if isinstance(node.ctx, ast.Store):
+                sub = ("__setitem__",)
+            elif isinstance(node.ctx, ast.Del):
+                sub = ("__delitem__",)
+            else:
+                sub = ("__getitem__",)
+            out.append((node.value, sub, node.lineno))
         for child in ast.iter_child_nodes(node):
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            if isinstance(child, (ast.With, ast.AsyncWith)):
-                out.extend(child.items)
+            rec(child)
+
+    for stmt in getattr(func, "body", []):
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        rec(stmt)
+    return out
+
+
+def _direct_withs(func: ast.AST) -> list[tuple[ast.withitem, bool]]:
+    out: list[tuple[ast.withitem, bool]] = []
+
+    # Checks NODE ITSELF, then recurses. The old check-children-only shape never
+    # collected a `with` that is a DIRECT body statement of the function — only
+    # withs nested inside try/if/for were seen, so the top-level `with ctx:` (the
+    # most common shape) emitted no __enter__/__exit__ edges at all. Latent since
+    # the original _with_edges; exposed by the v3.39.0 protocol-resolver tests.
+    def rec(node: ast.AST) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            is_async = isinstance(node, ast.AsyncWith)
+            out.extend((item, is_async) for item in node.items)
+        for child in ast.iter_child_nodes(node):
             rec(child)
 
     for stmt in getattr(func, "body", []):
@@ -1843,10 +2108,8 @@ def _wanted(path: Path, root: Path) -> bool:
 
 
 def _ignored(path: Path, root: Path, ignore: list[str] | None) -> bool:
-    if not ignore:
-        return False
-    rel = path.relative_to(root)
-    # Skip empty patterns: PurePath.match("") raises ValueError("empty pattern"), so a
-    # hand-edited stitchgraph.toml with `ignore = [""]` (or a direct extract_project call)
-    # would crash reindex with a raw traceback instead of returning a Result (panel R33B).
-    return any(rel.match(pattern) for pattern in ignore if pattern)
+    # Root-anchored gitignore-style semantics live in core/globs.py — PurePath.match's
+    # right-anchored, non-recursive-** behaviour mis-ignored in BOTH directions on the
+    # 2026-07-05 Home Assistant field run (research/18 bug 2).
+    from ..globs import ignored
+    return ignored(path.relative_to(root), ignore)

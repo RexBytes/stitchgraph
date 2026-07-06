@@ -17,7 +17,7 @@ spec and section references.
 | Surfaces | MCP server (FastMCP, generated from registry) | ✅ Done | optional dep |
 | Surfaces | Markdown report (orientation + issues + risk) | ✅ Done | `stitchgraph report` |
 | Surfaces | Agent rule file (adoption) | ✅ Done | AGENTS.md |
-| Surfaces | `watch` (re-index on change) | ✅ Done | stdlib polling |
+| Surfaces | `watch` (re-index on change) | ✅ Done | stdlib polling; differential apply via `replace_file` (v3.38.0), full-reindex fallback on deletions / streaming-scale trees |
 | Surfaces | CI + PyPI publish workflow | ✅ Done | GitHub Actions |
 | **Extraction** | Python extractor (stdlib `ast`) | ✅ Done | Module/Class/Function/Method/Test |
 | Extraction | Scope-aware resolution (`self.`, locally-typed `var.`) | ✅ Done | + decorator refs |
@@ -96,8 +96,7 @@ file-watching, and a precision/recall eval harness.
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
 | Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
-| True incremental reindex (wire `replace_file` to `watch`) | M | `watch` currently full-rebuilds (fast at personal scale). |
-| Persist DENSE-embedder vectors in the similarity sidecar | S | The token path is sidecar-served since v3.36.0 (<0.1 s at 106k nodes); a registered embedder still recomputes per query. |
+| Single-file extraction against a persistent symbol table | L | Would extend v3.38.0's incremental watch past the AUTO-streaming threshold (~2k files), where the differential apply currently falls back to a full streaming reindex; needs store-backed by_name/module tables with the extractor's exact resolution semantics. |
 
 ## Known seams (honest)
 

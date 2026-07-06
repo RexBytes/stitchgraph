@@ -37,12 +37,24 @@ from .store import Store
 # (sentence-transformers, model2vec, an API) and find_similar switches to cosine
 # over real embeddings. Unset -> the token-similarity default below.
 _EMBEDDER: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None = None
+_EMBEDDER_KEY: str | None = None  # stable identity of the embedder's vector space
 
 
-def set_embedder(fn: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None) -> None:
-    """Register (or clear) the dense embedding backend used by find_similar."""
-    global _EMBEDDER
+def set_embedder(fn: Callable[[Sequence[str]], Sequence[Sequence[float]]] | None,
+                 cache_key: str | None = None) -> None:
+    """Register (or clear) the dense embedding backend used by find_similar.
+
+    `cache_key` (v3.38.0): a stable identifier of the embedder's VECTOR SPACE
+    (model name + revision). When given, node embeddings persist in the
+    similarity sidecar and a query embeds only the snippet — one embed call
+    instead of one per stored node. Omit it for ad-hoc/experimental callables:
+    an anonymous lambda has no stable identity, and persisting vectors under a
+    wrong identity would silently mix vector spaces, so without a key every
+    query recomputes (the pre-v3.38 behaviour). Changing models with the same
+    key is the caller's foot-gun — pick keys like "potion-base-8M@rev3"."""
+    global _EMBEDDER, _EMBEDDER_KEY
     _EMBEDDER = fn
+    _EMBEDDER_KEY = cache_key if fn is not None else None
 
 
 _M2V_TRIED = False
@@ -63,7 +75,10 @@ def _try_model2vec() -> bool:
         from .config import load_config
         model = load_config().embed_model or "minishlab/potion-base-8M"
         m = StaticModel.from_pretrained(model)
-        set_embedder(lambda texts: m.encode(list(texts)).tolist())
+        # The configured model NAME is the vector-space identity — embeddings
+        # persist in the similarity sidecar keyed on it (v3.38.0).
+        set_embedder(lambda texts: m.encode(list(texts)).tolist(),
+                     cache_key=f"model2vec:{model}")
         return True
     except Exception:  # noqa: BLE001 — no model / offline -> token fallback
         return False
@@ -130,14 +145,27 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         # the reference below re-materialises every CALLS edge PER QUERY (26.8M
         # Edge objects ≈ 3 min/query on the 106k-node field corpus, the recorded
         # PERFORMANCE.md gap). Same token pipeline, same cosine maths; sidecar
-        # absent/stale/disabled/pure-mode -> the reference path unchanged. The
-        # dense-embedder path deliberately bypasses it (different vector space;
-        # persisting embeddings is the recorded follow-up).
+        # absent/stale/disabled/pure-mode -> the reference path unchanged.
         from .simcache import load_cache
         cache = load_cache(store)
         if cache is not None:
             return [(nid, round(s, 6))
                     for nid, s in cache.query(tokenise(snippet), limit)]
+    elif _EMBEDDER_KEY:
+        # Dense path with a persisted vector space (v3.38.0): the sidecar holds one
+        # pre-normalised embedding per code node, so a query embeds ONLY the snippet
+        # — one embed call instead of one per stored node — and never touches the
+        # callees materialisation below. Keyless embedders (no stable identity)
+        # keep the recompute-per-query reference path.
+        from .simcache import load_dense
+        dcache = load_dense(store, _EMBEDDER_KEY, embed=_EMBEDDER)
+        if dcache is not None and _EMBEDDER is not None:
+            try:
+                q = _EMBEDDER([snippet])[0]
+            except Exception:  # noqa: BLE001 — a failing embedder falls through
+                q = None
+            if q is not None:
+                return [(nid, round(s, 6)) for nid, s in dcache.query(q, limit)]
     callees: dict[str, list[str]] = {}
     for edge in store.resolved_edges(Relation.CALLS):
         if edge.dst_id:

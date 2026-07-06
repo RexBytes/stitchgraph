@@ -41,3 +41,15 @@ def changed(old: dict[str, float], new: dict[str, float]) -> bool:
     if old.keys() != new.keys():
         return True
     return any(old[k] != new[k] for k in new)
+
+
+def diff(old: dict[str, float], new: dict[str, float]) -> tuple[set[str], set[str], set[str]]:
+    """(added, removed, modified) absolute paths between two snapshots. Drives the
+    incremental watch path (v3.38.0): added/modified feed `reindex_incremental`;
+    any removal falls back to a full reindex so the two documented non-cardinal
+    `replace_file`-deletion residuals (phantom fan_in re-bind, find_holes count
+    drift — LIMITATIONS) stay out of shipped surfaces."""
+    added = new.keys() - old.keys()
+    removed = old.keys() - new.keys()
+    modified = {k for k in new.keys() & old.keys() if old[k] != new[k]}
+    return set(added), set(removed), modified

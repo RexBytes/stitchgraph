@@ -82,6 +82,7 @@ def run_resolvers(root: str | Path, nodes: list[Node], edges: list[Edge],
 
 
 def default_resolvers() -> list[Resolver]:
+    from .djangotpl import DjangoTemplateResolver
     from .events import EventResolver
     from .express import ExpressRouteResolver
     from .grpcproto import GrpcProtoResolver
@@ -97,7 +98,8 @@ def default_resolvers() -> list[Resolver]:
     # the OpenAPI spec and gRPC proto resolvers are route producers too).
     return [WebRouteResolver(), ExpressRouteResolver(), SpringRouteResolver(),
             OpenApiResolver(), GrpcProtoResolver(),
-            HtmlRouteResolver(), JsFetchResolver(), EventResolver(),
+            HtmlRouteResolver(), JsFetchResolver(), DjangoTemplateResolver(),
+            EventResolver(),
             OrmResolver(), PrismaResolver(), TypeOrmResolver(), SqlResolver()]
 
 
