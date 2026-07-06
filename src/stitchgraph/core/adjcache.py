@@ -320,6 +320,19 @@ class AdjacencyCache:
                 out.extend(self.reachable_many(seed_groups[i:i + 64], relations,
                                                confident_only))
             return out
+        labels = self._label_sweep(seed_groups, relations, confident_only)
+        out = []
+        for g in range(len(seed_groups)):
+            bit = _np.uint64(1 << g)
+            out.append({self.ids[i] for i in _np.nonzero((labels & bit) != 0)[0]})
+        return out
+
+    def _label_sweep(self, seed_groups: list, relations: Iterable[Relation],
+                     confident_only: bool):
+        """The bit-parallel fixed point shared by `reachable_many` (which wants the
+        per-group id SETS) and `reach_hits` (which wants only the per-node lane
+        POPCOUNT): uint64 labels, bit g set on node n iff n is forward-reachable
+        from group g. At most 64 groups."""
         allowed = self._rel_mask(relations)
         indptr, indices = self.fwd_indptr, self.fwd_indices
         rel, conf = self.fwd_rel, self.fwd_conf
@@ -362,11 +375,24 @@ class AdjacencyCache:
             # A node re-enters the frontier only when it gained NEW lane bits, so
             # each lane's propagation terminates exactly like its solo BFS.
             frontier = _np.nonzero(labels != before)[0]
-        out = []
-        for g in range(len(seed_groups)):
-            bit = _np.uint64(1 << g)
-            out.append({self.ids[i] for i in _np.nonzero((labels & bit) != 0)[0]})
-        return out
+        return labels
+
+    def reach_hits(self, seed_groups: list, relations: Iterable[Relation],
+                   confident_only: bool = False):
+        """Per-node count of seed groups whose forward closure contains the node
+        (int64[n]). The bit-parallel sweeps never materialise the id sets — 64
+        lanes popcount per chunk — so 1,024 single-node groups cost 16 sweeps and
+        one int vector, which is what makes the sampled transitive-fan-in
+        estimator (reach.transitive_fan_in_estimate) tractable at field scale."""
+        hits = _np.zeros(self.n, _np.int64)
+        for i in range(0, len(seed_groups), 64):
+            labels = self._label_sweep(seed_groups[i:i + 64], relations,
+                                       confident_only)
+            # popcount via byte view: n×8 uint8 → unpack → sum. Transient is
+            # n×64 bits ≈ 6.4 MB per sweep at 100k nodes.
+            hits += _np.unpackbits(labels.view(_np.uint8)).reshape(
+                self.n, 64).sum(axis=1).astype(_np.int64)
+        return hits
 
     def reverse_reachable(self, targets: Iterable[str],
                           relations: Iterable[Relation]) -> set[str]:

@@ -58,7 +58,8 @@ spec and section references.
 | Operations | `find_similar` (semantic-ish) | ✅ Done | token default; pluggable dense embedder |
 | Operations | `find_component` (purpose locator) | ✅ Done | research-validated 76% P@1 (v3.32.0); test-excluded, public-boosted |
 | Operations | `audit_graph` (call-graph precision audit) | ✅ Done | static reach vs runtime ground truth; resolver-gap worklist (v3.33.0) |
-| **Storage** | **Homonym-group edge compression** | ✅ Done | v3.41.0: content-addressed candidate-set interning + `edges_all` view; Django index 41.6s→24.0s, 278MB→25MB, byte-identical answers (research/20) |
+| **Storage** | **Homonym-group edge compression** | ✅ Done | v3.41.0: content-addressed candidate-set interning + `edges_all` view; Django index 41.6s→24.0s, 278MB→25MB, byte-identical answers; HA field: 4 min / 317MB for 16.1M logical edges (research/20) |
+| Algebra | **Sampled transitive fan-in past the closure cap** | ✅ Done | v3.42.0: deterministic source sampling over the bit-parallel sidecar sweep; exact within budget, honestly named when sampled; orient's transitive ranking at any scale |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
 | Algebra | GraphBLAS PageRank centrality | ✅ Done | alt hub metric via config |
@@ -91,12 +92,19 @@ file-watching, and a precision/recall eval harness.
 
 ## Roadmap (what's left)
 
+Agreed order (2026-07-06): the **dependency-free batch first** (persistent
+symbol table, variable-granularity data flow, remaining tree-sitter
+imports/inheritance, sidecar CSR group-sharing, module-level use attribution)
+→ release → then the **LSP backend**, the one item that adds external
+requirements (per-language server binaries, strictly optional at runtime).
+Completing both phases closes everything currently known.
+
 | Item | Effort | Why deferred |
 |---|---|---|
 | **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. |
 | **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
 | Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
-| Bound/scale the `transitive_fan_in` closure past its 4,000-node cap | M | The 100k-node validation is DONE (106k nodes / 26.8M edges real-code corpus: index 61.6 min / 228 MB flat, find_stale 1.8 s, scan 397 s — see docs/PERFORMANCE.md); orient at that scale uses the confident-fan-in fallback because the closure is still capped. |
+| Module-level use attribution (decorator/constructor applied at import) | S/M | The one Known-seams residual: module-level-only symbols can surface as needs_review stale candidates because their uses aren't attributed to a caller. Folded into the dependency-free batch (2026-07-06 plan). |
 | Single-file extraction against a persistent symbol table | L | Would extend v3.38.0's incremental watch past the AUTO-streaming threshold (~2k files), where the differential apply currently falls back to a full streaming reindex; needs store-backed by_name/module tables with the extractor's exact resolution semantics. |
 | Sidecar CSR group-sharing (store an interned candidate set once in the mmap instead of expanding it per call site) | M | v3.41.0 compressed the STORE 10.5× (homonym-group interning, research/20); the adjacency sidecar still materialises the full expansion — correct and structurally pinned, but the same sharing would shrink the CSR and its build. Deferred: sidecar size hasn't been the bottleneck. |
 

@@ -29,6 +29,7 @@ from .reach import (
     reachable_from,
     reverse_reachable_from,
     strongly_connected_components,
+    transitive_fan_in_estimate,
 )
 from .store import Store
 
@@ -315,6 +316,17 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
             tfi = algebra.transitive_fan_in(store)
             if tfi:
                 return {k: float(v) for k, v in tfi.items()}, "transitive_fan_in"
+    if metric not in ("fan_in", "pagerank"):
+        # Past the exact closure's node cap (or without GraphBLAS at all), the
+        # sidecar estimator keeps the TRANSITIVE ranking: sampled distinct-
+        # ancestor counts, exact when the graph fits inside the sample budget
+        # (v3.42.0, reach.transitive_fan_in_estimate). Only below the sampled
+        # tier does orient degrade to direct confident fan-in.
+        est = transitive_fan_in_estimate(store)
+        if est is not None and est[0]:
+            est_counts, exact = est
+            return est_counts, ("transitive_fan_in" if exact
+                                else "transitive_fan_in_sampled")
     # Fallback: direct fan-in over CONFIDENT (EXTRACTED) edges only. Counting every
     # AMBIGUOUS widening arm at full weight let homonym attributes drown the hub list at
     # scale — Home Assistant's top "hubs" were `.hass`/`.data` attribute nodes with
@@ -543,15 +555,32 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         store.conn.executemany("INSERT OR IGNORE INTO _scan_comp VALUES (?)",
                                [(m,) for m in comp])
         _srel = tuple(r.value for r in _SCC_RELATIONS)
+        # TWO branch queries, summed in Python — NOT one query over `edges_all`:
+        # SQLite cannot flatten a UNION-ALL view that sits inside a join, so the
+        # single-view form MATERIALISES all 16M logical rows (plus an automatic
+        # index over them) PER COMPONENT — observed live as a >1 h scan on the
+        # HA field index (py-spy, 2026-07-06) where the flat-table original took
+        # minutes. Driving each branch directly keeps idx_edges_src /
+        # idx_groups_src probes per member, exactly the plan the CROSS JOIN
+        # directive was written to pin.
         row = store.conn.execute(
             """SELECT COALESCE(SUM(e.relation IN (?, ?)
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
                       COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
-                 FROM _scan_comp s CROSS JOIN edges_all e ON e.src = s.id""",
+                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id
+                WHERE e.dst_id IS NOT NULL""",
+            (*_srel, *_srel, _extracted)).fetchone()
+        grow = store.conn.execute(
+            """SELECT COALESCE(SUM(g.relation IN (?, ?)
+                                   AND m.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
+                      COALESCE(SUM(g.relation IN (?, ?) AND g.provenance = ?
+                                   AND m.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
+                 FROM _scan_comp s CROSS JOIN edge_groups g ON g.src = s.id
+                 JOIN cand_members m ON m.set_id = g.set_id""",
             (*_srel, *_srel, _extracted)).fetchone()
         store.conn.execute("DROP TABLE temp._scan_comp")
-        frac, conf_n, total = _share_rows(row["t"], row["c"])
+        frac, conf_n, total = _share_rows(row["t"] + grow["t"], row["c"] + grow["c"])
         artifact = frac < 0.5  # majority of the linking edges are guesses
         reason = (f"circular dependency among {len(comp)} symbols"
                   + ("; rests mostly on name-ambiguous/heuristic edges "
