@@ -135,6 +135,35 @@ subtree or member set changed + new bound targets) is the next optimisation,
 deliberately left for its own careful pass — the semantics are the
 subtlest of the three and the current latency is already edit-loop usable.
 
+## Addendum (post-v3.43.0): the reserved pass, and the real bottleneck
+
+Two further changes took the HA edit loop from 13.6 s to **3.7 s (65× from
+the original 4 min)**, steady across repeated rounds:
+
+1. **Scoped override derivation** — the pass is additive and
+   NOT-EXISTS-guarded over an override-complete state, so an edit can only
+   create missing rows through three doors: newly bound targets (touched
+   srcs' edges), new members (added ids overriding ancestor members), and new
+   INHERITS links (an existing subtree grafted under new ancestors —
+   candidate targets enumerated by primary-key range over the base chain's
+   members). Correct, ring-green — but it barely moved the wall clock,
+   because the profile was misread:
+2. **The actual bottleneck was the fresh batch itself**: `replace_file`
+   inserted the edited file's widened fan-out FLAT (tens of thousands of
+   arms for a hot-homonym HA component) and compressed only at transaction
+   end — so add_edge, the worklist, dedup, and the override join all waded
+   through rows that were about to be interned anyway. Deduping the batch in
+   memory (the file-local twin) and partitioning it into groups up front —
+   the streaming sink's own per-source-complete argument — collapsed every
+   downstream pass at once. Bonus: the project's convergence-test ring got
+   ~35% faster for the same reason.
+
+| HA edit loop (components/light/__init__.py) | latency |
+|---|---|
+| full streaming reindex (pre-v3.43) | ~4 min |
+| v3.43.0 as released | 13.6 s |
+| + scoped overrides + ingest-compressed batch | **3.7 s** |
+
 ## Known seams to carry honestly
 
 - Cross-file effects that today's `reindex_incremental` itself does not
