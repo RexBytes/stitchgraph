@@ -114,8 +114,9 @@ class AdjacencyCache:
         self.base_n = self.n
         self.overlay_fwd: dict[int, tuple] = {}
         self.overlay_rev: dict[int, tuple] = {}
-        self._ov_fwd_keys = None  # sorted int64 key arrays for vectorized isin
-        self._ov_rev_keys = None
+        # sorted int64 key arrays for vectorized isin (None until a delta lands)
+        self._ov_fwd_keys: object = None
+        self._ov_rev_keys: object = None
 
     @property
     def has_overlay(self) -> bool:
@@ -282,7 +283,7 @@ class AdjacencyCache:
             out = {self.ids[i]: int(counts[i]) for i in _np.nonzero(counts)[0]}
         # Overlay rows REPLACE their base counts (v3.40.0 incremental refresh);
         # new nodes past base_n exist only here.
-        for k, (nbrs, rels, confs) in (overlay or {}).items():
+        for k, (_nbrs, rels, confs) in (overlay or {}).items():
             m = allowed[rels]
             if confident_only:
                 m = m & confs

@@ -15,7 +15,6 @@ import stitchgraph as sg
 from stitchgraph.core.adjcache import load_cache, sidecar_path
 from stitchgraph.core.operations import reindex_incremental
 from stitchgraph.core.reach import (
-    reachable_from,
     reachable_from_many,
     strongly_connected_components,
 )

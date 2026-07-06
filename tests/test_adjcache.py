@@ -144,12 +144,26 @@ def test_stale_after_replace_file_falls_back_then_rebuilds(tmp_path):
     after = reach.reachable_from(store, seeds)
     assert "b.py::helper" in before
     assert after < before, "the severed dependency must disappear from the closure"
-    assert manifest.read_text() != gen_before, "sidecar must have been rebuilt"
+    # v3.40.0: a replace_file no longer forces a rebuild — the loader may PATCH a
+    # row overlay from the captured delta (manifest generation then stays put) or
+    # rebuild (manifest changes). Either path must serve the corrected closure,
+    # which the assertion above just proved; pin that one of the two happened.
+    from stitchgraph.core.adjcache import load_cache
+    cache = load_cache(store)
+    assert cache is not None
+    assert cache.has_overlay or manifest.read_text() != gen_before, \
+        "sidecar must have been patched or rebuilt"
 
-    # falsification arm: with the bump suppressed the stale sidecar WOULD be served —
-    # proving the generation check is the thing standing between us and wrong answers
+    # falsification arm: the raw on-disk sidecar without the delta chain is
+    # genuinely STALE (under the v3.40.0 patch path its manifest legitimately
+    # stays at the old generation) — the loader's generation check + delta walk
+    # is the thing standing between us and wrong answers. Prove it: the raw
+    # cache still reaches the severed dependency; the loader-served one doesn't.
     stale = adjcache.AdjacencyCache(str(tmp_path / "idx.db.adjcache"))
-    assert stale.manifest["generation"] == adjcache.current_generation(store)
+    if stale.manifest["generation"] != adjcache.current_generation(store):
+        from stitchgraph.core.reach import LIVENESS_RELATIONS
+        assert "b.py::helper" in stale.reachable(seeds, LIVENESS_RELATIONS)
+        assert "b.py::helper" not in cache.reachable(seeds, LIVENESS_RELATIONS)
 
 
 def test_config_disable(tmp_path):
