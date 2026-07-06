@@ -195,6 +195,49 @@ dsts unioned in at capture-finish via the set join.
 4. **Scale**: Django before/after (index time, db size, scan/orient
    wall-clock); HA-class re-measure if disk allows.
 
+## Results (v3.41.0, shipped same day)
+
+The design above survived contact with the code essentially intact; what the
+implementation added:
+
+- **The mixed-key guard**: a (src, relation, dst_symbol) key holding BOTH a
+  non-ambiguous flat row and ambiguous arms (the per-dst_id dedup leaves an
+  EXTRACTED single beside surviving arms) must never compress — `_rewiden_
+  resolved` rebuilds a name-based key from its FLAT rows only, so a hidden
+  compressed arm would duplicate on the next rebuild.
+- **Collision expansion is bounded by construction**: a freshly-compressed
+  state is collision-free (compression runs on post-dedup rows), so only flat
+  rows created in the current transaction can collide with a pre-existing
+  group — `replace_file` scopes the probe to its sidecar-capture src set; the
+  streaming endgame runs it once unbounded.
+- **Order seams surfaced exactly where predicted**: `get_callers`/`get_callees`
+  gained a deterministic ORDER BY, and the sidecar oracle compares per-node
+  neighbour multisets (byte order within a CSR segment is read-order-dependent
+  and meaningless for unordered widening arms; the same-store
+  accelerated-vs-reference contract is pinned separately).
+- **One pre-existing seam documented, not caused**: on any name-universe
+  change, `_rewiden_resolved` demotes a declared-type EXTRACTED row that
+  shares a key with widening arms to an AMBIGUOUS arm (provenance is not
+  recoverable at the store layer — the documented under-claiming direction).
+  Verified byte-identical in the flat world; orthogonal to compression.
+
+Measured on Django 5.2 (same machine, same tree):
+
+| metric | flat (v3.40.0) | compressed (v3.41.0) | factor |
+|---|---|---|---|
+| full index time | 41.6 s | **24.0 s** | 1.7× |
+| db size | 278 MB | **25 MB** | 11× |
+| stored edge rows | 669,944 | 63,867 (31,232 flat + 23,815 groups + 8,820 members) | 10.5× |
+| `edges_all` row count | 669,944 | 669,944 | = |
+| scan / orient / find_stale | 119.6 s / 0.7 s / 0.2 s | 123.2 s / 0.4 s / 0.2 s | = (783 issues, identical) |
+
+The differential campaign (tests/oracles/test_compression_differential.py)
+gates it: on-vs-off row-multiset + full battery equality on both reindex
+paths, streaming-vs-in-memory with both compressing, incremental convergence
+through the expand/narrow/re-compress round trip, sidecar structural
+identity — plus the 130 MB bounded-memory streaming gate still passing with
+the sink's partition + interning memo in the loop.
+
 ## Risks
 
 - **Write-pass drift**: any store pass touching a group without expansion
