@@ -207,18 +207,29 @@ def test_dispatch_body_edit_converges(tmp_path):
 
 def test_dispatch_declines_resolver_shapes(tmp_path):
     """The honest gate: route/event/ORM/SQL shapes must decline the fast path
-    (returns None) so the whole-project resolvers keep running."""
+    (returns None) so the whole-project resolvers keep running. The SQL case is
+    gated on sqlglot exactly like the resolver itself: without it the resolver
+    is a no-op, no divergence is possible, and the fast path SHOULD apply —
+    the core-only CI job runs that arm."""
     from stitchgraph.core.operations import reindex_singlefile
+    from stitchgraph.core.resolve.sql import _HAVE_SQLGLOT
     root = _tree(tmp_path, "a")
     store = sg.Store(str(tmp_path / "a.db"))
     assert sg.reindex(store, str(root), streaming=False).ok
-    for content in (
+    cases = [
         "def h(request):\n    return 1\n\nurlpatterns = [path('u/', h)]\n",
         "class M:\n    def go(self, sig, cb):\n        sig.connect(cb)\n",
-        "Q = \"SELECT * FROM users\"\n",
-    ):
+    ]
+    sql = "Q = \"SELECT * FROM users\"\n"
+    if _HAVE_SQLGLOT:
+        cases.append(sql)
+    for content in cases:
         (root / "pkg" / "app.py").write_text(content)
         assert reindex_singlefile(store, str(root), {"pkg/app.py"}) is None, content
+    if not _HAVE_SQLGLOT:
+        (root / "pkg" / "app.py").write_text(sql)
+        assert reindex_singlefile(store, str(root), {"pkg/app.py"}) is not None, \
+            "without sqlglot the sql resolver cannot fire — the fast path applies"
     store.close()
 
 
