@@ -100,6 +100,41 @@ fresh full reindex, through rows (`edges_all`), holes, roles, and the
 operation battery. Field measurement: watch-loop edit latency on the HA
 index (target: seconds, from 4 minutes).
 
+## Field results (Home Assistant 2024.3.3, 6,725 files, 16.1M logical edges)
+
+The edit loop this arc exists for — touch one component file, re-query:
+
+| path | latency |
+|---|---|
+| full streaming reindex (what watch paid before, per edit) | ~4 min |
+| `reindex_singlefile` (stages A–C, after the field fixes below) | **13.6 s** |
+
+Stable across repeated edit/revert rounds; end state verified (probe node
+present after edit, gone after revert). ~17× — and the field probes found
+and fixed three real scale defects on the way:
+
+1. **The resolver gate was keyword soup**: the first draft declined every
+   file (`.get(` is every Python file). Now each check re-states its
+   resolver's own firing shape (route verbs in decorator position with a
+   string path; the events arg shapes; the sql resolver's `_SQL_RE` reused).
+2. **The expand-affected universe was old∪new, not the delta**: an HA
+   component file defines the graph's hottest homonyms, so a one-function
+   edit tried to flatten 3,651 groups (11.5M rows) and filled the disk. A
+   group's set can only change when a NAME's defining-id set changes or a
+   contained id is removed/re-kinded — the precise predicate keeps everything
+   else compressed. (This also fixes plain `reindex_incremental` at scale.)
+3. **Whole-graph passes per edit**: `_dedup_resolved_edges` (26 s of
+   correlated sweep; keys are src-local, so it now scopes to the
+   transaction's touched srcs, JOIN-driven past the stat-less planner trap)
+   and `_rewiden_resolved` (per-group queries confirming foregone
+   conclusions; now scoped to affected names).
+
+**Remaining known cost**: `_propagate_overrides` still derives the full
+override map per edit (~half the residual 13.6 s). Its scoping (bases whose
+subtree or member set changed + new bound targets) is the next optimisation,
+deliberately left for its own careful pass — the semantics are the
+subtlest of the three and the current latency is already edit-loop usable.
+
 ## Known seams to carry honestly
 
 - Cross-file effects that today's `reindex_incremental` itself does not
