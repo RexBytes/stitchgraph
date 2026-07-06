@@ -7,6 +7,20 @@ All notable changes to stitchgraph. Format follows
 ## [3.40.0] — 2026-07-06
 
 ### Added
+- **Incremental sidecar refresh**: after a `replace_file` (the incremental
+  `watch` path), the adjacency sidecar is PATCHED instead of fully rebuilt
+  (~2 min at HA scale). Capture: temp SQL triggers during `replace_file`
+  record every touched edge row — src and dst, across the worklist/dangling/
+  rewiden/override side effects, complete by construction — into a bounded
+  `adj_delta:{generation}` meta. Load: on a stale sidecar, the loader walks
+  the delta chain (≤64 generations, ≤2,048 touched nodes) and installs a
+  per-node ROW OVERLAY consulted by the BFS family (`reachable`,
+  `reachable_many`, `reverse_reachable`, `fan_in`/`fan_out`); new nodes
+  extend the id space and live only in the overlay. SCC/articulation refuse a
+  patched cache and fall back to the reference path; any chain gap,
+  tombstone, oversize, or node-count drift (deletions) degrades to the full
+  rebuild — the overlay can serve *stale-safe or not at all*. Byte-equality
+  with a fresh rebuild is pinned by tests.
 - **Parallel extraction** (`extract_project(parallel=...)`, Linux/fork only): a
   process pool runs both per-file passes on all cores — pass 2 forks AFTER the
   symbol table is built, reading it copy-on-write; results merge in sorted-file

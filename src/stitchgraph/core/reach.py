@@ -170,7 +170,10 @@ def strongly_connected_components(
     from .adjcache import load_cache
     nodes = store.all_node_ids()
     cache = load_cache(store)
-    if cache is not None:
+    # An overlay-patched cache serves the BFS family only: the SCC/articulation
+    # traversals read the raw base CSR (_filtered_csr) and would miss patched
+    # rows — fall through to the reference path instead (v3.40.0).
+    if cache is not None and not cache.has_overlay:
         out = cache.scc(nodes, relations)
         self_loops = cache.self_loops(relations)
     else:
@@ -201,7 +204,7 @@ def articulation_points(store: Store,
     parent side is empty, so this reduces to sum-of-children minus the largest child.)"""
     from .adjcache import load_cache
     cache = load_cache(store)
-    if cache is not None:
+    if cache is not None and not cache.has_overlay:  # see SCC note (v3.40.0)
         return cache.articulation(relations)
     directed = _adjacency(store, relations)
     undirected: dict[str, set[str]] = defaultdict(set)
