@@ -49,6 +49,39 @@ CREATE TABLE IF NOT EXISTS edges (
     file        TEXT NOT NULL DEFAULT '',     -- owning (source) file path
     name_based  INTEGER NOT NULL DEFAULT 0    -- 1 = resolved by name (re-widenable)
 );
+
+-- Homonym-group edge compression (research/20). An AMBIGUOUS widening emits one
+-- row per candidate per call site; at framework-Python density that is >95% of
+-- all resolved rows and identical candidate SETS repeat across thousands of
+-- sites. The compressed form stores each distinct set once (content-addressed
+-- by its sorted member ids) and one `edge_groups` row per widened source-site.
+-- Compression is OPPORTUNISTIC: any group that fails the uniformity gates stays
+-- as flat `edges` rows, and correctness never depends on coverage.
+CREATE TABLE IF NOT EXISTS cand_sets (
+    set_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sig    TEXT UNIQUE NOT NULL               -- unit-separator-joined sorted member ids
+);
+
+CREATE TABLE IF NOT EXISTS cand_members (
+    set_id INTEGER NOT NULL,
+    dst_id TEXT    NOT NULL,
+    PRIMARY KEY (set_id, dst_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS edge_groups (      -- one row per widened source-site
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    src        TEXT NOT NULL,
+    relation   TEXT NOT NULL,
+    dst_symbol TEXT NOT NULL,
+    set_id     INTEGER NOT NULL,
+    weight     REAL NOT NULL,                 -- the uniform per-arm weight
+    provenance TEXT NOT NULL DEFAULT 'ambiguous',
+    location   TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT 'tree-sitter',
+    file       TEXT NOT NULL DEFAULT '',
+    name_based INTEGER NOT NULL DEFAULT 1
+);
+
 """
 
 # Indexes are created *after* migration so they never reference a column an older
@@ -61,6 +94,27 @@ CREATE INDEX IF NOT EXISTS idx_edges_dst    ON edges(dst_id);
 CREATE INDEX IF NOT EXISTS idx_edges_symbol ON edges(dst_symbol);
 CREATE INDEX IF NOT EXISTS idx_edges_file   ON edges(file);
 CREATE INDEX IF NOT EXISTS idx_edges_rel    ON edges(relation);
+CREATE INDEX IF NOT EXISTS idx_members_dst  ON cand_members(dst_id);
+CREATE INDEX IF NOT EXISTS idx_groups_src    ON edge_groups(src);
+CREATE INDEX IF NOT EXISTS idx_groups_set    ON edge_groups(set_id);
+CREATE INDEX IF NOT EXISTS idx_groups_file   ON edge_groups(file);
+CREATE INDEX IF NOT EXISTS idx_groups_symbol ON edge_groups(dst_symbol);
+
+-- The read-path contract (research/20): every resolved-edge consumer reads this
+-- view and sees the identical row multiset whether a widening is stored flat or
+-- compressed. UNION ALL keeps it flattenable: SQLite pushes src=?/dst_id=?
+-- predicates into both branches, so indexed probes keep indexed plans. Created
+-- here (post-migration, with _INDEXES) because CREATE VIEW validates its SELECT
+-- immediately — on an older index file it must not run before `_migrate` has
+-- backfilled columns like `name_based`.
+CREATE VIEW IF NOT EXISTS edges_all AS
+  SELECT src, relation, dst_symbol, dst_id, weight, provenance,
+         location, source, file, name_based
+    FROM edges WHERE dst_id IS NOT NULL
+  UNION ALL
+  SELECT g.src, g.relation, g.dst_symbol, m.dst_id, g.weight, g.provenance,
+         g.location, g.source, g.file, g.name_based
+    FROM edge_groups g JOIN cand_members m ON m.set_id = g.set_id;
 """
 
 def _canonical_columns() -> dict[str, dict[str, str]]:
@@ -237,6 +291,16 @@ class Store:
 
     def commit(self) -> None:
         self.conn.commit()
+
+    def wipe_edges(self) -> None:
+        """Clear every edge representation — the flat table AND the compressed
+        group/set tables (research/20). Full-rebuild paths must call this instead
+        of a bare `DELETE FROM edges`, or a stale compressed group would survive
+        the wipe and leak pre-rebuild reachability into the new index."""
+        self.conn.execute("DELETE FROM edges")
+        self.conn.execute("DELETE FROM edge_groups")
+        self.conn.execute("DELETE FROM cand_members")
+        self.conn.execute("DELETE FROM cand_sets")
 
     def analyze(self) -> None:
         """Refresh approximate planner statistics (`sqlite_stat1`) after a rebuild.
@@ -772,6 +836,121 @@ class Store:
             (imp, mod),
         )
 
+    # -- homonym-group edge compression (research/20) ------------------------
+    #
+    # Three primitives, all pure representation changes: the row multiset seen
+    # through `edges_all` is identical before and after each one. The resolve
+    # pipeline never operates on compressed rows — callers expand the affected
+    # groups first (`_expand_groups`), run the flat-row passes unchanged, and
+    # re-compress the survivors (`_compress_edges`) at the end.
+
+    _SET_SIG_SEP = "\x1f"  # unit separator: cannot appear in a node id
+
+    def _intern_set(self, members: list[str]) -> int:
+        """Return the set_id for this candidate set, creating it (and its member
+        rows) on first sight. Content-addressed: identical sets share one id."""
+        sig = self._SET_SIG_SEP.join(sorted(members))
+        row = self.conn.execute(
+            "SELECT set_id FROM cand_sets WHERE sig = ?", (sig,)).fetchone()
+        if row:
+            return int(row["set_id"])
+        cur = self.conn.execute("INSERT INTO cand_sets(sig) VALUES (?)", (sig,))
+        set_id = int(cur.lastrowid or 0)
+        self.conn.executemany(
+            "INSERT INTO cand_members(set_id, dst_id) VALUES (?, ?)",
+            [(set_id, m) for m in sorted(set(members))])
+        return set_id
+
+    def _compress_edges(self, srcs: Iterable[str] | None = None) -> int:
+        """Compress eligible flat AMBIGUOUS fan-outs into `edge_groups` rows.
+
+        Eligible: a (src, relation, dst_symbol) group of >= 2 resolved rows, all
+        provenance='ambiguous', with uniform weight/location/source/file/
+        name_based across its arms (guaranteed by every emitter — arms of one
+        widening share one call site — but VERIFIED here so a hand-built store
+        or a future emitter that violates it simply stays flat). `srcs` scopes
+        the pass (None = whole table). Returns the number of groups created."""
+        where = ""
+        if srcs is not None:
+            srcs = sorted(set(srcs))
+            if not srcs:
+                return 0
+            self.conn.execute("DROP TABLE IF EXISTS temp._cmp_srcs")
+            self.conn.execute("CREATE TEMP TABLE _cmp_srcs (src TEXT PRIMARY KEY)")
+            self.conn.executemany("INSERT OR IGNORE INTO _cmp_srcs VALUES (?)",
+                                  [(s,) for s in srcs])
+            where = "AND src IN (SELECT src FROM _cmp_srcs)"
+        groups = self.conn.execute(
+            f"""SELECT src, relation, dst_symbol,
+                       MIN(weight) AS weight, MIN(location) AS location,
+                       MIN(source) AS source, MIN(file) AS file,
+                       MIN(name_based) AS name_based
+                  FROM edges
+                 WHERE dst_id IS NOT NULL AND provenance = 'ambiguous' {where}
+                 GROUP BY src, relation, dst_symbol
+                HAVING COUNT(*) >= 2
+                   AND COUNT(DISTINCT weight) = 1
+                   AND COUNT(DISTINCT location) = 1
+                   AND COUNT(DISTINCT source) = 1
+                   AND COUNT(DISTINCT file) = 1
+                   AND COUNT(DISTINCT name_based) = 1
+                   AND COUNT(*) = COUNT(DISTINCT dst_id)""").fetchall()
+        made = 0
+        for g in groups:
+            members = [r["dst_id"] for r in self.conn.execute(
+                """SELECT dst_id FROM edges
+                    WHERE src = ? AND relation = ? AND dst_symbol = ?
+                      AND dst_id IS NOT NULL AND provenance = 'ambiguous'""",
+                (g["src"], g["relation"], g["dst_symbol"]))]
+            set_id = self._intern_set(members)
+            self.conn.execute(
+                """INSERT INTO edge_groups(src, relation, dst_symbol, set_id,
+                                           weight, provenance, location, source,
+                                           file, name_based)
+                   VALUES (?, ?, ?, ?, ?, 'ambiguous', ?, ?, ?, ?)""",
+                (g["src"], g["relation"], g["dst_symbol"], set_id, g["weight"],
+                 g["location"], g["source"], g["file"], g["name_based"]))
+            self.conn.execute(
+                """DELETE FROM edges
+                    WHERE src = ? AND relation = ? AND dst_symbol = ?
+                      AND dst_id IS NOT NULL AND provenance = 'ambiguous'""",
+                (g["src"], g["relation"], g["dst_symbol"]))
+            made += 1
+        if srcs is not None:
+            self.conn.execute("DROP TABLE IF EXISTS temp._cmp_srcs")
+        return made
+
+    def _expand_groups(self, where: str, params: tuple = ()) -> list[tuple[str, str, str]]:
+        """Expand `edge_groups` rows matching `where` back into flat `edges` rows
+        (one per member, carrying the group's uniform attributes). Returns the
+        (src, relation, dst_symbol) keys expanded, so the caller can re-compress
+        exactly those after the flat-row passes have run."""
+        rows = self.conn.execute(
+            f"SELECT * FROM edge_groups WHERE {where}", params).fetchall()
+        keys: list[tuple[str, str, str]] = []
+        for g in rows:
+            self.conn.execute(
+                """INSERT INTO edges(src, relation, dst_symbol, dst_id, weight,
+                                     provenance, location, source, file, name_based)
+                   SELECT ?, ?, ?, dst_id, ?, ?, ?, ?, ?, ?
+                     FROM cand_members WHERE set_id = ?""",
+                (g["src"], g["relation"], g["dst_symbol"], g["weight"],
+                 g["provenance"], g["location"], g["source"], g["file"],
+                 g["name_based"], g["set_id"]))
+            self.conn.execute("DELETE FROM edge_groups WHERE id = ?", (g["id"],))
+            keys.append((g["src"], g["relation"], g["dst_symbol"]))
+        return keys
+
+    def _gc_cand_sets(self) -> None:
+        """Drop candidate sets no group references (sets are immutable and shared;
+        expansion leaves garbage behind). Cheap; called from reindex endgames."""
+        self.conn.execute(
+            """DELETE FROM cand_members WHERE set_id NOT IN
+               (SELECT DISTINCT set_id FROM edge_groups)""")
+        self.conn.execute(
+            """DELETE FROM cand_sets WHERE set_id NOT IN
+               (SELECT DISTINCT set_id FROM edge_groups)""")
+
     # -- reads -------------------------------------------------------------
     def nodes_by_name(self, name: str) -> list[Node]:
         try:
@@ -823,14 +1002,14 @@ class Store:
 
     def callers_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
         rows = self.conn.execute(
-            "SELECT * FROM edges WHERE dst_id = ? AND relation = ?",
+            "SELECT * FROM edges_all WHERE dst_id = ? AND relation = ?",
             (node_id, relation.value),
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
 
     def callees_of(self, node_id: str, relation: Relation = Relation.CALLS) -> list[Edge]:
         rows = self.conn.execute(
-            "SELECT * FROM edges WHERE src = ? AND relation = ? AND dst_id IS NOT NULL",
+            "SELECT * FROM edges_all WHERE src = ? AND relation = ?",
             (node_id, relation.value),
         ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
@@ -876,17 +1055,17 @@ class Store:
         at 6 GB through `resolved_edges()` (field analysis 2026-07-03); one-at-a-time
         keeps that sweep at adjacency scale. Same row set + corrupt-row filtering as
         `resolved_edges()`."""
-        for r in self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL"):
+        for r in self.conn.execute("SELECT * FROM edges_all"):
             e = _row_to_edge(r)
             if e is not None:
                 yield e
 
     def resolved_edges(self, relation: Relation | None = None) -> list[Edge]:
         if relation is None:
-            rows = self.conn.execute("SELECT * FROM edges WHERE dst_id IS NOT NULL").fetchall()
+            rows = self.conn.execute("SELECT * FROM edges_all").fetchall()
         else:
             rows = self.conn.execute(
-                "SELECT * FROM edges WHERE dst_id IS NOT NULL AND relation = ?",
+                "SELECT * FROM edges_all WHERE relation = ?",
                 (relation.value,),
             ).fetchall()
         return [e for r in rows if (e := _row_to_edge(r))]
@@ -912,7 +1091,7 @@ class Store:
         the hub-ranking matrices build from (v3.32.0: homonym widening arms must not
         rank as centrality; the same discount `confident_fan_in` already applies)."""
         valid = {r.value for r in Relation}
-        sql = "SELECT src, relation, dst_id, weight FROM edges WHERE dst_id IS NOT NULL"
+        sql = "SELECT src, relation, dst_id, weight FROM edges_all WHERE 1=1"
         params: tuple[str, ...] = ()
         if relation is not None:
             sql += " AND relation = ?"

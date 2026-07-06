@@ -330,8 +330,8 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
         return {k: float(v) for k, v in counts.items()}, "confident_fan_in"
     lv = tuple(r.value for r in LIVENESS_RELATIONS)
     rows = store.conn.execute(
-        f"""SELECT dst_id, COUNT(*) AS c FROM edges
-             WHERE dst_id IS NOT NULL AND provenance = ?
+        f"""SELECT dst_id, COUNT(*) AS c FROM edges_all
+             WHERE provenance = ?
                AND relation IN ({",".join("?" * len(lv))})
                AND dst_id IN (SELECT id FROM nodes)
              GROUP BY dst_id""",
@@ -386,7 +386,7 @@ def impact_of(store: Store, name: str) -> Result:
     n_backing = n_conf = 0
     any_ambiguous = False
     cur = store.conn.execute(
-        "SELECT src, relation, dst_id, provenance FROM edges WHERE dst_id IS NOT NULL")
+        "SELECT src, relation, dst_id, provenance FROM edges_all")
     for src, rel, dst_id, prov_s in cur:
         if rel in liveness and src in dependents and dst_id in radius:
             n_backing += 1
@@ -548,7 +548,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS t,
                       COALESCE(SUM(e.relation IN (?, ?) AND e.provenance = ?
                                    AND e.dst_id IN (SELECT id FROM _scan_comp)), 0) AS c
-                 FROM _scan_comp s CROSS JOIN edges e ON e.src = s.id""",
+                 FROM _scan_comp s CROSS JOIN edges_all e ON e.src = s.id""",
             (*_srel, *_srel, _extracted)).fetchone()
         store.conn.execute("DROP TABLE temp._scan_comp")
         frac, conf_n, total = _share_rows(row["t"], row["c"])
@@ -607,13 +607,12 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             in_row = store.conn.execute(
                 f"""SELECT COALESCE(SUM(relation IN ({ph})), 0) AS t,
                            COALESCE(SUM(relation IN ({ph}) AND provenance = ?), 0) AS c
-                     FROM edges WHERE dst_id = ?""",
+                     FROM edges_all WHERE dst_id = ?""",
                 (*_lv, *_lv, _extracted, nid)).fetchone()
             out_row = store.conn.execute(
-                """SELECT COALESCE(SUM(relation = ? AND dst_id IS NOT NULL), 0) AS t,
-                          COALESCE(SUM(relation = ? AND dst_id IS NOT NULL
-                                       AND provenance = ?), 0) AS c
-                     FROM edges WHERE src = ?""",
+                """SELECT COALESCE(SUM(relation = ?), 0) AS t,
+                          COALESCE(SUM(relation = ? AND provenance = ?), 0) AS c
+                     FROM edges_all WHERE src = ?""",
                 (Relation.CALLS.value, Relation.CALLS.value, _extracted,
                  nid)).fetchone()
             in_frac, c_in, _ = _share_rows(in_row["t"], in_row["c"])
@@ -1097,7 +1096,7 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     # materialising a frozenset per resolved edge (v3.39.0: that set was the op's
     # entire 10-12 GB peak at 27-30M edges — the recorded known-cost-op hazard —
     # while only the few hundred co-activation candidates are ever checked).
-    _q = "SELECT 1 FROM edges WHERE src=? AND dst_id=? LIMIT 1"
+    _q = "SELECT 1 FROM edges_all WHERE src=? AND dst_id=? LIMIT 1"
 
     def _linked(a: str, b: str) -> bool:
         return (store.conn.execute(_q, (a, b)).fetchone() is not None
@@ -2015,7 +2014,7 @@ def reindex(store: Store, path: str, precise: bool = False,
                 "was left untouched; pass a valid project root to rebuild it")
         with store.conn:
             store.conn.execute("DELETE FROM nodes")
-            store.conn.execute("DELETE FROM edges")
+            store.wipe_edges()
         store.bump_generation()
         store.set_meta("root", abs_root)
         return ok({"files": 0, "nodes": 0, "holes": 0}, files=0, nodes=0)
@@ -2045,7 +2044,7 @@ def reindex(store: Store, path: str, precise: bool = False,
     # incremental updates, design §4.)
     with store.conn:
         store.conn.execute("DELETE FROM nodes")
-        store.conn.execute("DELETE FROM edges")
+        store.wipe_edges()
         for n in nodes:
             store.add_node(n)
         for e in edges:
@@ -2309,7 +2308,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     # in-memory alternative is an OOM. The clear, node write, and dedup are each a transaction.
     with store.conn:
         store.conn.execute("DELETE FROM nodes")
-        store.conn.execute("DELETE FROM edges")
+        store.wipe_edges()
     sink = _StoreEdgeSink(store)
     try:
         # Pass 1/2: nodes resident, edges streamed (deduped per-source, committed in batches).
