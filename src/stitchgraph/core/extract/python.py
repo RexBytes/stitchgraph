@@ -59,6 +59,27 @@ class _Project:
     module_by_qual: dict[str, str] = field(default_factory=dict)  # module qualname -> node id
     module_ids: set[str] = field(default_factory=set)  # all MODULE node ids
     source_prefix: str = ""  # qualname prefix of a src-layout source root, e.g. "src." (else "")
+    # Per-file record of the four raw pass-1 name-sets (rel -> kind -> names,
+    # kinds: export/main/const/fixture). The global sets above are unions and
+    # cannot say WHICH file contributed a name — but the store must (research/21:
+    # `replace_file` maintains a per-file `symtab` table so single-file
+    # re-extraction can rebuild each union with one file's contribution swapped).
+    symtab: dict[str, dict[str, set[str]]] = field(default_factory=dict)
+
+
+_SYM_KINDS = {"export": "exported_names", "main": "main_calls",
+              "const": "module_consts", "fixture": "fixture_names"}
+
+
+def _sym_add(proj: _Project, rel: str, kind: str, names) -> None:
+    """Record pass-1 name-set entries BOTH globally (what pass 2 reads) and
+    per-file (what the store persists). Single choke point so the two views
+    can never drift."""
+    names = [names] if isinstance(names, str) else list(names)
+    if not names:
+        return
+    getattr(proj, _SYM_KINDS[kind]).update(names)
+    proj.symtab.setdefault(rel, {}).setdefault(kind, set()).update(names)
 
 # Ordinary bases whose subclasses are NOT framework callbacks — their methods
 # should still be eligible for dead-code. Anything else external (HTMLParser,
@@ -150,7 +171,8 @@ def extract_project(root: str | Path,
                     edge_sink: object = None,
                     skip_sink: list[tuple[str, str]] | None = None,
                     fallback: object = None,
-                    parallel: bool | None = None) -> tuple[list[Node], list[Edge]]:
+                    parallel: bool | None = None,
+                    project_sink: dict | None = None) -> tuple[list[Node], list[Edge]]:
     """Two passes: (1) collect definitions + symbol table, (2) resolve references.
 
     `ignore` is a list of globs (relative to root) to skip — e.g. migrations.
@@ -206,10 +228,13 @@ def extract_project(root: str | Path,
                     continue
                 _, rel, f_nodes, f_exported, f_mains, f_consts, f_fixtures = res
                 proj.nodes.extend(f_nodes)
-                proj.exported_names.update(f_exported)
-                proj.main_calls.update(f_mains)
-                proj.module_consts.update(f_consts)
-                proj.fixture_names.update(f_fixtures)
+                # _sym_add keeps the global sets and the per-file symtab record in
+                # lockstep; the worker's mini-project processed exactly one file,
+                # so its global sets ARE that file's contribution.
+                _sym_add(proj, rel, "export", f_exported)
+                _sym_add(proj, rel, "main", f_mains)
+                _sym_add(proj, rel, "const", f_consts)
+                _sym_add(proj, rel, "fixture", f_fixtures)
                 ok_files.append((rel, proj.root / rel))
         files = []  # consumed; the serial loop below is skipped
     for path in files:
@@ -342,6 +367,12 @@ def extract_project(root: str | Path,
         # DB-backed twin (Store._propagate_overrides) once nodes are inserted. Drain the
         # dunder-seed edges appended above.
         _drain()
+    if project_sink is not None:
+        # The cross-file state the store persists (research/21): the per-file raw
+        # name-sets plus the file-listing-derived import-internality inputs.
+        project_sink["symtab"] = proj.symtab
+        project_sink["packages"] = sorted(proj.packages)
+        project_sink["source_prefix"] = proj.source_prefix
     return proj.nodes, proj.edges
 
 
@@ -621,8 +652,8 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
 
     exported = _dunder_all(tree)
     if exported:
-        proj.exported_names.update(exported)
-    proj.main_calls.update(_main_block_calls(tree))
+        _sym_add(proj, rel, "export", exported)
+    _sym_add(proj, rel, "main", _main_block_calls(tree))
     for stmt in tree.body:  # module-level constants (not graphed as nodes)
         if isinstance(stmt, ast.Assign):
             for t in stmt.targets:
@@ -635,13 +666,13 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                 while stack:
                     n = stack.pop()
                     if isinstance(n, ast.Name):
-                        proj.module_consts.add(n.id)
+                        _sym_add(proj, rel, "const", n.id)
                     elif isinstance(n, (ast.Tuple, ast.List)):
                         stack.extend(n.elts)
                     elif isinstance(n, ast.Starred):
                         stack.append(n.value)
         elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            proj.module_consts.add(stmt.target.id)
+            _sym_add(proj, rel, "const", stmt.target.id)
     has_main = _has_main_block(tree)
 
     proj.nodes.append(Node(
@@ -658,7 +689,7 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
         for node in _module_export_nodes(tree):
             nm = getattr(node, "name", None)
             if nm and not nm.startswith("_"):
-                proj.exported_names.add(nm)
+                _sym_add(proj, rel, "export", nm)
             # Re-exports: `from .api import Public` in a package __init__ makes
             # `pkg.Public` importable public API — an export root even though it
             # isn't physically defined here. ast.ImportFrom/Import carry `.names`
@@ -672,7 +703,7 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                     else:
                         bound = alias.asname or alias.name
                     if bound != "*" and not bound.startswith("_"):
-                        proj.exported_names.add(bound)
+                        _sym_add(proj, rel, "export", bound)
                         # Under a RENAMED re-export (`from .core import Engine as Public`),
                         # the bound public name (`Public`) differs from the actually-defined
                         # symbol's name (`Engine`). `_apply_entrypoint_roles` matches nodes by
@@ -681,7 +712,7 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                         # (and its methods) is flagged dead (panel R25A, cardinal). A private
                         # bound name (`import _hidden`) is skipped above, staying dead.
                         if isinstance(node, ast.ImportFrom):
-                            proj.exported_names.add(alias.name)
+                            _sym_add(proj, rel, "export", alias.name)
             # Alias re-export by assignment: `Public = impl.Thing` / `Public = _Internal`
             # in a package __init__ exposes the RHS symbol as public API under `Public`.
             # The scan above only sees defs/imports, so the aliased target was flagged dead
@@ -694,7 +725,7 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
                        for t in targets):
                     ref = _assign_rhs_name(node.value)
                     if ref:
-                        proj.exported_names.add(ref)
+                        _sym_add(proj, rel, "export", ref)
 
     for node in _scope_defs(tree):
         _def_node(proj, rel, node, parent="", is_test_file=is_test_file)
@@ -768,7 +799,7 @@ def _def_node(proj: _Project, rel: str, node: ast.AST, parent: str,
         for dec in node.decorator_list:
             target = dec.func if isinstance(dec, ast.Call) else dec
             if _name_of(target) == "fixture":
-                proj.fixture_names.add(node.name)
+                _sym_add(proj, rel, "fixture", node.name)
                 break
         roles: set[str] = set()
         if is_test_file and node.name.startswith("test"):

@@ -57,6 +57,18 @@ CREATE TABLE IF NOT EXISTS edges (
 -- by its sorted member ids) and one `edge_groups` row per widened source-site.
 -- Compression is OPPORTUNISTIC: any group that fails the uniformity gates stays
 -- as flat `edges` rows, and correctness never depends on coverage.
+-- Persisted per-file symbol-table inputs (research/21): the four raw pass-1
+-- name-sets that never become graph objects but that pass-2 / role assignment
+-- read ACROSS files (module constants, pytest fixtures, export surface,
+-- __main__ calls). Single-file re-extraction rebuilds each cross-file union
+-- with one file's contribution swapped; kinds: const | fixture | export | main.
+CREATE TABLE IF NOT EXISTS symtab (
+    file TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (file, kind, name)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS cand_sets (
     set_id INTEGER PRIMARY KEY AUTOINCREMENT,
     sig    TEXT UNIQUE NOT NULL               -- unit-separator-joined sorted member ids
@@ -94,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_dst    ON edges(dst_id);
 CREATE INDEX IF NOT EXISTS idx_edges_symbol ON edges(dst_symbol);
 CREATE INDEX IF NOT EXISTS idx_edges_file   ON edges(file);
 CREATE INDEX IF NOT EXISTS idx_edges_rel    ON edges(relation);
+CREATE INDEX IF NOT EXISTS idx_symtab_kind  ON symtab(kind, name);
 CREATE INDEX IF NOT EXISTS idx_members_dst  ON cand_members(dst_id);
 CREATE INDEX IF NOT EXISTS idx_groups_src    ON edge_groups(src);
 CREATE INDEX IF NOT EXISTS idx_groups_set    ON edge_groups(set_id);
@@ -299,6 +312,39 @@ class Store:
     def commit(self) -> None:
         self.conn.commit()
 
+    def replace_symtab(self, file: str, contribution: dict[str, set[str]] | None) -> None:
+        """Replace one file's persisted symbol-table contribution (research/21).
+        `contribution` maps kind -> names for THIS file (the extractor's per-file
+        record); None just clears — the conservative choice when a caller has no
+        extraction data, since stale rows would mis-suppress holes or mis-root
+        tests after the file changed."""
+        try:
+            self.conn.execute("DELETE FROM symtab WHERE file = ?", (file,))
+            if contribution:
+                self.conn.executemany(
+                    "INSERT OR IGNORE INTO symtab(file, kind, name) VALUES (?, ?, ?)",
+                    [(file, kind, name) for kind, names in contribution.items()
+                     for name in names])
+        except (UnicodeEncodeError, ValueError):
+            return  # unstorable file/name (non-UTF-8 / NUL): skip, as add_node does
+
+    def replace_symtab_all(self, symtab: dict[str, dict[str, set[str]]]) -> None:
+        """Full-rebuild twin of `replace_symtab`: wipe and write every file's
+        contribution (both reindex paths call this after nodes land)."""
+        self.conn.execute("DELETE FROM symtab")
+        for file, contribution in symtab.items():
+            self.replace_symtab(file, contribution)
+
+    def symtab_names(self, kind: str, *, exclude_file: str | None = None) -> set[str]:
+        """The project-wide union of one kind's names, optionally with a file's
+        contribution excluded (the single-file re-extraction swap)."""
+        sql = "SELECT DISTINCT name FROM symtab WHERE kind = ?"
+        params: list[object] = [kind]
+        if exclude_file is not None:
+            sql += " AND file != ?"
+            params.append(exclude_file)
+        return {r["name"] for r in self.conn.execute(sql, params)}
+
     def wipe_edges(self) -> None:
         """Clear every edge representation — the flat table AND the compressed
         group/set tables (research/20). Full-rebuild paths must call this instead
@@ -353,7 +399,8 @@ class Store:
         return val if isinstance(val, str) else None
 
     def replace_file(self, file: str, nodes: Iterable[Node], edges: Iterable[Edge],
-                     *, exported_ids: set[str] | None = None) -> None:
+                     *, exported_ids: set[str] | None = None,
+                     symtab: dict[str, set[str]] | None = None) -> None:
         """Incremental update for one file (design §4, Store & incremental updates).
 
         1. Delete nodes/edges owned by this file.
@@ -412,6 +459,10 @@ class Store:
             # extract; other files' affected groups flatten so the resolve
             # pipeline below runs on flat rows exactly as it always has.
             self.conn.execute("DELETE FROM edge_groups WHERE file = ?", (file,))
+            # Persisted symbol-table maintenance (research/21): this file's raw
+            # name-set contribution is replaced with the fresh extract's (or
+            # cleared when the caller has none — stale rows are never kept).
+            self.replace_symtab(file, symtab)
             expanded = self._expand_affected(affected_names, affected_ids)
             for n in nodes:
                 self.add_node(n, file=file)

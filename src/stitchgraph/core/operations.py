@@ -2086,6 +2086,7 @@ def reindex(store: Store, path: str, precise: bool = False,
         # interned groups directly — at framework-Python density that is >90%
         # of the rows this loop used to insert.
         store.insert_edges_compressed(edges)
+        _persist_symtab(store, xreport)
 
     store.analyze()
     store.bump_generation()
@@ -2153,9 +2154,11 @@ def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
     # edit that changes a package __init__'s re-exports converges (panel R37A — the
     # exact contract replace_file's docstring asks incremental callers to honour).
     exported_ids = {n.id for n in nodes if "exported" in n.roles}
+    xsymtab = xreport.get("symtab") or {}
     for owner in targets:
         store.replace_file(owner, nodes_by_owner.get(owner, ()),
-                           edges_by_owner.get(owner, ()), exported_ids=exported_ids)
+                           edges_by_owner.get(owner, ()), exported_ids=exported_ids,
+                           symtab=xsymtab.get(owner))
 
     store.analyze()
     store.set_meta("root", abs_root)  # replace_file bumped the generation per owner
@@ -2165,6 +2168,20 @@ def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
              files=len(changed), nodes=store.node_count(), replaced=len(targets))
     _annotate_extraction_gaps(res, xreport)
     return res
+
+
+def _persist_symtab(store: Store, xreport: dict) -> None:
+    """Write the extractor's per-file symbol-table record + the import-internality
+    meta (research/21). Both reindex paths call this after nodes land, so a later
+    single-file re-extraction can rebuild every cross-file union from the store."""
+    import json as _json
+    store.replace_symtab_all(xreport.get("symtab") or {})
+    store.conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('packages', ?)",
+        (_json.dumps(xreport.get("packages") or []),))
+    store.conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('source_prefix', ?)",
+        (xreport.get("source_prefix") or "",))
 
 
 def _annotate_extraction_gaps(res: Result, xreport: dict) -> None:
@@ -2382,6 +2399,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     with store.conn:
         for n in nodes:
             store.add_node(n)
+        _persist_symtab(store, xreport)
         # Orphan sweep (review 2026-07-03, F9): a swallowed tree-sitter failure mid-extract
         # (see extract_project's warn-and-continue) leaves already-COMMITTED edge batches whose
         # defining nodes were never returned — resolved edges into/out of phantom ids that
