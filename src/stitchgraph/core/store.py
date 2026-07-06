@@ -484,8 +484,26 @@ class Store:
             expanded = self._expand_affected(affected_names, affected_ids)
             for n in nodes:
                 self.add_node(n, file=file)
-            for e in edges:
-                self.add_edge(e, file=file)
+            # Ingest-time compression for the file's fresh batch (research/21):
+            # a hot-homonym file's widened fan-out is tens of thousands of arms
+            # at field scale, and inserting them FLAT made every pipeline pass
+            # below wade through them before the end-of-transaction compression
+            # cleaned up (py-spy, HA edit loop). Dedup the batch in memory (the
+            # in-memory twin; file-local keys, idempotent for callers that
+            # already deduped) and write eligible fan-outs as groups directly —
+            # the same per-source-complete argument as the streaming sink.
+            if self.edge_compression:
+                from .operations import _dedup_edges  # lazy: avoids module cycle
+                edges = _dedup_edges(edges)
+                flat, groups = self.partition_compressible(edges)
+                for e in flat:
+                    self.add_edge(e, file=file)
+                memo: dict[str, int] = {}
+                for template, dsts in groups:
+                    self.insert_edge_group(template, dsts, memo)
+            else:
+                for e in edges:
+                    self.add_edge(e, file=file)
             for nid in runtime_ids:
                 self.add_role(nid, "runtime")
             self._resolve_worklist()
