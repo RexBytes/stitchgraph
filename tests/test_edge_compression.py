@@ -174,6 +174,135 @@ def test_hot_probes_stay_indexed(tmp_path):
         assert "SCAN edge_groups" not in plan, f"group branch scan:\n{plan}"
 
 
+def _converged(store, tmp_path, root="src"):
+    """Fresh-reindex twin of the store's current tree; compare through the
+    representation-blind APIs (the incremental-convergence contract)."""
+    twin = sg.Store(str(tmp_path / "twin.db"))
+    assert sg.reindex(twin, str(tmp_path / root)).ok
+    a, b = _api_snapshot(store), _api_snapshot(twin)
+    twin.close()
+    return a == b
+
+
+def _no_dupes_or_mixed_keys(store):
+    """Post-replace_file invariants: no duplicate (src, relation, dst_id) through
+    the view, and no key both compressed and holding a non-ambiguous flat row."""
+    dupes = store.conn.execute(
+        """SELECT COUNT(*) FROM (SELECT src, relation, dst_id FROM edges_all
+            GROUP BY src, relation, dst_id HAVING COUNT(*) > 1)""").fetchone()[0]
+    mixed = store.conn.execute(
+        """SELECT COUNT(*) FROM edge_groups g
+            WHERE EXISTS (SELECT 1 FROM edges e
+                           WHERE e.src = g.src AND e.relation = g.relation
+                             AND e.dst_symbol = g.dst_symbol
+                             AND e.dst_id IS NOT NULL
+                             AND e.provenance != 'ambiguous')""").fetchone()[0]
+    return dupes == 0 and mixed == 0
+
+
+def test_replace_file_widens_compressed_group(tmp_path):
+    """The expand-affected round trip: an edit that ADDS a homonym in another
+    file must re-derive the compressed groups whose sets it changes, and the
+    end state must converge with a fresh full reindex."""
+    from stitchgraph.core.extract import extract_project
+    store = _index(tmp_path)
+    store._compress_edges()
+    store.commit()
+    n_groups = store.conn.execute("SELECT COUNT(*) FROM edge_groups").fetchone()[0]
+    assert n_groups >= 1
+    # d.py adds ANOTHER `work` — every widened set for the name must gain it
+    root = tmp_path / "src"
+    (root / "d.py").write_text("def work():\n    return 4\n")
+    nodes, edges = extract_project(str(root))
+    d_nodes = [n for n in nodes if n.id.startswith("d.py::")]
+    d_edges = [e for e in edges if e.src.startswith("d.py::")]
+    store.replace_file("d.py", d_nodes, d_edges)
+    arms = {r["dst_id"] for r in store.conn.execute(
+        """SELECT dst_id FROM edges_all
+            WHERE relation = 'CALLS' AND dst_symbol = 'work'""")}
+    assert "d.py::work" in arms, "the new homonym must join every widened fan-out"
+    assert _no_dupes_or_mixed_keys(store)
+    assert _converged(store, tmp_path)
+    store.close()
+
+
+def test_replace_file_narrows_compressed_group(tmp_path):
+    """The narrowing direction: emptying a homonym's file must drop its arm from
+    affected sets (weights re-normalised by the flat-row rewiden), converging
+    with a fresh reindex."""
+    store = _index(tmp_path)
+    store._compress_edges()
+    store.commit()
+    (tmp_path / "src" / "c.py").write_text("import b\n\ndef main():\n    return b.helper()\n")
+    from stitchgraph.core.extract import extract_project
+    nodes, edges = extract_project(str(tmp_path / "src"))
+    c_nodes = [n for n in nodes if n.id.startswith("c.py::")]
+    c_edges = [e for e in edges if e.src.startswith("c.py::")]
+    store.replace_file("c.py", c_nodes, c_edges)
+    arms = {r["dst_id"] for r in store.conn.execute(
+        "SELECT dst_id FROM edges_all WHERE dst_symbol = 'work'")}
+    assert "c.py::work" not in arms, "the deleted homonym's arm must vanish"
+    assert _no_dupes_or_mixed_keys(store)
+    assert _converged(store, tmp_path)
+    store.close()
+
+
+def test_replace_file_recompresses_touched_srcs(tmp_path):
+    """After the pipeline, eligible widened fan-outs the edit touched must be
+    compressed again — the representation converges, not just the content."""
+    from stitchgraph.core.extract import extract_project
+    store = _index(tmp_path)
+    store._compress_edges()
+    store.commit()
+    root = tmp_path / "src"
+    (root / "d.py").write_text("def work():\n    return 4\n")
+    nodes, edges = extract_project(str(root))
+    store.replace_file("d.py", [n for n in nodes if n.id.startswith("d.py::")],
+                       [e for e in edges if e.src.startswith("d.py::")])
+    # the b.py::run -> work widening was expanded (name affected) and must be
+    # a compressed group again, now with the 3-member set
+    g = store.conn.execute(
+        """SELECT g.set_id FROM edge_groups g
+            WHERE g.src = 'b.py::run' AND g.dst_symbol = 'work'""").fetchone()
+    assert g is not None, "the affected group must have been re-compressed"
+    members = {r["dst_id"] for r in store.conn.execute(
+        "SELECT dst_id FROM cand_members WHERE set_id = ?", (g["set_id"],))}
+    assert "d.py::work" in members
+    store.close()
+
+
+def test_sidecar_overlay_sees_group_changes(tmp_path):
+    """The v3.40.0 incremental sidecar must stay byte-correct when the delta
+    involves compressed groups: the edge_groups capture triggers record src and
+    every member dst, and apply_delta re-reads through edges_all."""
+    import shutil
+
+    from stitchgraph.core.adjcache import load_cache, sidecar_path
+    from stitchgraph.core.extract import extract_project
+    from stitchgraph.core.reach import LIVENESS_RELATIONS
+    __import__("pytest").importorskip("numpy")
+    store = _index(tmp_path)
+    store._compress_edges()
+    store.commit()  # representation change only: the warm sidecar stays valid
+    assert load_cache(store) is not None
+    root = tmp_path / "src"
+    (root / "d.py").write_text("def work():\n    return 4\n")
+    nodes, edges = extract_project(str(root))
+    store.replace_file("d.py", [n for n in nodes if n.id.startswith("d.py::")],
+                       [e for e in edges if e.src.startswith("d.py::")])
+    cache = load_cache(store)
+    assert cache is not None
+    seeds = {"c.py::main", "b.py::run"}
+    patched = cache.reachable(seeds, LIVENESS_RELATIONS)
+    assert "d.py::work" in patched, "the new homonym arm must be reachable"
+    if cache.has_overlay:  # patched path taken: byte-equality vs full rebuild
+        shutil.rmtree(sidecar_path(store))
+        rebuilt = load_cache(store)
+        assert rebuilt is not None and not rebuilt.has_overlay
+        assert patched == rebuilt.reachable(seeds, LIVENESS_RELATIONS)
+    store.close()
+
+
 def test_old_db_gains_view_on_open(tmp_path):
     """An index file created before the compression schema must open cleanly and
     serve the view (empty group tables = exactly the old behaviour)."""

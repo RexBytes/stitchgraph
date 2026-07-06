@@ -378,11 +378,18 @@ class Store:
         # update (cardinal sin), while `has_runtime` meta stayed set and inflated
         # find_stale's confidence to 0.78 (panel R33A). Carry the role across for every
         # id that survives the re-extraction (add_role no-ops on a vanished id).
+        old_rows = self.conn.execute(
+            "SELECT id, name, roles FROM nodes WHERE file = ?", (file,)).fetchall()
         runtime_ids = {
-            row["id"] for row in self.conn.execute(
-                "SELECT id, roles FROM nodes WHERE file = ?", (file,))
+            row["id"] for row in old_rows
             if "runtime" in (row["roles"] or "").split(",")
         }
+        # Expand-affected universe (research/20): every node name/id this update
+        # adds OR removes. A compressed group is only touched by this edit if its
+        # dst_symbol is one of these names or its candidate set contains one of
+        # these ids — everything else keeps a provably-unchanged set.
+        affected_names = ({r["name"] for r in old_rows} | {n.name for n in nodes})
+        affected_ids = ({r["id"] for r in old_rows} | {n.id for n in nodes})
         # Sidecar-delta capture (v3.40.0): TEMP TRIGGERS record every edge row this
         # update touches — src AND dst_id, across the worklist/dangling/rewiden/
         # override side effects, complete by construction — so the adjacency
@@ -394,6 +401,11 @@ class Store:
         with self.conn:  # single transaction
             self.conn.execute("DELETE FROM nodes WHERE file = ?", (file,))
             self.conn.execute("DELETE FROM edges WHERE file = ?", (file,))
+            # The file's own compressed groups are re-derived from the fresh
+            # extract; other files' affected groups flatten so the resolve
+            # pipeline below runs on flat rows exactly as it always has.
+            self.conn.execute("DELETE FROM edge_groups WHERE file = ?", (file,))
+            expanded = self._expand_affected(affected_names, affected_ids)
             for n in nodes:
                 self.add_node(n, file=file)
             for e in edges:
@@ -411,9 +423,28 @@ class Store:
             self._resolve_worklist()
             self._rewiden_resolved()
             self._propagate_overrides()
+            touched = None
+            if capture:
+                touched = [r[0] for r in self.conn.execute(
+                    "SELECT DISTINCT src FROM _adj_touched WHERE src IS NOT NULL")]
+            expanded += self._expand_collisions(touched)
             self._dedup_resolved_edges()
             if exported_ids is not None:
                 self._set_exported_roles(exported_ids)
+            # Re-compress the survivors: exactly the groups we flattened, plus
+            # every src this transaction wrote flat rows for (rewiden rebuilds,
+            # worklist widenings, the file's own fresh arms). Opportunistic —
+            # anything left flat is correct, just uncompressed until the next
+            # full reindex.
+            scope = {k[0] for k in expanded}
+            if touched is not None:
+                scope.update(touched)
+            else:
+                scope.update(r[0] for r in self.conn.execute(
+                    "SELECT DISTINCT src FROM edges WHERE file = ?", (file,)))
+            self._compress_edges(srcs=scope)
+            if expanded:
+                self._gc_cand_sets()
         self.bump_generation()  # the adjacency sidecar must never survive this edit
         if capture:
             self._delta_capture_finish(prev_gen, [n.id for n in nodes])
@@ -435,9 +466,22 @@ class Store:
             self.conn.execute(
                 "CREATE TEMP TRIGGER IF NOT EXISTS _adj_del AFTER DELETE ON edges "
                 "BEGIN INSERT INTO _adj_touched VALUES (old.src, old.dst_id); END")
+            # Compressed groups (research/20): a group row stands for one flat row
+            # per candidate-set member, so creating/dropping one touches its src
+            # and every member dst. Member rows are inserted before the group row
+            # (`_intern_set` runs first) and sets are immutable, so the SELECT
+            # sees the full membership on both triggers.
+            self.conn.execute(
+                "CREATE TEMP TRIGGER IF NOT EXISTS _adjg_ins AFTER INSERT ON edge_groups "
+                "BEGIN INSERT INTO _adj_touched "
+                "SELECT new.src, dst_id FROM cand_members WHERE set_id = new.set_id; END")
+            self.conn.execute(
+                "CREATE TEMP TRIGGER IF NOT EXISTS _adjg_del AFTER DELETE ON edge_groups "
+                "BEGIN INSERT INTO _adj_touched "
+                "SELECT old.src, dst_id FROM cand_members WHERE set_id = old.set_id; END")
             return True
         except sqlite3.Error:
-            for t in ("_adj_ins", "_adj_upd", "_adj_del"):
+            for t in ("_adj_ins", "_adj_upd", "_adj_del", "_adjg_ins", "_adjg_del"):
                 try:
                     self.conn.execute(f"DROP TRIGGER IF EXISTS temp.{t}")
                 except sqlite3.Error:
@@ -465,7 +509,7 @@ class Store:
         except sqlite3.Error:
             pass
         finally:
-            for t in ("_adj_ins", "_adj_upd", "_adj_del"):
+            for t in ("_adj_ins", "_adj_upd", "_adj_del", "_adjg_ins", "_adjg_del"):
                 try:
                     self.conn.execute(f"DROP TRIGGER IF EXISTS temp.{t}")
                 except sqlite3.Error:
@@ -661,7 +705,11 @@ class Store:
                         WHERE e.relation IN (?, ?)
                           AND NOT EXISTS (SELECT 1 FROM edges p
                                            WHERE p.src = e.src AND p.relation = e.relation
-                                             AND p.dst_id = w.override))
+                                             AND p.dst_id = w.override)
+                          AND NOT EXISTS (SELECT 1 FROM edge_groups g
+                                           JOIN cand_members m ON m.set_id = g.set_id
+                                           WHERE g.src = e.src AND g.relation = e.relation
+                                             AND m.dst_id = w.override))
                 WHERE rn = 1""",
             (Relation.CALLS.value, Relation.REFERENCES.value))
         self.conn.execute(
@@ -737,12 +785,20 @@ class Store:
         self.conn.execute(
             """DELETE FROM edges
                 WHERE dst_id IS NULL
-                  AND EXISTS (SELECT 1 FROM edges r
-                               WHERE r.dst_id IS NOT NULL
-                                 AND r.src = edges.src
-                                 AND r.relation = edges.relation
-                                 AND r.dst_symbol = edges.dst_symbol
-                                 AND r.name_based = edges.name_based)"""
+                  AND (EXISTS (SELECT 1 FROM edges r
+                                WHERE r.dst_id IS NOT NULL
+                                  AND r.src = edges.src
+                                  AND r.relation = edges.relation
+                                  AND r.dst_symbol = edges.dst_symbol
+                                  AND r.name_based = edges.name_based)
+                       -- a compressed group IS a resolved same-kind sibling
+                       -- (research/20): its arms are exactly the fan-out that
+                       -- would satisfy this hole in the flat representation
+                       OR EXISTS (SELECT 1 FROM edge_groups g
+                                   WHERE g.src = edges.src
+                                     AND g.relation = edges.relation
+                                     AND g.dst_symbol = edges.dst_symbol
+                                     AND g.name_based = edges.name_based))"""
         )
 
     def _resolve_worklist(self) -> None:
@@ -897,6 +953,18 @@ class Store:
                    AND COUNT(*) = COUNT(DISTINCT dst_id)""").fetchall()
         made = 0
         for g in groups:
+            # Mixed-key guard: a key that ALSO has a non-ambiguous flat resolved
+            # row (an INFERRED/EXTRACTED single left beside surviving arms by the
+            # per-dst_id dedup) must stay flat — `_rewiden_resolved` rebuilds a
+            # name-based key from its FLAT rows only, so compressing the ambiguous
+            # part would make a later rebuild duplicate the hidden arms.
+            if self.conn.execute(
+                    """SELECT 1 FROM edges
+                        WHERE src = ? AND relation = ? AND dst_symbol = ?
+                          AND dst_id IS NOT NULL AND provenance != 'ambiguous'
+                        LIMIT 1""",
+                    (g["src"], g["relation"], g["dst_symbol"])).fetchone():
+                continue
             members = [r["dst_id"] for r in self.conn.execute(
                 """SELECT dst_id FROM edges
                     WHERE src = ? AND relation = ? AND dst_symbol = ?
@@ -939,6 +1007,67 @@ class Store:
                  g["name_based"], g["set_id"]))
             self.conn.execute("DELETE FROM edge_groups WHERE id = ?", (g["id"],))
             keys.append((g["src"], g["relation"], g["dst_symbol"]))
+        return keys
+
+    def _expand_affected(self, names: set[str], ids: set[str]) -> list[tuple[str, str, str]]:
+        """Expand-affected, step 1 (research/20): before the resolve pipeline runs,
+        flatten every group this update could touch — a group whose dst_symbol is a
+        name being added/removed (its candidate set may widen/narrow), or whose set
+        contains an id owned by the replaced file (dangling/module-retarget arms).
+        Unaffected groups keep candidate sets that are provably unchanged, so the
+        pipeline's flat-row passes need never see them."""
+        if not names and not ids:
+            return []
+        self.conn.execute("DROP TABLE IF EXISTS temp._aff_names")
+        self.conn.execute("CREATE TEMP TABLE _aff_names (name TEXT PRIMARY KEY)")
+        self.conn.executemany("INSERT OR IGNORE INTO _aff_names VALUES (?)",
+                              [(n,) for n in names])
+        self.conn.execute("DROP TABLE IF EXISTS temp._aff_ids")
+        self.conn.execute("CREATE TEMP TABLE _aff_ids (id TEXT PRIMARY KEY)")
+        self.conn.executemany("INSERT OR IGNORE INTO _aff_ids VALUES (?)",
+                              [(i,) for i in ids])
+        keys = self._expand_groups(
+            """dst_symbol IN (SELECT name FROM _aff_names)
+               OR set_id IN (SELECT set_id FROM cand_members
+                              WHERE dst_id IN (SELECT id FROM _aff_ids))""")
+        self.conn.execute("DROP TABLE IF EXISTS temp._aff_names")
+        self.conn.execute("DROP TABLE IF EXISTS temp._aff_ids")
+        return keys
+
+    def _expand_collisions(self, touched_srcs: list[str] | None) -> list[tuple[str, str, str]]:
+        """Expand-affected, step 2: flatten any group that COLLIDES with a flat
+        resolved row — same (src, dst) under the same relation or under the
+        CALLS/REFERENCES subsumption pair — so `_dedup_resolved_edges` sees every
+        member of the duplicate group and applies today's exact semantics.
+
+        A freshly-compressed state is collision-free by construction (compression
+        runs on post-dedup rows), so only flat rows created THIS transaction can
+        collide with a pre-existing group; `touched_srcs` (the sidecar-capture
+        src set) bounds the probe to them. Without capture (None) the probe runs
+        unbounded — rare, correct, just slower."""
+        scope = ""
+        params: tuple = ()
+        if touched_srcs is not None:
+            if not touched_srcs:
+                return []
+            self.conn.execute("DROP TABLE IF EXISTS temp._col_srcs")
+            self.conn.execute("CREATE TEMP TABLE _col_srcs (src TEXT PRIMARY KEY)")
+            self.conn.executemany("INSERT OR IGNORE INTO _col_srcs VALUES (?)",
+                                  [(s,) for s in touched_srcs])
+            scope = "AND e.src IN (SELECT src FROM _col_srcs)"
+        keys = self._expand_groups(
+            f"""id IN (SELECT DISTINCT g.id FROM edges e
+                        JOIN edge_groups g ON g.src = e.src
+                        JOIN cand_members m ON m.set_id = g.set_id
+                                           AND m.dst_id = e.dst_id
+                       WHERE e.dst_id IS NOT NULL {scope}
+                         AND (e.relation = g.relation
+                              OR (e.relation = ? AND g.relation = ?)
+                              OR (e.relation = ? AND g.relation = ?)))""",
+            (*params, Relation.CALLS.value, Relation.REFERENCES.value,
+             Relation.REFERENCES.value, Relation.CALLS.value))
+        if touched_srcs is not None:
+            self.conn.execute("DROP TABLE IF EXISTS temp._col_srcs")
         return keys
 
     def _gc_cand_sets(self) -> None:
