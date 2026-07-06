@@ -610,6 +610,14 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             "reason": f"data feedback loop through state '{var.rsplit('::', 1)[-1]}'",
         })
 
+    # Unused parameters (design §6.E, research/22 deliverable 3): computed per
+    # function from source at scan time — deliberately NOT persisted as param
+    # nodes (variable granularity stays opt-in for scale). GREEN advisory: an
+    # unused param is a cleanup candidate, never urgent, and interface-shaped
+    # code (overrides, callbacks, stubs) is excluded rather than hedged.
+    for issue in _unused_params(store):
+        issues.append(issue)
+
     # God objects: high fan-in AND fan-out.
     _lv = tuple(r.value for r in LIVENESS_RELATIONS)
     fi, fo = fan_in(store), fan_out(store)
@@ -2366,6 +2374,137 @@ def _exported_ids_for_single(store: Store, rel: str, fresh_nodes: list,
                 and nid.rsplit(".", 1)[0] in owner_ok):
             ids.add(nid)
     return ids
+
+
+def _unused_params(store: Store) -> list[dict]:
+    """Parameters never loaded in their function's own body (design §6.E) —
+    a scan-time, source-derived advisory. Exclusions, by design rather than
+    hedging: `self`/`cls`, `_`-prefixed (the idiomatic 'intentionally unused'
+    marker), `*args`/`**kwargs` (pass-through shape), and any function that is
+    a stub, abstract, a `callback`-role framework override, or overrides a
+    first-party base method (the signature is the INTERFACE's, not the
+    function's to slim). Python files only; missing/unparseable sources are
+    silently skipped (scan must never fail on a stale index)."""
+    import ast as _ast
+    import os
+
+    root = store.get_meta("root") or ""
+    out: list[dict] = []
+    # Overriding methods: same member name defined on any INHERITS ancestor.
+    bases: dict[str, list[str]] = {}
+    inh = Relation.INHERITS.value
+    for src, dst in store.conn.execute(
+            "SELECT src, dst_id FROM edges_all WHERE relation = ?", (inh,)):
+        if isinstance(src, str) and isinstance(dst, str) and src != dst:
+            bases.setdefault(src, []).append(dst)
+
+    def overrides_base(fn_id: str) -> bool:
+        owner, _, method = fn_id.rpartition(".")
+        if "::" not in owner:
+            return False
+        seen: set[str] = set()
+        stack = list(bases.get(owner, ()))
+        while stack:
+            b = stack.pop()
+            if b in seen:
+                continue
+            seen.add(b)
+            if store.get_node(f"{b}.{method}") is not None:
+                return True
+            stack.extend(bases.get(b, ()))
+        return False
+
+    trees: dict[str, _ast.Module | None] = {}
+    for node in store.all_nodes_full():
+        if node.kind not in (NodeKind.FUNCTION, NodeKind.METHOD) or node.is_stub:
+            continue
+        if "callback" in node.roles:
+            continue
+        rel_path = node.id.split("::", 1)[0]
+        if not rel_path.endswith(".py"):
+            continue
+        if rel_path not in trees:
+            try:
+                with open(os.path.join(root, rel_path), encoding="utf-8") as f:
+                    trees[rel_path] = _ast.parse(f.read())
+            except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+                trees[rel_path] = None
+        tree = trees[rel_path]
+        if tree is None:
+            continue
+        qual = node.id.split("::", 1)[1]
+        fn = _find_def(tree, qual)
+        if fn is None or _is_interface_like(fn):
+            continue
+        params = [a.arg for a in (fn.args.posonlyargs + fn.args.args
+                                  + fn.args.kwonlyargs)
+                  if a.arg not in ("self", "cls") and not a.arg.startswith("_")]
+        if not params:
+            continue
+        loaded = {n.id for n in _ast.walk(fn)
+                  if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Load)}
+        unused = [p for p in params if p not in loaded]
+        if not unused:
+            continue
+        if node.kind is NodeKind.METHOD and overrides_base(node.id):
+            continue
+        out.append({
+            "kind": "unused_params", "node": node.id, "params": sorted(unused),
+            "urgency": Urgency.GREEN.value,
+            "reason": (f"parameter(s) never used in the body: "
+                       f"{', '.join(sorted(unused))}"),
+        })
+    return sorted(out, key=lambda i: i["node"])
+
+
+def _find_def(tree, qual: str):
+    """Locate the def matching a dotted qualname (mirrors _def_node's quals:
+    control-flow blocks add no level; classes and defs do)."""
+    import ast as _ast
+    parts = qual.split(".")
+
+    def walk(node, idx):
+        for child in _ast.iter_child_nodes(node):
+            if isinstance(child, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                                  _ast.ClassDef)):
+                if child.name != parts[idx]:
+                    continue
+                if idx == len(parts) - 1:
+                    if isinstance(child, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                        return child
+                    continue
+                got = walk(child, idx + 1)
+                if got is not None:
+                    return got
+            else:
+                got = walk(child, idx)
+                if got is not None:
+                    return got
+        return None
+
+    return walk(tree, 0)
+
+
+def _is_interface_like(fn) -> bool:
+    """A def whose body is a stub/ellipsis/docstring-only, or that is decorated
+    abstract/overload — its signature is an interface contract, not dead weight."""
+    import ast as _ast
+    for d in fn.decorator_list:
+        name = d.attr if isinstance(d, _ast.Attribute) else (
+            d.id if isinstance(d, _ast.Name) else None)
+        if name in ("abstractmethod", "abstractproperty", "overload"):
+            return True
+    body = [s for s in fn.body
+            if not (isinstance(s, _ast.Expr) and isinstance(s.value, _ast.Constant))]
+    if not body:
+        return True
+    if len(body) == 1:
+        only = body[0]
+        if isinstance(only, _ast.Pass):
+            return True
+        if isinstance(only, _ast.Raise):
+            return True
+    return False
 
 
 def _persist_symtab(store: Store, xreport: dict) -> None:

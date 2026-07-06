@@ -206,6 +206,43 @@ def test_attribute_ids_are_class_scoped(tmp_path):
     store.close()
 
 
+def test_unused_params_surfaced_in_scan(tmp_path):
+    """research/22 deliverable 3: a parameter never loaded in the body is a
+    GREEN advisory; interface shapes are excluded, not hedged."""
+    store = _index(tmp_path, {"m.py": """
+        from abc import abstractmethod
+
+        def leaky(a, b, _ignored, *args, **kwargs):
+            return a
+
+        def clean(x):
+            return x + 1
+
+        class Base:
+            @abstractmethod
+            def handle(self, event):
+                ...
+
+        class Impl(Base):
+            def handle(self, event):
+                return 1   # unused param, but the signature is Base's contract
+
+        if __name__ == "__main__":
+            leaky(1, 2, 3)
+            clean(4)
+            Impl().handle(None)
+    """})
+    issues = {i["node"]: i for i in sg.scan(store).result
+              if i["kind"] == "unused_params"}
+    assert "m.py::leaky" in issues
+    assert issues["m.py::leaky"]["params"] == ["b"]  # _ignored/*args/**kwargs excluded
+    assert "m.py::clean" not in issues
+    assert "m.py::Base.handle" not in issues        # abstract
+    assert "m.py::Impl.handle" not in issues        # overrides a first-party base
+    assert issues["m.py::leaky"]["urgency"] == "green"
+    store.close()
+
+
 def test_incremental_converges_and_zombie_var_cleared(tmp_path):
     """Removing the last mutation must remove the var node on the incremental
     path exactly as a fresh reindex would (the replace_file var-row sweep)."""
