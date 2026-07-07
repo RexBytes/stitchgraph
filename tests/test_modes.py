@@ -222,16 +222,20 @@ def test_converter_qualifies_method_names(tmp_path):
 
 def test_nonturnkey_run_script_is_clean(tmp_path):
     """Panel R277 LOW: a non-turnkey language's run_coverage.sh must be a clean placeholder, not a
-    mangled copy of the Python recipe with stray pytest/pip/converter lines."""
+    mangled copy of the Python recipe with stray pytest/pip lines. JavaScript graduated to turnkey
+    in v3.49.0 (research/26), so the vehicle is now java — the one remaining template."""
     st = sg.Store(":memory:")
-    out = tmp_path / "jskit"
-    r = sg.scaffold_coverage(st, out_dir=str(out), language="javascript")
+    out = tmp_path / "javakit"
+    r = sg.scaffold_coverage(st, out_dir=str(out), language="java")
     assert r.ok
     run = (out / "run_coverage.sh").read_text()
     assert "--cov-context=test" not in run      # no leftover pytest coverage flags
-    assert "python to_canonical.py" not in run  # no converter call (none is shipped for js)
-    assert "pip install" not in run             # no python deps in a js kit
-    assert "TODO" in run and "c8" in run        # a real, self-contained placeholder
+    assert "pip install" not in run             # no python deps in a java kit
+    assert "TODO" in run and "JaCoCo" in run    # a real, self-contained placeholder
+    # and the graduated js kit is a RUNNABLE script, not a placeholder
+    r2 = sg.scaffold_coverage(st, out_dir=str(tmp_path / "jskit"), language="javascript")
+    js = (tmp_path / "jskit" / "run_coverage.sh").read_text()
+    assert r2.ok and "TODO" not in js and "jest" in js and "vitest" in js
 
 
 def test_scaffold_bad_input_refuses():
