@@ -248,6 +248,7 @@ The full rule file — written to be dropped into an agent's context — is
 |---|---|
 | **Deep** (stdlib `ast`; optional jedi `--precise`) | Python 3.11+ |
 | **Full graph via tree-sitter** (definitions, calls, imports/inheritance, tests, body matrix) | JavaScript, TypeScript/TSX, Go, Rust, C, C++, C#, Java, Ruby, PHP, Bash |
+| **Type-grade upgrade via `--lsp`** (v3.46.0): an installed language server answers go-to-definition per call site, so the true target of an ambiguous name gains a confident edge — including picking the right *override* | TS/JS (typescript-language-server), Rust (rust-analyzer), Go (gopls), C/C++ (clangd); `[lsp.servers]` adds more |
 | **Cross-language seams** | Flask/FastAPI/Django/Express/Spring routes, HTML forms, JS `fetch`, events, SQL (sqlglot), SQLAlchemy/Django ORM — all converging in one graph, so `trace_path` crosses language boundaries |
 
 Per-language support matrix: [`docs/LANGUAGES.md`](docs/LANGUAGES.md).

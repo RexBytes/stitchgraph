@@ -25,7 +25,7 @@ spec and section references.
 | Extraction | **Polyglot tree-sitter extractor** | ✅ Done | JS/TS, Rust, C/C++, C#, Go, Java, Ruby, PHP, Bash (defs + call graph) |
 | Extraction | Polyglot imports / inheritance / test entry points | ✅ Done | per-language (see LANGUAGES.md matrix) |
 | Extraction | Framework-callback handling (external base) | ✅ Done | overrides of a framework base aren't dead |
-| Extraction | External multi-language LSP backend | ⬜ To do | type-grade resolution per language |
+| Extraction | External multi-language LSP backend | ✅ Done | v3.46.0 (research/24): `reindex --lsp` + `type_at`; typescript-language-server / rust-analyzer / gopls / clangd auto-detected, `[lsp.servers]` extends; stdlib-only client, honest declines |
 | **Entry points** | Python library+CLI detector | ✅ Done | exported API, main, scripts, tests, routes |
 | Entry points | `stitchgraph.toml` override | ✅ Done | include roots, ignore globs, threshold, hub metric |
 | **Operations** | `find_symbol` / `get_callers` / `get_callees` | ✅ Done | structural primitives |
@@ -104,11 +104,16 @@ requirements (per-language server binaries, strictly optional at runtime).
 shipped (symbol table v3.43.0, data flow + group-sharing v3.45.0, overrides
 scoping v3.44.0) or was verified already closed by earlier releases
 (tree-sitter imports v3.34.0; module-level attribution, confirmed empirically
-2026-07-06). One item remains:
+2026-07-06). **The LSP backend shipped in v3.46.0 (research/24) — the roadmap
+as originally scoped is closed.**
 
-| Item | Effort | Why deferred |
+What remains is maintenance and opportunity, not commitments:
+
+| Item | Effort | Status |
 |---|---|---|
-| **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. The last roadmap item — completing it closes everything currently known. |
+| `[lsp] ambiguous_only` cost knob (skip confirmation queries, ~halve the pass) | S | Deferred until field use finds the full pass too slow (research/24). |
+| LSP recall of dropped externals (call sites whose name matched nothing) | M | Needs a source re-walk; deferred until the precision pass proves itself in the field. |
+| Interprocedural argument provenance / taint | v3.0-class | The body-matrix promotion project (IDEAS.md §5c, research/22). |
 
 ## Known seams (honest)
 

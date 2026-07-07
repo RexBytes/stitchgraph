@@ -119,6 +119,33 @@ the reindex report rather than pretending completeness.
   as jedi, which is also reindex-time only. Documented.
 - No long-lived server daemon: one server per reindex pass, then shutdown.
 
+## Field results (2026-07-07)
+
+Two real repos, baseline vs `--lsp`, same machine as the probes:
+
+| | hono (TypeScript, 307 files) | fd (Rust, 28 files) |
+|---|---|---|
+| sites queried | 10,904 | 976 |
+| server resolved | 7,162 (66%) | 717 (73%) |
+| **new confident edges** | **+497** (EXTRACTED 1,130 → 1,627) | **+147** (132 → 279) |
+| ambiguous CALLS rows | 3,264 → 2,941 | 1,742 → 1,597 |
+| reindex cost | 6.5 s → 397 s | 0.3 s → 52 s |
+
+Hand-verified samples: `EventV2Processor.getHeaders → EventV2Processor.
+getCookies` (hono) is the marquee type-grade case — the server resolves to the
+**correct override** (V2's `getCookies`, line 429 `this.getCookies(event,
+headers)`), which name matching cannot distinguish from V1's or the abstract
+declaration. `DirEntry.stripped_path → DirEntry.path` (fd, line 60
+`self.path()`) likewise.
+
+Cost honesty: ~36 ms per site, linear in sites. Confirmations of already-
+confident single-candidate edges dedup away (same weight), so most of the
+paid sites change nothing — they exist to catch the rare wrong single-match.
+The site cap (20,000/server) plus AMBIGUOUS-first ordering means a capped run
+spends its budget where precision pays. An `ambiguous_only` config knob (skip
+confirmations entirely, roughly halving cost) is the obvious follow-up if
+field use finds the full pass too slow — deferred until someone actually asks.
+
 ## Gates
 
 - **Fake-server suite**: a deterministic Python LSP server (speaks real

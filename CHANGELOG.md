@@ -4,6 +4,33 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.46.0] — 2026-07-07
+
+### Added
+- **The LSP backend** (research/24) — the roadmap's final item. What jedi's
+  `--precise` is to Python, an external language server now is to the
+  tree-sitter languages: `reindex --lsp` (or `[lsp] enabled`) asks the
+  file's server for the definition at each name-based call site and adds a
+  confident EXTRACTED `source="lsp"` edge when the answer maps to a known
+  node. Monotone by contract — the AMBIGUOUS arms stay, so a server
+  mis-answer can never drop a true edge; every ranking already prefers
+  EXTRACTED where it lands. Defaults auto-detected on PATH
+  (typescript-language-server, rust-analyzer, gopls, clangd);
+  `[lsp.servers]` overrides/extends/disables per extension; missing or
+  broken servers decline honestly in the reindex result's `lsp` report.
+  Field: hono (TS) +497 confident call edges (+44%), fd (Rust) +147
+  (+111%), each hand-verified to pick the correct override where name
+  matching cannot. The client is stdlib-only JSON-RPC over stdio with
+  probe-driven hardening (warm-up stabilisation for asynchronous project
+  loads, dead-shim tolerance, result-shape normalisation, hard deadlines).
+- **`type_at(file, line, col)`** — hover-grade type information from the
+  file's language server, on demand, as a registry operation (CLI + MCP
+  for free). Refuses honestly when no server covers the file.
+- **README supported-version table** — the newest and oldest verified
+  syntax version of each of the 12 languages, CI-enforced by parse probes
+  (`tests/test_language_versions.py`) so a grammar upgrade can't silently
+  falsify the claim.
+
 ## [3.45.0] — 2026-07-06
 
 ### Added
