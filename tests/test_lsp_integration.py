@@ -5,6 +5,7 @@ wire protocol, project-load timing, and cross-file resolution."""
 from __future__ import annotations
 
 import shutil
+import subprocess
 import textwrap
 
 import pytest
@@ -15,8 +16,19 @@ pytest.importorskip("tree_sitter_language_pack")
 
 
 def _need(binary: str) -> None:
+    """Skip unless the binary exists AND runs. `shutil.which` alone is not
+    enough: GitHub runners ship rustup's `rust-analyzer` PROXY SHIM without
+    the component installed — on PATH, dies on first use (the exact failure
+    mode research/24 documents; it broke CI for v3.47.0)."""
     if shutil.which(binary) is None:
         pytest.skip(f"{binary} not installed")
+    try:
+        probe = subprocess.run([binary, "--version"], capture_output=True,
+                               timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        pytest.skip(f"{binary} on PATH but not runnable")
+    if probe.returncode != 0:
+        pytest.skip(f"{binary} is a dead shim (rustup proxy without the component?)")
 
 
 def test_rust_analyzer_disambiguates(tmp_path):

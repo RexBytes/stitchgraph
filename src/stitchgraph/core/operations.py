@@ -358,17 +358,31 @@ def _hub_ranking(store: Store,
     # else one SQL GROUP BY, O(nodes) output, never a Python edge sweep.
     # (Since v3.32.0 the GraphBLAS metrics above also rank confident-only — every
     # hub metric now applies the same provenance discount.)
+    # When the DEFAULT (transitive) metric degrades to this direct fallback, the
+    # test-mass exclusion must degrade WITH it (research/25: core-only installs
+    # otherwise re-crown the suite's favourite helper). An explicitly-chosen
+    # `fan_in`/`pagerank` metric keeps raw degree semantics as documented.
+    excl = exclude_sources if metric not in ("fan_in", "pagerank") else None
     from .adjcache import load_cache
     cache = load_cache(store)
-    if cache is not None:
+    if cache is not None and not excl:
         counts = cache.fan_in(LIVENESS_RELATIONS, confident_only=True)
         return {k: float(v) for k, v in counts.items()}, "confident_fan_in"
     lv = tuple(r.value for r in LIVENESS_RELATIONS)
+    extra = ""
+    if excl:
+        store.conn.execute(
+            "CREATE TEMP TABLE IF NOT EXISTS _hub_excl(id TEXT PRIMARY KEY)")
+        store.conn.execute("DELETE FROM _hub_excl")
+        store.conn.executemany("INSERT OR IGNORE INTO _hub_excl(id) VALUES (?)",
+                               ((i,) for i in excl))
+        extra = "AND src NOT IN (SELECT id FROM _hub_excl)"
     rows = store.conn.execute(
         f"""SELECT dst_id, COUNT(*) AS c FROM edges_all
              WHERE provenance = ?
                AND relation IN ({",".join("?" * len(lv))})
                AND dst_id IN (SELECT id FROM nodes)
+               {extra}
              GROUP BY dst_id""",
         (Provenance.EXTRACTED.value, *lv)).fetchall()
     return {r["dst_id"]: float(r["c"]) for r in rows}, "confident_fan_in"
@@ -683,6 +697,11 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # (panel R14A). Liveness/holes are unaffected.
             gnode = store.get_node(nid)
             if gnode is None or gnode.kind not in _CODE_KINDS:
+                continue
+            # Test-owned entities are not design feedback (the same principle as
+            # the orient hub-list exclusion, research/25 generalization check: a
+            # hono test file's router mock survived the scaled floors).
+            if "test" in gnode.roles or _is_test_path(nid):
                 continue
             # Confident-only degree: fan-in over liveness relations, fan-out over CALLS
             # (matching fan_in/fan_out), counting only EXTRACTED edges. If the high
