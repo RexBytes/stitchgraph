@@ -1131,6 +1131,7 @@ def _collect_edges(proj: _Project, rel: str, tree: ast.Module) -> None:
     _walk_scope(proj, rel, tree, parent="", class_qual=None)
     _module_scope_edges(proj, rel, tree, mod_id)
     _global_state(proj, rel, tree)
+    _instance_state(proj, rel, tree)
 
 
 def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str) -> None:
@@ -1186,50 +1187,215 @@ def _module_scope_edges(proj: _Project, rel: str, tree: ast.Module, mod_id: str)
                 _decorator_edges(proj, did, stmt, rel)
 
 
+# In-place mutators of the stdlib containers (research/22: a CLOSED allowlist —
+# an unknown method emits nothing; a missed loop is acceptable, a phantom loop
+# that cries wolf is not).
+_MUTATING_METHODS = frozenset({
+    "append", "extend", "add", "update", "setdefault", "pop", "popitem",
+    "insert", "remove", "clear", "discard", "appendleft", "extendleft",
+})
+_CONTAINER_CALLS = frozenset({
+    "dict", "list", "set", "defaultdict", "deque", "Counter", "OrderedDict",
+})
+
+
+def _is_container_value(v: ast.AST) -> bool:
+    return isinstance(v, (ast.Dict, ast.List, ast.Set)) or (
+        isinstance(v, ast.Call) and _name_of(v.func) in _CONTAINER_CALLS)
+
+
+def _module_containers(tree: ast.Module) -> set[str]:
+    """Module-level names bound to a container literal/constructor — the shared
+    state that gets MUTATED without any `global` statement (`CACHE[k] = v`,
+    `REGISTRY.append(x)`). Top-level statements only, mirroring the
+    module-constants scan."""
+    out: set[str] = set()
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and _is_container_value(stmt.value):
+            for t in stmt.targets:
+                if isinstance(t, ast.Name):
+                    out.add(t.id)
+        elif (isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
+                and stmt.value is not None and _is_container_value(stmt.value)):
+            out.add(stmt.target.id)
+    return out
+
+
+def _sub_root(node: ast.AST) -> str | None:
+    """The root Name of a subscript/attribute chain (`X[k][j]` / `X.attr[k]` -> X)."""
+    while isinstance(node, (ast.Subscript, ast.Attribute)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
 def _global_state(proj: _Project, rel: str, tree: ast.Module) -> None:
     """Model mutable module-level state for data-loop detection (design §6.F).
 
-    A name is tracked only if some function declares it `global` (intent to
-    rebind shared state) — this targets the feedback/accumulator pattern and
-    avoids flooding the graph with every constant. Emits WRITES (writer -> var)
-    and READS (reader -> var) so a function that both reads and writes a global
-    forms a data feedback loop.
+    Two triggers (research/22):
+    * a name some function declares `global` (intent to REBIND shared state —
+      the original v1 slice), and
+    * a module-level CONTAINER (dict/list/set literal or constructor) that some
+      function MUTATES in place — subscript store/delete or a known mutating
+      method call — which needs no `global` statement at all and is the
+      dominant shared-state idiom (`CACHE[k] = v`, `REGISTRY.append(fn)`).
+
+    Emits WRITES (writer -> var) and READS (reader -> var); `find_data_loops`
+    closes the loop through CALLS. Container var nodes are emitted only when
+    some function actually writes — a read-only module table is configuration,
+    not feedback state, and must not flood the graph.
     """
-    mutable: set[str] = set()
+    declared: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Global):
-            mutable.update(node.names)
-    if not mutable:
+            declared.update(node.names)
+    containers = _module_containers(tree)
+    tracked = declared | containers
+    if not tracked:
         return
-    for name in mutable:
-        proj.nodes.append(Node(id=f"var::{rel}::{name}", kind=NodeKind.VARIABLE,
-                               name=name, location=f"{rel}:0:0"))
+    per_func: list[tuple[str, int, set[str], set[str]]] = []  # (fid, line, writes, reads)
     for func, fid in _iter_funcs(tree, rel):
         decl: set[str] = set()
         reads: set[str] = set()
         stores: set[str] = set()
+        mut_writes: set[str] = set()
+        mut_receivers: set[int] = set()  # id() of receiver Name nodes: not READS
         for child in _direct_nodes(func):
             if isinstance(child, ast.Global):
                 decl.update(child.names)
-            elif isinstance(child, ast.Name) and child.id in mutable:
-                if isinstance(child.ctx, ast.Load):
+            elif (isinstance(child, ast.Subscript)
+                    and isinstance(child.ctx, (ast.Store, ast.Del))):
+                root = _sub_root(child)
+                if root in containers:
+                    mut_writes.add(root)
+                    n = child.value
+                    while isinstance(n, (ast.Subscript, ast.Attribute)):
+                        n = n.value
+                    mut_receivers.add(id(n))
+            elif (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                    and child.func.attr in _MUTATING_METHODS
+                    and isinstance(child.func.value, ast.Name)
+                    and child.func.value.id in containers):
+                mut_writes.add(child.func.value.id)
+                mut_receivers.add(id(child.func.value))
+        for child in _direct_nodes(func):
+            if isinstance(child, ast.Name) and child.id in tracked:
+                if isinstance(child.ctx, ast.Load) and id(child) not in mut_receivers:
                     reads.add(child.id)
                 elif isinstance(child.ctx, ast.Store):
                     stores.add(child.id)
         # A WRITES edge requires the function to actually *assign* a declared global,
         # not merely declare it: `global x; return x` (read-only) must not get a
         # spurious WRITES (which faked a read+write data feedback loop in scan()).
-        writes = decl & stores
-        for name in writes:
+        # A rebind of a container name WITHOUT `global` is a local shadow, not a
+        # write to module state — only in-place mutations count for containers.
+        writes = (decl & stores) | mut_writes
+        if writes or reads:
+            per_func.append((fid, func.lineno, writes, reads))
+
+    written = {n for _, _, w, _ in per_func for n in w}
+    # Declared-global names keep their original always-emit contract; container
+    # names must earn the node with at least one write somewhere in the module.
+    for name in sorted(declared | (written & containers)):
+        proj.nodes.append(Node(id=f"var::{rel}::{name}", kind=NodeKind.VARIABLE,
+                               name=name, location=f"{rel}:0:0"))
+    emitted = declared | (written & containers)
+    for fid, line, writes, reads in per_func:
+        for name in writes & emitted:
             proj.edges.append(Edge(src=fid, relation=Relation.WRITES, dst_symbol=name,
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,
-                                   location=f"{rel}:{func.lineno}:0", source="ast"))
-        for name in reads:  # a read is a read whether or not the function also writes
+                                   location=f"{rel}:{line}:0", source="ast"))
+        for name in reads & emitted:  # a read is a read whether or not it also writes
             proj.edges.append(Edge(src=fid, relation=Relation.READS, dst_symbol=name,
                                    dst_id=f"var::{rel}::{name}", weight=1.0,
                                    provenance=Provenance.EXTRACTED,
-                                   location=f"{rel}:{func.lineno}:0", source="ast"))
+                                   location=f"{rel}:{line}:0", source="ast"))
+
+
+def _instance_state(proj: _Project, rel: str, tree: ast.Module) -> None:
+    """Instance/class-attribute data loops (research/22 deliverable 2): methods
+    of ONE class reading and writing the same `self.<attr>` form the classic
+    non-global feedback shape (a worker that appends to `self.queue` and a
+    drain method that consumes it and re-triggers the worker). Emits
+    `var::<rel>::<Class>.<attr>` VARIABLE nodes with WRITES from methods that
+    assign or in-place-mutate the attribute and READS from methods that load
+    it — `self` receivers only (no alias chasing), class-scoped ids (never
+    cross-class), and a node only when some method WRITES and another reads
+    (a write-only or read-only attribute is not feedback state). Advisory as
+    ever: READS/WRITES stay outside liveness."""
+
+    def scan_class(cls: ast.ClassDef, class_qual: str) -> None:
+        per_method: list[tuple[str, int, set[str], set[str]]] = []
+        for stmt in cls.body:
+            if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            mid = Node.make_id(rel, f"{class_qual}.{stmt.name}")
+            writes: set[str] = set()
+            reads: set[str] = set()
+            receivers: set[int] = set()
+            for child in _direct_nodes(stmt):
+                # self.attr = ... / self.attr[k] = ... / del self.attr[k]
+                if (isinstance(child, (ast.Attribute, ast.Subscript))
+                        and isinstance(child.ctx, (ast.Store, ast.Del))):
+                    n: ast.AST = child
+                    while isinstance(n, ast.Subscript):
+                        n = n.value
+                    if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                            and n.value.id == "self"):
+                        writes.add(n.attr)
+                        receivers.add(id(n))
+                # self.attr.append(...) — in-place mutation via the allowlist
+                elif (isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Attribute)
+                        and child.func.attr in _MUTATING_METHODS
+                        and isinstance(child.func.value, ast.Attribute)
+                        and isinstance(child.func.value.value, ast.Name)
+                        and child.func.value.value.id == "self"):
+                    writes.add(child.func.value.attr)
+                    receivers.add(id(child.func.value))
+            for child in _direct_nodes(stmt):
+                if (isinstance(child, ast.Attribute) and isinstance(child.ctx, ast.Load)
+                        and isinstance(child.value, ast.Name) and child.value.id == "self"
+                        and id(child) not in receivers):
+                    reads.add(child.attr)
+            if writes or reads:
+                per_method.append((mid, stmt.lineno, writes, reads))
+        written = {a for _, _, w, _ in per_method for a in w}
+        read = {a for _, _, _, r in per_method for a in r}
+        # __init__'s seeding write alone is not feedback; require a writer AND a
+        # reader among the methods (they may be the same method — that IS a loop).
+        feedback = written & read
+        for attr in sorted(feedback):
+            proj.nodes.append(Node(
+                id=f"var::{rel}::{class_qual}.{attr}", kind=NodeKind.VARIABLE,
+                name=f"{class_qual}.{attr}", location=f"{rel}:{cls.lineno}:0"))
+        for mid, line, writes, reads in per_method:
+            for attr in sorted(writes & feedback):
+                proj.edges.append(Edge(
+                    src=mid, relation=Relation.WRITES, dst_symbol=attr,
+                    dst_id=f"var::{rel}::{class_qual}.{attr}", weight=1.0,
+                    provenance=Provenance.EXTRACTED,
+                    location=f"{rel}:{line}:0", source="ast"))
+            for attr in sorted(reads & feedback):
+                proj.edges.append(Edge(
+                    src=mid, relation=Relation.READS, dst_symbol=attr,
+                    dst_id=f"var::{rel}::{class_qual}.{attr}", weight=1.0,
+                    provenance=Provenance.EXTRACTED,
+                    location=f"{rel}:{line}:0", source="ast"))
+
+    def walk(node: ast.AST, parent: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                qual = f"{parent}.{child.name}" if parent else child.name
+                scan_class(child, qual)
+                walk(child, qual)
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qual = f"{parent}.{child.name}" if parent else child.name
+                walk(child, qual)
+            else:
+                walk(child, parent)  # control-flow blocks aren't a scope
+
+    walk(tree, "")
 
 
 def _iter_funcs(tree: ast.Module, rel: str):

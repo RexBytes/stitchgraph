@@ -60,7 +60,9 @@ spec and section references.
 | Operations | `audit_graph` (call-graph precision audit) | ✅ Done | static reach vs runtime ground truth; resolver-gap worklist (v3.33.0) |
 | **Storage** | **Homonym-group edge compression** | ✅ Done | v3.41.0: content-addressed candidate-set interning + `edges_all` view; Django index 41.6s→24.0s, 278MB→25MB, byte-identical answers; HA field: 4 min / 317MB for 16.1M logical edges (research/20) |
 | Algebra | **Sampled transitive fan-in past the closure cap** | ✅ Done | v3.42.0: deterministic source sampling over the bit-parallel sidecar sweep; exact within budget, honestly named when sampled; orient's transitive ranking at any scale |
-| Core | **Persistent symbol table + single-file extraction** | ✅ Done | v3.43.0: symtab table + store-backed _Project views; watch fast path at any scale (HA edit loop 4min→13.6s, research/21); honest resolver gating |
+| Core | **Persistent symbol table + single-file extraction** | ✅ Done | v3.43.0: symtab table + store-backed _Project views; watch fast path at any scale (HA edit loop 4min→13.6s→3.7s with v3.44.0, research/21); honest resolver gating |
+| **Data flow** | **Variable-granularity slices** (module containers, instance attributes, unused params) | ✅ Done | v3.45.0 (research/22): mutation-aware module state, class-scoped `self.attr` loops, scan-time unused-parameter advisory; advisory always, closed mutator allowlist |
+| Storage | **Sidecar CSR group-sharing (v2 layout)** | ✅ Done | v3.45.0 (research/23): interned candidate sets stored once in the mmap; HA sidecar 162MB→12MB, build 74s→2.5s; sweeps dedup sets per frontier, degrees set-first |
 | **Algebra** | GraphBLAS reachability sweeps | ✅ Done | frontier BFS, pure-Python fallback |
 | Algebra | GraphBLAS transitive fan-in (hub ranking) | ✅ Done | boolean closure; orient default |
 | Algebra | GraphBLAS PageRank centrality | ✅ Done | alt hub metric via config |
@@ -73,7 +75,7 @@ spec and section references.
 | Cross-language | Full-stack trace (form/JS → route → handler → table) | ✅ Done | the "gem", end to end |
 | Cross-language | **OpenAPI/Swagger + gRPC proto contract resolvers** | ✅ Done | spec/proto → ROUTE nodes + handler/Servicer binding (v3.35.0) |
 | Cross-language | **Prisma + TypeORM** ORM resolvers | ✅ Done | schema.prisma / @Entity → DBTable MAPS_TO (v3.35.0) |
-| **Data flow** | Data-loop detection (🟡) | ✅ Done | mutable-global feedback; surfaced in `scan` |
+| **Data flow** | Data-loop detection (🟡) | ✅ Done | mutable-global, module-container, and instance-attribute feedback (v3.45.0); surfaced in `scan` |
 | **Risk** | git-history churn × centrality (`risk`) | ✅ Done | hotspots + hidden coupling |
 | **Runtime** | runtime-trace fusion (`ingest_trace`) | ✅ Done | coverage.json → live seeds, +confidence |
 | **Semantic** | `find_similar` retrieval | ✅ Done | token similarity; embedding model = drop-in |
@@ -98,24 +100,25 @@ symbol table, variable-granularity data flow, remaining tree-sitter
 imports/inheritance, sidecar CSR group-sharing, module-level use attribution)
 → release → then the **LSP backend**, the one item that adds external
 requirements (per-language server binaries, strictly optional at runtime).
-Completing both phases closes everything currently known.
+**The dependency-free batch is complete as of v3.45.0** — every item either
+shipped (symbol table v3.43.0, data flow + group-sharing v3.45.0, overrides
+scoping v3.44.0) or was verified already closed by earlier releases
+(tree-sitter imports v3.34.0; module-level attribution, confirmed empirically
+2026-07-06). One item remains:
 
 | Item | Effort | Why deferred |
 |---|---|---|
-| **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. |
-| **Variable-granularity data flow** (beyond globals) | L | Big extractor lift; unlocks non-global data loops + argument provenance/taint. |
-| Imports/inheritance for the remaining tree-sitter langs (C, Bash, Ruby imports) | M | Calls already resolve by name; lower priority. |
-| Module-level use attribution (decorator/constructor applied at import) | S/M | The one Known-seams residual: module-level-only symbols can surface as needs_review stale candidates because their uses aren't attributed to a caller. Folded into the dependency-free batch (2026-07-06 plan). |
-| Scope `_propagate_overrides` on the incremental path | M | The one remaining whole-graph pass per replace_file (~half of the 13.6s HA edit latency, research/21); its scoping semantics (changed subtrees/members/bound targets) are the subtlest of the three and reserved for a careful dedicated pass. |
-| Sidecar CSR group-sharing (store an interned candidate set once in the mmap instead of expanding it per call site) | M | v3.41.0 compressed the STORE 10.5× (homonym-group interning, research/20); the adjacency sidecar still materialises the full expansion — correct and structurally pinned, but the same sharing would shrink the CSR and its build. Deferred: sidecar size hasn't been the bottleneck. |
+| **LSP backend** (type-grade resolution, multi-language) + `type_at` | L | Needs language-server binaries + network; `--precise` (jedi) covers Python. Lifts the whole accuracy ceiling. The last roadmap item — completing it closes everything currently known. |
 
 ## Known seams (honest)
 
 - `find_stale` is `needs_review` at 0.6 (0.78 with a runtime trace) — resolution
   is name/scope-based, not type-grade. `--precise` (jedi) and a future LSP raise
   this further. This is the single biggest accuracy lever left.
-- Module-level uses (a decorator/constructor applied at import, not inside a
-  function) aren't attributed, so a few module-level-only symbols can surface as
-  `needs_review` stale candidates.
-- Context managers (`with`), property/attribute reads, and framework-callback
-  overrides are now modelled, so those no longer false-flag as stale.
+- Context managers (`with`), property/attribute reads, framework-callback
+  overrides, AND module-level / class-body uses (a decorator or constructor
+  applied at import) are now modelled, so those no longer false-flag as stale.
+  (The module-level seam was verified closed 2026-07-06: `_module_scope_edges`
+  attributes module-level executable code to the module node, decorator refs
+  run in the enclosing scope, and class-body statements are walked — empirical
+  corpora with live roots flag only genuinely-dead symbols.)
