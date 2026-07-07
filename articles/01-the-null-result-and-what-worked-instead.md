@@ -118,8 +118,9 @@ The months since I ran that benchmark added two honest qualifications.
 Assistant's size: 6,728 files, 59k definitions, **16 million resolved edges**. Nothing
 reads that. Transitive questions — *what ultimately depends on this function*, *what does
 this suite actually reach* — stop being greppable long before that point, and the graph
-answers them in seconds (a full reachability sweep over that index runs in ~2.5 s from a
-12 MB memory-mapped sidecar). The static side doesn't beat reading; it outlives it.
+answers them in seconds: the 12 MB memory-mapped sidecar builds in 2.5 s, and a
+strongly-connected-components pass over all 59k nodes runs in 2 s — the pure-Python
+reference for one sweep took 46 s. The static side doesn't beat reading; it outlives it.
 
 **Precision the reader can't get.** The graph now drives real language servers
 (typescript-language-server, rust-analyzer, gopls, clangd) over its own call sites and
