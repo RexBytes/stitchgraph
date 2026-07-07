@@ -4,6 +4,35 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.48.0] — 2026-07-07
+
+### Changed
+- **The LSP pass runs by default when a server is installed** (AUTO). The
+  reviewer's point (docs/LLM_REVIEW.md) and the project's own install story
+  agree: the best available analysis should be the default. `reindex`'s
+  `lsp` switch is now tri-state — AUTO (default) uses whatever of
+  typescript-language-server / rust-analyzer / gopls / clangd /
+  `[lsp.servers]` is actually on PATH and falls back silently otherwise;
+  `--no-lsp`, `[lsp] enabled = false`, or `STITCHGRAPH_NO_LSP=1` opt out;
+  `--lsp` forces the pass and reports missing servers loudly. Under AUTO a
+  missing server is the expected fallback, never a review reason.
+
+### Fixed
+- **The confident-empty problem** (the one hole an LLM field review found in
+  the envelope, docs/LLM_REVIEW.md): `get_callers`/`get_callees` answering
+  an empty CALLS list now check every other resolved relation touching the
+  symbol — macro-wrapped calls arrive as REFERENCES, route handlers are
+  invoked via ROUTES_TO, tests via TESTS. Anything found demotes the answer
+  to needs_review at confidence <= 0.6, reports the counts in
+  `meta.non_call_uses`, and states outright: do NOT treat it as unused. A
+  symbol nothing touches keeps its honest confident empty.
+
+### Added
+- **docs/LLM_REVIEW.md** — the verbatim field review by Claude Opus 4.8
+  after end-to-end use on a real Rust project, with the actions taken.
+  Turnkey Rust coverage (the review's remaining gap) is now a named
+  roadmap item.
+
 ## [3.47.1] — 2026-07-07
 
 ### Fixed

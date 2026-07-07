@@ -52,6 +52,21 @@ _INIT_TIMEOUT = 30.0
 _READY_TIMEOUT = 30.0
 
 
+def any_server_available(overrides: dict[str, str] | None = None) -> bool:
+    """True when at least one registered language-server binary is on PATH —
+    the AUTO gate (v3.48.0): the best available analysis runs by default, and
+    a machine with no servers skips the pass without ever spawning anything."""
+    cmds = {cmd for cmd, _lang in DEFAULT_SERVERS.values()}
+    for ext, cmd in (overrides or {}).items():
+        if cmd.strip():
+            cmds.add(cmd)
+        else:
+            default = DEFAULT_SERVERS.get(ext)
+            if default:
+                cmds.discard(default[0])
+    return any(shutil.which(cmd.split()[0]) is not None for cmd in cmds if cmd)
+
+
 def server_for(ext: str, overrides: dict[str, str] | None = None) -> tuple[str, str] | None:
     """(command, languageId) for a file extension, or None. An override maps
     extension -> command string; empty string disables that extension."""

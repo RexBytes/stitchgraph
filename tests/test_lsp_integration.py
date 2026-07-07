@@ -31,7 +31,7 @@ def _need(binary: str) -> None:
         pytest.skip(f"{binary} is a dead shim (rustup proxy without the component?)")
 
 
-def test_rust_analyzer_disambiguates(tmp_path):
+def test_rust_analyzer_disambiguates(tmp_path, monkeypatch):
     _need("rust-analyzer")
     root = tmp_path / "crate"
     (root / "src").mkdir(parents=True)
@@ -57,6 +57,7 @@ def test_rust_analyzer_disambiguates(tmp_path):
         }
     """))
     (root / "stitchgraph.toml").write_text("[lsp]\nenabled = true\n")
+    monkeypatch.delenv("STITCHGRAPH_NO_LSP", raising=False)
     store = sg.Store(str(tmp_path / "g.db"))
     res = sg.reindex(store, str(root))
     assert res.ok

@@ -118,7 +118,7 @@ with sg.Store("stitchgraph.db") as store:
 
 ## The operations
 
-Thirty-one operations, one question each. All advisory, all read-only, all carrying
+Thirty-four operations, one question each. All advisory, all read-only, all carrying
 the envelope.
 
 | Ask | Operation(s) |
@@ -134,7 +134,7 @@ the envelope.
 | How do two builds differ? | `graph_diff` — call-level deltas **plus** body-shape changes (catches a data-flow bug that leaves the call graph identical) |
 | Drill into one function | `get_matrix(layer="call" \| "statement" \| "expression")` — call graph → program-dependence graph → value-flow graph |
 | Ground liveness in reality | `ingest_trace` (coverage.py JSON / LCOV / Go coverprofile) |
-| Rebuild the index | `reindex` (admin; `--precise` adds jedi) |
+| Rebuild the index | `reindex` (admin; `--precise` adds jedi; the LSP pass runs automatically when a server is installed — `--no-lsp` opts out) |
 
 …plus the eleven behavioural operations below.
 
@@ -248,7 +248,7 @@ The full rule file — written to be dropped into an agent's context — is
 |---|---|
 | **Deep** (stdlib `ast`; optional jedi `--precise`) | Python 3.11+ |
 | **Full graph via tree-sitter** (definitions, calls, imports/inheritance, tests, body matrix) | JavaScript, TypeScript/TSX, Go, Rust, C, C++, C#, Java, Ruby, PHP, Bash |
-| **Type-grade upgrade via `--lsp`** (v3.46.0): an installed language server answers go-to-definition per call site, so the true target of an ambiguous name gains a confident edge — including picking the right *override* | TS/JS (typescript-language-server), Rust (rust-analyzer), Go (gopls), C/C++ (clangd); `[lsp.servers]` adds more |
+| **Type-grade upgrade via language servers** (v3.46.0; runs automatically when a server is installed, v3.48.0): go-to-definition per call site, so the true target of an ambiguous name gains a confident edge — including picking the right *override* | TS/JS (typescript-language-server), Rust (rust-analyzer), Go (gopls), C/C++ (clangd); `[lsp.servers]` adds more; `--no-lsp` opts out |
 | **Cross-language seams** | Flask/FastAPI/Django/Express/Spring routes, HTML forms, JS `fetch`, events, SQL (sqlglot), SQLAlchemy/Django ORM — all converging in one graph, so `trace_path` crosses language boundaries |
 
 Per-language support matrix: [`docs/LANGUAGES.md`](docs/LANGUAGES.md).

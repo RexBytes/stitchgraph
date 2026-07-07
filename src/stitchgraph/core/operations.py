@@ -122,7 +122,10 @@ def get_callers(store: Store, name: str) -> Result:
         return refuse(reason, confidence=0.0)
     edges = store.callers_of(target.id)
     callers = [{"src": e.src, "weight": round(e.weight, 3)} for e in edges]
-    return _callgraph_result(callers, edges, symbol=target.id)
+    res = _callgraph_result(callers, edges, symbol=target.id)
+    if not callers:
+        _annotate_non_call_uses(res, store, target.id, incoming=True)
+    return res
 
 
 @operation("Direct callees of a symbol.")
@@ -133,7 +136,44 @@ def get_callees(store: Store, name: str) -> Result:
         return refuse(reason, confidence=0.0)
     edges = store.callees_of(target.id)
     callees = [{"dst": e.dst_id, "weight": round(e.weight, 3)} for e in edges]
-    return _callgraph_result(callees, edges, symbol=target.id)
+    res = _callgraph_result(callees, edges, symbol=target.id)
+    if not callees:
+        _annotate_non_call_uses(res, store, target.id, incoming=False)
+    return res
+
+
+def _annotate_non_call_uses(res: Result, store: Store, node_id: str,
+                            *, incoming: bool) -> None:
+    """The confident-empty guard (docs/LLM_REVIEW.md, field review 2026-07-07):
+    an empty CALLS answer is NOT evidence of an unused symbol when other
+    resolved relations touch it — a Rust macro-wrapped call extracts as
+    REFERENCES, a route handler is invoked by the framework via ROUTES_TO, a
+    test reaches it through TESTS. An agent that trusts a confident 'no
+    callers' deletes live code; surface the relation counts and demote the
+    confidence instead. (Liveness was never at risk — those relations already
+    count in reach — but this operation's envelope claimed certainty it did
+    not have.)"""
+    col = "dst_id" if incoming else "src"
+    rows = store.conn.execute(
+        f"""SELECT relation, COUNT(*) FROM edges_all
+             WHERE {col} = ? AND relation != ? AND dst_id IS NOT NULL
+             GROUP BY relation ORDER BY relation""",
+        (node_id, Relation.CALLS.value)).fetchall()
+    counts = {r[0]: r[1] for r in rows}
+    if not counts:
+        return  # genuinely nothing touches it: the confident empty stands
+    res.meta["non_call_uses"] = counts
+    res.confidence = min(res.confidence, 0.6)
+    kinds = ", ".join(f"{v} {k}" for k, v in counts.items())
+    if incoming:
+        res.add_reason(
+            f"no CALLS edges, but other edges point at this symbol ({kinds}) — "
+            "macro/decorator/dispatch/framework use is invisible to the call "
+            "graph; do NOT treat it as unused")
+    else:
+        res.add_reason(
+            f"no CALLS edges, but this symbol has other outgoing edges ({kinds}) "
+            "— its dependencies may run through references/imports, not calls")
 
 
 def _callgraph_result(payload: list, edges: list, **meta) -> Result:
@@ -2071,18 +2111,23 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
 
 @operation("Incrementally (re)index a path into the graph (admin).")
 def reindex(store: Store, path: str, precise: bool = False,
-            streaming: bool | None = None, lsp: bool = False) -> Result:
+            streaming: bool | None = None, lsp: bool | None = None) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
     index — never to source (read-only invariant).
 
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
 
-    lsp=True (or `[lsp] enabled` in stitchgraph.toml) adds the language-server
-    resolver (research/24): the same go-to-definition upgrade for the
-    tree-sitter languages, via external server binaries (rust-analyzer,
-    typescript-language-server, gopls, clangd — `[lsp.servers]` overrides).
-    Missing/broken servers degrade to zero extra edges, never to an error.
+    lsp (tri-state, AUTO by default since v3.48.0): the language-server
+    resolver (research/24) — go-to-definition upgrades for the tree-sitter
+    languages via external server binaries (rust-analyzer,
+    typescript-language-server, gopls, clangd; `[lsp.servers]` overrides).
+    AUTO runs it whenever a matching server is already installed — the best
+    available analysis is the default, and machines without servers fall back
+    silently to the name-based graph. `--no-lsp` / `lsp=False` /
+    `STITCHGRAPH_NO_LSP=1` / `[lsp] enabled = false` opt out; `lsp=True`
+    forces it and reports missing servers loudly. Missing/broken servers can
+    only cost coverage, never an error or a wrong edge.
 
     `streaming` lowers the extraction memory peak (v2) and produces an index BYTE-IDENTICAL to
     the in-memory path — pinned by the streaming differential oracle. It (a) drops each file's
@@ -2144,10 +2189,18 @@ def reindex(store: Store, path: str, precise: bool = False,
         from .resolve.jedi_resolver import JediResolver
         resolvers.append(JediResolver())
     cfg = load_config(path)
-    if lsp or cfg.lsp_enabled:
+    lsp_mode = _lsp_mode(lsp, cfg)
+    lsp_forced = lsp_mode is True
+    if lsp_mode is not False:
+        from .resolve.lsp import any_server_available
         from .resolve.lsp_resolver import LspResolver
-        resolvers.append(LspResolver(servers=cfg.lsp_servers,
-                                     timeout=cfg.lsp_timeout))
+        # AUTO (None): attach the resolver only when some server binary is
+        # actually installed — the pass then covers those languages and the
+        # rest keep the name-based graph; forced True attaches regardless so
+        # missing binaries decline LOUDLY in the report.
+        if lsp_forced or any_server_available(cfg.lsp_servers):
+            resolvers.append(LspResolver(servers=cfg.lsp_servers,
+                                         timeout=cfg.lsp_timeout))
 
     # [index] edge_compression gates NEW compression for this rebuild and every
     # later replace_file on the store; the env kill switch always wins.
@@ -2155,7 +2208,8 @@ def reindex(store: Store, path: str, precise: bool = False,
                               and load_config(path).edge_compression)
 
     if streaming:
-        return _reindex_streaming(store, path, abs_root, load_config(path).ignore, resolvers)
+        return _reindex_streaming(store, path, abs_root, load_config(path).ignore,
+                                  resolvers, lsp_forced=lsp_forced)
 
     xreport: dict = {}
     nodes, edges = extract_project(path, ignore=load_config(path).ignore,
@@ -2188,22 +2242,40 @@ def reindex(store: Store, path: str, precise: bool = False,
     res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
              files=len(files), nodes=store.node_count())
     _annotate_extraction_gaps(res, xreport)
-    _annotate_lsp(res, resolvers)
+    _annotate_lsp(res, resolvers, forced=lsp_forced)
     return res
 
 
-def _annotate_lsp(res: Result, resolvers) -> None:
+def _annotate_lsp(res: Result, resolvers, forced: bool = True) -> None:
     """Surface the LSP pass's honesty counters (sites asked / resolved /
     declines) on the reindex result — the pass must never pretend coverage
-    it didn't have (research/24)."""
+    it didn't have (research/24). Declines become review reasons only when
+    the pass was FORCED (`lsp=True`): under AUTO a missing server is the
+    expected fallback, not something to flag."""
     for r in resolvers:
         if getattr(r, "name", "") == "lsp" and getattr(r, "report", None):
             if isinstance(res.result, dict):
                 res.result["lsp"] = r.report
-            for cmd, stats in r.report.items():
-                if stats.get("declined"):
-                    res.add_reason(f"lsp: {cmd.split()[0]} declined "
-                                   f"({stats['declined']})")
+            if forced:
+                for cmd, stats in r.report.items():
+                    if stats.get("declined"):
+                        res.add_reason(f"lsp: {cmd.split()[0]} declined "
+                                       f"({stats['declined']})")
+
+
+def _lsp_mode(lsp: bool | None, cfg) -> bool | None:
+    """Resolve the effective LSP switch: explicit param > STITCHGRAPH_NO_LSP
+    env kill switch > `[lsp] enabled` config > AUTO (None). AUTO is the
+    default since v3.48.0: the best available analysis runs by default —
+    servers already installed are used, missing ones fall back silently to
+    the name-based graph (the same full-power-by-default contract as the
+    v3.31.0 install story; field review 2026-07-07, docs/LLM_REVIEW.md)."""
+    import os
+    if lsp is not None:
+        return lsp
+    if os.environ.get("STITCHGRAPH_NO_LSP"):
+        return False
+    return cfg.lsp_enabled
 
 
 @operation("Type of the symbol at a source position, via the language server (needs --lsp servers).")
@@ -2898,7 +2970,8 @@ class _StoreEdgeSink:
 
 
 def _reindex_streaming(store: Store, path: str, abs_root: str,
-                       ignore: list[str], resolvers: list) -> Result:
+                       ignore: list[str], resolvers: list,
+                       lsp_forced: bool = True) -> Result:
     """Constant(-ish)-memory reindex: stream nodes/edges to SQLite; dedup as we go + once more
     globally in the store.
 
@@ -3032,7 +3105,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
              files=len(files), nodes=store.node_count())
     _annotate_extraction_gaps(res, xreport)
-    _annotate_lsp(res, resolvers)
+    _annotate_lsp(res, resolvers, forced=lsp_forced)
     return res
 
 
