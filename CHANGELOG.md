@@ -4,6 +4,20 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.47.1] — 2026-07-07
+
+### Fixed
+- **CI: the LSP integration gate now verifies the server binary RUNS**, not
+  just that it is on PATH — GitHub runners ship rustup's `rust-analyzer`
+  proxy shim without the component installed (the exact dead-shim failure
+  mode research/24 documents), which made the gated tests run and fail
+  instead of skipping.
+- **Orient's test-mass exclusion now degrades with the metric**: on
+  installs without the sidecar/GraphBLAS (core-only, `--pure`), the direct
+  confident-fan-in fallback used by the DEFAULT metric also excludes
+  test-owned dependers, matching the transitive metrics. Explicitly-chosen
+  `fan_in`/`pagerank` keep raw degree semantics as documented.
+
 ## [3.47.0] — 2026-07-07
 
 ### Changed
