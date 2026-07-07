@@ -111,7 +111,8 @@ What remains is maintenance and opportunity, not commitments:
 
 | Item | Effort | Status |
 |---|---|---|
-| `[lsp] ambiguous_only` cost knob (skip confirmation queries, ~halve the pass) | S | Deferred until field use finds the full pass too slow (research/24). |
+| **Turnkey Rust coverage** — `scaffold_coverage` emits a runnable cargo-llvm-cov per-test recipe instead of a template needing ~150 lines of hand-wiring | M | From the LLM field review (docs/LLM_REVIEW.md): the behavioural toolkit is the moat, and this is the gap between "useful when a human sets it up" and "an agent drives it unaided". |
+| `[lsp] ambiguous_only` cost knob (skip confirmation queries, ~halve the pass) | S | More relevant now that AUTO runs the pass by default (v3.48.0); still deferred until field use finds it too slow (research/24). |
 | LSP recall of dropped externals (call sites whose name matched nothing) | M | Needs a source re-walk; deferred until the precision pass proves itself in the field. |
 | Interprocedural argument provenance / taint | v3.0-class | The body-matrix promotion project (IDEAS.md §5c, research/22). |
 

@@ -142,10 +142,11 @@ def test_definitions_outside_root_are_dropped(tmp_path):
 
 
 # -- resolver end-to-end ------------------------------------------------------
-def test_reindex_lsp_disambiguates_homonym(tmp_path):
+def test_reindex_lsp_disambiguates_homonym(tmp_path, monkeypatch):
     """The value proposition, end to end: two `greet` candidates -> the
     name-based pass widens AMBIGUOUS to both; the LSP pass adds the true
     EXTRACTED edge; the other arm STAYS (monotone contract)."""
+    monkeypatch.delenv("STITCHGRAPH_NO_LSP", raising=False)
     root = _ts_project(tmp_path)
     (root / "stitchgraph.toml").write_text(textwrap.dedent(f"""\
         [lsp]
@@ -166,9 +167,10 @@ def test_reindex_lsp_disambiguates_homonym(tmp_path):
     store.close()
 
 
-def test_reindex_lsp_streaming_matches_in_memory(tmp_path):
+def test_reindex_lsp_streaming_matches_in_memory(tmp_path, monkeypatch):
     """The streaming path hands resolvers an empty edge list; the store-driven
     hook must produce the identical resolved-edge multiset."""
+    monkeypatch.delenv("STITCHGRAPH_NO_LSP", raising=False)
     root = _ts_project(tmp_path)
     (root / "stitchgraph.toml").write_text(textwrap.dedent(f"""\
         [lsp]

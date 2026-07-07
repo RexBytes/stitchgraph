@@ -46,9 +46,12 @@ thin surfaces (library / CLI / MCP) over the same operation set.
 | `trace_path` | Change safety | How does a request flow end-to-end, with confidence? |
 | `graph_diff` | Change safety | How do two builds differ — call-level *and* body-shape? |
 | `find_similar` | Search | Where's the code that does X? (by name/docs, or by body shape) |
+| `find_component` | Search | Which public component implements this described purpose? (test-excluded, public-boosted; 76% P@1) |
+| `audit_graph` | Health | How precise is the call graph vs runtime ground truth? (resolver-gap worklist) |
+| `type_at` | Navigate | Hover-grade type of the symbol at file:line:col, from the language server |
 | `risk` | Risk | Which files are most dangerous to touch? (git churn × centrality + hidden coupling) |
 | `ingest_trace` | Runtime | Mark what actually executed (coverage.json / LCOV / Go coverprofile) |
-| `reindex` | Admin | (Re)index a path into the graph |
+| `reindex` | Admin | (Re)index a path into the graph (`--precise` adds jedi; the LSP pass runs automatically when a server is installed) |
 
 ## Languages (12, in one graph)
 
@@ -56,6 +59,7 @@ thin surfaces (library / CLI / MCP) over the same operation set.
 |---|---|
 | **Deep** (stdlib `ast`, + optional jedi `--precise`) | Python |
 | **Polyglot** (tree-sitter: defs + call graph + body matrix) | JS/TS/TSX, Rust, C, C++, C#, Go, Java, Ruby, PHP, Bash |
+| **Type-grade upgrade** (language servers, auto when installed — v3.48.0) | TS/JS (typescript-language-server), Rust (rust-analyzer), Go (gopls), C/C++ (clangd); `[lsp.servers]` adds more |
 
 All resolve into a **single typed graph**, so analysis and traces cross language
 boundaries.
@@ -124,9 +128,11 @@ boundaries.
 
 ## Maturity
 
-Production/Stable, MIT-licensed, dogfooded on its own source. The test suite runs
-in the low thousands of cases with high coverage. Development is driven by a
-strict adversarial-panel gate — a release is RELEASABLE only after **two
-consecutive clean full-diversity review panels** on a frozen commit. Recent line:
-the §6 "system-matrix" research wins are landing as operations —
-`find_chokepoints` and `find_subsystems` have shipped.
+Production/Stable, MIT-licensed, dogfooded on its own source (the self-audit
+ritual is written up in `research/25-dogfood-v3.46.md` — the tool finds real
+dead code in itself and its noise patterns become the next release's
+calibrations). The test suite runs at ~2,600 cases. The roadmap as originally
+scoped CLOSED with v3.46.0's LSP backend; what remains is maintenance and
+opportunity (`STATUS.md`). An independent LLM field review — stitchgraph's
+other native audience assessing it after real use — is archived verbatim in
+`docs/LLM_REVIEW.md`, and its findings shipped in v3.48.0.

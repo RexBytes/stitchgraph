@@ -46,16 +46,20 @@ threshold = 0.80            # results below this confidence are flagged needs_re
 hub_metric = "transitive_fan_in"
 
 [lsp]
-# The language-server precision pass (v3.46.0, research/24): what jedi's
-# --precise is to Python, an external language server is to the tree-sitter
-# languages. During reindex (with `--lsp`, or `enabled = true` here) each
-# name-based call site is asked go-to-definition and the true target gains a
-# confident EXTRACTED edge; the AMBIGUOUS arms stay (monotone — a server
-# mis-answer can never drop a true edge). Needs the server binary on PATH:
-# typescript-language-server (TS/JS), rust-analyzer, gopls, clangd are
-# auto-detected. Missing/broken servers decline honestly (see the reindex
-# result's `lsp` report); nothing here can fail an index build.
-enabled = false
+# The language-server precision pass (research/24): what jedi's --precise is
+# to Python, an external language server is to the tree-sitter languages —
+# each name-based call site is asked go-to-definition and the true target
+# gains a confident EXTRACTED edge; the AMBIGUOUS arms stay (monotone — a
+# server mis-answer can never drop a true edge).
+#
+# AUTO by default (v3.48.0): the pass runs whenever a matching server binary
+# is installed — typescript-language-server (TS/JS), rust-analyzer, gopls,
+# clangd are auto-detected — and falls back silently to the name-based graph
+# otherwise. The best available analysis is the default; opt out with
+# `enabled = false`, `reindex --no-lsp`, or STITCHGRAPH_NO_LSP=1.
+# `enabled = true` forces the pass and reports missing servers loudly.
+# Nothing here can fail an index build.
+#enabled = false            # default: auto
 timeout = 15.0              # per-request seconds
 [lsp.servers]
 # Override or extend the defaults per file extension; empty string disables.

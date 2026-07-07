@@ -48,11 +48,14 @@ class Config:
     hub_metric: str = "transitive_fan_in"            # | fan_in | pagerank
     # [similar]
     embed_model: str | None = None                   # model2vec model for find_similar
-    # [lsp] — the language-server precision pass (research/24). Off by default:
-    # it spawns external binaries and costs per-site round-trips; `--lsp` on the
-    # CLI or `enabled = true` here turns it on. `servers` maps a file extension
+    # [lsp] — the language-server precision pass (research/24). Tri-state:
+    # None (AUTO, the default since v3.48.0) runs it whenever a matching
+    # server binary is installed — the best available analysis by default,
+    # silent fallback to the name-based graph otherwise; true forces it
+    # (missing servers decline loudly); false disables. STITCHGRAPH_NO_LSP=1
+    # also disables (reindex param excepted). `servers` maps a file extension
     # to a command line (empty string disables that extension's default).
-    lsp_enabled: bool = False
+    lsp_enabled: bool | None = None
     lsp_timeout: float = 15.0
     lsp_servers: dict[str, str] = field(default_factory=dict)
     source: Path | None = None                       # the file we loaded, if any
@@ -129,6 +132,9 @@ def _load(start: str | Path | None) -> Config:
     servers_tbl = lsp.get("servers")
     lsp_servers = ({str(k): str(v) for k, v in servers_tbl.items()}
                    if isinstance(servers_tbl, dict) else {})
+    raw_enabled = lsp.get("enabled")
+    # tri-state: bool honoured, "auto"/absent/anything else -> AUTO (None)
+    lsp_enabled = raw_enabled if isinstance(raw_enabled, bool) else None
     return Config(
         include=set(_str_list(ep.get("include"))),
         root_modules=_str_list(ep.get("root_modules")),
@@ -140,7 +146,7 @@ def _load(start: str | Path | None) -> Config:
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,
-        lsp_enabled=bool(lsp.get("enabled", False)),
+        lsp_enabled=lsp_enabled,
         lsp_timeout=lsp_timeout,
         lsp_servers=lsp_servers,
         source=path,
