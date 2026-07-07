@@ -59,7 +59,7 @@ class LspResolver:
                     and e.dst_symbol is not None)]
         return [], self.resolve_rows(ctx.root, ctx.nodes, rows)
 
-    def resolve_rows(self, root: Path, nodes: list[Node],
+    def resolve_rows(self, root: str | Path, nodes: list[Node],
                      rows: list[tuple[str, str, str, bool]]) -> list[Edge]:
         """The store-driven entry the streaming reindex uses (its resolvers see
         an empty edge list by design — edges are already on disk). `rows` are
@@ -127,6 +127,15 @@ class LspResolver:
             if not client.did_open(rel, language_id):
                 continue
             for src, _rel, line, symbol, _lang in by_rel[rel]:
+                # Circuit breaker (self-audit 2026-07-07, finding 1): an
+                # alive-but-SILENT server would otherwise cost the full
+                # per-request timeout on EVERY remaining site — 15 s × 20k
+                # sites is days. A dead process already fails fast; three
+                # consecutive full timeouts means mute, so stop paying.
+                if client.consecutive_timeouts >= 3 or not client.available:
+                    stats["declined"] = ("server stopped answering "
+                                         "(circuit breaker)")
+                    return edges
                 for col in _columns(root, rel, line, symbol, line_cache):
                     if not warmed:
                         client.warm_up(rel, line, col)
@@ -146,9 +155,13 @@ class LspResolver:
 
 def _columns(root: Path, rel: str, line: int, symbol: str,
              cache: dict[str, list[str]]):
-    """0-based columns of `symbol`'s last path segment on the source line, in
-    order — `util::greet` / `a.b.greet` query at `greet`. Word-bounded so
-    `greet` never matches inside `greeting`."""
+    """Columns of `symbol`'s last path segment on the source line, in order —
+    `util::greet` / `a.b.greet` query at `greet`. Word-bounded so `greet`
+    never matches inside `greeting`. Yielded as **UTF-16 code units** (the
+    LSP default position encoding; self-audit 2026-07-07, finding 2): a
+    Python str index counts code points, so an astral character — an emoji in
+    a string before the call — would shift the query onto the wrong column.
+    For pure-ASCII prefixes the two are identical."""
     if rel not in cache:
         try:
             cache[rel] = (root / rel).read_text(
@@ -161,8 +174,9 @@ def _columns(root: Path, rel: str, line: int, symbol: str,
     leaf = re.split(r"::|\.", symbol)[-1]
     if not leaf or not re.match(r"\w+$", leaf):
         return
-    for m in re.finditer(rf"(?<![\w$]){re.escape(leaf)}(?![\w$])", lines[line - 1]):
-        yield m.start()
+    text = lines[line - 1]
+    for m in re.finditer(rf"(?<![\w$]){re.escape(leaf)}(?![\w$])", text):
+        yield len(text[:m.start()].encode("utf-16-le")) // 2
 
 
 def _map_definitions(defs: list[tuple[str, int, int]], span_index) -> str | None:

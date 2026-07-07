@@ -95,6 +95,40 @@ def test_converter_istanbul(tmp_path):
     assert got["tests"] == {"tests/add.test.js": ["src/calc.js::add"]}
 
 
+def test_converter_zero_tests_fails_loud(tmp_path):
+    """Self-audit 2026-07-07 (bug class 1, confident absence): an empty capture
+    dir must NOT produce a 0-test artifact with exit 0 — that artifact reads as
+    'this suite covers nothing' downstream. Fail loud, write nothing."""
+    (tmp_path / "spans.json").write_text(json.dumps(SPANS))
+    (tmp_path / "covdata").mkdir()
+    (tmp_path / "tests.txt").write_text("t_one\n")
+    conv = _write_kit_converter(tmp_path)
+    out = tmp_path / "coverage_modes.json"
+    proc = subprocess.run(
+        [sys.executable, str(conv), "llvm-json", "covdata", "spans.json",
+         str(out), "tests.txt"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert proc.returncode != 0
+    assert "0 tests" in proc.stderr
+    assert not out.exists(), "a 0-test artifact must never be written"
+
+
+def test_converter_monorepo_suffix_fallback(tmp_path):
+    """Self-audit 2026-07-07 (finding 7): the capture runs inside a monorepo
+    subdirectory (where go.mod/package.json live) while spans.json keys carry
+    the index-root prefix — a unique suffix match must recover attribution."""
+    spans = {"backend/calc/calc.go": [["backend/calc/calc.go::Add", 3, 5]]}
+    (tmp_path / "spans.json").write_text(json.dumps(spans))
+    (tmp_path / "go.mod").write_text("module example.com/demo\n\ngo 1.24\n")
+    (tmp_path / "covdata").mkdir()
+    (tmp_path / "tests.txt").write_text("example.com/demo/calc::TestAdd\n")
+    (tmp_path / "covdata" / "0.out").write_text(
+        "mode: set\nexample.com/demo/calc/calc.go:3.20,5.2 1 1\n")
+    got = _run_converter(tmp_path, "goprofile")
+    assert got["tests"] == {
+        "example.com/demo/calc::TestAdd": ["backend/calc/calc.go::Add"]}
+
+
 def test_converter_bad_capture_skipped_not_fatal(tmp_path):
     (tmp_path / "spans.json").write_text(json.dumps(SPANS))
     (tmp_path / "covdata").mkdir()
@@ -187,9 +221,10 @@ def test_go_kit_end_to_end(tmp_path):
     assert sg.reindex(store, str(root)).ok
     assert scaffold_coverage(store, out_dir=str(root / "kit"), language="go").ok
     store.close()
-    for f in ("run_coverage.sh", "to_canonical.py", "spans.json"):
-        shutil.copy(root / "kit" / f, root / f)
-    proc = subprocess.run(["bash", "run_coverage.sh"], cwd=root,
+    # No copying kit files into the project root: the script must find its own
+    # to_canonical.py/spans.json relative to ITSELF (self-audit 2026-07-07 —
+    # the kit used to silently require an undocumented copy step).
+    proc = subprocess.run(["bash", "kit/run_coverage.sh"], cwd=root,
                           capture_output=True, text=True, timeout=300)
     assert proc.returncode == 0, proc.stderr
     got = json.loads((root / "coverage_modes.json").read_text())

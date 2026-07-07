@@ -96,6 +96,10 @@ for f in data.measured_files():
             tests.setdefault(c, set()).add(f"{rel}::{best[0]}")
 out = {"format": "stitchgraph-coverage-v1",
        "tests": {t: sorted(fs) for t, fs in tests.items()}}
+if not out["tests"]:
+    # a 0-test artifact is the confident-absence trap: fail LOUD, write nothing
+    sys.exit("ERROR: 0 tests captured — no artifact written. Check that pytest-cov ran "
+             "(--cov --cov-context=test) and that the suite has tests.")
 json.dump(out, open(OUT, "w"), indent=0)
 print(f"wrote {OUT}: {len(out['tests'])} tests, "
       f"{len({x for fs in out['tests'].values() for x in fs})} functions")
@@ -104,12 +108,19 @@ print(f"wrote {OUT}: {len(out['tests'])} tests, "
 _PY_RUN = r'''#!/usr/bin/env bash
 # Run the test suite under per-test coverage, then emit the canonical artifact.
 # Intended to run inside the sandbox (Docker service below, or your own jail/CI).
+# Run FROM YOUR PROJECT ROOT; kit files resolve relative to this script itself.
 set -euo pipefail
-pip install --quiet coverage pytest 2>/dev/null || true
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# --cov* are pytest-COV flags: without the plugin pytest exits before running
+# a single test (self-audit 2026-07-07 finding: coverage+pytest alone produced
+# a confidently-empty artifact), hence pytest-cov here and the guard below.
+pip install --quiet coverage pytest pytest-cov 2>/dev/null || true
+rm -f .coverage
 # --cov-context=test tags coverage by the running test id
 python -m pytest -p no:cacheprovider -q \
   --cov=. --cov-context=test || true      # keep going even if some tests fail
-python to_canonical.py . coverage_modes.json
+[ -f .coverage ] || { echo "no coverage data captured — is pytest-cov installed and the suite runnable?" >&2; exit 1; }
+python "$KIT/to_canonical.py" . coverage_modes.json
 echo "artifact ready: coverage_modes.json  (copy it out; run: stitchgraph find-modes coverage_modes.json)"
 '''
 
@@ -152,10 +163,24 @@ def rel_of(path):
     p = p.replace(os.sep, "/")
     return None if p.startswith("..") else p
 
+_skey_cache = {}
+def span_key(rel):
+    """spans.json keys are relative to the stitchgraph INDEX root; when the
+    capture runs in a subdirectory (a Go module / JS package inside a
+    monorepo), coverage paths lack that prefix — recover via a UNIQUE
+    suffix match rather than silently attributing nothing."""
+    if rel in spans: return rel
+    if rel not in _skey_cache:
+        hits = [k for k in spans if k.endswith("/" + rel)]
+        _skey_cache[rel] = hits[0] if len(hits) == 1 else None
+    return _skey_cache[rel]
+
 def innermost(rel, line):
     """Innermost enclosing span, so a nested fn isn't also credited to its parent."""
     best = None
-    for nid, lo, hi in spans.get(rel, ()):
+    key = span_key(rel)
+    if key is None: return None
+    for nid, lo, hi in spans.get(key, ()):
         if lo <= line <= hi and (best is None or (hi - lo) < (best[2] - best[1])):
             best = (nid, lo, hi)
     return best[0] if best else None
@@ -216,6 +241,11 @@ for name in sorted(os.listdir(covdir)):
         print(f"skip {name}: {exc}", file=sys.stderr); continue
     if hit: tests[tid] = sorted(hit)
 
+if not tests:
+    # a 0-test artifact is the confident-absence trap: fail LOUD, write nothing
+    sys.exit("ERROR: 0 tests captured — no artifact written. Common causes: the capture "
+             "loop produced no files in covdata/, or coverage paths do not match "
+             "spans.json (run the capture from the directory stitchgraph indexed).")
 json.dump({"format": "stitchgraph-coverage-v1", "tests": tests}, open(out_path, "w"), indent=0)
 print(f"wrote {out_path}: {len(tests)} tests, "
       f"{len({x for v in tests.values() for x in v})} functions")
@@ -224,8 +254,11 @@ print(f"wrote {out_path}: {len(tests)} tests, "
 _RS_RUN = r'''#!/usr/bin/env bash
 # Turnkey Rust per-test coverage (research/26). One instrumented build, then each
 # test costs one execution + one JSON export (~0.5 s measured on a real crate).
+# Run FROM YOUR PROJECT ROOT; kit files resolve relative to this script itself.
 set -uo pipefail
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 command -v cargo-llvm-cov >/dev/null 2>&1 || cargo install cargo-llvm-cov
+rm -rf covdata   # stale captures from a previous run would misattribute by index
 mkdir -p covdata
 # one instrumented build + test enumeration (unit + integration binaries)
 cargo llvm-cov test --no-report -- --list 2>/dev/null | sed -n 's/: test$//p' | sort -u > tests.txt
@@ -241,14 +274,17 @@ while IFS= read -r t; do
   fi
   i=$((i+1))
 done < tests.txt
-python3 to_canonical.py llvm-json covdata spans.json coverage_modes.json tests.txt
+python3 "$KIT/to_canonical.py" llvm-json covdata "$KIT/spans.json" coverage_modes.json tests.txt || exit 1
 echo "artifact ready: coverage_modes.json  (run: stitchgraph find-modes coverage_modes.json)"
 '''
 
 _GO_RUN = r'''#!/usr/bin/env bash
 # Turnkey Go per-test coverage (research/26): enumerate tests per package, one
 # -coverprofile per test, coverpkg across the whole module.
+# Run FROM YOUR PROJECT ROOT; kit files resolve relative to this script itself.
 set -uo pipefail
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rm -rf covdata   # stale captures from a previous run would misattribute by index
 mkdir -p covdata
 : > tests.txt
 i=0
@@ -261,7 +297,7 @@ for pkg in $(go list ./... 2>/dev/null); do
   done
 done
 [ -s tests.txt ] || { echo "no tests found" >&2; exit 1; }
-python3 to_canonical.py goprofile covdata spans.json coverage_modes.json tests.txt
+python3 "$KIT/to_canonical.py" goprofile covdata "$KIT/spans.json" coverage_modes.json tests.txt || exit 1
 echo "artifact ready: coverage_modes.json  (run: stitchgraph find-modes coverage_modes.json)"
 '''
 
@@ -269,21 +305,31 @@ _JS_RUN = r'''#!/usr/bin/env bash
 # Turnkey JS/TS coverage (research/26). Granularity is per test FILE — istanbul
 # per-test contexts are runner-specific, per-file is what generalizes across
 # jest and vitest (documented in README).
+# Run FROM YOUR PROJECT ROOT; kit files resolve relative to this script itself.
 set -uo pipefail
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+rm -rf covdata   # stale captures from a previous run would misattribute by index
 mkdir -p covdata
 : > tests.txt
+# strip $PWD/ with parameter expansion, NOT sed — a cwd containing sed
+# metacharacters ('|', '[', '.') would break or silently skip the strip
+relpaths() { while IFS= read -r p; do printf '%s\n' "${p#"$PWD"/}"; done; }
 if [ -f package.json ] && grep -q '"vitest"' package.json; then
-  npx vitest list --filesOnly 2>/dev/null | sed "s|^$PWD/||" | grep -v '^$' > tests.txt || true
+  npx vitest list --filesOnly 2>/dev/null | relpaths | grep -v '^$' > tests.txt || true
+  # "$PWD/$1" pins the filter to the exact file — a bare relative path is a
+  # SUBSTRING filter in vitest and would also run e.g. web<path> lookalikes
   RUN() { npx vitest run --coverage.enabled --coverage.provider=v8 \
-          --coverage.reporter=json --coverage.reportsDirectory=covtmp "$1"; }
+          --coverage.reporter=json --coverage.reportsDirectory=covtmp "$PWD/$1"; }
 elif [ -f package.json ] && grep -q '"jest"' package.json; then
-  npx jest --listTests 2>/dev/null | sed "s|^$PWD/||" | grep -v '^$' > tests.txt || true
-  RUN() { npx jest --coverage --coverageReporters=json --coverageDirectory=covtmp "$1"; }
+  npx jest --listTests 2>/dev/null | relpaths | grep -v '^$' > tests.txt || true
+  # --runTestsByPath: exact path, not an unanchored testPathPattern REGEX
+  RUN() { npx jest --coverage --coverageReporters=json --coverageDirectory=covtmp \
+          --runTestsByPath "$1"; }
 else
   echo "no jest/vitest in package.json — wire your runner in this script (see README)" >&2
   exit 1
 fi
-[ -s tests.txt ] || { echo "no test files found" >&2; exit 1; }
+[ -s tests.txt ] || { echo "no test files found (jest needs --listTests; vitest needs a version with 'vitest list', v3+ — wire enumeration manually above if older)" >&2; exit 1; }
 i=0
 while IFS= read -r f; do
   rm -rf covtmp
@@ -294,29 +340,34 @@ while IFS= read -r f; do
   fi
   i=$((i+1))
 done < tests.txt
-python3 to_canonical.py istanbul covdata spans.json coverage_modes.json tests.txt
+python3 "$KIT/to_canonical.py" istanbul covdata "$KIT/spans.json" coverage_modes.json tests.txt || exit 1
 echo "artifact ready: coverage_modes.json  (run: stitchgraph find-modes coverage_modes.json)"
 '''
 
 _DOCKERFILE = """# Sandboxed per-test coverage capture. Build/run this in YOUR environment; it executes the
 # project's tests in an isolated, non-root, network-less container. Only coverage_modes.json leaves.
+# Dependencies install at BUILD time (network available) so the RUN stays network-less; the build
+# context is the PROJECT ROOT (docker-compose.yml sets it) so the whole project is copied in.
 FROM {base}
 WORKDIR /work
-# copy the project in read-only spirit; the container is disposable
 COPY . /work
-RUN useradd -m runner || true
+{deps}RUN useradd -m runner || true
+RUN chown -R runner /work
 USER runner
-{deps}
-CMD ["bash", "run_coverage.sh"]
+CMD ["bash", "{kp}run_coverage.sh"]
 """
 
-_COMPOSE = """# `docker compose run --rm coverage` — isolated: no network, read-only rootfs, tmpfs work area,
-# dropped caps, memory/pid limits. Emits ./out/coverage_modes.json.
+_COMPOSE = """# `docker compose run --rm coverage` — isolated: no network at RUN time (dependencies are
+# baked at build time, where network exists), non-root, dropped caps, memory/pid limits. The
+# container filesystem stays writable — the capture writes build artifacts into the project
+# copy — but the container is disposable (--rm) and unprivileged. Emits ./out/coverage_modes.json.
+# Assumes this kit directory sits INSIDE the project; if you moved it, fix context/paths below.
 services:
   coverage:
-    build: .
+    build:
+      context: {ctx}
+      dockerfile: {kp}Dockerfile
     network_mode: "none"          # no outbound network while running untrusted tests
-    read_only: true
     tmpfs:
       - /tmp
     cap_drop: ["ALL"]
@@ -324,30 +375,39 @@ services:
     pids_limit: 512
     mem_limit: 2g
     volumes:
-      - ./out:/work/out           # the ONLY thing that comes back out
-    command: bash -lc "bash run_coverage.sh && cp coverage_modes.json out/"
+      - ./out:/work/{kp}out       # the ONLY thing that comes back out
+    command: bash -lc "bash {kp}run_coverage.sh && cp coverage_modes.json {kp}out/"
 """
 
 _LANG: dict[str, dict[str, Any]] = {
+    # deps run at image-BUILD time (network exists there; the compose service runs with
+    # network_mode "none") and best-effort install the project's own dependencies too —
+    # a runtime fetch (go mod / npm / rustup) inside the network-less container would fail.
     "python": {"base": "python:3.12-slim",
-               "deps": "RUN pip install --no-cache-dir coverage pytest",
-               "tool": "coverage.py (`pytest --cov --cov-context=test`)",
+               "deps": ("RUN pip install --no-cache-dir coverage pytest pytest-cov\n"
+                        "RUN pip install --no-cache-dir -e . 2>/dev/null || "
+                        "pip install --no-cache-dir -r requirements.txt 2>/dev/null || true\n"),
+               "tool": "coverage.py (`pytest --cov --cov-context=test`, needs pytest-cov)",
                "run": _PY_RUN, "converter": ("to_canonical.py", _PY_CONVERTER),
                "note": None},
     # node:22 (non-slim) deliberately: the universal converter is stdlib python3,
     # present in the full Debian bases but not in -slim node images.
     "javascript": {"base": "node:22",
-                   "deps": "",
+                   "deps": "RUN npm ci 2>/dev/null || npm install 2>/dev/null || true\n",
                    "tool": "jest or vitest with istanbul JSON coverage, one run per test file",
                    "run": _JS_RUN, "converter": ("to_canonical.py", _UNI_CONVERTER),
                    "note": ("granularity is per test FILE, not per test function — "
                             "istanbul per-test contexts are runner-specific; per-file "
                             "generalizes across jest and vitest")},
     "go": {"base": "golang:1.24",
-           "deps": "", "tool": "`go test -run '^<Test>$' -coverprofile -coverpkg=./...` per test",
+           "deps": "RUN go mod download 2>/dev/null || true\n",
+           "tool": "`go test -run '^<Test>$' -coverprofile -coverpkg=./...` per test",
            "run": _GO_RUN, "converter": ("to_canonical.py", _UNI_CONVERTER),
            "note": None},
-    "rust": {"base": "rust:1", "deps": "RUN cargo install cargo-llvm-cov 2>/dev/null || true",
+    "rust": {"base": "rust:1",
+             "deps": ("RUN cargo install cargo-llvm-cov 2>/dev/null || true\n"
+                      "RUN rustup component add llvm-tools-preview 2>/dev/null || true\n"
+                      "RUN cargo fetch 2>/dev/null || true\n"),
              "tool": "cargo-llvm-cov (one instrumented build, then per-test profraw + JSON export)",
              "run": _RS_RUN, "converter": ("to_canonical.py", _UNI_CONVERTER),
              "note": None},
@@ -386,8 +446,9 @@ def _spans(store: Store, exts: set[str]) -> dict[str, list[list]]:
     return out
 
 
-def _readme(lang: str, info: dict[str, Any]) -> str:
+def _readme(lang: str, info: dict[str, Any], kp: str = "") -> str:
     turnkey = info["run"] is not None
+    runpath = f"{kp}run_coverage.sh" if kp else "run_coverage.sh"
     return f"""# stitchgraph per-test coverage kit — {lang}
 
 `find_modes` needs a **per-test coverage artifact**: which test executed which function. Producing it
@@ -398,19 +459,22 @@ on your host. This kit gives three interchangeable ways to produce the canonical
 Coverage tool for {lang}: **{info['tool']}**
 
 ## Option 1 — Docker (most isolated; recommended)
+Run from this kit directory (dependencies bake at build time; the run itself has no network):
 ```
-docker compose run --rm coverage        # no network, non-root, read-only rootfs, capped
+docker compose run --rm coverage        # no network at run time, non-root, capped
 # → ./out/coverage_modes.json
 ```
 
 ## Option 2 — plain shell (if you already have a sandbox / CI runner / devcontainer)
+Run **from the project root** (the directory stitchgraph indexed) — the script finds its own
+kit files (`to_canonical.py`, `spans.json`) relative to itself:
 ```
-bash run_coverage.sh                     # → coverage_modes.json
+bash {runpath}                     # → coverage_modes.json in the project root
 ```
 
 ## Option 3 — CI (GitHub Actions)
 ```yaml
-- run: bash run_coverage.sh
+- run: bash {runpath}
 - uses: actions/upload-artifact@v4
   with: {{ name: coverage_modes, path: coverage_modes.json }}
 ```
@@ -462,11 +526,21 @@ def generate(store: Store, out_dir: str, language: str | None = None) -> dict[st
         info = _LANG[lang]
         d = os.path.join(out_dir, lang) if len(langs) > 1 else out_dir
         os.makedirs(os.path.join(d, "out"), exist_ok=True)
+        # Docker option: build context = the PROJECT ROOT so `COPY . /work` copies the
+        # project, not just this kit (self-audit 2026-07-07 — kit-as-context shipped a
+        # container with no code in it). The kit's location inside the project is only
+        # knowable when out_dir stays under the cwd the kit was generated from (the
+        # default `stitchgraph-coverage/`); a kit generated elsewhere falls back to
+        # kit-dir context and the compose header comment says what to fix.
+        kitrel = os.path.relpath(os.path.abspath(d), os.getcwd()).replace(os.sep, "/")
+        inside = kitrel != ".." and not kitrel.startswith("../") and kitrel != "."
+        kp = f"{kitrel}/" if inside else ""
+        ctx = os.path.relpath(os.getcwd(), os.path.abspath(d)) if inside else "."
         files = {
-            "Dockerfile": _DOCKERFILE.format(base=info["base"], deps=info["deps"]),
-            "docker-compose.yml": _COMPOSE,
+            "Dockerfile": _DOCKERFILE.format(base=info["base"], deps=info["deps"], kp=kp),
+            "docker-compose.yml": _COMPOSE.format(ctx=ctx, kp=kp),
             "run_coverage.sh": info["run"] or _TEMPLATE_RUN.format(lang=lang, tool=info["tool"]),
-            "README.md": _readme(lang, info),
+            "README.md": _readme(lang, info, kp),
         }
         if info["converter"]:
             cname, ctext = info["converter"]

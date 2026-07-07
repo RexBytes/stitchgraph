@@ -55,16 +55,20 @@ _READY_TIMEOUT = 30.0
 def any_server_available(overrides: dict[str, str] | None = None) -> bool:
     """True when at least one registered language-server binary is on PATH —
     the AUTO gate (v3.48.0): the best available analysis runs by default, and
-    a machine with no servers skips the pass without ever spawning anything."""
-    cmds = {cmd for cmd, _lang in DEFAULT_SERVERS.values()}
+    a machine with no servers skips the pass without ever spawning anything.
+
+    Computed per EXTENSION, not per command (self-audit 2026-07-07, finding
+    4): six extensions share the typescript-language-server command, so
+    disabling `.ts` alone must not silently kill AUTO for `.js` siblings."""
+    cmds: set[str] = set()
+    for ext, (default_cmd, _lang) in DEFAULT_SERVERS.items():
+        eff = (overrides or {}).get(ext, default_cmd)
+        if eff and eff.strip():
+            cmds.add(eff)
     for ext, cmd in (overrides or {}).items():
-        if cmd.strip():
+        if ext not in DEFAULT_SERVERS and cmd.strip():
             cmds.add(cmd)
-        else:
-            default = DEFAULT_SERVERS.get(ext)
-            if default:
-                cmds.discard(default[0])
-    return any(shutil.which(cmd.split()[0]) is not None for cmd in cmds if cmd)
+    return any(shutil.which(cmd.split()[0]) is not None for cmd in cmds)
 
 
 def server_for(ext: str, overrides: dict[str, str] | None = None) -> tuple[str, str] | None:
@@ -92,8 +96,14 @@ class LspClient:
         self.proc: subprocess.Popen | None = None
         self._id = 0
         self._pending: dict[int, dict] = {}
+        self._abandoned: set[int] = set()  # timed-out rids: late replies dropped
         self._lock = threading.Lock()
         self._opened: set[str] = set()
+        # consecutive full-timeout requests — the resolver's circuit-breaker
+        # signal for an alive-but-SILENT server (self-audit 2026-07-07: a dead
+        # process fails fast, a mute one would otherwise cost the full timeout
+        # per site × up to 20k sites). Reset on any answered request.
+        self.consecutive_timeouts = 0
 
     # -- lifecycle -------------------------------------------------------
     @property
@@ -205,13 +215,21 @@ class LspClient:
         """Project loads are asynchronous and a server may answer WRONG (the
         import binding) meanwhile — re-issue one representative query until two
         consecutive answers agree (research/24 probe: typescript-language-server
-        flips to the true definition ~2 s in). Best-effort: on deadline the
-        pass proceeds with whatever the server gives."""
+        flips to the true definition ~2 s in). A run of consecutive EMPTY
+        answers also counts as ready (self-audit 2026-07-07, finding 3: a
+        fast, healthy server whose honest answer at this position is "nothing
+        in-root" — keywords, third-party targets — would otherwise burn the
+        whole deadline on every call). Best-effort: on deadline the pass
+        proceeds with whatever the server gives."""
         prev: list | None = None
+        empties = 0
         t0 = time.monotonic()
         while time.monotonic() - t0 < deadline:
             cur = self.definition(rel, line, char)
             if cur and prev == cur:
+                return
+            empties = empties + 1 if not cur else 0
+            if empties >= 4:  # ~2 s of stable "no answer": the answer IS empty
                 return
             prev = cur if cur else None
             time.sleep(0.5)
@@ -257,32 +275,62 @@ class LspClient:
                 try:
                     n = int(header.split(b":")[1])
                 except (ValueError, IndexError):
-                    return  # framing lost: stop reading, requests will time out
+                    # Framing lost: without a length we can never resync. Kill
+                    # the process so `available` flips False and every waiter
+                    # fails FAST — leaving it alive turned one glitch into a
+                    # mute server paying full timeout per site (self-audit
+                    # 2026-07-07, finding 1).
+                    self._kill()
+                    return
                 while True:  # consume remaining headers up to the blank line
                     sep = proc.stdout.readline()
                     if not sep or sep in (b"\r\n", b"\n"):
                         break
                 body = proc.stdout.read(n)
                 if len(body) != n:
+                    self._kill()
                     return
                 try:
                     msg = json.loads(body)
                 except ValueError:
                     continue  # one garbage frame doesn't kill the session
-                if isinstance(msg, dict) and "id" in msg and (
-                        "result" in msg or "error" in msg):
-                    self._pending[msg["id"]] = msg
-                # notifications / server->client requests are dropped: this
-                # client never registers capabilities that require answering
+                if not isinstance(msg, dict):
+                    continue
+                if "id" in msg and ("result" in msg or "error" in msg):
+                    if msg["id"] in self._abandoned:
+                        self._abandoned.discard(msg["id"])  # late reply: drop
+                    else:
+                        self._pending[msg["id"]] = msg
+                elif "id" in msg and "method" in msg:
+                    # a server->client REQUEST (workspace/configuration,
+                    # client/registerCapability, ...): refuse politely instead
+                    # of silently dropping — a server that synchronously
+                    # awaits the reply would otherwise go mute (finding 6)
+                    self._write({"jsonrpc": "2.0", "id": msg["id"],
+                                 "error": {"code": -32601,
+                                           "message": "method not supported"}})
+                # notifications are dropped
         except (OSError, ValueError):
             return
+
+    def _kill(self) -> None:
+        try:
+            if self.proc is not None and self.proc.poll() is None:
+                self.proc.kill()
+        except OSError:
+            pass
 
     def _wait(self, rid: int, timeout: float) -> dict | None:
         t0 = time.monotonic()
         while rid not in self._pending:
-            if time.monotonic() - t0 > timeout or not self.available:
+            if not self.available:
+                return None  # dead process: fast fail, not a "timeout"
+            if time.monotonic() - t0 > timeout:
+                self._abandoned.add(rid)  # a late reply must not leak/pend
+                self.consecutive_timeouts += 1
                 return None
             time.sleep(0.02)
+        self.consecutive_timeouts = 0
         return self._pending.pop(rid)
 
 

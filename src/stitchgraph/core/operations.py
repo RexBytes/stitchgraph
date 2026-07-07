@@ -729,6 +729,8 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     fi, fo = fan_in(store), fan_out(store)
     t_in, t_out = _god_floors(store, fi, fo)
     god_issues: list[dict] = []
+    god_test_mass = 0
+    _tsrc_ready = False
     for nid in set(fi) & set(fo):
         if fi[nid] >= t_in and fo[nid] >= t_out:
             # "God object" is a code-entity smell; a MODULE node with many importers
@@ -753,11 +755,30 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # candidate on the 16M-edge field graph (~2 s each, hours in total) instead
             # of an idx_edges_src probe (caught live by py-spy, 2026-07-04).
             ph = ",".join("?" * len(_lv))
+            # Test-SOURCED fan-in mass is likewise not design feedback (self-
+            # audit 2026-07-07, the scan-side gap of the research/25 orient
+            # exclusion): a production helper with 4 src callers and hundreds
+            # of test callers is well-tested, not a god object. Candidates are
+            # discovered on the raw (cheap, bulk) degrees, then rechecked here
+            # against non-test fan-in — the same per-candidate SQL that already
+            # computes the confident share, one temp-table probe extra.
+            if not _tsrc_ready:
+                store.conn.execute(
+                    "CREATE TEMP TABLE IF NOT EXISTS _god_tsrc(id TEXT PRIMARY KEY)")
+                store.conn.execute("DELETE FROM _god_tsrc")
+                store.conn.executemany(
+                    "INSERT OR IGNORE INTO _god_tsrc(id) VALUES (?)",
+                    ((i,) for i in _test_node_ids(store)))
+                _tsrc_ready = True
             in_row = store.conn.execute(
                 f"""SELECT COALESCE(SUM(relation IN ({ph})), 0) AS t,
                            COALESCE(SUM(relation IN ({ph}) AND provenance = ?), 0) AS c
-                     FROM edges_all WHERE dst_id = ?""",
+                     FROM edges_all WHERE dst_id = ?
+                       AND src NOT IN (SELECT id FROM _god_tsrc)""",
                 (*_lv, *_lv, _extracted, nid)).fetchone()
+            if in_row["t"] < t_in:
+                god_test_mass += 1  # coupling melts away without the suite
+                continue
             out_row = store.conn.execute(
                 """SELECT COALESCE(SUM(relation = ?), 0) AS t,
                           COALESCE(SUM(relation = ? AND provenance = ?), 0) AS c
@@ -809,6 +830,8 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
              red=sum(i["urgency"] == "red" for i in issues),
              orange=sum(i["urgency"] == "orange" for i in issues))
     res.urgency = Urgency(top) if issues else Urgency.GREEN
+    if god_test_mass:
+        res.meta["god_objects_test_mass_suppressed"] = god_test_mass
     if god_suppressed:
         res.meta["god_objects_suppressed"] = god_suppressed
         res.add_reason(
@@ -2263,6 +2286,34 @@ def _annotate_lsp(res: Result, resolvers, forced: bool = True) -> None:
                                        f"({stats['declined']})")
 
 
+def _lsp_edges_for(path: str, cfg, nodes: list, edges: list,
+                   only_files: set[str] | None = None) -> list:
+    """The scoped LSP pass shared by the incremental paths: resolve the
+    name-based CALLS sites of `only_files` (or all files when None) and return
+    the extra EXTRACTED edges. Total: any failure — no servers, mode off,
+    resolver error — returns []."""
+    lsp_mode = _lsp_mode(None, cfg)
+    if lsp_mode is False:
+        return []
+    from .resolve.lsp import any_server_available
+    from .resolve.lsp_resolver import LspResolver
+    if not (lsp_mode is True or any_server_available(cfg.lsp_servers)):
+        return []
+    rows = [(e.src, e.dst_symbol, e.location, e.provenance is Provenance.AMBIGUOUS)
+            for e in edges
+            if (e.relation is Relation.CALLS and e.source == "tree-sitter"
+                and e.dst_symbol is not None
+                and (only_files is None
+                     or e.src.split("::", 1)[0] in only_files))]
+    if not rows:
+        return []
+    try:
+        return LspResolver(servers=cfg.lsp_servers,
+                           timeout=cfg.lsp_timeout).resolve_rows(path, nodes, rows)
+    except Exception:  # noqa: BLE001 — precision adds, never breaks (jedi contract)
+        return []
+
+
 def _lsp_mode(lsp: bool | None, cfg) -> bool | None:
     """Resolve the effective LSP switch: explicit param > STITCHGRAPH_NO_LSP
     env kill switch > `[lsp] enabled` config > AUTO (None). AUTO is the
@@ -2357,9 +2408,20 @@ def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
         return refuse(f"root {path!r} is not a readable directory — nothing was changed")
     abs_root = os.path.abspath(path)
 
+    cfg = load_config(path)
     xreport: dict = {}
-    nodes, edges = extract_project(path, ignore=load_config(path).ignore, report=xreport)
+    nodes, edges = extract_project(path, ignore=cfg.ignore, report=xreport)
     nodes, edges = run_resolvers(path, nodes, edges, default_resolvers())
+    # Scoped LSP pass over the CHANGED files only (adversarial self-audit
+    # 2026-07-07, docs/BUG_HUNT_PROMPT.md class 5): under the v3.48.0 AUTO
+    # default a fresh reindex carries source="lsp" edges, so an incremental
+    # update that skipped the pass would silently strip them from every edited
+    # file — breaking the incremental==fresh convergence contract exactly
+    # where the suite can't see it (tests pin STITCHGRAPH_NO_LSP=1). Scoping
+    # to the changed files keeps the watch edit-loop cost at one server
+    # session over a handful of sites; unchanged files keep their stored LSP
+    # edges because their rows aren't replaced.
+    edges = edges + _lsp_edges_for(path, cfg, nodes, edges, only_files=set(changed))
     edges = _dedup_edges(edges)
 
     nodes_by_owner: dict[str, list] = {}
@@ -2435,6 +2497,8 @@ def reindex_singlefile(store: Store, path: str, changed: set[str]) -> Result | N
             return None
         parsed.append((rel, tree))
 
+    from .config import load_config as _load_config
+    cfg = _load_config(path)
     for rel, _tree in parsed:
         try:
             nodes, edges, contribution = extract_single_file(store, abs_root, rel)
@@ -2442,8 +2506,16 @@ def reindex_singlefile(store: Store, path: str, changed: set[str]) -> Result | N
             return None
         exported_ids = _exported_ids_for_single(store, rel, nodes, edges,
                                                 contribution)
-        store.replace_file(rel, nodes, edges, exported_ids=exported_ids,
-                           symtab=contribution)
+        # Scoped LSP convergence (self-audit 2026-07-07): a no-op unless the
+        # user registered a server for .py (this fast path is Python-only and
+        # .py has no default server) — but with one registered, the edited
+        # file must keep the LSP edges a fresh reindex would give it. Span
+        # index over the store's full node list: definitions can land in any
+        # file. The extra edges are deduped by replace_file's own pipeline.
+        lsp_extra = _lsp_edges_for(path, cfg, store.all_nodes_full(), edges,
+                                   only_files={rel})
+        store.replace_file(rel, nodes, edges + lsp_extra,
+                           exported_ids=exported_ids, symtab=contribution)
     store.analyze()
     store.set_meta("root", abs_root)
     return ok({"replaced": len(parsed), "nodes": store.node_count(),

@@ -111,6 +111,7 @@ What remains is maintenance and opportunity, not commitments:
 
 | Item | Effort | Status |
 |---|---|---|
+| ~~Adversarial self-audit~~ | — | **Done, v3.50.0 (research/27)** — the `docs/BUG_HUNT_PROMPT.md` ritual run against ourselves: 14 confirmed findings (watch stripped LSP edges; mute-server amplification; UTF-16 columns; the coverage kits' hostile-machine batch; scan god-objects counting test mass), all fixed and pinned. Re-run after each major arc. |
 | ~~Turnkey coverage~~ | — | **Done, v3.49.0 (research/26)** — and not just Rust: `scaffold_coverage` ships runnable capture loops for Rust (cargo-llvm-cov), Go, and JS/TS (jest/vitest), each converting via the kit's index-derived `spans.json` (node-id-exact, no parser in the sandbox). Field-validated on fd: 267 tests captured, `find_modes` end to end. Java remains the one honest template. |
 | `[lsp] ambiguous_only` cost knob (skip confirmation queries, ~halve the pass) | S | More relevant now that AUTO runs the pass by default (v3.48.0); still deferred until field use finds it too slow (research/24). |
 | LSP recall of dropped externals (call sites whose name matched nothing) | M | Needs a source re-walk; deferred until the precision pass proves itself in the field. |
