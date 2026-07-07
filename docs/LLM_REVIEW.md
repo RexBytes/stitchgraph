@@ -98,11 +98,14 @@ like any other field review: verified first, then fixed or scheduled.
    the name-based graph otherwise; `--no-lsp` / `[lsp] enabled = false` /
    `STITCHGRAPH_NO_LSP=1` opt out; `--lsp` forces it with loud declines. The
    same full-power-by-default contract as the install story (v3.31.0).
-3. **Turnkey Rust coverage — scheduled.** The ~150-line wiring gap in front
-   of the behavioural toolkit is now a named roadmap item (STATUS.md): make
-   `scaffold_coverage` emit a runnable Rust recipe (cargo-llvm-cov per-test
-   profile) rather than a template that needs hand-finishing.
-
-The setup-friction point is the honest remaining gap: the behavioural moat is
-reachable only with per-test coverage in hand, and for Rust that is still
-manual. It is the next thing an LLM-driving-stitchgraph story needs.
+3. **Turnkey coverage — shipped (v3.49.0, research/26), and not just Rust.**
+   The audit showed the ~150-line wiring gap was every language but Python.
+   `scaffold_coverage` now ships runnable capture loops for Rust
+   (cargo-llvm-cov, one instrumented build then ~0.5 s per test), Go
+   (per-test `-coverprofile`), and JS/TS (jest/vitest, per test file) — each
+   converting through the kit's index-derived `spans.json`, so the sandbox
+   needs no language parser and the emitted ids match node ids exactly.
+   Field-proof on the reviewer's own scenario: the generated kit ran fd's
+   267 tests unedited and `find_modes` answered (intrinsic dimensionality 7,
+   16 modes, minimal test set 154). The behavioural moat is now reachable
+   unaided in five languages; Java remains the one honest template.
