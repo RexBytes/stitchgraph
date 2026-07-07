@@ -640,6 +640,28 @@ def _seed_exported_inherited_methods(proj: _Project) -> None:
             node.roles = node.roles | {"exported"}
 
 
+def _module_const_stmts(tree: ast.Module):
+    """Module-level statements INCLUDING those inside try/except/else/finally
+    and if/elif/else blocks. `try: _HAVE_X = True / except ImportError:
+    _HAVE_X = False` and version-gated constants are ordinary module-constant
+    idioms; seeing only `tree.body` left imports of those names dangling as
+    phantom holes (research/25 dogfood: the _HAVE_SQLGLOT pair)."""
+    stack = list(tree.body)
+    while stack:
+        stmt = stack.pop()
+        if isinstance(stmt, ast.Try):
+            stack.extend(stmt.body)
+            stack.extend(stmt.orelse)
+            stack.extend(stmt.finalbody)
+            for h in stmt.handlers:
+                stack.extend(h.body)
+        elif isinstance(stmt, ast.If):
+            stack.extend(stmt.body)
+            stack.extend(stmt.orelse)
+        else:
+            yield stmt
+
+
 # -- pass 1: definitions ----------------------------------------------------
 def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> None:
     is_init = path.name == "__init__.py"
@@ -654,7 +676,7 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     if exported:
         _sym_add(proj, rel, "export", exported)
     _sym_add(proj, rel, "main", _main_block_calls(tree))
-    for stmt in tree.body:  # module-level constants (not graphed as nodes)
+    for stmt in _module_const_stmts(tree):  # module-level constants (not graphed as nodes)
         if isinstance(stmt, ast.Assign):
             for t in stmt.targets:
                 # Flatten tuple/list unpacking (incl. starred): `HORIZONTAL, VERTICAL

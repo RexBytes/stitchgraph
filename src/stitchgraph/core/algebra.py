@@ -106,7 +106,8 @@ def _bfs(adj: _Adjacency, seeds: Iterable[str], transpose: bool) -> set[str]:
 def transitive_fan_in(store: Store,
                       relations: Iterable[Relation] = LIVENESS_RELATIONS,
                       max_nodes: int = 4000,
-                      confident_only: bool = True) -> dict[str, int]:
+                      confident_only: bool = True,
+                      exclude_sources: set[str] | None = None) -> dict[str, int]:
     """For each node, how many *distinct* nodes can transitively reach it — the
     'most-depended-on, read these first' ranking (design §6.A).
 
@@ -117,7 +118,13 @@ def transitive_fan_in(store: Store,
     back to direct fan-in (the closure densifies on big graphs).
 
     `confident_only` (default True since v3.32.0): rank over EXTRACTED edges only,
-    matching `confident_fan_in` — see _Adjacency's rationale."""
+    matching `confident_fan_in` — see _Adjacency's rationale.
+
+    `exclude_sources` drops those node ids as DEPENDERS (closure rows) while
+    keeping them as graph structure: `orient` passes the test set so a suite
+    closing 1,117 stores doesn't crown `Store.close` the #1 hub (research/25).
+    Excluded nodes still ROUTE reachability — a src helper reached only through
+    tests keeps the sources that flow through it — they just aren't mass."""
     adj = _Adjacency(store, relations, confident_only=confident_only)
     if adj.n == 0 or adj.n > max_nodes or not adj.rows:
         return {}
@@ -133,8 +140,13 @@ def transitive_fan_in(store: Store,
     # closure, which would count the node as its own depender — inconsistent with
     # reverse_reachable_from/impact_of, which exclude self (panel R16B). We want distinct
     # *other* sources. Then cast bool->int (else `plus` on BOOL is OR, always 1) and count.
-    counts = (gb.select.offdiag(reach).new(dtype="INT64")
-              .reduce_columnwise(gb.monoid.plus).new())
+    offdiag = gb.select.offdiag(reach).new(dtype="INT64")
+    if exclude_sources:
+        kept = [i for i, nid in enumerate(adj.ids) if nid not in exclude_sources]
+        if not kept:
+            return {}
+        offdiag = offdiag[kept, :].new()  # every column kept; only kept rows count
+    counts = offdiag.reduce_columnwise(gb.monoid.plus).new()
     coo = counts.to_coo()
     return {adj.ids[i]: int(v) for i, v in zip(coo[0].tolist(), coo[1].tolist(), strict=False)}
 

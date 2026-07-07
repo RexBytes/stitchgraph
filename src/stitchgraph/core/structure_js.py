@@ -155,7 +155,7 @@ def pdg_source(source: str, lang: str = "javascript") -> dict[str, tuple[list[st
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
-def _build_vfg(fn, data: bytes) -> _VFG:
+def _build_vfg(fn, _data: bytes) -> _VFG:
     """Symbolically evaluate one function node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds, copy propagation through locals, operations and
     control points as nodes, data/control edges. `fn` is a tree-sitter function-like node."""
@@ -493,7 +493,7 @@ def _last(node):
     return last(node)
 
 
-def _op_text(node, text) -> str:
+def _op_text(node, _text) -> str:
     return op_text(node)
 
 
@@ -516,7 +516,7 @@ def _pdg_label(t: str) -> str:
     return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
 
 
-def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+def _build_pdg(fn, _data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a JS-family function — a program-dependence graph mirroring
     `structure._build_pdg` (Python): statement nodes + a synthetic ENTRY carrying the parameters,
     control ('C', nested-under-a-header) and data ('D', a sequential reaching-def) edges. Nested

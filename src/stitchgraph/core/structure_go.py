@@ -116,7 +116,7 @@ def pdg_source(source: str, lang: str = "go") -> dict[str, tuple[list[str], list
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
-def _build_vfg(fn, data: bytes) -> _VFG:
+def _build_vfg(fn, _data: bytes) -> _VFG:
     """Symbolically evaluate one Go function/method node into a value-flow graph, mirroring
     `structure._build_vfg` for Python: PARAM seeds (receiver + params + named results), copy
     propagation through locals, operations and control points as nodes, data/control edges."""
@@ -454,7 +454,7 @@ def _last(node):
     return last(node)
 
 
-def _op_text(node, text) -> str:
+def _op_text(node, _text) -> str:
     return op_text(node)
 
 
@@ -480,7 +480,7 @@ def _pdg_label(t: str) -> str:
     return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
 
 
-def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+def _build_pdg(fn, _data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a Go function — a program-dependence graph mirroring
     `structure._build_pdg` (Python) and `structure_js._build_pdg`: statement nodes + a synthetic
     ENTRY carrying the parameters (and receiver), control ('C') / data ('D', sequential reaching-def)

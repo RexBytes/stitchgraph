@@ -128,6 +128,7 @@ def reachable_from_many(store: Store, seed_groups: list[set[str]],
 def transitive_fan_in_estimate(
     store: Store, relations: Iterable[Relation] = LIVENESS_RELATIONS,
     samples: int = 1024, confident_only: bool = True,
+    exclude_sources: set[str] | None = None,
 ) -> tuple[dict[str, float], bool] | None:
     """Distinct-ancestor counts over the sidecar — `orient`'s hub metric past the
     GraphBLAS closure's node cap (v3.42.0). Returns `(counts, exact)` or None
@@ -153,7 +154,14 @@ def transitive_fan_in_estimate(
 
     `confident_only=True` matches every other hub metric since v3.32.0: rank
     over EXTRACTED edges only; AMBIGUOUS widening arms are resolution artifacts,
-    not dependency mass."""
+    not dependency mass.
+
+    `exclude_sources` removes those ids from the SAMPLE SPACE (they never seed a
+    sweep, so they contribute no ancestor mass) while leaving them in the graph
+    to route reachability — the same depender-exclusion contract as
+    `algebra.transitive_fan_in` (orient passes the test set, research/25).
+    The estimator stays unbiased over the non-excluded population: the scale
+    factor becomes n_kept / |S|."""
     from .adjcache import load_cache
     cache = load_cache(store)
     if cache is None:
@@ -162,15 +170,22 @@ def transitive_fan_in_estimate(
     n = cache.n
     if n == 0:
         return {}, True
-    s = min(n, max(1, samples))
-    sample_idx = np.unique(np.linspace(0, n - 1, s).astype(np.int64))
+    if exclude_sources:
+        pool = np.array([i for i, nid in enumerate(cache.ids)
+                         if nid not in exclude_sources], dtype=np.int64)
+    else:
+        pool = np.arange(n, dtype=np.int64)
+    if pool.size == 0:
+        return {}, True
+    s = min(int(pool.size), max(1, samples))
+    sample_idx = pool[np.unique(np.linspace(0, pool.size - 1, s).astype(np.int64))]
     seed_groups = [{cache.ids[i]} for i in sample_idx.tolist()]
     hits = cache.reach_hits(seed_groups, relations, confident_only)
     # A seed's own lane bit is set at init (a closure includes its seed); the
     # exact metric counts distinct OTHER ancestors (offdiag), so drop self-hits.
     hits[sample_idx] -= 1
-    exact = sample_idx.size == n
-    scale = 1.0 if exact else n / sample_idx.size
+    exact = sample_idx.size == pool.size
+    scale = 1.0 if exact else pool.size / sample_idx.size
     nz = np.nonzero(hits > 0)[0]
     return {cache.ids[i]: float(hits[i]) * scale for i in nz.tolist()}, exact
 

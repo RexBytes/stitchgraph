@@ -96,7 +96,7 @@ def vfg_source(source: str, lang: str = "bash") -> dict[str, tuple[list[str], li
     return _walk(source, lang, lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
-def _build_vfg(fn, data: bytes) -> _VFG:
+def _build_vfg(fn, _data: bytes) -> _VFG:
     """Symbolically evaluate one Bash function node into a value-flow graph, mirroring
     `structure._build_vfg`: operations + control points as nodes, data/control edges, copy
     propagation through assignments. Command-oriented (a command is a CALL)."""
@@ -358,7 +358,7 @@ _STMT_TYPES = frozenset({
 })
 
 
-def _op_text(node, text) -> str:
+def _op_text(node, _text) -> str:
     return op_text(node)
 
 
@@ -393,7 +393,7 @@ def pdg_source(source: str, lang: str = "bash") -> dict[str, tuple[list[str], li
     return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
 
 
-def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+def _build_pdg(fn, _data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a Bash function — a program-dependence graph mirroring
     `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++/Java/C#/Ruby/PHP PDG builders:
     statement nodes + a synthetic ENTRY (empty — Bash has no parameter list), control ('C') / data

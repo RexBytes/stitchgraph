@@ -89,6 +89,45 @@ machinery hasn't changed since; not re-run.)
   the marathon's code.
 - **live_stub**: 1, a deliberate test double (`_S.run` in test_mcp).
 
+## Addendum (v3.47.0): the calibrations, applied and re-measured
+
+All four follow-ups shipped, plus one suppression the re-run taught us:
+
+1. **God-object floors are now size-scaled**: with ≥200 coupled code nodes,
+   a god object must sit strictly ABOVE the population's 95th percentile in
+   both directions (p95 + 1 — the first formula used ≥ p95 and the test
+   caught it flagging the crowd when >5% share one value); small graphs keep
+   the historical 5/5 floors byte-identically.
+2. **Orient excludes test mass**: test-owned nodes (Test kind, `test` role,
+   test-path file) neither appear in the hub list nor count as dependency
+   mass in the transitive metrics — excluded as closure rows / sample
+   sources while still ROUTING reachability. The explicitly-chosen raw
+   `fan_in`/`pagerank` metrics keep degree semantics (list-filtered only).
+3. **Unused-param advisories gained three suppressions**: framework-owned
+   signatures (any decorator beyond the static/class/property/abstract set),
+   family-interface params (a slot a same-name same-arity sibling DOES
+   load), and **value-referenced functions** (an incoming REFERENCES edge =
+   passed to a dispatcher, its shape is the caller's) — the graph already
+   knew the ten grammar builders are called through one shared traversal.
+4. **Module constants inside try/except and if/else** are collected; the
+   `_HAVE_SQLGLOT` phantom holes are gone.
+
+And the advisory that survived all suppressions was RIGHT: `data`/`text`
+in the ten `structure_*.py` builder families is dead **family-wide** (the
+tree-sitter twins never needed the source bytes their `ast` sibling's call
+shape once implied) — 28 parameters underscore-renamed to document it.
+
+Re-run on the same repository:
+
+| | v3.46.0 | v3.47.0 |
+|---|---|---|
+| scan findings | 435 | **45** (76 before the param renames) |
+| god_object | 340 (252 src, ORANGE) | **0** (max real coupling ~50 vs floors 62/29 — honest) |
+| unused_params | 52 | **5** (all genuine: modes/similar `store`, two test/research helpers) |
+| holes | 2 (phantom) | **0** |
+| #1 hub | `Store.close` (fan-in 1,097, test mass) | `Provenance` (320, all src) |
+| test defs in hub list | yes (a pytest fixture at #2) | none |
+
 ## Verdict
 
 The tool finds real things in its own code the morning after release: one
