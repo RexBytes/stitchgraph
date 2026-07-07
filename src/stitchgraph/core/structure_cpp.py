@@ -205,7 +205,7 @@ def pdg_source(source: str, lang: str = "cpp") -> dict[str, tuple[list[str], lis
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
-def _build_vfg(fn, data: bytes) -> _VFG:
+def _build_vfg(fn, _data: bytes) -> _VFG:
     """Symbolically evaluate one C/C++ function/lambda node into a value-flow graph, mirroring
     `structure._build_vfg`: PARAM seeds, copy propagation through declarations, operations and control
     points as nodes, data/control edges. Statement-oriented (explicit returns)."""
@@ -603,7 +603,7 @@ def _last(node):
     return last(node)
 
 
-def _op_text(node, text) -> str:
+def _op_text(node, _text) -> str:
     return op_text(node)
 
 
@@ -630,7 +630,7 @@ def _pdg_label(t: str) -> str:
     return _PDG_STMT_LABEL.get(t) or "".join(w.capitalize() for w in t.split("_")) or "Stmt"
 
 
-def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+def _build_pdg(fn, _data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a C/C++ function/method — a program-dependence graph mirroring
     `structure._build_pdg` (Python) and the JS-family/Go/Rust PDG builders: statement nodes + a synthetic
     ENTRY carrying the parameters, control ('C') / data ('D', sequential reaching-def) edges. C/C++

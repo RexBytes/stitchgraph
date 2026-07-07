@@ -145,7 +145,7 @@ def vfg_source(source: str, lang: str = "csharp") -> dict[str, tuple[list[str], 
     return _walk(source, lang, build=lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
-def _build_vfg(fn, data: bytes) -> _VFG:
+def _build_vfg(fn, _data: bytes) -> _VFG:
     """Symbolically evaluate one C# method/constructor/local-function/lambda node into a value-flow
     graph, mirroring `structure._build_vfg`: PARAM seeds, copy propagation through declarations,
     operations and control points as nodes, data/control edges. Statement-oriented (explicit returns)."""
@@ -549,7 +549,7 @@ def _last(node):
     return last(node)
 
 
-def _op_text(node, text) -> str:
+def _op_text(node, _text) -> str:
     return op_text(node)
 
 
@@ -588,7 +588,7 @@ def pdg_source(source: str, lang: str = "csharp") -> dict[str, tuple[list[str], 
     return _walk(source, lang, build=lambda fn, data: _build_pdg(fn, data))
 
 
-def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+def _build_pdg(fn, _data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a C# method/constructor — a program-dependence graph mirroring
     `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++/Java PDG builders: statement nodes
     + a synthetic ENTRY carrying the parameters, control ('C') / data ('D', sequential reaching-def)

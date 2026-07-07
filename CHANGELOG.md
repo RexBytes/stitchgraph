@@ -4,6 +4,36 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.47.0] — 2026-07-07
+
+### Changed
+- **Scan and orient, calibrated by dogfood** (research/25 addendum). Running
+  the released v3.46.0 on stitchgraph itself produced 435 scan findings of
+  which ~390 were noise with a pattern; v3.47.0 fixes the patterns:
+  - **God-object floors are size-scaled**: on graphs with >= 200 coupled
+    code nodes a god object must sit strictly above the population's 95th
+    percentile of coupling in BOTH directions (never below the historical
+    5/5 floors, which small graphs keep byte-identically). A 2,878-node
+    codebase went from 252 ORANGE god-objects to the honest 0.
+  - **Orient hubs exclude test mass**: test-owned nodes neither appear in
+    the hub list nor count as dependency mass in the transitive metrics
+    (they still route reachability). `Store.close` — #1 hub only because
+    1,117 tests close stores — drops to its true src-only rank; pytest
+    fixtures no longer appear at all. Explicit `fan_in`/`pagerank` metric
+    choices keep raw degree semantics.
+  - **Unused-parameter advisories gained three family suppressions**:
+    framework-owned signatures (decorators beyond
+    static/class/property/abstract), family-interface slots (a param a
+    same-name same-arity sibling loads), and value-referenced functions
+    (an incoming REFERENCES edge means a dispatcher owns the shape).
+    52 self-findings became 5, all genuine.
+  - **Module constants bound under try/except and if/else are extracted**
+    (`try: _HAVE_X = True / except ImportError: _HAVE_X = False`) — imports
+    of such names no longer surface as phantom holes.
+- The one advisory family that survived every suppression was right:
+  `data`/`text` parameters in the ten per-language `structure_*.py` builder
+  families are dead family-wide — 28 parameters underscore-renamed.
+
 ## [3.46.0] — 2026-07-07
 
 ### Added

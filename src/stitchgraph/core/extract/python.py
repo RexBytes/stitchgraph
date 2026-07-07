@@ -640,6 +640,28 @@ def _seed_exported_inherited_methods(proj: _Project) -> None:
             node.roles = node.roles | {"exported"}
 
 
+def _module_const_stmts(tree: ast.Module):
+    """Module-level statements INCLUDING those inside try/except/else/finally
+    and if/elif/else blocks. `try: _HAVE_X = True / except ImportError:
+    _HAVE_X = False` and version-gated constants are ordinary module-constant
+    idioms; seeing only `tree.body` left imports of those names dangling as
+    phantom holes (research/25 dogfood: the _HAVE_SQLGLOT pair)."""
+    stack = list(tree.body)
+    while stack:
+        stmt = stack.pop()
+        if isinstance(stmt, ast.Try):
+            stack.extend(stmt.body)
+            stack.extend(stmt.orelse)
+            stack.extend(stmt.finalbody)
+            for h in stmt.handlers:
+                stack.extend(h.body)
+        elif isinstance(stmt, ast.If):
+            stack.extend(stmt.body)
+            stack.extend(stmt.orelse)
+        else:
+            yield stmt
+
+
 # -- pass 1: definitions ----------------------------------------------------
 def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> None:
     is_init = path.name == "__init__.py"
@@ -654,7 +676,7 @@ def _collect_defs(proj: _Project, rel: str, path: Path, tree: ast.Module) -> Non
     if exported:
         _sym_add(proj, rel, "export", exported)
     _sym_add(proj, rel, "main", _main_block_calls(tree))
-    for stmt in tree.body:  # module-level constants (not graphed as nodes)
+    for stmt in _module_const_stmts(tree):  # module-level constants (not graphed as nodes)
         if isinstance(stmt, ast.Assign):
             for t in stmt.targets:
                 # Flatten tuple/list unpacking (incl. starred): `HORIZONTAL, VERTICAL
@@ -1582,7 +1604,7 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # set bounds the per-function fan to one fallback per dunder.
             proto_seen: set[str] = set()
             for cm, is_async in _direct_withs(child):
-                _with_edges(proj, rel, cid, class_qual, local_types, cm,
+                _with_edges(proj, rel, cid, local_types, cm,
                             is_async=is_async, seen=proto_seen)
             for expr, dunders, line in _direct_protocol_uses(child):
                 _protocol_dunder_edges(proj, rel, cid, local_types, expr,
@@ -1746,7 +1768,7 @@ def _protocol_dunder_edges(proj: _Project, rel: str, src_id: str,
                        is_method=True)
 
 
-def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
+def _with_edges(proj: _Project, rel: str, src_id: str,
                 local_types: dict[str, str], item: ast.withitem,
                 is_async: bool = False, seen: set[str] | None = None) -> None:
     """A `with` context manager uses __enter__/__exit__ (`async with`:

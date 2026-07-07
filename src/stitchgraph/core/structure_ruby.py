@@ -108,7 +108,7 @@ def vfg_source(source: str, lang: str = "ruby") -> dict[str, tuple[list[str], li
     return _walk(source, lang, lambda fn, data: _serialize_vfg(_build_vfg(fn, data)))
 
 
-def _build_vfg(fn, data: bytes) -> _VFG:
+def _build_vfg(fn, _data: bytes) -> _VFG:
     """Symbolically evaluate one Ruby method/block node into a value-flow graph, mirroring
     `structure._build_vfg`: PARAM seeds, copy propagation, operations + control points as nodes,
     data/control edges. Expression-oriented — a body's trailing expression is its return value."""
@@ -321,7 +321,7 @@ def _build_vfg(fn, data: bytes) -> _VFG:
             return None
         return ev(node, ctrl)
 
-    def _do_body(node, ctrl: int | None, *, as_value: bool = False) -> int | None:
+    def _do_body(node, ctrl: int | None, *, _as_value: bool = False) -> int | None:
         """Walk a body_statement / then / else block; return the trailing expression's value."""
         if node is None:
             return None
@@ -417,7 +417,7 @@ def pdg_source(source: str, lang: str = "ruby") -> dict[str, tuple[list[str], li
     return _walk(source, lang, lambda fn, data: _build_pdg(fn, data))
 
 
-def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
+def _build_pdg(fn, _data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     """The STATEMENT layer for a Ruby method — a program-dependence graph mirroring
     `structure._build_pdg` (Python) and the JS-family/Go/Rust/C++/Java/C# PDG builders: statement
     nodes + a synthetic ENTRY carrying the parameters, control ('C') / data ('D', sequential
@@ -645,5 +645,5 @@ def _build_pdg(fn, data: bytes) -> tuple[list[str], list[tuple[int, int, str]]]:
     return labels, edges
 
 
-def _op_text(node, text) -> str:
+def _op_text(node, _text) -> str:
     return op_text(node)

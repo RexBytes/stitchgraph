@@ -264,10 +264,6 @@ EXT_LANG = {
 }
 
 
-def supported_languages() -> list[str]:
-    return sorted(set(EXT_LANG.values()))
-
-
 def _canon_lang(lang: str) -> str:
     """Canonical resolution bucket for a language. C and C++ share one symbol namespace:
     real projects freely reference symbols across `.h`/`.c`/`.cpp`, and a `.h` may be parsed

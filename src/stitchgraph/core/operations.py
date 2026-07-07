@@ -283,15 +283,21 @@ def orient(store: Store) -> Result:
             counts[kind.value] = n
     # Transitive importance (PageRank over the whole graph) when GraphBLAS is
     # available; direct fan-in otherwise (design §6.A).
-    ranking, metric = _hub_ranking(store)
+    test_ids = _test_node_ids(store)
+    ranking, metric = _hub_ranking(store, exclude_sources=test_ids)
     # "Read these first" hubs are code entities (functions/classes/methods). Module and
     # other container/pseudo nodes carry high import-coupling — amplified by the module->module
     # IMPORTS edges that make module-level liveness work — so they would crowd out the actual
     # functions a reader should open first; exclude them from the hub list (module COUNT is
     # still reported in node_counts). Liveness is unaffected (panel R13A metric).
+    # Test-owned defs (fixtures, suite helpers) are likewise excluded from the LIST
+    # on every metric — a pytest fixture is never the answer to "read these first" —
+    # and the transitive metrics also exclude test nodes as dependency MASS, so a
+    # suite closing 1,117 stores can't crown Store.close the #1 hub (research/25).
     ranked = sorted(ranking.items(), key=lambda kv: kv[1], reverse=True)
     hubs = [(nid, score) for nid, score in ranked
-            if (hub := store.get_node(nid)) is not None and hub.kind in _CODE_KINDS][:10]
+            if (hub := store.get_node(nid)) is not None
+            and hub.kind in _CODE_KINDS and nid not in test_ids][:10]
     payload = {
         "node_counts": counts,
         "top_hubs": [{"id": nid, metric: round(score, 4)} for nid, score in hubs],
@@ -299,7 +305,24 @@ def orient(store: Store) -> Result:
     return ok(payload, total_nodes=store.node_count(), hub_metric=metric)
 
 
-def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
+def _test_node_ids(store: Store) -> set[str]:
+    """Node ids owned by the test suite — Test kind, a `test` role, or a
+    test-path file. The orientation metrics exclude these as dependency mass
+    and from the hub list (research/25): correct arithmetic that ranks
+    `Store.close` #1 because every test closes a store is useless orientation."""
+    out: set[str] = set()
+    for nid, kind, roles in store.conn.execute("SELECT id, kind, roles FROM nodes"):
+        if not isinstance(nid, str):
+            continue  # corrupt-index BLOB row (panel R31B): skip, never crash
+        if (kind == NodeKind.TEST.value
+                or "test" in (roles if isinstance(roles, str) else "").split(",")
+                or _is_test_path(nid)):
+            out.add(nid)
+    return out
+
+
+def _hub_ranking(store: Store,
+                 exclude_sources: set[str] | None = None) -> tuple[dict[str, float], str]:
     from . import algebra
     from .config import load_config
 
@@ -313,7 +336,7 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
             if ranks:
                 return ranks, "pagerank"
         else:  # transitive_fan_in (default) — most-depended-on
-            tfi = algebra.transitive_fan_in(store)
+            tfi = algebra.transitive_fan_in(store, exclude_sources=exclude_sources)
             if tfi:
                 return {k: float(v) for k, v in tfi.items()}, "transitive_fan_in"
     if metric not in ("fan_in", "pagerank"):
@@ -322,7 +345,7 @@ def _hub_ranking(store: Store) -> tuple[dict[str, float], str]:
         # ancestor counts, exact when the graph fits inside the sample budget
         # (v3.42.0, reach.transitive_fan_in_estimate). Only below the sampled
         # tier does orient degrade to direct confident fan-in.
-        est = transitive_fan_in_estimate(store)
+        est = transitive_fan_in_estimate(store, exclude_sources=exclude_sources)
         if est is not None and est[0]:
             est_counts, exact = est
             return est_counts, ("transitive_fan_in" if exact
@@ -473,6 +496,35 @@ _SCC_RELATIONS = (Relation.CALLS, Relation.IMPORTS)
 
 
 _GOD_REVIEW_CAP = 500  # hedged god-object flags kept per scan; see the cutoff comment below
+_GOD_MIN_POP = 200     # coupled code nodes needed before percentile floors apply
+
+
+def _god_floors(store: Store, fi: dict, fo: dict) -> tuple[int, int]:
+    """Size-scaled god-object floors (research/25 dogfood). The absolute floors
+    (5/5) are right for small graphs but a 2,878-node codebase strolls past
+    them — 252 of its src/ nodes were flagged ORANGE, which is noise, not
+    signal. On graphs with a meaningful population (>= _GOD_MIN_POP code nodes
+    coupled in BOTH directions) a god object must also be exceptional among
+    its peers: strictly ABOVE the 95th percentile of each direction's degrees
+    (p95 + 1 — when the crowd itself sits at one value, >= p95 would flag the
+    crowd), never below the absolute floor. Below the population cut the
+    behaviour is byte-identical to the historical floors."""
+    both = [nid for nid in set(fi) & set(fo) if fi[nid] >= 1 and fo[nid] >= 1]
+    if len(both) < _GOD_MIN_POP:
+        return 5, 5
+    code = {r[0] for r in store.conn.execute(
+        "SELECT id FROM nodes WHERE kind IN (?, ?, ?)",
+        tuple(k.value for k in _CODE_KINDS))}
+    pop = [nid for nid in both if nid in code]
+    if len(pop) < _GOD_MIN_POP:
+        return 5, 5
+
+    def p95(vals: list[int]) -> int:
+        vals = sorted(vals)
+        return vals[min(len(vals) - 1, int(0.95 * len(vals)))]
+
+    return (max(5, p95([fi[n] for n in pop]) + 1),
+            max(5, p95([fo[n] for n in pop]) + 1))
 
 
 @operation("Ranked issue list with urgency (structural scan).")
@@ -621,9 +673,10 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     # God objects: high fan-in AND fan-out.
     _lv = tuple(r.value for r in LIVENESS_RELATIONS)
     fi, fo = fan_in(store), fan_out(store)
+    t_in, t_out = _god_floors(store, fi, fo)
     god_issues: list[dict] = []
     for nid in set(fi) & set(fo):
-        if fi[nid] >= 5 and fo[nid] >= 5:
+        if fi[nid] >= t_in and fo[nid] >= t_out:
             # "God object" is a code-entity smell; a MODULE node with many importers
             # (fan-in) plus many module-level calls (fan-out, from _module_scope_edges) is
             # not an OOP god object — skip pseudo nodes so the label isn't mis-applied
@@ -655,11 +708,13 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             in_frac, c_in, _ = _share_rows(in_row["t"], in_row["c"])
             out_frac, c_out, _ = _share_rows(out_row["t"], out_row["c"])
             # An artifact needs BOTH halves to survive on confident edges; if either the
-            # confident fan-in or fan-out falls below the threshold the coupling isn't
+            # confident fan-in or fan-out falls below the floor the coupling isn't
             # really there once the guesses are removed.
-            artifact = c_in < 5 or c_out < 5
+            artifact = c_in < t_in or c_out < t_out
             frac = (in_frac + out_frac) / 2
-            reason = (f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]})"
+            reason = (f"high coupling (fan-in {fi[nid]}, fan-out {fo[nid]}"
+                      + (f"; floors {t_in}/{t_out}, size-scaled" if (t_in, t_out)
+                         != (5, 5) else "") + ")"
                       + (f"; mostly name-ambiguous edges (confident fan-in {c_in}, "
                          f"fan-out {c_out}) — verify before acting" if artifact else ""))
             god_issues.append({
@@ -2487,6 +2542,23 @@ def _unused_params(store: Store) -> list[dict]:
         return False
 
     trees: dict[str, _ast.Module | None] = {}
+    # Two passes (research/25 dogfood): pass 1 collects candidates AND, for every
+    # (leaf name, arity) family, which params ANY member loads — the ten
+    # structure_*.py grammars share `_walk(lang)` / `_build_pdg(data)` signatures
+    # where only some languages use every slot, and a param a sibling DOES use is
+    # the family's interface, not this member's dead weight. Pass 2 filters.
+    family_used: dict[tuple[str, int], set[str]] = {}
+    family_count: dict[tuple[str, int], int] = {}
+    candidates: list[tuple[str, tuple[str, int], list[str]]] = []
+    # Functions referenced AS A VALUE (passed to a dispatcher, stored in a
+    # table) have caller-owned signatures: the ten `_build_pdg(fn, data)`
+    # grammar builders are invoked uniformly by one shared traversal, so a
+    # slot only the CALLER needs still isn't the member's to slim
+    # (research/25). The graph already knows: an incoming REFERENCES edge.
+    value_refd = {r[0] for r in store.conn.execute(
+        "SELECT DISTINCT dst_id FROM edges_all "
+        "WHERE relation = ? AND dst_id IS NOT NULL",
+        (Relation.REFERENCES.value,))}
     for node in store.all_nodes_full():
         if node.kind not in (NodeKind.FUNCTION, NodeKind.METHOD) or node.is_stub:
             continue
@@ -2506,27 +2578,68 @@ def _unused_params(store: Store) -> list[dict]:
             continue
         qual = node.id.split("::", 1)[1]
         fn = _find_def(tree, qual)
-        if fn is None or _is_interface_like(fn):
+        if fn is None:
             continue
-        params = [a.arg for a in (fn.args.posonlyargs + fn.args.args
-                                  + fn.args.kwonlyargs)
-                  if a.arg not in ("self", "cls") and not a.arg.startswith("_")]
-        if not params:
-            continue
+        pos_args = fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
         loaded = {n.id for n in _ast.walk(fn)
                   if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Load)}
+        key = (fn.name, len(pos_args) + bool(fn.args.vararg) + bool(fn.args.kwarg))
+        # every parsed def is usage EVIDENCE for its family, even ones the
+        # candidate gates below skip — an abstract base that loads a param
+        # still proves the slot is the family's contract
+        family_count[key] = family_count.get(key, 0) + 1
+        family_used.setdefault(key, set()).update(
+            a.arg for a in pos_args if a.arg in loaded)
+        if _is_interface_like(fn) or _framework_owns_signature(fn) \
+                or node.id in value_refd:
+            continue
+        params = [a.arg for a in pos_args
+                  if a.arg not in ("self", "cls") and not a.arg.startswith("_")]
         unused = [p for p in params if p not in loaded]
         if not unused:
             continue
         if node.kind is NodeKind.METHOD and overrides_base(node.id):
             continue
+        candidates.append((node.id, key, unused))
+    for nid, key, unused in candidates:
+        kept = ([p for p in unused if p not in family_used[key]]
+                if family_count[key] > 1 else unused)
+        if not kept:
+            continue
         out.append({
-            "kind": "unused_params", "node": node.id, "params": sorted(unused),
+            "kind": "unused_params", "node": nid, "params": sorted(kept),
             "urgency": Urgency.GREEN.value,
             "reason": (f"parameter(s) never used in the body: "
-                       f"{', '.join(sorted(unused))}"),
+                       f"{', '.join(sorted(kept))}"),
         })
     return sorted(out, key=lambda i: i["node"])
+
+
+# Decorators that never consume a function's signature. Anything else —
+# @operation (the registry calls with the contract shape), @app.command /
+# typer callbacks (params filled by introspection), @pytest.fixture, route
+# registrations — makes the signature the FRAMEWORK's, so an "unused" param
+# may be very much in use (research/25: 10 of 52 self-findings were exactly
+# this). Precision-biased: an unknown decorator suppresses the advisory.
+_SIGNATURE_SAFE_DECORATORS = frozenset({
+    "staticmethod", "classmethod", "property", "cached_property",
+    "override", "final", "abstractmethod", "abstractproperty", "overload",
+})
+
+
+def _framework_owns_signature(fn) -> bool:
+    import ast as _ast
+    for dec in fn.decorator_list:
+        base = dec.func if isinstance(dec, _ast.Call) else dec
+        if isinstance(base, _ast.Attribute):
+            name = base.attr          # @functools.cached_property -> cached_property
+        elif isinstance(base, _ast.Name):
+            name = base.id
+        else:
+            name = None               # something exotic: treat as framework-owned
+        if name not in _SIGNATURE_SAFE_DECORATORS:
+            return True
+    return False
 
 
 def _find_def(tree, qual: str):
