@@ -80,7 +80,7 @@ def _walk(node, src, rel, parent, routes, ids, edges):
             qual = f"{parent}.{name}" if parent and name else (name or parent)
             fid = f"{rel}::{qual}"
             owner = fid if fid in ids else None
-            _scan_calls(child, src, rel, owner, routes, ids, edges, parent)
+            _scan_calls(child, src, rel, owner, routes, edges)
             _walk(child, src, rel, qual, routes, ids, edges)
         elif child.type == "class_declaration":
             name = _name(child, src)
@@ -90,7 +90,7 @@ def _walk(node, src, rel, parent, routes, ids, edges):
             _walk(child, src, rel, parent, routes, ids, edges)
 
 
-def _scan_calls(func, src, rel, owner, routes, ids, edges, parent):
+def _scan_calls(func, src, rel, owner, routes, edges):
     """Find fetch/axios calls in this function body and link to routes."""
     def rec(n):
         for c in n.children:

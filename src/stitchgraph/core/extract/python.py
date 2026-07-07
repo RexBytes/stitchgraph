@@ -1582,7 +1582,7 @@ def _walk_scope(proj: _Project, rel: str, node: ast.AST, parent: str,
             # set bounds the per-function fan to one fallback per dunder.
             proto_seen: set[str] = set()
             for cm, is_async in _direct_withs(child):
-                _with_edges(proj, rel, cid, class_qual, local_types, cm,
+                _with_edges(proj, rel, cid, local_types, cm,
                             is_async=is_async, seen=proto_seen)
             for expr, dunders, line in _direct_protocol_uses(child):
                 _protocol_dunder_edges(proj, rel, cid, local_types, expr,
@@ -1746,7 +1746,7 @@ def _protocol_dunder_edges(proj: _Project, rel: str, src_id: str,
                        is_method=True)
 
 
-def _with_edges(proj: _Project, rel: str, src_id: str, class_qual: str | None,
+def _with_edges(proj: _Project, rel: str, src_id: str,
                 local_types: dict[str, str], item: ast.withitem,
                 is_async: bool = False, seen: set[str] | None = None) -> None:
     """A `with` context manager uses __enter__/__exit__ (`async with`:
