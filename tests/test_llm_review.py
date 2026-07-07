@@ -149,6 +149,37 @@ def test_explicit_param_overrides_kill_switch(tmp_path, monkeypatch):
     store.close()
 
 
+def test_incremental_keeps_lsp_edges(tmp_path, monkeypatch):
+    """Adversarial self-audit find (docs/BUG_HUNT_PROMPT.md class 5): under
+    the AUTO default a fresh index carries source="lsp" edges, so a watch
+    edit going through reindex_incremental must NOT silently strip them from
+    the edited file — incremental == fresh, including the LSP pass."""
+    pytest.importorskip("tree_sitter_language_pack")
+    from stitchgraph.core.operations import reindex_incremental
+    monkeypatch.delenv("STITCHGRAPH_NO_LSP", raising=False)
+    root = _ts_root(tmp_path)
+    store = sg.Store(str(tmp_path / "g.db"))
+    assert sg.reindex(store, str(root)).ok
+    assert any(e.source == "lsp" for e in store.resolved_edges())
+    # edit the calling file (content change that keeps the call site line)
+    main = root / "src" / "main.ts"
+    main.write_text(main.read_text().replace(
+        'return greet("world");', 'return greet("world!");'))
+    assert reindex_incremental(store, str(root), {"src/main.ts"}).ok
+    kept = [e for e in store.resolved_edges()
+            if e.source == "lsp" and e.src == "src/main.ts::run"]
+    assert kept, "the edited file lost its LSP edges on the incremental path"
+    twin = sg.Store(str(tmp_path / "twin.db"))
+    assert sg.reindex(twin, str(root)).ok
+
+    def rows(s):
+        return sorted((e.src, e.relation.value, e.dst_id, e.provenance.value,
+                       e.source) for e in s.resolved_edges())
+    assert rows(store) == rows(twin), "incremental drifted from fresh under AUTO"
+    twin.close()
+    store.close()
+
+
 def test_config_false_disables_auto(tmp_path, monkeypatch):
     pytest.importorskip("tree_sitter_language_pack")
     monkeypatch.delenv("STITCHGRAPH_NO_LSP", raising=False)

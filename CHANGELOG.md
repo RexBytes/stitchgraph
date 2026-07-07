@@ -4,6 +4,78 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.50.0] — 2026-07-07
+
+### Fixed
+Fourteen findings from the first **adversarial self-audit** (the
+`docs/BUG_HUNT_PROMPT.md` ritual run against ourselves — one self-pass, two
+parallel agent passes; full record with exonerations in
+`research/27-adversarial-self-audit.md`). Each fix is pinned by a test.
+
+- **Incremental/watch reindex silently stripped LSP edges.** Under the AUTO
+  default a fresh index carries `source="lsp"` edges, but
+  `reindex_incremental`/`reindex_singlefile` never ran the LSP pass — every
+  watch edit degraded the edited file back to tree-sitter quality. Both
+  paths now run the same scoped LSP pass for changed files; incremental
+  equals fresh, row for row.
+- **LSP mute-server amplification.** A server that answers `initialize` but
+  never definitions used to cost the full per-request timeout on every one
+  of up to 20k sites (days, silently, default-on). The client counts
+  consecutive timeouts and the resolver circuit-breaks after 3, declining
+  with "server stopped answering (circuit breaker)". Framing loss
+  (unparseable Content-Length) now kills the server process so every
+  subsequent request fails fast instead of paying the timeout; warm-up
+  stops after ~2 s of stable-empty answers instead of burning its 30 s
+  deadline; replies arriving after a timeout are dropped, not leaked into
+  the pending map; server→client requests (`workspace/configuration`, ...)
+  get a polite `-32601` error reply instead of deadlocking servers that
+  synchronously await one.
+- **LSP query columns are now UTF-16 code units** (the LSP wire default) —
+  an astral character (emoji) in a string before the call site shifted
+  every query column by Python-vs-UTF-16 code-unit drift.
+- **The AUTO server gate is per-extension, not per-command** — disabling
+  `.ts` in `[lsp.servers]` no longer silently kills AUTO for the five
+  sibling extensions sharing typescript-language-server.
+- **Coverage kits: the hostile-machine batch** (they had only ever run on
+  the machines that built them):
+  - the Python kit installs **pytest-cov** (without it, pytest rejected
+    `--cov` before running a single test and the kit printed success over
+    an empty artifact) and guards on `.coverage` existing;
+  - **both converters refuse to write a 0-test artifact** (exit 1, no
+    file) — the loud floor under every best-effort `|| true`;
+  - the **Docker option actually runs now**: dependencies bake at image
+    BUILD time (network exists there; the run stays network-less), the
+    container fs is writable-but-disposable instead of read-only-vs-
+    scripts-that-write, build context is the project root so the image
+    contains the project;
+  - kit scripts **self-locate** (`bash kit/run_coverage.sh` from the
+    project root just works — no undocumented copy step; the e2e test no
+    longer copies kit files);
+  - `covdata/` is wiped at loop start (stale captures from a previous run
+    misattributed coverage by index);
+  - JS test files run by **exact path** (jest `--runTestsByPath`, vitest
+    absolute path) instead of unanchored regex/substring filters that
+    merged same-named files across directories;
+  - `$PWD` stripping uses shell parameter expansion, not an interpolated
+    `sed` program a `|`/`[` in the project path could break;
+  - the universal converter recovers **monorepo subdirectory captures**
+    via unique-suffix span matching (go.mod/package.json below the index
+    root).
+- **`scan` god objects ignore test-sourced fan-in mass** — the scan-side
+  twin of the research/25 orient exclusion: a production helper whose
+  callers are overwhelmingly tests is well-tested, not a god object.
+  Candidates are re-checked against non-test fan-in (same per-candidate
+  SQL, one temp-table probe extra); suppressions reported as
+  `god_objects_test_mass_suppressed`.
+
+### Added
+- `docs/BUG_HUNT_PROMPT.md` — the reusable adversarial bug-hunt ritual
+  (seven bug classes, CONFIRMED/PLAUSIBLE grading, mandatory
+  exonerations); `research/27-adversarial-self-audit.md` — this run's
+  findings, fixes, and lessons.
+- `tests/fake_lsp_server.py` grew `slow`, `needy`, and `corrupt_frame`
+  modes; `tests/test_self_audit.py` pins all six LSP fixes.
+
 ## [3.49.0] — 2026-07-07
 
 ### Added

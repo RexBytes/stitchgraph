@@ -78,6 +78,27 @@ def test_god_object_skips_test_owned_nodes(tmp_path):
     store.close()
 
 
+def test_god_object_ignores_test_sourced_fan_in(tmp_path):
+    """Self-audit 2026-07-07 (finding 8): a production helper whose fan-in is
+    suite mass — hundreds of test callers, a handful of src callers — is
+    well-tested, not a god object. The scan-side twin of the orient exclusion
+    (research/25): coupling that melts away without the tests never flags."""
+    helpers = "\n".join(f"def u{i}():\n    return {i}" for i in range(6))
+    prod = (f"def hub(x):\n    return u0() and u1() and u2() and u3() and u4() "
+            f"and u5() and x\n{helpers}\n"
+            "def caller_a():\n    return hub(1)\n"
+            "def caller_b():\n    return hub(2)\n")
+    suite = "from prod import hub\n\n" + "\n".join(
+        f"def test_{i}():\n    assert hub({i})" for i in range(10))
+    store = _index(tmp_path, {"prod.py": prod, "tests/test_hub.py": suite})
+    res = sg.scan(store)
+    gods = [i["node"] for i in res.result if i["kind"] == "god_object"]
+    assert "prod.py::hub" not in gods, \
+        "test-sourced fan-in mass must not crown a god object"
+    assert res.meta.get("god_objects_test_mass_suppressed", 0) >= 1
+    store.close()
+
+
 # -- ② orient hubs ------------------------------------------------------------
 def test_orient_hubs_exclude_test_mass_and_test_defs(tmp_path):
     """A def whose dependers are all tests must rank below one with src

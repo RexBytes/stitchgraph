@@ -14,10 +14,16 @@ external binary. Behaviour is scripted by a JSON answers file:
 Positions are the LSP wire values (0-based line). Modes: "mute" answers
 initialize but never definitions (timeout path); "garbage" prints junk and
 exits (framing-loss path); "die" exits before reading anything (dead-shim
-path). Usage: python fake_lsp_server.py <answers.json>
+path); "slow" answers definitions after spec["delay"] seconds (late-reply
+path); "needy" sends a server->client workspace/configuration REQUEST before
+its first definition answer and blocks until the client replies (deadlock
+path); "corrupt_frame" emits an unparseable Content-Length frame instead of
+its first definition answer (framing-loss-mid-session path).
+Usage: python fake_lsp_server.py <answers.json>
 """
 import json
 import sys
+import time
 from pathlib import Path
 
 spec = json.loads(Path(sys.argv[1]).read_text())
@@ -61,19 +67,26 @@ def loc(entry, root_uri):
     return {"uri": uri, "range": rng}
 
 
-root_uri = ""
-while True:
-    header = stdin.readline()
-    if not header:
-        sys.exit(0)
-    if not header.lower().startswith(b"content-length:"):
-        continue
-    n = int(header.split(b":")[1])
+def read_msg():
     while True:
-        sep = stdin.readline()
-        if not sep or sep in (b"\r\n", b"\n"):
-            break
-    msg = json.loads(stdin.read(n))
+        header = stdin.readline()
+        if not header:
+            sys.exit(0)
+        if not header.lower().startswith(b"content-length:"):
+            continue
+        n = int(header.split(b":")[1])
+        while True:
+            sep = stdin.readline()
+            if not sep or sep in (b"\r\n", b"\n"):
+                break
+        return json.loads(stdin.read(n))
+
+
+root_uri = ""
+needy_done = False
+corrupted = False
+while True:
+    msg = read_msg()
     method, rid = msg.get("method"), msg.get("id")
     if method == "initialize":
         root_uri = (msg["params"].get("rootUri") or "").rstrip("/")
@@ -82,6 +95,24 @@ while True:
     elif method == "textDocument/definition" and rid is not None:
         if mode == "mute":
             continue  # never answer: the client's timeout path
+        if mode == "corrupt_frame" and not corrupted:
+            corrupted = True  # framing lost mid-session: no way to resync
+            stdout.write(b"Content-Length: not-a-number\r\n\r\njunk")
+            stdout.flush()
+            continue
+        if mode == "needy" and not needy_done:
+            needy_done = True
+            # a real server (gopls, rust-analyzer) does this synchronously:
+            # request configuration and WAIT for the reply before serving
+            send({"jsonrpc": "2.0", "id": 9001,
+                  "method": "workspace/configuration",
+                  "params": {"items": [{"section": "fake"}]}})
+            while True:
+                reply = read_msg()
+                if reply.get("id") == 9001 and "method" not in reply:
+                    break
+        if mode == "slow":
+            time.sleep(spec.get("delay", 1.0))
         k = key(msg["params"])
         entry = spec.get("definitions", {}).get(k) if k else None
         if entry is None:
