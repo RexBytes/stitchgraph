@@ -48,6 +48,13 @@ class Config:
     hub_metric: str = "transitive_fan_in"            # | fan_in | pagerank
     # [similar]
     embed_model: str | None = None                   # model2vec model for find_similar
+    # [lsp] — the language-server precision pass (research/24). Off by default:
+    # it spawns external binaries and costs per-site round-trips; `--lsp` on the
+    # CLI or `enabled = true` here turns it on. `servers` maps a file extension
+    # to a command line (empty string disables that extension's default).
+    lsp_enabled: bool = False
+    lsp_timeout: float = 15.0
+    lsp_servers: dict[str, str] = field(default_factory=dict)
     source: Path | None = None                       # the file we loaded, if any
 
 
@@ -103,7 +110,7 @@ def _load(start: str | Path | None) -> Config:
         return [s for x in v if (s := str(x))] if isinstance(v, list) else []
 
     ep, idx, rev = _table("entry_points"), _table("index"), _table("review")
-    orient, sim = _table("orient"), _table("similar")
+    orient, sim, lsp = _table("orient"), _table("similar"), _table("lsp")
     try:
         threshold = float(rev.get("threshold", 0.80))
     except (TypeError, ValueError):
@@ -113,6 +120,15 @@ def _load(start: str | Path | None) -> Config:
         # needs_review (`conf < nan` is always False); fall back to the default (panel ZZZ).
         threshold = 0.80
     embed = sim.get("embed_model")
+    try:
+        lsp_timeout = float(lsp.get("timeout", 15.0))
+    except (TypeError, ValueError):
+        lsp_timeout = 15.0
+    if not (0.0 < lsp_timeout <= 600.0):  # NaN/zero/absurd -> default
+        lsp_timeout = 15.0
+    servers_tbl = lsp.get("servers")
+    lsp_servers = ({str(k): str(v) for k, v in servers_tbl.items()}
+                   if isinstance(servers_tbl, dict) else {})
     return Config(
         include=set(_str_list(ep.get("include"))),
         root_modules=_str_list(ep.get("root_modules")),
@@ -124,5 +140,8 @@ def _load(start: str | Path | None) -> Config:
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,
+        lsp_enabled=bool(lsp.get("enabled", False)),
+        lsp_timeout=lsp_timeout,
+        lsp_servers=lsp_servers,
         source=path,
     )

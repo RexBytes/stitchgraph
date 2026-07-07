@@ -7,9 +7,13 @@ graph); and a set of **cross-language resolvers** stitch the boundaries (routes,
 HTML forms, SQL, ORM) so a full-stack trace works end to end.
 
 Adding a language is a small `LangSpec` (node types → kinds, the call node +
-callee field): name-based call graphs are cheap. The genuinely hard part — and
-the reason an LSP is the deferred upgrade — is *type-correct* resolution
-(which `save` does `x.save()` mean?), not parsing.
+callee field): name-based call graphs are cheap. The genuinely hard part is
+*type-correct* resolution (which `save` does `x.save()` mean?), not parsing —
+and since v3.46.0 the **LSP backend** (`reindex --lsp`, research/24) closes it:
+an installed language server (rust-analyzer, typescript-language-server, gopls,
+clangd; `[lsp.servers]` adds others) answers go-to-definition per call site and
+the true target gains a confident EXTRACTED edge, while the name-based arms stay
+as the honest fallback. `type_at` exposes hover-grade type info on demand.
 
 ## Language progress table
 

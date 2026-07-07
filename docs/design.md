@@ -502,7 +502,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 
 ---
 
-## 9. Operation surface (18 operations)
+## 9. Operation surface (19 operations)
 
 | Operation | Returns | Bucket |
 |---|---|---|
@@ -521,6 +521,7 @@ consumers: a human reading Markdown, and an LLM reading compact tool results.
 | `risk(path?)` | git-churn × centrality hotspots + hidden coupling | §8 |
 | `ingest_trace(coverage)` | fuse a runtime trace (coverage.json / LCOV / Go coverprofile) into liveness | — |
 | `find_symbol / get_callers / get_callees` | structural primitives | A |
+| `type_at(file, line, col)` | hover-grade type info from the file's language server (`--lsp` backend, research/24); refuses without a server | §5 |
 | `reindex(path)` | incremental update (admin) | — |
 
 **On scope:** the read operations are scoped by the **indexed graph** (the `--db`),
