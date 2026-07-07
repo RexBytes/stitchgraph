@@ -7,6 +7,28 @@ into a single SQLite graph on your machine, answers through three identical surf
 (Python library, CLI, MCP server), and attaches a **confidence, a provenance, and a
 reason to double-check** to every answer, so you always know how much to trust it.
 
+## Supported language versions
+
+Every bound below is verified against the bundled parsers by syntax probes
+(newest-feature and oldest-baseline snippets must parse clean); per-feature
+depth is in [docs/LANGUAGES.md](docs/LANGUAGES.md).
+
+| Language | Oldest | Newest | Language | Oldest | Newest |
+|---|---|---|---|---|---|
+| **Python** | 3.0 | 3.13 | **Go** | 1.0 | 1.22+ |
+| **JavaScript** | ES5 | ES2024 | **Java** | 7 | 21 |
+| **TypeScript** | 2.0 | 5.x | **Ruby** | 1.9 | 3.4 |
+| **Rust** | 2015 edition¹ | 2024 edition | **PHP** | 5 | 8.4 |
+| **C** | C89 | C23 | **Bash** | 3 / POSIX sh | 5 |
+| **C++** | C++98 | C++20 | **C#** | 2 | 12 |
+
+¹ except the long-deprecated `try!` macro (`try` is a reserved word in the
+modern grammar); Rust 2018+ parses in full.
+
+Python is analysed by the running interpreter's stdlib `ast` (deep, scope-aware
+resolution; interpreter ≥ 3.11) and falls back to tree-sitter for syntax newer
+than the interpreter (e.g. PEP 695 under 3.11). Python 2 is not supported.
+
 Two design commitments make it different:
 
 - **It never guesses confidently.** Every result rides a universal envelope
@@ -226,6 +248,7 @@ The full rule file — written to be dropped into an agent's context — is
 |---|---|
 | **Deep** (stdlib `ast`; optional jedi `--precise`) | Python 3.11+ |
 | **Full graph via tree-sitter** (definitions, calls, imports/inheritance, tests, body matrix) | JavaScript, TypeScript/TSX, Go, Rust, C, C++, C#, Java, Ruby, PHP, Bash |
+| **Type-grade upgrade via `--lsp`** (v3.46.0): an installed language server answers go-to-definition per call site, so the true target of an ambiguous name gains a confident edge — including picking the right *override* | TS/JS (typescript-language-server), Rust (rust-analyzer), Go (gopls), C/C++ (clangd); `[lsp.servers]` adds more |
 | **Cross-language seams** | Flask/FastAPI/Django/Express/Spring routes, HTML forms, JS `fetch`, events, SQL (sqlglot), SQLAlchemy/Django ORM — all converging in one graph, so `trace_path` crosses language boundaries |
 
 Per-language support matrix: [`docs/LANGUAGES.md`](docs/LANGUAGES.md).

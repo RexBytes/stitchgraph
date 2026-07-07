@@ -44,3 +44,21 @@ threshold = 0.80            # results below this confidence are flagged needs_re
 # Hub ranking for `orient`: transitive_fan_in (default, most-depended-on) |
 # pagerank | fan_in (direct in-degree, fast).
 hub_metric = "transitive_fan_in"
+
+[lsp]
+# The language-server precision pass (v3.46.0, research/24): what jedi's
+# --precise is to Python, an external language server is to the tree-sitter
+# languages. During reindex (with `--lsp`, or `enabled = true` here) each
+# name-based call site is asked go-to-definition and the true target gains a
+# confident EXTRACTED edge; the AMBIGUOUS arms stay (monotone — a server
+# mis-answer can never drop a true edge). Needs the server binary on PATH:
+# typescript-language-server (TS/JS), rust-analyzer, gopls, clangd are
+# auto-detected. Missing/broken servers decline honestly (see the reindex
+# result's `lsp` report); nothing here can fail an index build.
+enabled = false
+timeout = 15.0              # per-request seconds
+[lsp.servers]
+# Override or extend the defaults per file extension; empty string disables.
+# ".ts" = "typescript-language-server --stdio"
+# ".rs" = "rust-analyzer"
+# ".py" = ""

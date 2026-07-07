@@ -2630,9 +2630,11 @@ def test_design_section9_lists_only_real_operations():
     text = design.read_text()
     names = {op.name for op in registry()}
     assert "structure_smells" not in text       # folded into scan
-    assert "type_at" not in text                  # LSP roadmap, lives in STATUS.md
     assert "relations?" not in text               # trace_path takes only (src, sink)
-    assert "type_at" not in names                 # sanity: really not an op
+    # type_at graduated from roadmap phantom to real operation (v3.46.0, the LSP
+    # backend) — the pin now points the OTHER way: it must be documented AND real.
+    assert "type_at" in text
+    assert "type_at" in names
 
 
 def test_risk_empty_churn_is_a_refusal_not_vacuous_ok(tmp_path):

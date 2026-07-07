@@ -24,7 +24,10 @@ Each entry: **Concern** (what looks wrong) / **Decision** (what we chose) /
   (an LSP per language). Over-claiming "dead" invites a destructive false delete —
   the one outcome the whole design refuses (precision over recall). Honest low
   confidence is correct, not a bug.
-- **Escape hatch:** `reindex --precise` (jedi, Python); pin roots in
+- **Escape hatch:** `reindex --precise` (jedi, Python); `reindex --lsp`
+  (v3.46.0: a real language server per tree-sitter language — rust-analyzer,
+  typescript-language-server, gopls, clangd — upgrades name-based call sites
+  to type-grade EXTRACTED edges); pin roots in
   `stitchgraph.toml [entry_points]`; `ingest_trace` a coverage run to raise
   confidence to 0.78 and seed liveness from what actually executed.
 

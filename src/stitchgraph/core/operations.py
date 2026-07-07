@@ -1997,12 +1997,18 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
 
 @operation("Incrementally (re)index a path into the graph (admin).")
 def reindex(store: Store, path: str, precise: bool = False,
-            streaming: bool | None = None) -> Result:
+            streaming: bool | None = None, lsp: bool = False) -> Result:
     """Extract a Python project into the graph (design §0/§1). Writes only to the
     index — never to source (read-only invariant).
 
     precise=True adds the jedi resolver (LSP-grade go-to-definition, design §5):
     slower, needs jedi installed, but sharpens method/attribute resolution.
+
+    lsp=True (or `[lsp] enabled` in stitchgraph.toml) adds the language-server
+    resolver (research/24): the same go-to-definition upgrade for the
+    tree-sitter languages, via external server binaries (rust-analyzer,
+    typescript-language-server, gopls, clangd — `[lsp.servers]` overrides).
+    Missing/broken servers degrade to zero extra edges, never to an error.
 
     `streaming` lowers the extraction memory peak (v2) and produces an index BYTE-IDENTICAL to
     the in-memory path — pinned by the streaming differential oracle. It (a) drops each file's
@@ -2063,6 +2069,11 @@ def reindex(store: Store, path: str, precise: bool = False,
     if precise:
         from .resolve.jedi_resolver import JediResolver
         resolvers.append(JediResolver())
+    cfg = load_config(path)
+    if lsp or cfg.lsp_enabled:
+        from .resolve.lsp_resolver import LspResolver
+        resolvers.append(LspResolver(servers=cfg.lsp_servers,
+                                     timeout=cfg.lsp_timeout))
 
     # [index] edge_compression gates NEW compression for this rebuild and every
     # later replace_file on the store; the env kill switch always wins.
@@ -2103,7 +2114,68 @@ def reindex(store: Store, path: str, precise: bool = False,
     res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
              files=len(files), nodes=store.node_count())
     _annotate_extraction_gaps(res, xreport)
+    _annotate_lsp(res, resolvers)
     return res
+
+
+def _annotate_lsp(res: Result, resolvers) -> None:
+    """Surface the LSP pass's honesty counters (sites asked / resolved /
+    declines) on the reindex result — the pass must never pretend coverage
+    it didn't have (research/24)."""
+    for r in resolvers:
+        if getattr(r, "name", "") == "lsp" and getattr(r, "report", None):
+            if isinstance(res.result, dict):
+                res.result["lsp"] = r.report
+            for cmd, stats in r.report.items():
+                if stats.get("declined"):
+                    res.add_reason(f"lsp: {cmd.split()[0]} declined "
+                                   f"({stats['declined']})")
+
+
+@operation("Type of the symbol at a source position, via the language server (needs --lsp servers).")
+def type_at(store: Store, file: str, line: int, col: int = 0) -> Result:
+    """Hover-grade type information at (file, 1-based line, 0-based col) —
+    research/24's on-demand companion to the `--lsp` reindex pass.
+
+    Spawns the file's language server for one question and shuts it down.
+    Refuses honestly when no server covers the extension, the binary is
+    missing, or the server has no answer — never guesses."""
+    import os
+    from pathlib import Path
+
+    from .config import load_config
+    from .resolve.lsp import LspClient, server_for
+
+    root = store.get_meta("root")
+    if not root or not os.path.isdir(root):
+        return refuse("no indexed root on this store — run reindex first")
+    rel = file.replace("\\", "/")
+    if not os.path.isfile(os.path.join(root, rel)):
+        return refuse(f"{rel!r} is not a file under the indexed root {root!r}")
+    cfg = load_config(root)
+    server = server_for(Path(rel).suffix, cfg.lsp_servers)
+    if server is None:
+        return refuse(
+            f"no language server is registered for '{Path(rel).suffix}' files — "
+            "add one under [lsp.servers] in stitchgraph.toml")
+    cmd, language_id = server
+    client = LspClient(cmd, root, timeout=cfg.lsp_timeout)
+    if not client.start():
+        return refuse(f"language server unavailable: {cmd.split()[0]!r} "
+                      "(not on PATH, or it exited during initialize)")
+    try:
+        if not client.did_open(rel, language_id):
+            return refuse(f"could not open {rel!r} on the server")
+        client.warm_up(rel, line, col)
+        text = client.hover(rel, line, col)
+    finally:
+        client.stop()
+    if text is None:
+        return refuse(f"the server has no type information at {rel}:{line}:{col}",
+                      confidence=0.0)
+    return ok({"file": rel, "line": line, "col": col, "type": text,
+               "server": cmd.split()[0]},
+              provenance=Provenance.EXTRACTED)
 
 
 def reindex_incremental(store: Store, path: str, changed: set[str]) -> Result:
@@ -2731,6 +2803,26 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
         nodes, res_edges = run_resolvers(path, nodes, [], resolvers)
         for e in res_edges:
             sink.append(e)
+        # The LSP resolver is edge-DRIVEN (its sites are the extractor's call
+        # edges), and this path deliberately hands resolvers an empty edge list
+        # — so feed it from the store, where the streamed edges already live
+        # (research/24). Its extra edges ride the same sink as every resolver's.
+        for r in resolvers:
+            if getattr(r, "name", "") != "lsp":
+                continue
+            sink.flush()  # the sites must include the buffered tail
+            from .model import Relation as _Rel
+            rows = [(src, sym, loc, prov == Provenance.AMBIGUOUS.value)
+                    for src, sym, loc, prov in store.conn.execute(
+                        "SELECT DISTINCT src, dst_symbol, location, provenance "
+                        "FROM edges_all WHERE relation = ? "
+                        "AND source = 'tree-sitter' AND dst_symbol IS NOT NULL",
+                        (_Rel.CALLS.value,))]
+            try:
+                for e in r.resolve_rows(path, nodes, rows):
+                    sink.append(e)
+            except Exception:  # noqa: BLE001 — same never-abort rule as run_resolvers
+                continue
     finally:
         sink.flush()  # never drop the buffered tail — even if extraction/resolvers raise
     with store.conn:
@@ -2808,6 +2900,7 @@ def _reindex_streaming(store: Store, path: str, abs_root: str,
     res = ok({"files": len(files), "nodes": store.node_count(), "holes": holes},
              files=len(files), nodes=store.node_count())
     _annotate_extraction_gaps(res, xreport)
+    _annotate_lsp(res, resolvers)
     return res
 
 
