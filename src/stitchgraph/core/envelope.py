@@ -121,10 +121,7 @@ class Result(Generic[T]):
         # The codes mirror of the same contract: a flagged result must always be
         # machine-filterable (needs_review => review_codes non-empty).
         if self.needs_review:
-            if not self.review_reasons:
-                self.review_reasons.append(_DEFAULT_REVIEW_REASON)
-            if not self.review_codes:
-                self.review_codes.append(ReviewCode.UNSPECIFIED.value)
+            self._backfill_review_contract()
         # Provenance gates the urgency ceiling: nothing low-confidence shouts red.
         if self.urgency is Urgency.RED and self.provenance is not Provenance.EXTRACTED:
             self.urgency = Urgency.ORANGE
@@ -135,14 +132,21 @@ class Result(Generic[T]):
         # answer MCP/CLI would serialize (self-review 2026-07-09).
         object.__setattr__(self, "_contract_live", True)
 
+    def _backfill_review_contract(self) -> None:
+        """One edit point for the flagged-result contract: `needs_review` implies
+        non-empty `review_reasons` (explainable) AND `review_codes`
+        (machine-filterable). Idempotent; called at construction, on assignment,
+        and at serialization."""
+        if not self.review_reasons:
+            self.review_reasons.append(_DEFAULT_REVIEW_REASON)
+        if not self.review_codes:
+            self.review_codes.append(ReviewCode.UNSPECIFIED.value)
+
     def __setattr__(self, name: str, value: Any) -> None:
         object.__setattr__(self, name, value)
         if (name == "needs_review" and value
                 and getattr(self, "_contract_live", False)):
-            if not self.review_reasons:
-                self.review_reasons.append(_DEFAULT_REVIEW_REASON)
-            if not self.review_codes:
-                self.review_codes.append(ReviewCode.UNSPECIFIED.value)
+            self._backfill_review_contract()
 
     def add_reason(self, reason: str,
                    code: ReviewCode | str | None = None) -> Result[T]:
@@ -167,10 +171,14 @@ class Result(Generic[T]):
             self.review_codes.append(value)
 
     def to_dict(self) -> dict[str, Any]:
-        # The `needs_review => review_codes non-empty` contract is upheld at
-        # construction (__post_init__) and on assignment (__setattr__), so the
-        # serialized codes are exactly the in-process codes — the library and
-        # MCP/CLI surfaces can never disagree.
+        # Belt AND suspenders: the contract is upheld at construction
+        # (__post_init__) and on assignment (__setattr__), but the hook only
+        # watches the `needs_review` name — an op that clears/reassigns the
+        # lists on an already-flagged Result would still serialize an
+        # unexplained flag. The chokepoint self-protects, exactly as it does
+        # for non-finite confidence (panel R38; self-review round 2).
+        if self.needs_review:
+            self._backfill_review_contract()
         return {
             "ok": self.ok,
             "result": _plain(self.result),
@@ -203,13 +211,14 @@ def refuse(*reasons: str, confidence: float = 0.0,
     Used when an operation can't answer confidently — the single most valuable
     contract for an LLM consumer (design principle 4).
 
-    The stable code tracks `ok`: a true refusal (no result) is REFUSED; a
-    hedged partial answer (result supplied, ok=True — find_stale's
-    no-entry-points candidates) is HEDGED_RESULT, so a machine consumer
-    treating REFUSED as "no answer, try differently" never discards a genuine
-    candidate payload (self-review 2026-07-09).
+    The stable code tracks the PAYLOAD, not just `ok`: a refusal with no
+    usable answer — result None or EMPTY (find_stale can pass an empty
+    candidates list) — is REFUSED; only a non-empty advisory payload is
+    HEDGED_RESULT, so a machine consumer treating REFUSED as "no answer, try
+    differently" never discards a genuine candidate payload AND never keeps
+    an empty one it should have retried (self-review rounds 1–2).
     """
-    code = ReviewCode.REFUSED if result is None else ReviewCode.HEDGED_RESULT
+    code = ReviewCode.HEDGED_RESULT if result else ReviewCode.REFUSED
     return Result(ok=result is not None, result=result, confidence=confidence,
                   provenance=provenance, needs_review=True,
                   review_reasons=list(reasons),

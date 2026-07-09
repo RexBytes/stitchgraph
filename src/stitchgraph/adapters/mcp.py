@@ -29,12 +29,58 @@ def _item_budget() -> int:
         return _MCP_MAX_ITEMS
 
 
-# Ops whose payload lists are index-correlated (get_matrix's `labels` row/col
-# indices are what `cells` entries point at): cutting them independently would
-# silently corrupt the correspondence — worse than size. They are exempt here
-# because they are already self-bounded at the operation layer (get_matrix
-# refuses broad scopes past its own `limit`).
-_UNBOUNDED_OPS = frozenset({"get_matrix"})
+# Ops whose payload lists are index-correlated: get_matrix's `cells` entries
+# point INTO `labels` by index, so the generic per-list walk would silently
+# corrupt the correspondence. They get the dedicated correlated cut below
+# (labels and cells trimmed TOGETHER) instead of the generic walk. NEVER a
+# blanket exemption: get_matrix's own scope refusal is gated on the
+# caller-supplied `limit`, which has no ceiling — an exemption reopened the
+# unbounded-blob hole the bound exists to close (self-review round 2).
+_MATRIX_OPS = frozenset({"get_matrix"})
+
+
+def _needs_cut(value: Any, budget: int) -> bool:
+    """Allocation-free pre-scan: does any list anywhere exceed the budget? The
+    common small-result case then skips the full tree rebuild in _bound."""
+    if isinstance(value, list):
+        return len(value) > budget or any(_needs_cut(v, budget) for v in value)
+    if isinstance(value, dict):
+        return any(_needs_cut(v, budget) for v in value.values())
+    return False
+
+
+def _bound_matrix(envelope: dict, budget: int) -> dict:
+    """Correlated cut for matrix payloads: trim `labels` to the budget, keep
+    only `cells` whose src/dst indices survive (alignment preserved — every
+    remaining index still names the right label), then apply the plain item cap
+    to the cells themselves. Both cuts are reported in meta.truncated."""
+    result = envelope.get("result")
+    if not isinstance(result, dict):
+        return envelope
+    truncated: dict[str, dict[str, int]] = {}
+    labels = result.get("labels")
+    cells = result.get("cells")
+    n_cells0 = len(cells) if isinstance(cells, list) else 0
+    if isinstance(labels, list) and len(labels) > budget:
+        truncated["result.labels"] = {"shown": budget, "total": len(labels)}
+        result["labels"] = labels[:budget]
+        if isinstance(cells, list):
+            cells = [c for c in cells if isinstance(c, dict)
+                     and isinstance(c.get("src"), int) and isinstance(c.get("dst"), int)
+                     and c["src"] < budget and c["dst"] < budget]
+    if isinstance(cells, list) and (len(cells) > budget or len(cells) != n_cells0):
+        result["cells"] = cells[:budget]
+        truncated["result.cells"] = {"shown": len(result["cells"]), "total": n_cells0}
+    if truncated:
+        meta = envelope.get("meta")
+        if not isinstance(meta, dict):
+            meta = envelope["meta"] = {}
+        meta["truncated"] = truncated
+        meta["truncation_hint"] = (
+            f"matrix bounded to {budget} labels for MCP, cells cut consistently "
+            "(surviving indices stay aligned) — narrow the scope, or use the CLI "
+            "--json for the full matrix")
+    return envelope
 
 
 def _bound(envelope: dict, op_name: str | None = None) -> dict:
@@ -42,12 +88,16 @@ def _bound(envelope: dict, op_name: str | None = None) -> dict:
     (a scan cycle's `members`, an orient hub's callers) must not smuggle the
     400 KB blob the bound exists to prevent (self-review 2026-07-09). Every cut
     is recorded in `meta.truncated[path] = {shown, total}` plus a one-line hint,
-    so a consumer can never mistake a bounded answer for a complete one. Ops in
-    _UNBOUNDED_OPS pass through untouched (index-correlated payloads, bounded at
-    the op layer)."""
+    so a consumer can never mistake a bounded answer for a complete one.
+    Matrix ops take the correlated cut; everything else the generic walk."""
     budget = _item_budget()
-    if budget <= 0 or op_name in _UNBOUNDED_OPS:
+    if budget <= 0:
         return envelope
+    if op_name in _MATRIX_OPS:
+        return _bound_matrix(envelope, budget)
+    if not (_needs_cut(envelope.get("result"), budget)
+            or _needs_cut(envelope.get("alternatives") or [], budget)):
+        return envelope  # nothing to cut: skip the tree rebuild entirely
     truncated: dict[str, dict[str, int]] = {}
 
     def walk(value: Any, path: str) -> Any:

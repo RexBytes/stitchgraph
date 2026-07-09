@@ -83,6 +83,31 @@ def test_hedged_partial_result_is_not_coded_refused():
     assert ReviewCode.REFUSED.value in hard.review_codes
 
 
+def test_hedged_code_requires_a_non_empty_payload():
+    """An EMPTY payload is not 'an answer worth keeping': refuse(result=[])
+    (find_stale with zero candidates and no entry points) must code REFUSED,
+    or a consumer following 'HEDGED_RESULT = don't discard' keeps an empty
+    advisory instead of retrying with explicit roots (self-review round 2)."""
+    empty = refuse("no entry points, zero candidates", result=[], confidence=0.1)
+    assert ReviewCode.REFUSED.value in empty.review_codes
+    assert ReviewCode.HEDGED_RESULT.value not in empty.review_codes
+
+
+def test_to_dict_self_heals_cleared_codes():
+    """Belt AND suspenders: the __setattr__ hook only watches the
+    `needs_review` name, so clearing review_codes on an already-flagged
+    Result must be healed at the serialization chokepoint — the envelope
+    self-protects exactly as it does for non-finite confidence (self-review
+    round 2, reproduced live)."""
+    r = ok([], confidence=1.0)
+    r.needs_review = True
+    r.review_codes.clear()
+    r.review_reasons.clear()
+    d = r.to_dict()
+    assert d["review_codes"] == [ReviewCode.UNSPECIFIED.value]
+    assert d["review_reasons"] != []
+
+
 # -- request 4/5: tiered, distance-ranked, capped impact_of --------------------
 def test_impact_of_tiers_confident_vs_ambiguous(tmp_path):
     """A dependent reached only through a homonym name-bind lands in the
@@ -157,30 +182,147 @@ def test_impact_of_parallel_inferred_edge_does_not_hedge(tmp_path):
         assert r.provenance is Provenance.EXTRACTED
 
 
-def test_impact_of_detail_caps_degrade_to_id_order(tmp_path, monkeypatch):
-    """Just-above/below the detail caps (CONTRIBUTING rule 4): under the caps
-    entries carry distances; past either the NODE cap or the induced-EDGE
-    budget the tiers degrade to id order with no distance keys — the memory
-    bound must actually bound."""
-    import stitchgraph.core.operations as ops
+@pytest.fixture()
+def _hub_store(tmp_path):
+    """hub + two direct callers: radius = {c0, c1}, |radius incl. target| = 3,
+    induced liveness rows = 4 (2 CALLS + 2 module-level IMPORTS)."""
     _mk(tmp_path, {
         "hub.py": "def hub():\n    return 1\n",
         "c0.py": "from hub import hub\ndef caller0():\n    return hub()\n",
         "c1.py": "from hub import hub\ndef caller1():\n    return hub()\n",
     })
+    store = sg.Store(":memory:")
+    sg.reindex(store, str(tmp_path))
+    yield store
+    store.close()
+
+
+def test_impact_of_node_cap_boundary(_hub_store, monkeypatch):
+    """CONTRIBUTING rule 4 at the NODE cap: |radius| (dependents + target,
+    derived from the baseline) exactly AT the cap keeps distances; one below
+    loses them, degrades to id order, and says so in meta — degradation is
+    never silent."""
+    import stitchgraph.core.operations as ops
+    baseline = sg.impact_of(_hub_store, "hub.py::hub")
+    n_radius = baseline.result["count"] + 1                # dependents + target
+    monkeypatch.setattr(ops, "_IMPACT_DETAIL_CAP", n_radius)   # exactly AT
+    at_cap = sg.impact_of(_hub_store, "hub.py::hub")
+    assert all("distance" in e for e in at_cap.result["confident"])
+    assert "distances_skipped" not in at_cap.meta
+    monkeypatch.setattr(ops, "_IMPACT_DETAIL_CAP", n_radius - 1)  # one below
+    over = sg.impact_of(_hub_store, "hub.py::hub")
+    assert over.result["confident"] and \
+        all("distance" not in e for e in over.result["confident"])
+    assert over.meta["distances_skipped"] == "node_cap"
+
+
+def test_impact_of_edge_budget_boundary(_hub_store, monkeypatch):
+    """CONTRIBUTING rule 4 at the EDGE budget: exactly N induced rows pass;
+    N-1 abandons the detail pass mid-stream with the reason in meta."""
+    import stitchgraph.core.operations as ops
+    # measure the fixture's true induced-row count with an ample budget
+    baseline = sg.impact_of(_hub_store, "hub.py::hub")
+    assert all("distance" in e for e in baseline.result["confident"])
+    n_rows = sum(len(v) for v in _radj_of(_hub_store, baseline).values())
+    assert n_rows >= 2
+    monkeypatch.setattr(ops, "_IMPACT_DETAIL_EDGE_CAP", n_rows)   # exactly N
+    at_cap = sg.impact_of(_hub_store, "hub.py::hub")
+    assert all("distance" in e for e in at_cap.result["confident"])
+    assert "distances_skipped" not in at_cap.meta
+    monkeypatch.setattr(ops, "_IMPACT_DETAIL_EDGE_CAP", n_rows - 1)  # one below
+    over = sg.impact_of(_hub_store, "hub.py::hub")
+    assert over.result["confident"] and \
+        all("distance" not in e for e in over.result["confident"])
+    assert over.meta["distances_skipped"] == "edge_budget"
+
+
+def _radj_of(store, res) -> dict[str, list[str]]:
+    """Recompute the radius-induced reverse adjacency exactly as impact_of does,
+    so the edge-budget boundary test derives N instead of hardcoding it."""
+    import stitchgraph.core.operations as ops
+    deps = set(res.result["blast_radius"])
+    radius = deps | {res.result["symbol"]}
+    liveness = {r.value for r in ops.LIVENESS_RELATIONS}
+    radj: dict[str, list[str]] = {}
+    for src, rel, dst, _p in store.conn.execute(
+            "SELECT src, relation, dst_id, provenance FROM edges_all"):
+        if rel in liveness and src in deps and dst in radius:
+            radj.setdefault(dst, []).append(src)
+    return radj
+
+
+def test_impact_of_tests_to_run_is_ranked_nearest_first():
+    """The tests_to_run promise (AGENTS.md: 'a truncated list keeps the most
+    relevant entries'): a direct-caller test outranks a transitive one even
+    when alphabetical order says otherwise."""
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
     with sg.Store(":memory:") as store:
-        sg.reindex(store, str(tmp_path))
-        below = sg.impact_of(store, "hub.py::hub")
-        assert all("distance" in e for e in below.result["confident"])
-        monkeypatch.setattr(ops, "_IMPACT_DETAIL_CAP", 2)   # radius+target > 2
-        above = sg.impact_of(store, "hub.py::hub")
-        assert above.result["confident"] and \
-            all("distance" not in e for e in above.result["confident"])
-        monkeypatch.setattr(ops, "_IMPACT_DETAIL_CAP", 5_000)
-        monkeypatch.setattr(ops, "_IMPACT_DETAIL_EDGE_CAP", 1)  # >1 induced edge
-        edge_capped = sg.impact_of(store, "hub.py::hub")
-        assert edge_capped.result["confident"] and \
-            all("distance" not in e for e in edge_capped.result["confident"])
+        store.add_node(Node(id="m.py::target", kind=NodeKind.FUNCTION,
+                            name="target", location="m.py:1:0"))
+        store.add_node(Node(id="m.py::mid", kind=NodeKind.FUNCTION,
+                            name="mid", location="m.py:5:0"))
+        # alphabetically test_aaa < test_zzz, but test_zzz is NEARER (direct)
+        store.add_node(Node(id="tests/t.py::test_aaa", kind=NodeKind.FUNCTION,
+                            name="test_aaa", location="tests/t.py:1:0",
+                            roles=frozenset({"test"})))
+        store.add_node(Node(id="tests/t.py::test_zzz", kind=NodeKind.FUNCTION,
+                            name="test_zzz", location="tests/t.py:5:0",
+                            roles=frozenset({"test"})))
+        for src, dst in (("m.py::mid", "m.py::target"),
+                         ("tests/t.py::test_aaa", "m.py::mid"),
+                         ("tests/t.py::test_zzz", "m.py::target")):
+            store.add_edge(Edge(src=src, dst_id=dst, dst_symbol=dst.split("::")[-1],
+                                relation=Relation.CALLS,
+                                provenance=Provenance.EXTRACTED))
+        r = sg.impact_of(store, "m.py::target")
+        assert r.result["tests_to_run"] == \
+            ["tests/t.py::test_zzz", "tests/t.py::test_aaa"]
+
+
+def test_impact_of_redundant_ambiguous_edge_keeps_inferred_provenance():
+    """Provenance reflects the edges backing the AMBIGUOUS TIER: a redundant
+    AMBIGUOUS edge onto a confident-tier dependent must not flip the envelope
+    to AMBIGUOUS when every ambiguous-tier route is INFERRED-only."""
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    with sg.Store(":memory:") as store:
+        for n in ("target", "a", "b"):
+            store.add_node(Node(id=f"m.py::{n}", kind=NodeKind.FUNCTION,
+                                name=n, location="m.py:1:0"))
+        store.add_edge(Edge(src="m.py::a", dst_id="m.py::target",
+                            dst_symbol="target", relation=Relation.CALLS,
+                            provenance=Provenance.EXTRACTED))
+        # redundant name-based edge onto the CONFIDENT dependent `a`
+        store.add_edge(Edge(src="m.py::a", dst_id="m.py::target",
+                            dst_symbol="target", relation=Relation.REFERENCES,
+                            provenance=Provenance.AMBIGUOUS))
+        # `b` reaches target only through an INFERRED edge -> ambiguous tier
+        store.add_edge(Edge(src="m.py::b", dst_id="m.py::a",
+                            dst_symbol="a", relation=Relation.REFERENCES,
+                            provenance=Provenance.INFERRED))
+        r = sg.impact_of(store, "m.py::target")
+        assert {e["id"] for e in r.result["ambiguous"]} == {"m.py::b"}
+        assert r.needs_review is True
+        assert r.provenance is Provenance.INFERRED   # NOT ambiguous
+
+
+def test_find_chokepoints_coerces_bool_limit():
+    """limit=True must fall back to the default like every other op — bool is
+    an int subtype, and the unconverted copy returned exactly 1 chokepoint."""
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    with sg.Store(":memory:") as store:
+        for n in "abcdefgh":
+            store.add_node(Node(id=f"m.py::{n}", kind=NodeKind.FUNCTION,
+                                name=n, location="m.py:1:0"))
+        for u, v in (("a", "b"), ("b", "c"), ("c", "d"), ("d", "e"),
+                     ("e", "f"), ("e", "g"), ("e", "h")):
+            store.add_edge(Edge(src=f"m.py::{u}", dst_id=f"m.py::{v}",
+                                dst_symbol=v, relation=Relation.CALLS))
+        default = sg.find_chokepoints(store)
+        boolean = sg.find_chokepoints(store, limit=True)
+        assert len(boolean.result) == len(default.result) > 1
 
 
 # -- request 9: bounded MCP output ---------------------------------------------
@@ -240,17 +382,34 @@ def test_mcp_bound_boundary_is_exact(monkeypatch):
     assert over["meta"]["truncated"]["result"] == {"shown": 5, "total": 6}
 
 
-def test_mcp_bound_exempts_index_correlated_payloads(monkeypatch):
+def test_mcp_bound_cuts_matrix_payloads_consistently(monkeypatch):
     """get_matrix's labels/cells are index-correlated: cutting them
-    independently silently corrupts the matrix, so the op is exempt (it is
-    already self-bounded — it refuses broad scopes at the operation layer)."""
+    independently silently corrupts the matrix, and a blanket exemption
+    reopened the unbounded-blob hole (the op's own bound is the
+    caller-supplied `limit`, which has no ceiling). The correlated cut trims
+    labels to the budget and keeps only cells whose endpoints survive —
+    every remaining index still names the right label."""
     from stitchgraph.adapters.mcp import _bound
     monkeypatch.setenv("STITCHGRAPH_MCP_MAX_ITEMS", "5")
-    env = {"result": {"labels": list(range(20)), "cells": list(range(20))},
+    labels = [f"fn{i}" for i in range(20)]
+    cells = [{"src": i, "dst": (i + 1) % 20, "w": 1.0} for i in range(20)]
+    env = {"result": {"labels": list(labels), "cells": list(cells), "n": 20},
            "alternatives": [], "meta": {}}
     out = _bound(env, "get_matrix")
-    assert len(out["result"]["labels"]) == 20 and len(out["result"]["cells"]) == 20
-    assert "truncated" not in out["meta"]
+    kept_labels = out["result"]["labels"]
+    kept_cells = out["result"]["cells"]
+    assert kept_labels == labels[:5]
+    assert kept_cells and all(c["src"] < 5 and c["dst"] < 5 for c in kept_cells)
+    # alignment: every surviving cell still points at the label it named before
+    for c in kept_cells:
+        assert kept_labels[c["src"]] == labels[c["src"]]
+        assert kept_labels[c["dst"]] == labels[c["dst"]]
+    assert out["meta"]["truncated"]["result.labels"] == {"shown": 5, "total": 20}
+    assert out["meta"]["truncated"]["result.cells"]["total"] == 20
+    # a matrix already within budget passes through untouched
+    small = {"result": {"labels": labels[:3], "cells": cells[:3], "n": 3},
+             "alternatives": [], "meta": {}}
+    assert "truncated" not in _bound(small, "get_matrix")["meta"]
 
 
 # -- request 12: find_hotspots (cross-lens convergence) ------------------------
@@ -386,6 +545,35 @@ def test_tied_percentiles_share_average_rank():
     pct = _tied_percentiles({"a": 1.0, "b": 1.0, "c": 1.0, "d": 50.0})
     assert pct["a"] == pct["b"] == pct["c"] == 0.5   # mean of ranks 1..3 / 4
     assert pct["d"] == 1.0
+
+
+# -- dogfood finding (round 2): test-owned stubs are doubles, not debt ---------
+def test_scan_test_owned_stub_is_green_advisory(tmp_path):
+    """A deliberately-empty fake in a test file (a stub server's run(), a mock
+    body) must never be the repo's loudest finding: scan applies the same
+    test-ownership principle to stubs that it applies to god objects. Found by
+    dogfooding stitchgraph on itself — the sole RED was a test double."""
+    _mk(tmp_path, {
+        "app.py": ("from svc import serve\n"
+                   "def main():\n    serve()\n"
+                   'if __name__ == "__main__":\n    main()\n'),
+        "svc.py": "def serve():\n    raise NotImplementedError\n",
+        "tests/test_app.py": ("class FakeServer:\n"
+                              "    def run(self):\n"
+                              "        raise NotImplementedError\n"
+                              "def test_main():\n"
+                              "    FakeServer().run()\n"),
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        issues = {i["node"]: i for i in sg.scan(store).result
+                  if i["kind"] in ("stub", "live_stub")}
+        prod = issues["svc.py::serve"]
+        assert prod["kind"] == "live_stub"            # real product debt stays loud
+        assert prod["urgency"] in ("red", "orange")
+        fake = issues["tests/test_app.py::FakeServer.run"]
+        assert fake["urgency"] == "green"             # a double, not debt
+        assert "test-owned" in fake["reason"]
 
 
 # -- request 14: audit_graph tolerates path-prefix id drift --------------------

@@ -3355,6 +3355,18 @@
     "LOW": 2
    },
    "theme": "v3.51.0 field-review batch (8 external requests implemented), then an 8-angle self-review with per-candidate adversarial verify: 2 claims refuted, 10 confirmed and fixed same-day with boundary tests. HIGHs were the data-fabrication class: audit_graph's suffix remap could graft a stale/vendored id onto an unrelated same-named file (now requires whole-segment path alignment, the runtime.py R34A policy), and MCP bounding cut correlated lists independently / only one level deep (get_matrix exempt + recursive walk + nearest-first ranking so truncation keeps relevant entries). Also: impact_of demotion gate now matches its tier message, diagnose_server probe stdin detached (MCP stdio protocol-byte theft) + memoized, find_hotspots gains orient's test-mass exclusion and average-rank tie percentiles, impact_of detail pass gains an induced-edge budget, the review_codes contract is enforced on assignment (library == MCP surface), REFUSED split from HEDGED_RESULT. Full suite + ruff + mypy green on the fixed tip."
+  },
+  {
+   "id": "R288",
+   "models": [
+    "self"
+   ],
+   "findings": {
+    "HIGH": 2,
+    "MEDIUM": 6,
+    "LOW": 2
+   },
+   "theme": "Round-2 self-review of R287's fixes (confirmation-gate principle applied to a self-review) + first dogfood of the branch on stitchgraph itself. Two of R287's own fixes had introduced regressions: the get_matrix MCP exemption reopened the unbounded-blob hole (caller-controlled limit, no ceiling) — replaced with a correlated labels+cells cut that preserves index alignment; and the envelope chokepoint lost its self-protection (review_codes.clear() on a flagged Result serialized unfilterable — reproduced live) — to_dict backfills again via one shared method. Plus: HEDGED_RESULT only for non-empty payloads; impact_of any_ambiguous scoped to ambiguous-tier sources, dead-work scan skipped, silent edge-budget degradation now in meta; diagnose memo mtime-keyed, transients uncached; find_chokepoints bool-limit; drifted limit refusals aligned; hotspot refusals unified and honest. Dogfood: features held on the real repo; found the sole RED was a test double (fake_build_server) — scan stubs now honor the god-object test-ownership principle (GREEN advisory). Exact N/N-1 boundary tests added for both detail caps, the matrix cut, tests_to_run order, and the probe hygiene. Full suite + ruff + mypy green on the fixed tip."
   }
  ]
 }

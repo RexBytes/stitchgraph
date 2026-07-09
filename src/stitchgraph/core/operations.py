@@ -502,28 +502,47 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
     # (homonym name-binds) as certain (panel R33A). The backing edges are the liveness
     # edges induced on the blast radius (every dependent reaches the target through them).
     radius = dependents | {target.id}
-    liveness = {r.value for r in LIVENESS_RELATIONS}
-    # Streamed (cursor) provenance tally: impact_of runs on EVERY query, and
-    # `resolved_edges()` fetchall+Edge-materializes the whole table — the documented
-    # 16M-edge OOM class `iter_resolved` exists to avoid (review 2026-07-03, F11a).
-    # Only the aggregates (and, on small radii, the radius-induced reverse adjacency
-    # for hop distances — bounded by _IMPACT_DETAIL_CAP) are kept.
+    # Streamed (cursor) scan: impact_of runs on EVERY query, and `resolved_edges()`
+    # fetchall+Edge-materializes the whole table — the documented 16M-edge OOM
+    # class `iter_resolved` exists to avoid (review 2026-07-03, F11a). The scan
+    # feeds exactly two consumers — the radius-induced reverse adjacency for hop
+    # distances (detail passes only) and the AMBIGUOUS-vs-INFERRED provenance
+    # choice (demoted results only) — so it is SKIPPED outright when neither is
+    # needed: a big fully-confident radius pays zero passes (self-review round 2).
     detail = len(radius) <= _IMPACT_DETAIL_CAP
+    degraded = None if detail else "node_cap"
     radj: dict[str, list[str]] = {}
-    n_backing = 0
     any_ambiguous = False
-    cur = store.conn.execute(
-        "SELECT src, relation, dst_id, provenance FROM edges_all")
-    for src, rel, dst_id, prov_s in cur:
-        if rel in liveness and src in dependents and dst_id in radius:
-            n_backing += 1
-            if prov_s == Provenance.AMBIGUOUS.value:
+    if detail or ambiguous_only:
+        liveness = {r.value for r in LIVENESS_RELATIONS}
+        n_induced = 0
+        cur = store.conn.execute(
+            "SELECT src, relation, dst_id, provenance FROM edges_all")
+        for src, rel, dst_id, prov_s in cur:
+            if rel not in liveness or src not in dependents or dst_id not in radius:
+                continue
+            # Provenance reflects the edges backing the AMBIGUOUS TIER, not any
+            # stray edge in the radius: a redundant AMBIGUOUS edge onto a
+            # confident-tier dependent must not flip the envelope to AMBIGUOUS
+            # (self-review round 2). Every ambiguous-tier path provably crosses
+            # a non-EXTRACTED edge whose src is itself ambiguous-only (a node
+            # with an EXTRACTED edge to a confident node would BE confident),
+            # so scoping the tally to those sources is exact.
+            if (prov_s == Provenance.AMBIGUOUS.value and src in ambiguous_only):
                 any_ambiguous = True
+                if not detail:
+                    break  # the only remaining question is answered
             if detail:
-                # n_backing counts exactly the rows radj holds — the edge budget.
-                if n_backing > _IMPACT_DETAIL_EDGE_CAP:
+                n_induced += 1
+                if n_induced > _IMPACT_DETAIL_EDGE_CAP:
+                    # The node cap alone does not bound memory (group expansion
+                    # makes >95% of rows at framework density): abandon the
+                    # detail pass, NEVER silently — `degraded` lands in meta.
                     detail = False
+                    degraded = "edge_budget"
                     radj.clear()
+                    if any_ambiguous or not ambiguous_only:
+                        break
                 else:
                     radj.setdefault(dst_id, []).append(src)
     dist: dict[str, int] = {}
@@ -541,16 +560,16 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
     # nearest-first everywhere the order carries meaning: an adapter or consumer
     # that truncates keeps the closest (most relevant) entries, never an
     # alphabetical prefix (self-review 2026-07-09). With no distances (past the
-    # detail caps) every key ties and this degrades to plain id order.
+    # detail caps) plain id order — no keyed sort tax on huge radii.
     def _nearest(i: str) -> tuple[int, str]:
         return (dist.get(i, len(radius)), i)
 
     def _tier(ids: set[str]) -> list[dict]:
-        ranked = sorted(ids, key=_nearest)
+        ranked = sorted(ids, key=_nearest) if dist else sorted(ids)
         return [({"id": i, "distance": dist[i]} if i in dist else {"id": i})
                 for i in ranked[:lim]]
 
-    tests = sorted(test_set, key=_nearest)
+    tests = sorted(test_set, key=_nearest) if dist else sorted(test_set)
     payload = {
         "symbol": target.id,
         "blast_radius": sorted(dependents),
@@ -566,7 +585,11 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
         truncated["confident"] = lim
     if len(ambiguous_only) > lim:
         truncated["ambiguous"] = lim
-    extra = {"tiers_truncated": truncated} if truncated else {}
+    extra: dict[str, Any] = {"tiers_truncated": truncated} if truncated else {}
+    if degraded and dependents:
+        # Degradation is never silent: distances were skipped because a memory
+        # bound tripped, not because the graph changed (self-review round 2).
+        extra["distances_skipped"] = degraded
     # The demotion gate is the NODE-tier split, not the raw edge tally: a
     # dependent with a confident route is certain even when a redundant
     # name-based edge also points at it, so an empty `ambiguous` tier must not
@@ -705,6 +728,20 @@ def scan(store: Store, detector: EntryPointDetector | None = None,
     for node in store.stub_nodes():
         live = node.id in reachable
         certain_live = node.id in certain
+        # Test-owned stubs are deliberate doubles (a fake server's empty run(),
+        # a mock's pass body), not unimplemented product code — the same
+        # test-ownership principle the god-object detector applies. Found by
+        # dogfooding the whole repo (self-review round 2): the sole RED in
+        # stitchgraph's own scan was a fake in tests/test_mcp.py. Kept visible
+        # (GREEN advisory), never RED/ORANGE.
+        if "test" in node.roles or _is_test_path(node.id):
+            issues.append({
+                "kind": "stub", "node": node.id, "location": node.location,
+                "urgency": Urgency.GREEN.value,
+                "reason": "unimplemented body in test-owned code — a deliberate "
+                          "double/fake, not product debt",
+            })
+            continue
         issues.append({
             "kind": "live_stub" if live else "stub",
             "node": node.id, "location": node.location,
@@ -984,7 +1021,7 @@ def find_chokepoints(store: Store, limit: int = 20) -> Result:
     never raises."""
     from .reach import articulation_points
 
-    lim = limit if isinstance(limit, int) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     aps = articulation_points(store)
     items: list[dict] = []
     for nid, blast in sorted(aps.items(), key=lambda kv: (-kv[1], kv[0])):
@@ -1738,12 +1775,14 @@ def find_hotspots(store: Store, path: str | None = None,
         if beh:
             lenses["behavioural_centrality"] = beh
     if not lenses:
-        return refuse(
-            "cross-lens convergence needs at least two lenses and only static "
-            "centrality is available. Run inside a git repo for churn, and/or "
-            "pass a per-test coverage artifact (scaffold_coverage) for "
-            "behavioural centrality; a single lens is `orient`/`risk` territory",
-            confidence=0.0)
+        # Honest about what was OBSERVED: static centrality has NOT been
+        # computed on this path (that is the point of the early exit), and this
+        # branch is also reachable when the user supplied both inputs but the
+        # test-file exclusion emptied them — say so instead of asserting an
+        # availability nobody verified (self-review round 2).
+        return _lens_refusal(
+            "neither git churn nor usable per-test coverage; at most static "
+            "centrality remains, and one lens cannot converge")
     # Static lens: test-sourced fan-in excluded exactly as orient does
     # (research/25) — a suite that closes 1,117 stores must not crown
     # Store.close, and here it would converge on 2-3 lenses at once.
@@ -1754,12 +1793,7 @@ def find_hotspots(store: Store, path: str | None = None,
         lenses["static_centrality"] = static
 
     if len(lenses) < 2:
-        have = ", ".join(sorted(lenses)) or "none"
-        return refuse(
-            f"cross-lens convergence needs at least two lenses; available: {have}. "
-            "Run inside a git repo for churn, and/or pass a per-test coverage "
-            "artifact (scaffold_coverage) for behavioural centrality; a single "
-            "lens is `orient`/`risk` territory", confidence=0.0)
+        return _lens_refusal(", ".join(sorted(lenses)) or "none")
 
     pct = {lens: _tied_percentiles(values) for lens, values in lenses.items()}
     files = {f for values in lenses.values() for f in values}
@@ -1839,8 +1873,12 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     # the stdlib-only default install is what crashes — guard here, at the op boundary.
     if not isinstance(snippet, str):
         return refuse("snippet must be a string", confidence=0.0)
-    if not isinstance(limit, int) or isinstance(limit, bool):
-        return refuse("limit must be an integer", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        # aligned with find_component's check (self-review round 2): the three
+        # refuse-style limit validations had drifted — limit=0/-5 passed here
+        # and produced degenerate output (empty slice / a matrix op refusing
+        # every non-empty scope) while the sibling op refused cleanly.
+        return refuse("limit must be a positive integer", confidence=0.0)
     if mode not in ("semantic", "structure", "behavior"):
         return refuse("mode must be 'semantic', 'structure' or 'behavior'", confidence=0.0)
     if mode == "behavior":
@@ -2126,6 +2164,18 @@ def _connected_file_pairs(store: Store, to_git) -> set[frozenset[str]]:
         if a != b:
             pairs.add(frozenset((a, b)))
     return pairs
+
+
+def _lens_refusal(available: str) -> Result:
+    """find_hotspots' one refusal message (two call sites had already drifted
+    ~90%-identical prose — self-review round 2). `available` states what was
+    actually observed, never a guess."""
+    return refuse(
+        f"cross-lens convergence needs at least two lenses; available: {available}. "
+        "Run inside a git repo for churn, and/or pass a per-test coverage artifact "
+        "(scaffold_coverage) for behavioural centrality — note test files are "
+        "excluded from every lens; a single lens is `orient`/`risk` territory",
+        confidence=0.0)
 
 
 def _tied_percentiles(values: dict[str, float]) -> dict[str, float]:
@@ -2432,8 +2482,12 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         return refuse("scope must be a string", confidence=0.0)
     if not isinstance(relation, str):
         return refuse("relation must be a string", confidence=0.0)
-    if not isinstance(limit, int) or isinstance(limit, bool):
-        return refuse("limit must be an integer", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        # aligned with find_component's check (self-review round 2): the three
+        # refuse-style limit validations had drifted — limit=0/-5 passed here
+        # and produced degenerate output (empty slice / a matrix op refusing
+        # every non-empty scope) while the sibling op refused cleanly.
+        return refuse("limit must be a positive integer", confidence=0.0)
     if not isinstance(layer, str):
         return refuse("layer must be a string", confidence=0.0)
     layer = layer.lower()

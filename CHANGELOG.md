@@ -115,6 +115,45 @@ tests before release:
   src-layout bug class) and a `_pos_int` helper replacing nine hand-copied
   limit-validation idioms.
 
+### Fixed (round-2 self-review of the fixes — panel R288)
+The R287 fix batch was itself reviewed with the same 8-angle process; 10
+findings survived (two of R287's own fixes had introduced regressions), all
+fixed with boundary tests, plus one finding from dogfooding stitchgraph on
+its own repo:
+
+- **The `get_matrix` MCP exemption reopened the unbounded-blob hole** — the
+  op's "self-bound" is the caller-supplied `limit`, which has no ceiling.
+  Replaced with a correlated cut: labels trimmed to the budget, cells kept
+  only where both endpoints survive (index alignment preserved), both cuts
+  reported.
+- **The envelope serialization chokepoint self-protects again** — the
+  `__setattr__` hook only watches the `needs_review` name, so clearing
+  `review_codes` on a flagged Result serialized an unfilterable envelope;
+  `to_dict` now backfills as belt-and-suspenders and the backfill is one
+  shared method. `refuse(result=[])` (empty payload) codes REFUSED, not
+  HEDGED_RESULT — an empty advisory is "no answer, retry differently".
+- **`impact_of` refinements**: `any_ambiguous` is scoped to edges sourced in
+  the ambiguous tier (a redundant AMBIGUOUS edge onto a confident dependent
+  no longer flips the envelope's provenance); the `edges_all` scan is skipped
+  outright when neither distances nor provenance need it and breaks early
+  once its remaining question is answered; detail degradation reports itself
+  (`meta.distances_skipped = node_cap | edge_budget`); huge radii keep plain
+  id-order sorts instead of paying constant-key keyed sorts.
+- **`diagnose_server` memo keyed by binary mtime** (an in-place fix
+  re-probes) and transient probe failures are never cached; `find_hotspots`'
+  two drifted refusal messages collapsed into one honest builder that states
+  what was observed (including the test-file exclusion); `find_chokepoints`
+  converted to `_pos_int` (its leftover copy accepted `limit=True` as 1);
+  `find_similar`/`get_matrix` now refuse non-positive limits like their
+  sibling.
+- **Dogfood finding**: scan's stub detector now applies the god-object
+  test-ownership principle — a deliberately-empty double in a test file
+  (`FakeServer.run`) is a GREEN advisory, never the repo's loudest RED
+  (found by scanning stitchgraph itself: the sole RED was a test fake).
+- New boundary tests pin the node/edge detail caps at exactly N vs N-1,
+  the correlated matrix cut, `tests_to_run`'s nearest-first order, the
+  stdin/memo/transient probe behavior, and the bool-limit coercion.
+
 ## [3.50.0] — 2026-07-07
 
 ### Fixed

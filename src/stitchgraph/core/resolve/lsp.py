@@ -68,11 +68,13 @@ _INSTALL_HINTS = {
 _RUSTUP_ADD = re.compile(r"rustup +component +add +[\w-]+")
 
 
-# diagnose_server memo: a broken binary's verdict cannot change within a session
-# (fixing it makes start() succeed, so diagnose stops being called at all), and
-# watch mode constructs a fresh LspResolver per edit — without the cache a dead
-# shim would cost a failed spawn PLUS an up-to-10s probe on every save.
-_DIAGNOSIS_CACHE: dict[tuple[str, str | None], tuple[str, bool]] = {}
+# diagnose_server memo: watch mode constructs a fresh LspResolver per edit —
+# without the cache a dead shim would cost a failed spawn PLUS an up-to-10s
+# probe on every save. The key includes the located file's mtime so a binary
+# fixed/replaced IN PLACE mid-session (rustup component add, reinstall) gets a
+# fresh probe instead of a stale verdict, and transient probe failures
+# (timeout on a loaded machine) are never cached at all (self-review round 2).
+_DIAGNOSIS_CACHE: dict[tuple[str, str | None, int | None], tuple[str, bool]] = {}
 
 
 def diagnose_server(cmd: str) -> tuple[str, bool]:
@@ -86,23 +88,31 @@ def diagnose_server(cmd: str) -> tuple[str, bool]:
     fix, which is surfaced verbatim; (c) binary present and runnable but the
     LSP initialize handshake failed. Total: any probe failure degrades to a
     generic-but-honest message, never an exception. Memoized per (cmd,
-    resolved path) for the session."""
+    resolved path, mtime); transient probe failures are not cached."""
     argv = cmd.split()
     binary = argv[0] if argv else cmd
     located = shutil.which(binary)
-    key = (cmd, located)
+    try:
+        stamp = os.stat(located).st_mtime_ns if located else None
+    except OSError:
+        stamp = None
+    key = (cmd, located, stamp)
     cached = _DIAGNOSIS_CACHE.get(key)
     if cached is not None:
         return cached
-    _DIAGNOSIS_CACHE[key] = out = _diagnose_uncached(binary, located)
-    return out
+    msg, present, cacheable = _diagnose_uncached(binary, located)
+    if cacheable:
+        _DIAGNOSIS_CACHE[key] = (msg, present)
+    return msg, present
 
 
-def _diagnose_uncached(binary: str, located: str | None) -> tuple[str, bool]:
+def _diagnose_uncached(binary: str, located: str | None) -> tuple[str, bool, bool]:
+    """(message, binary_on_path, cacheable) — cacheable is False for outcomes
+    that may be transient (probe timeout / spawn error on a loaded machine)."""
     if located is None:
         hint = _INSTALL_HINTS.get(binary)
         msg = f"'{binary}' is not on PATH"
-        return (f"{msg}; install it: {hint}" if hint else msg), False
+        return (f"{msg}; install it: {hint}" if hint else msg), False, True
     try:
         # stdin MUST be detached: this probe targets exactly the population of
         # misbehaving binaries, and one that ignores argv and reads stdin would
@@ -118,7 +128,7 @@ def _diagnose_uncached(binary: str, located: str | None) -> tuple[str, bool]:
             fix = _RUSTUP_ADD.search(err)
             if fix:  # the rustup proxy shim: on PATH, but the component isn't installed
                 return (f"'{binary}' on PATH is a rustup proxy shim but the component "
-                        f"is not installed; run: {fix.group(0)}"), True
+                        f"is not installed; run: {fix.group(0)}"), True, True
             first = err.splitlines()[0] if err else "no error output"
             hint = _INSTALL_HINTS.get(binary)
             # Honest about the probe's limits: a non-zero exit may just mean the
@@ -126,11 +136,13 @@ def _diagnose_uncached(binary: str, located: str | None) -> tuple[str, bool]:
             # handshake — assert the observation, not a broken install.
             return (f"'{binary}' is on PATH but did not serve; probing it with "
                     f"--version also failed ({first})"
-                    + (f" — if it is broken, reinstall: {hint}" if hint else "")), True
+                    + (f" — if it is broken, reinstall: {hint}" if hint else "")), True, True
     except (OSError, subprocess.TimeoutExpired, ValueError):
-        return f"'{binary}' is on PATH but could not be executed", True
+        # Possibly transient (loaded machine, momentary spawn failure): report
+        # honestly but never cache — the next decline re-probes.
+        return f"'{binary}' is on PATH but could not be executed", True, False
     return (f"'{binary}' is installed but did not complete the LSP initialize "
-            "handshake"), True
+            "handshake"), True, True
 
 
 def any_server_available(overrides: dict[str, str] | None = None) -> bool:

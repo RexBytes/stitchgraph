@@ -210,7 +210,7 @@ reasons contract). Codes are append-only — never renamed. The set (defined in
 | `LOW_CONFIDENCE` | confidence below the review threshold |
 | `AMBIGUOUS_PROVENANCE` | result provenance is AMBIGUOUS |
 | `REFUSED` | the operation refused to answer (`ok=false`, no result) |
-| `HEDGED_RESULT` | answered, but hedged — an advisory/partial result (`ok=true`) |
+| `HEDGED_RESULT` | answered, but hedged — a NON-EMPTY advisory/partial result (`ok=true`; an empty payload codes REFUSED) |
 | `UNSPECIFIED` | flagged without a specific code |
 | `NAME_BASED_EDGE` | rests on inferred/ambiguous (name-matched) edges |
 | `NON_CALL_USES` | empty CALLS answer, but other relations touch the symbol |
