@@ -604,6 +604,69 @@ def test_audit_graph_suffix_matches_prefixed_coverage_ids(tmp_path):
         assert ReviewCode.COVERAGE_MISMATCH.value in r.review_codes
 
 
+def test_drift_reconciliation_reaches_every_coverage_join(tmp_path):
+    """The drift is a property of the ARTIFACT, not of one op: with a
+    prefix-drifted artifact, select_tests/co_change/find_gaps used to emit
+    confident WRONG diagnoses (STATIC_ONLY 'coverage may predate them',
+    COVERAGE_ABSENT 'never executed', everything 'untested') while audit_graph
+    — one function away — proved the rows exist. Reconciliation now happens at
+    the shared load boundary, so all of them agree and all annotate the remap."""
+    _mk(tmp_path, {
+        "app.py": "def work():\n    return 1\n",
+        "tests/test_app.py": ("from app import work\n"
+                              "def test_work():\n    assert work() == 1\n"),
+    })
+    cov = {
+        "format": "stitchgraph-coverage-v1",
+        "tests": {  # sandbox/ prefix on every id — the capture-kit drift case
+            "sandbox/tests/test_app.py::test_work": ["sandbox/app.py::work"],
+            "sandbox/tests/test_app.py::test_more": ["sandbox/app.py::work"],
+        },
+    }
+    cov_path = tmp_path / "coverage_modes.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+
+        st = sg.select_tests(store, "app.py::work", coverage=str(cov_path))
+        assert st.ok
+        assert "tests/test_app.py::test_work" in st.result["ran_it"]
+        assert ReviewCode.STATIC_ONLY.value not in st.review_codes
+        assert st.meta.get("ids_remapped", 0) >= 1
+        assert ReviewCode.COVERAGE_MISMATCH.value in st.review_codes
+
+        gaps = sg.find_gaps(store, coverage=str(cov_path))
+        assert gaps.ok
+        assert "app.py::work" not in gaps.result["untested_live"]
+        assert gaps.meta.get("ids_remapped", 0) >= 1
+
+        cc = sg.co_change(store, "tests/test_app.py::test_work",
+                          coverage=str(cov_path))
+        assert cc.ok
+        assert cc.result["covers"] == ["app.py::work"]
+        assert ReviewCode.COVERAGE_ABSENT.value not in cc.review_codes
+        assert cc.meta.get("ids_remapped", 0) >= 1
+
+
+def test_reconcile_preserves_param_and_phase_suffixes():
+    """Test-id remap rewrites only the PATH component: pytest [param] and
+    coverage.py |phase tails survive, so per-row granularity is intact."""
+    from stitchgraph.core import coverage_query
+
+    cov = {"sandbox/tests/t.py::test_a[x|y]|run": ["sandbox/app.py::work"],
+           "sandbox/tests/t.py::test_a[z]|setup": ["sandbox/app.py::work"]}
+    nodes = {"tests/t.py::test_a", "app.py::work"}
+    out, n = coverage_query.reconcile(cov, nodes)
+    assert n == 2   # one test base + one function id
+    assert set(out) == {"tests/t.py::test_a[x|y]|run",
+                        "tests/t.py::test_a[z]|setup"}
+    assert all(fs == ["app.py::work"] for fs in out.values())
+    # nothing to remap -> the SAME mapping comes back, zero count
+    clean = {"tests/t.py::test_a": ["app.py::work"]}
+    same, zero = coverage_query.reconcile(clean, nodes)
+    assert same is clean and zero == 0
+
+
 def test_audit_graph_never_grafts_unaligned_paths(tmp_path):
     """A basename+symbol match alone must NOT remap: a stale/vendored id whose
     directory disagrees with the index's (neither path a whole-segment suffix

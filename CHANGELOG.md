@@ -153,6 +153,22 @@ its own repo:
 - New boundary tests pin the node/edge detail caps at exactly N vs N-1,
   the correlated matrix cut, `tests_to_run`'s nearest-first order, the
   stdin/memo/transient probe behavior, and the bool-limit coercion.
+- **Coverage id-drift reconciliation hoisted to the shared load boundary**
+  (the round-2 deferred item). The drift is a property of the artifact, not
+  of one op: with a prefix-drifted artifact, `select_tests`/`co_change`/
+  `find_gaps` used to emit confident WRONG diagnoses (STATIC_ONLY "coverage
+  may predate them", COVERAGE_ABSENT "never executed", everything
+  "untested") while `audit_graph` — one function away — proved the rows
+  exist. `coverage_query.reconcile` (built on the alignment-guarded
+  `suffix_remap`, moved out of operations.py) now runs once per load for
+  every graph-joining coverage op — `select_tests`, `co_change`,
+  `audit_graph`, `find_coupling`, `find_gaps`, `runtime_risk`,
+  `find_hotspots`, and `find_similar(mode="behavior")` — each annotating
+  `meta.ids_remapped` + `COVERAGE_MISMATCH`, never silently. Test-id remaps
+  rewrite only the path component, so pytest `[param]` / coverage.py
+  `|phase` suffixes survive intact. Pure-artifact ops (`find_modes`,
+  `test_order`, `redundant_tests`, `find_core`, `coverage_drift`) stay raw
+  by design — they never join graph ids.
 
 ## [3.50.0] — 2026-07-07
 

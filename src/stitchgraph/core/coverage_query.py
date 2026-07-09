@@ -21,12 +21,88 @@ from .modes import base_test_id, load_coverage, normalize
 
 __all__ = ["load_coverage", "base_test_id", "normalize", "invert", "tests_for", "co_functions",
            "coactivation_pairs", "hidden_coupling", "untested", "greedy_order", "redundant_groups",
-           "core_functions", "mode_drift"]
+           "core_functions", "mode_drift", "reconcile", "suffix_remap"]
 
 # A test that touches more than this many functions contributes ~n² pairs to the co-activation count;
 # such near-global tests (a smoke/end-to-end that runs everything) add noise, not signal, so their
 # pairwise contribution is skipped — this also bounds memory on huge suites (cardinal: never OOM).
 _COOC_FUNC_CAP = 400
+
+
+def suffix_remap(missing: set[str], nodes: set[str]) -> dict[str, str]:
+    """artifact id -> graph node id, for ids whose trees disagree on a path
+    PREFIX (capture kit run from a sandbox root, crate subdir, …). Two guards,
+    both required (self-review 2026-07-09 — a bare basename+symbol match
+    silently grafted a stale/vendored id onto an unrelated same-named file,
+    fabricating recall; runtime.py's `_by_suffix` refuses bare basenames for
+    the same reason, panel R34A):
+
+    - the (basename, qualname) key must be UNIQUE among graph nodes, and
+    - the two paths must actually be prefix-drifted versions of each other:
+      one path is a whole-segment suffix of the other. `sandbox/tests/a.py`
+      aligns with `tests/a.py`; `src/utils.py` does NOT align with
+      `tools/utils.py` — that id stays unmatched (an honest mismatch) rather
+      than becoming a wrong-node join."""
+    def key(nid: str) -> tuple[str, str]:
+        path, _, qual = nid.partition("::")
+        return (path.replace("\\", "/").rsplit("/", 1)[-1], qual)
+
+    def aligned(a: str, b: str) -> bool:
+        pa, pb = (i.partition("::")[0].replace("\\", "/") for i in (a, b))
+        longer, shorter = (pa, pb) if len(pa) >= len(pb) else (pb, pa)
+        return longer == shorter or longer.endswith("/" + shorter)
+
+    # Key only the candidates that could serve a missing id — never a dict over
+    # every node in a multi-million-node graph to remap a handful of ids.
+    wanted = {key(mid) for mid in missing}
+    by_key: dict[tuple[str, str], str | None] = {}
+    for nid in nodes:
+        k = key(nid)
+        if k in wanted:
+            by_key[k] = None if k in by_key else nid  # duplicate -> ambiguous -> never map
+    out: dict[str, str] = {}
+    for mid in missing:
+        cand = by_key.get(key(mid))
+        if cand is not None and cand != mid and aligned(mid, cand):
+            out[mid] = cand
+    return out
+
+
+def reconcile(cov: dict[str, list[str]],
+              nodes: set[str]) -> tuple[dict[str, list[str]], int]:
+    """Remap prefix-drifted artifact ids onto graph node ids ONCE, at the load
+    boundary — the drift is a property of the ARTIFACT, not of one op (field
+    review 2026-07-09 request 14, generalized in self-review round 2: fixing
+    only audit_graph left select_tests/co_change/find_gaps mis-diagnosing the
+    same drift as STATIC_ONLY/COVERAGE_ABSENT — confident wrong explanations).
+
+    Function ids remap directly. Test ids remap by their `base_test_id` (the
+    graph-facing form) with only the PATH component rewritten, so pytest
+    `[param]`/`|phase` suffixes survive intact. Returns (cov', n_remapped);
+    the input mapping is returned unchanged (same object) when nothing maps —
+    callers annotate `n_remapped` on their envelope so the remap is never
+    silent."""
+    fids = {f for fs in cov.values() for f in fs}
+    tbases = {base_test_id(tid) for tid in cov}
+    missing = {f for f in fids if f not in nodes} | \
+              {b for b in tbases if b not in nodes}
+    if not missing:
+        return cov, 0
+    remap = suffix_remap(missing, nodes)
+    if not remap:
+        return cov, 0
+    out: dict[str, list[str]] = {}
+    for tid, funcs in cov.items():
+        target = remap.get(base_test_id(tid))
+        if target is not None:
+            # path-only rewrite: the key matched on (basename, qualname), so
+            # only the directory prefix differs — the qual (and any [param]/
+            # |phase tail after it) is preserved verbatim.
+            _, _, rest = tid.partition("::")
+            tid = target.partition("::")[0] + "::" + rest
+        merged = out.setdefault(tid, [])
+        merged.extend(remap.get(f, f) for f in funcs)
+    return ({t: sorted(set(fs)) for t, fs in out.items()}, len(remap))
 
 
 def invert(cov: dict[str, list[str]]) -> dict[str, set[str]]:

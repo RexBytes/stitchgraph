@@ -1217,7 +1217,7 @@ def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json")
         if not targets:
             return refuse(f"none of the changeset symbols resolve to a unique indexed symbol: {parts}",
                           confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage); for static-only "
@@ -1240,8 +1240,9 @@ def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json")
         payload["symbol"] = targets[0]               # back-compat for the single-symbol shape
     if unresolved:
         payload["unresolved"] = sorted(unresolved)
-    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
-             runtime=len(runtime), static=len(static))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
+           runtime=len(runtime), static=len(static)), remapped)
     if not runtime:
         res.needs_review = True
         res.add_reason("none of the symbols were executed in this coverage artifact — 'run_these' is "
@@ -1277,7 +1278,7 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
             res.alternatives = [n.to_dict() for n in candidates]
             return res
         return refuse(f"'{name}' is not in the index", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1294,17 +1295,19 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
                 covered.update(funcs)
                 rows += 1
         if not rows:
-            res = ok({"test": target.id, "covers": []},
-                     provenance=Provenance.EXTRACTED, count=0)
+            res = _annotate_remap(ok({"test": target.id, "covers": []},
+                                     provenance=Provenance.EXTRACTED, count=0), remapped)
             res.needs_review = True
             res.add_reason("this test has no row in the coverage artifact — it was not "
                            "part of the recorded run", code=ReviewCode.COVERAGE_ABSENT)
             return res
         payload = {"test": target.id, "covers": sorted(covered), "coverage_rows": rows}
-        return ok(payload, provenance=Provenance.EXTRACTED, count=len(covered))
+        return _annotate_remap(
+            ok(payload, provenance=Provenance.EXTRACTED, count=len(covered)), remapped)
     neighbours = coverage_query.co_functions(cov, target.id, k=lim)
     if not neighbours:
-        res = ok({"symbol": target.id, "co_changing": []}, provenance=Provenance.EXTRACTED, count=0)
+        res = _annotate_remap(ok({"symbol": target.id, "co_changing": []},
+                                 provenance=Provenance.EXTRACTED, count=0), remapped)
         res.needs_review = True
         res.add_reason("the symbol was never executed in this coverage artifact — no "
                        "co-activation neighbourhood to report",
@@ -1314,7 +1317,8 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
         "symbol": target.id,
         "co_changing": [{"function": g, "score": s, "shared_tests": c} for g, s, c in neighbours],
     }
-    return ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours))
+    return _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours)), remapped)
 
 
 @operation("Audit the call graph against runtime ground truth (static reach vs executed, per test).")
@@ -1337,13 +1341,16 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     closure per test (sidecar-fast). Only functions that exist as graph nodes are
     compared, so id-scheme drift between the artifact and the index reads as
     `unmatched`, not as fake misses."""
-    from . import coverage_query
     from .modes import base_test_id
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
     lim = _pos_int(limit, 20)
-    cov = coverage_query.load_coverage(coverage)
+    # Path-prefix drift reconciliation happens at the shared load boundary
+    # (field review 2026-07-09 request 14, hoisted in self-review round 2 —
+    # the drift is a property of the ARTIFACT, so every graph-joining
+    # coverage op sees the same reconciled ids and the same annotation).
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1352,25 +1359,6 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     by_test: dict[str, set[str]] = {}
     for tid, funcs in cov.items():
         by_test.setdefault(base_test_id(tid), set()).update(funcs)
-
-    # Path-prefix drift tolerance (field review 2026-07-09, request 14): the same
-    # artifact find_modes consumed happily made audit_graph refuse, because ONLY
-    # audit_graph additionally requires the ids to exist as graph nodes — and a
-    # capture kit run from a different root (`sandbox/…` vs the indexed tree)
-    # prefixes every id. Remap unmatched ids by (path basename, qualname) when
-    # that key is unambiguous, and REPORT the remap — never silently.
-    remapped = 0
-    missing = ({t for t in by_test if t not in nodes}
-               | {f for fs in by_test.values() for f in fs} - nodes)
-    if missing:
-        remap = _suffix_remap(missing, nodes)
-        if remap:
-            collapsed: dict[str, set[str]] = {}
-            for tid, fset in by_test.items():
-                collapsed.setdefault(remap.get(tid, tid), set()).update(
-                    remap.get(f, f) for f in fset)
-            by_test = collapsed
-            remapped = len(remap)
 
     per_test: list[dict] = []
     missed_count: dict[str, int] = {}
@@ -1423,13 +1411,8 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
         "worst_tests": per_test[:lim],
         "missed_functions": [{"function": f, "tests_missing_it": n} for f, n in missed],
     }
-    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(per_test))
-    if remapped:
-        res.meta["ids_remapped"] = remapped
-        res.add_reason(f"{remapped} artifact id(s) did not match a graph node exactly and "
-                       "were remapped by (file basename, symbol) — the artifact and the "
-                       "index disagree on a path prefix; regenerate the artifact from the "
-                       "indexed root for exact ids", code=ReviewCode.COVERAGE_MISMATCH)
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(per_test)), remapped)
     if missed:
         res.needs_review = True
         res.add_reason("missed_functions are executed on paths the static graph cannot see "
@@ -1439,43 +1422,30 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     return res
 
 
-def _suffix_remap(missing: set[str], nodes: set[str]) -> dict[str, str]:
-    """artifact id -> graph node id, for ids whose trees disagree on a path
-    PREFIX (capture kit run from a sandbox root, crate subdir, …). Two guards,
-    both required (self-review 2026-07-09 — a bare basename+symbol match
-    silently grafted a stale/vendored id onto an unrelated same-named file,
-    fabricating recall; runtime.py's `_by_suffix` refuses bare basenames for
-    the same reason, panel R34A):
+def _load_reconciled(store: Store, coverage: str) -> tuple[dict[str, list[str]], int]:
+    """load_coverage + path-drift reconciliation against the graph — the ONE
+    place coverage ids meet node ids (self-review round 2; the matching policy
+    itself lives in coverage_query.suffix_remap/reconcile). Returns
+    ({}, 0) for an unusable artifact, exactly like load_coverage."""
+    from . import coverage_query
 
-    - the (basename, qualname) key must be UNIQUE among graph nodes, and
-    - the two paths must actually be prefix-drifted versions of each other:
-      one path is a whole-segment suffix of the other. `sandbox/tests/a.py`
-      aligns with `tests/a.py`; `src/utils.py` does NOT align with
-      `tools/utils.py` — that id stays unmatched (honest `tests_unmatched`)
-      rather than becoming a wrong-node audit."""
-    def key(nid: str) -> tuple[str, str]:
-        path, _, qual = nid.partition("::")
-        return (path.replace("\\", "/").rsplit("/", 1)[-1], qual)
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return {}, 0
+    return coverage_query.reconcile(cov, set(store.all_node_ids()))
 
-    def aligned(a: str, b: str) -> bool:
-        pa, pb = (i.partition("::")[0].replace("\\", "/") for i in (a, b))
-        longer, shorter = (pa, pb) if len(pa) >= len(pb) else (pb, pa)
-        return longer == shorter or longer.endswith("/" + shorter)
 
-    # Key only the candidates that could serve a missing id — never a dict over
-    # every node in a multi-million-node graph to remap a handful of ids.
-    wanted = {key(mid) for mid in missing}
-    by_key: dict[tuple[str, str], str | None] = {}
-    for nid in nodes:
-        k = key(nid)
-        if k in wanted:
-            by_key[k] = None if k in by_key else nid  # duplicate -> ambiguous -> never map
-    out: dict[str, str] = {}
-    for mid in missing:
-        cand = by_key.get(key(mid))
-        if cand is not None and cand != mid and aligned(mid, cand):
-            out[mid] = cand
-    return out
+def _annotate_remap(res: Result, remapped: int) -> Result:
+    """The never-silent half of the reconciliation contract: every op that
+    consumed remapped ids says so, with the same code, on every surface."""
+    if remapped:
+        res.meta["ids_remapped"] = remapped
+        res.add_reason(f"{remapped} artifact id(s) did not match a graph node exactly and "
+                       "were remapped by (file basename, symbol) with path alignment — "
+                       "the artifact and the index disagree on a path prefix; regenerate "
+                       "the artifact from the indexed root for exact ids",
+                       code=ReviewCode.COVERAGE_MISMATCH)
+    return res
 
 
 @operation("Hidden coupling: functions that co-run but never statically call each other (implicit deps).")
@@ -1498,7 +1468,7 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
         return refuse("coverage path must be a string", confidence=0.0)
     if scope not in ("all", "cross_file", "same_file"):
         return refuse("scope must be 'all', 'cross_file' or 'same_file'", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1541,7 +1511,8 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
                   for a, b, s, c in pairs],
         "count": len(pairs),
     }
-    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs)), remapped)
     res.needs_review = True
     res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — "
                    "populated common_callers usually explains it (siblings of one dispatcher); "
@@ -1569,7 +1540,7 @@ def find_gaps(store: Store, coverage: str = "coverage_modes.json") -> Result:
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1586,8 +1557,9 @@ def find_gaps(store: Store, coverage: str = "coverage_modes.json") -> Result:
         "tested": len(funcs) - len(ungapped),
         "total_functions": len(funcs),
     }
-    res = ok(payload, provenance=Provenance.INFERRED, count=len(untested_live),
-             untested_live=len(untested_live), untested_dead=len(untested_dead))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.INFERRED, count=len(untested_live),
+           untested_live=len(untested_live), untested_dead=len(untested_dead)), remapped)
     res.needs_review = True
     if funcs and not (exercised & funcs):
         res.add_reason("no coverage function id matches a graph node id — likely a namespace mismatch "
@@ -1683,11 +1655,11 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
     centrality** — how many tests exercise a file's functions (from the coverage matrix). A file that
     changes often *and* is touched by many behaviours is the most dangerous to modify, a sharper hotspot
     than churn × static-centrality alone. Advisory, read-only; needs no numpy (git + set math)."""
-    from . import coverage_query, gitrisk
+    from . import gitrisk
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1717,7 +1689,9 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
         for h in hotspots:
             h["urgency"] = (Urgency.ORANGE.value if h["risk"] >= top / 2 else Urgency.GREEN.value)
     payload = {"hotspots": hotspots[:lim]}
-    res = ok(payload, provenance=Provenance.INFERRED, confidence=0.7, hotspots=len(hotspots))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.INFERRED, confidence=0.7,
+           hotspots=len(hotspots)), remapped)
     res.needs_review = True
     if not hotspots:
         res.add_reason("no file's coverage functions matched a churned file — likely a namespace "
@@ -1751,7 +1725,7 @@ def find_hotspots(store: Store, path: str | None = None,
     available. Advisory, read-only."""
     import math
 
-    from . import coverage_query, gitrisk
+    from . import gitrisk
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
@@ -1769,7 +1743,7 @@ def find_hotspots(store: Store, path: str | None = None,
                  if not _is_test_path(f)}
         if churn:
             lenses["churn"] = churn
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if cov:
         beh = _file_behaviour(cov, to_git, exclude_tests=True)
         if beh:
@@ -1813,8 +1787,9 @@ def find_hotspots(store: Store, path: str | None = None,
         })
     hotspots.sort(key=lambda h: (-h["converging_lenses"], -h["score"], h["file"]))
     payload = {"hotspots": hotspots[:lim], "lenses": sorted(lenses)}
-    res = ok(payload, provenance=Provenance.INFERRED, confidence=0.75,
-             hotspots=len(hotspots), lenses=len(lenses))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.INFERRED, confidence=0.75,
+           hotspots=len(hotspots), lenses=len(lenses)), remapped)
     res.add_reason("convergence is advisory: percentile fusion over "
                    f"{len(lenses)} lenses ({', '.join(sorted(lenses))}) — a ranking "
                    "aid, not a measurement")
@@ -1882,7 +1857,7 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     if mode not in ("semantic", "structure", "behavior"):
         return refuse("mode must be 'semantic', 'structure' or 'behavior'", confidence=0.0)
     if mode == "behavior":
-        from . import coverage_query, modes
+        from . import modes
         target, candidates = _resolve_target(store, snippet)
         if target is None:
             if len(candidates) > 1:
@@ -1892,7 +1867,7 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
                 res.alternatives = [n.to_dict() for n in candidates]
                 return res
             return refuse(f"'{snippet}' is not in the index", confidence=0.0)
-        cov = coverage_query.load_coverage(coverage)
+        cov, remapped = _load_reconciled(store, coverage)
         if not cov:
             return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                           "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1903,8 +1878,9 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         if not neighbours:
             return refuse(f"'{target.id}' was never executed in this coverage artifact — "
                           "no behavioural embedding to rank from", confidence=0.0)
-        return ok([{"id": nid, "score": s} for nid, s in neighbours],
-                  provenance=Provenance.INFERRED, count=len(neighbours))
+        return _annotate_remap(
+            ok([{"id": nid, "score": s} for nid, s in neighbours],
+               provenance=Provenance.INFERRED, count=len(neighbours)), remapped)
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
         hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, "
