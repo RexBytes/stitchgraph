@@ -75,9 +75,12 @@ def reachable_from(store: Store, seeds: Iterable[str],
 
 
 def reverse_reachable_from(store: Store, targets: Iterable[str],
-                           relations: Iterable[Relation] = LIVENESS_RELATIONS) -> set[str]:
-    """Backward reachability (blast radius) — same sweep on the transpose."""
-    adj = _Adjacency(store, relations)
+                           relations: Iterable[Relation] = LIVENESS_RELATIONS,
+                           confident_only: bool = False) -> set[str]:
+    """Backward reachability (blast radius) — same sweep on the transpose.
+    `confident_only` builds from EXTRACTED edges only: the certain tier of the
+    blast radius (the reverse counterpart of scan's confident liveness sweep)."""
+    adj = _Adjacency(store, relations, confident_only=confident_only)
     seen = _bfs(adj, targets, transpose=True)
     seen.difference_update(targets)
     return seen

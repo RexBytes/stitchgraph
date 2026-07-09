@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 from ..envelope import Provenance
 from ..model import Edge, Node, NodeKind, Relation
-from .lsp import LspClient, server_for
+from .lsp import LspClient, diagnose_server, server_for
 
 if TYPE_CHECKING:
     from . import ResolveContext
@@ -78,7 +78,16 @@ class LspResolver:
             stats["sites"] += len(cmd_sites)
             client = LspClient(cmd, root, timeout=self.timeout)
             if not client.start():
-                stats["declined"] = "server unavailable"
+                # Not the opaque "server unavailable": say WHY and, when known,
+                # the exact command that fixes it (rustup shim, missing binary)
+                # — field review 2026-07-09, request 1. `broken_binary` marks
+                # the on-PATH-but-broken case so AUTO mode can flag it loudly
+                # (a shim the user has half-installed is worth shouting about;
+                # a machine with no server at all is the expected fallback).
+                diag, present = diagnose_server(cmd)
+                stats["declined"] = diag
+                if present:
+                    stats["broken_binary"] = True
                 continue
             try:
                 edges.extend(self._resolve_server(root, client, cmd_sites,

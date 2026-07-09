@@ -39,6 +39,7 @@ from .core.operations import (
     find_coupling,
     find_gaps,
     find_holes,
+    find_hotspots,
     find_modes,
     find_outlier_tests,
     find_similar,
@@ -85,4 +86,5 @@ __all__ = [
     "select_tests", "co_change", "find_coupling", "audit_graph",
     "find_gaps", "test_order", "redundant_tests", "find_core",
     "feature_map", "find_outlier_tests", "runtime_risk", "coverage_drift",
+    "find_hotspots",
 ]

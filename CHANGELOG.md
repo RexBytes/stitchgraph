@@ -4,6 +4,74 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.51.0] — 2026-07-09
+
+Answers to the 2026-07-09 field review (Claude Opus 4.8 running stitchgraph
+3.50.0 against `ant-node`, a ~40k-line Rust crate — static + git-risk + POD).
+Each change is pinned by tests in `tests/test_field_review.py` /
+`tests/test_lsp.py`.
+
+### Added
+- **`find_hotspots` — cross-lens convergence as a first-class command**
+  (request 12). Files that rank high across static centrality AND git churn
+  AND runtime behaviour at once — the review's single most valuable insight,
+  previously assembled by hand from four command outputs. Percentile fusion
+  (geometric mean) over whatever lenses are available; refuses below two
+  lenses; a file must converge on ≥ 2 lenses to be listed.
+- **Stable machine-readable `review_codes` on every envelope** (request 11).
+  The programmatic companion to the prose `review_reasons`:
+  `NAME_BASED_EDGE`, `LSP_UNAVAILABLE`, `CYCLE_HEURISTIC`,
+  `COVERAGE_MISMATCH`, … (full table in docs/design.md §4). Append-only
+  contract; `needs_review ⇒ review_codes non-empty`, centrally enforced.
+- **Tiered, ranked, capped `impact_of`** (requests 4/5). The blast radius
+  splits into `confident` (reachable through EXTRACTED edges alone — act on
+  it) and `ambiguous` (every route crosses a name-based guess — verify
+  first), each ranked nearest-first by call-graph hop distance and capped at
+  `limit` (default 50) with full counts and truncation reported in meta.
+  `blast_radius` stays the full flat list for compatibility. Backed by
+  `confident_only` support in reverse reachability across all three engines
+  (sidecar / GraphBLAS / pure).
+- **`scan --show-heuristic`** (request 2). Cycles whose every linking edge is
+  a name-based guess (0/N confident — pure `new`/`default`/`build` method-name
+  collisions across unrelated types) are now SUPPRESSED by default instead of
+  merely down-ranked: they read as real architecture problems and forced the
+  consumer to disprove each one (8 spurious cycles on the reviewed crate).
+  The suppression is counted in `meta.heuristic_cycles_suppressed` — never
+  silent — and `--show-heuristic` restores them. Cycles with even one
+  confident edge are unaffected.
+
+### Changed
+- **Actionable language-server diagnostics** (request 1). The opaque
+  "server unavailable" decline now says WHY and how to fix it:
+  `diagnose_server` distinguishes not-on-PATH (with a per-server install
+  hint), the rustup proxy-shim case — where the exact
+  `rustup component add rust-analyzer` fix is lifted from the shim's own
+  error output — and a present-but-broken binary. Under AUTO, a decline
+  from a binary that IS on PATH (the half-installed shim) now surfaces as a
+  review reason with code `LSP_UNAVAILABLE` instead of silently degrading
+  to the name-based graph; machines with no servers stay silent as before.
+  `type_at` refusals carry the same diagnosis.
+- **Bounded MCP tool output** (request 9). Every list in an MCP tool result
+  is cut at 100 items (`STITCHGRAPH_MCP_MAX_ITEMS` overrides; 0 disables),
+  with each cut reported in `meta.truncated` plus a hint — a 400 KB tool
+  result is unusable inside an agent's context. The CLI `--json` continues
+  to carry full payloads.
+- **Mode labels are IDF-weighted** (request 13). `find_modes`/`feature_map`
+  labels now weight tokens by inverse document frequency over the whole
+  artifact (the same scheme the subsystem labeller already used) — suite-wide
+  boilerplate tokens (`test`, `new`, `get`) no longer drown the tokens that
+  actually distinguish a mode.
+- **`audit_graph` tolerates path-prefix id drift** (request 14). The same
+  artifact `find_modes` consumed happily used to make `audit_graph` refuse
+  ("no coverage row matched a test node"): only audit_graph requires ids to
+  exist as graph nodes, and a capture kit run from a different root prefixes
+  every id. Unmatched ids are now remapped by (file basename, symbol) when
+  unambiguous — reported via `meta.ids_remapped` + `COVERAGE_MISMATCH`, never
+  silently — and the refusal, when it still fires, shows one sample id from
+  each namespace so the drift is visible.
+- The envelope schema (including the `review_codes` table) is documented in
+  docs/design.md §4.
+
 ## [3.50.0] — 2026-07-07
 
 ### Fixed

@@ -2415,13 +2415,27 @@ def test_scan_cycle_built_from_ambiguous_edges_is_demoted(tmp_path):
     })
     with sg.Store(":memory:") as store:
         sg.reindex(store, str(tmp_path))
+        # Default scan: the 0/N-confident collision cycle is SUPPRESSED (field
+        # review 2026-07-09, request 2) — counted in meta, never silent — while
+        # the confident cycle stays.
+        default = sg.scan(store)
+        default_cycles = {tuple(sorted(i["members"])): i
+                          for i in default.result if i["kind"] == "cycle"}
+        assert tuple(sorted(["a.js::build", "a.js::run"])) not in default_cycles
+        assert default.meta.get("heuristic_cycles_suppressed", 0) >= 1
+        assert "CYCLE_HEURISTIC" in default.review_codes
+        assert tuple(sorted(["c.js::alpha", "c.js::beta"])) in default_cycles
+
+        # show_heuristic=True restores the demoted-but-visible behaviour (issue #11).
         cycles = {tuple(sorted(i["members"])): i
-                  for i in sg.scan(store).result if i["kind"] == "cycle"}
+                  for i in sg.scan(store, show_heuristic=True).result
+                  if i["kind"] == "cycle"}
         artifact = cycles[tuple(sorted(["a.js::build", "a.js::run"]))]
         assert artifact["urgency"] == "green"           # capped below ORANGE
         assert artifact["needs_review"] is True
         assert artifact["confidence"] < 0.5
         assert artifact["confident_edges"] == 0
+        assert artifact["review_codes"] == ["CYCLE_HEURISTIC"]
 
         real = cycles[tuple(sorted(["c.js::alpha", "c.js::beta"]))]
         assert real["urgency"] == "orange"              # confident cycle unchanged

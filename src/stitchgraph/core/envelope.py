@@ -41,6 +41,33 @@ class Provenance(str, Enum):
     AMBIGUOUS = "ambiguous"  # multiple candidates, none dominant
 
 
+class ReviewCode(str, Enum):
+    """Stable machine-readable codes for `review_reasons` (field review 2026-07-09,
+    request 11): an agent filters on `review_codes` programmatically instead of
+    string-matching prose. One code may back several prose reasons; the code set is
+    the CONTRACT — never rename a member, only add. Documented in docs/design.md §4.
+    """
+
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"              # confidence below the review threshold
+    AMBIGUOUS_PROVENANCE = "AMBIGUOUS_PROVENANCE"  # result provenance is AMBIGUOUS
+    REFUSED = "REFUSED"                            # the operation refused to answer
+    UNSPECIFIED = "UNSPECIFIED"                    # flagged without a specific code
+    NAME_BASED_EDGE = "NAME_BASED_EDGE"            # rests on inferred/ambiguous (name-matched) edges
+    NON_CALL_USES = "NON_CALL_USES"                # empty CALLS answer, but other relations touch it
+    CYCLE_HEURISTIC = "CYCLE_HEURISTIC"            # cycle backed mostly/only by heuristic edges
+    LSP_UNAVAILABLE = "LSP_UNAVAILABLE"            # a language server declined / is missing or broken
+    COVERAGE_ABSENT = "COVERAGE_ABSENT"            # symbol/test absent from the coverage artifact
+    COVERAGE_MISMATCH = "COVERAGE_MISMATCH"        # artifact ids don't line up with graph node ids
+    RESOLVER_GAP = "RESOLVER_GAP"                  # executed on paths the static graph cannot see
+    STATIC_ONLY = "STATIC_ONLY"                    # answer rests on static reach alone (no runtime)
+    UNRESOLVED_SYMBOL = "UNRESOLVED_SYMBOL"        # a requested symbol did not resolve uniquely
+    IMPLICIT_COUPLING = "IMPLICIT_COUPLING"        # co-activation without a static edge (candidate)
+    PROFILE_IDENTITY = "PROFILE_IDENTITY"          # identical coverage profile != behavioural identity
+    PARSE_FAILURE = "PARSE_FAILURE"                # files could not be parsed / are missing from graph
+    SUPPRESSED_RESULTS = "SUPPRESSED_RESULTS"      # low-signal findings were capped/suppressed (never silent)
+    NO_ENTRY_POINTS = "NO_ENTRY_POINTS"            # liveness ranking unavailable (no entry points found)
+
+
 class Urgency(str, Enum):
     GREEN = "green"  # informational / safe cleanup / low risk
     ORANGE = "orange"  # anomaly, ambiguous, or moderate impact — look closer
@@ -57,6 +84,7 @@ class Result(Generic[T]):
     provenance: Provenance = Provenance.EXTRACTED
     needs_review: bool = False
     review_reasons: list[str] = field(default_factory=list)
+    review_codes: list[str] = field(default_factory=list)  # stable ReviewCode values
     urgency: Urgency | None = None  # issue results only
     alternatives: list[Any] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
@@ -66,10 +94,17 @@ class Result(Generic[T]):
         # `not (0.0 <= confidence <= 1.0)` clause also catches NaN and out-of-range
         # confidence (NaN < threshold is False, so a NaN would otherwise silently skip
         # review and emit invalid JSON) — defensive, no current caller hits it (panel PPP).
-        if (not (0.0 <= self.confidence <= 1.0)
-                or self.confidence < REVIEW_THRESHOLD
-                or self.provenance is Provenance.AMBIGUOUS):
+        low = (not (0.0 <= self.confidence <= 1.0)
+               or self.confidence < REVIEW_THRESHOLD)
+        if low or self.provenance is Provenance.AMBIGUOUS:
             self.needs_review = True
+            # The central rules carry their own stable codes, so every centrally-
+            # flagged result is machine-filterable even before an op adds a
+            # specific code of its own.
+            if low:
+                self._add_code(ReviewCode.LOW_CONFIDENCE)
+            if self.provenance is Provenance.AMBIGUOUS:
+                self._add_code(ReviewCode.AMBIGUOUS_PROVENANCE)
         # Clamp a non-finite / out-of-range confidence to a finite [0,1] value so to_dict()
         # can never emit Infinity/NaN (invalid JSON per RFC 8259). needs_review is already set
         # above; here we also CORRECT the value, not merely flag it — the envelope is the
@@ -88,16 +123,31 @@ class Result(Generic[T]):
         if self.urgency is Urgency.RED and self.provenance is not Provenance.EXTRACTED:
             self.urgency = Urgency.ORANGE
 
-    def add_reason(self, reason: str) -> Result[T]:
+    def add_reason(self, reason: str,
+                   code: ReviewCode | str | None = None) -> Result[T]:
         if reason not in self.review_reasons:
             # A specific reason supersedes the generic fallback added in __post_init__.
             if self.review_reasons == [_DEFAULT_REVIEW_REASON]:
                 self.review_reasons = []
             self.review_reasons.append(reason)
             self.needs_review = True
+        if code is not None:
+            self._add_code(code)
         return self
 
+    def _add_code(self, code: ReviewCode | str) -> None:
+        value = code.value if isinstance(code, ReviewCode) else str(code)
+        if value not in self.review_codes:
+            self.review_codes.append(value)
+
     def to_dict(self) -> dict[str, Any]:
+        # Mirror the reasons contract on codes at the one serialization point:
+        # `needs_review => review_codes non-empty` — a flagged result an agent
+        # filters by code must never come back with an empty code list, even when
+        # an op set needs_review after construction without naming a code.
+        codes = self.review_codes
+        if self.needs_review and not codes:
+            codes = [ReviewCode.UNSPECIFIED.value]
         return {
             "ok": self.ok,
             "result": _plain(self.result),
@@ -105,6 +155,7 @@ class Result(Generic[T]):
             "provenance": self.provenance.value,
             "needs_review": self.needs_review,
             "review_reasons": self.review_reasons,
+            "review_codes": codes,
             "urgency": self.urgency.value if self.urgency else None,
             "alternatives": [_plain(a) for a in self.alternatives],
             "meta": _plain(self.meta),  # honour _plain as the chokepoint for ALL values:
@@ -131,7 +182,8 @@ def refuse(*reasons: str, confidence: float = 0.0,
     """
     return Result(ok=result is not None, result=result, confidence=confidence,
                   provenance=provenance, needs_review=True,
-                  review_reasons=list(reasons), meta=meta)
+                  review_reasons=list(reasons),
+                  review_codes=[ReviewCode.REFUSED.value], meta=meta)
 
 
 def _plain(value: Any) -> Any:

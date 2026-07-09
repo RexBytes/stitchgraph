@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -50,6 +51,57 @@ DEFAULT_SERVERS: dict[str, tuple[str, str]] = {
 
 _INIT_TIMEOUT = 30.0
 _READY_TIMEOUT = 30.0
+
+# One actionable install line per default server binary — the diagnostic a
+# consumer can EXECUTE, not just read (field review 2026-07-09, request 1:
+# "server unavailable" cost a whole low-confidence first pass that one message
+# would have saved).
+_INSTALL_HINTS = {
+    "rust-analyzer": "rustup component add rust-analyzer",
+    "typescript-language-server":
+        "npm install -g typescript-language-server typescript",
+    "gopls": "go install golang.org/x/tools/gopls@latest",
+    "clangd": "install clangd via your system package manager (e.g. apt install clangd)",
+}
+
+# rustup proxy errors name the exact command to run — lift it verbatim.
+_RUSTUP_ADD = re.compile(r"rustup +component +add +[\w-]+")
+
+
+def diagnose_server(cmd: str) -> tuple[str, bool]:
+    """Why `cmd` could not serve, as (actionable message, binary_on_path).
+
+    Called only AFTER a start()/initialize failure — it never runs for healthy
+    servers. Distinguishes the three field cases that "server unavailable"
+    collapsed together: (a) binary not on PATH (with the install hint);
+    (b) binary on PATH but a dead proxy shim — rustup's uninstalled
+    rust-analyzer proxy errors on launch and names the `rustup component add`
+    fix, which is surfaced verbatim; (c) binary present and runnable but the
+    LSP initialize handshake failed. Total: any probe failure degrades to a
+    generic-but-honest message, never an exception."""
+    argv = cmd.split()
+    binary = argv[0] if argv else cmd
+    if shutil.which(binary) is None:
+        hint = _INSTALL_HINTS.get(binary)
+        msg = f"'{binary}' is not on PATH"
+        return (f"{msg}; install it: {hint}" if hint else msg), False
+    try:
+        probe = subprocess.run([binary, "--version"], capture_output=True,
+                               text=True, timeout=10)
+        err = ((probe.stderr or "") + "\n" + (probe.stdout or "")).strip()
+        if probe.returncode != 0:
+            fix = _RUSTUP_ADD.search(err)
+            if fix:  # the rustup proxy shim: on PATH, but the component isn't installed
+                return (f"'{binary}' on PATH is a rustup proxy shim but the component "
+                        f"is not installed; run: {fix.group(0)}"), True
+            first = err.splitlines()[0] if err else "no error output"
+            hint = _INSTALL_HINTS.get(binary)
+            return (f"'{binary}' is on PATH but exits with an error ({first})"
+                    + (f"; reinstall it: {hint}" if hint else "")), True
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return f"'{binary}' is on PATH but could not be executed", True
+    return (f"'{binary}' is installed but did not complete the LSP initialize "
+            "handshake"), True
 
 
 def any_server_available(overrides: dict[str, str] | None = None) -> bool:
