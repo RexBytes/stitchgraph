@@ -112,6 +112,14 @@ def _load(start: str | Path | None) -> Config:
         # raises "empty pattern" (panel R33B); a blank entry is never a useful value.
         return [s for x in v if (s := str(x))] if isinstance(v, list) else []
 
+    def _bool(v: object, default: bool) -> bool:
+        # A real TOML bool is honoured; anything else — notably a hand-quoted
+        # "false", which bool() would turn into True — falls back to the
+        # default, the same shape-guard rule `lsp_enabled` below already
+        # applies (external review 2026-07-09: bool("false") silently ENABLED
+        # the feature the user was trying to turn off).
+        return v if isinstance(v, bool) else default
+
     ep, idx, rev = _table("entry_points"), _table("index"), _table("review")
     orient, sim, lsp = _table("orient"), _table("similar"), _table("lsp")
     try:
@@ -138,11 +146,11 @@ def _load(start: str | Path | None) -> Config:
     return Config(
         include=set(_str_list(ep.get("include"))),
         root_modules=_str_list(ep.get("root_modules")),
-        include_tests=bool(ep.get("include_tests", True)),
+        include_tests=_bool(ep.get("include_tests"), True),
         ignore=_str_list(idx.get("ignore")),
-        adjacency_cache=bool(idx.get("adjacency_cache", True)),
-        similarity_cache=bool(idx.get("similarity_cache", True)),
-        edge_compression=bool(idx.get("edge_compression", True)),
+        adjacency_cache=_bool(idx.get("adjacency_cache"), True),
+        similarity_cache=_bool(idx.get("similarity_cache"), True),
+        edge_compression=_bool(idx.get("edge_compression"), True),
         threshold=threshold,
         hub_metric=str(orient.get("hub_metric", "transitive_fan_in")),
         embed_model=embed if isinstance(embed, str) else None,

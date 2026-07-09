@@ -120,3 +120,30 @@ def test_include_tests_defaults_true_and_respects_override(tmp_path):
     explicit.mkdir()
     (explicit / "stitchgraph.toml").write_text("[entry_points]\ninclude_tests = false\n")
     assert load_config(explicit).include_tests is False
+
+
+def test_quoted_boolean_strings_fall_back_to_defaults(tmp_path):
+    """A hand-quoted "false" is truthy, so bool() silently ENABLED the feature
+    the user was turning off (external review 2026-07-09). Malformed boolean
+    values fall back to the default — the same shape-guard rule every other
+    field (tables, lists, threshold, timeout, lsp.enabled) already follows —
+    while real TOML booleans are honoured."""
+    from stitchgraph.core.config import load_config
+    quoted = tmp_path / "quoted"
+    quoted.mkdir()
+    (quoted / "stitchgraph.toml").write_text(
+        '[entry_points]\ninclude_tests = "false"\n'
+        '[index]\nadjacency_cache = "false"\nsimilarity_cache = "no"\n'
+        'edge_compression = 0\n')
+    cfg = load_config(quoted)
+    assert cfg.include_tests is True          # default, not bool("false") == True
+    assert cfg.adjacency_cache is True
+    assert cfg.similarity_cache is True
+    assert cfg.edge_compression is True       # int 0 is malformed for a bool field
+    honoured = tmp_path / "honoured"
+    honoured.mkdir()
+    (honoured / "stitchgraph.toml").write_text(
+        '[entry_points]\ninclude_tests = false\n[index]\nedge_compression = false\n')
+    cfg2 = load_config(honoured)
+    assert cfg2.include_tests is False
+    assert cfg2.edge_compression is False

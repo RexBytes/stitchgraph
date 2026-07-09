@@ -547,6 +547,66 @@ def test_tied_percentiles_share_average_rank():
     assert pct["d"] == 1.0
 
 
+# -- external review 2026-07-09: packaging / adapter-parity guards -------------
+def test_import_stitchgraph_never_touches_optional_deps():
+    """The lean-install promise ('pip install --no-deps stitchgraph is the
+    stdlib-only library core') rests on the eager `from .core.operations
+    import *` chain staying dependency-free. CI proves it on a bare install;
+    this pins it in EVERY environment: import the package and run an op with
+    every optional dependency blocked at the import hook."""
+    import subprocess
+    import sys
+    import textwrap
+
+    code = textwrap.dedent("""
+        import importlib.abc, sys
+        BLOCKED = {"typer", "mcp", "tree_sitter", "tree_sitter_language_pack",
+                   "jedi", "sqlglot", "numpy", "graphblas", "scipy", "yaml"}
+        class Blocker(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname.split(".")[0] in BLOCKED:
+                    raise ImportError(f"optional dependency {fullname!r} "
+                                      "imported eagerly by the lean core")
+        sys.meta_path.insert(0, Blocker())
+        import stitchgraph
+        assert len(stitchgraph.registry()) > 20
+        with stitchgraph.Store(":memory:") as s:
+            r = stitchgraph.find_symbol(s, "nothing_here")
+            assert r.ok is False and "REFUSED" in r.review_codes
+        print("LEAN-OK")
+    """)
+    proc = subprocess.run([sys.executable, "-c", code],
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stderr
+    assert "LEAN-OK" in proc.stdout
+
+
+def test_cli_mcp_and_operation_signatures_agree():
+    """'Same name, same params, same order, everywhere' (design §3) is enforced
+    in three separate places (exposed_params filtering, the CLI's _anno_type
+    conversion, the MCP signature build) that can drift silently — pin exact
+    three-way parity for EVERY registered operation instead (external review
+    2026-07-09)."""
+    import inspect
+
+    typer = pytest.importorskip("typer")
+    pytest.importorskip("mcp")
+    from stitchgraph.adapters import cli as cli_mod
+    from stitchgraph.adapters import mcp as mcp_mod
+    from stitchgraph.core.operations import registry
+
+    for op in registry():
+        exposed = [p.name for p in op.exposed_params()]
+        mcp_names = list(inspect.signature(mcp_mod._make_tool(op, "x.db")).parameters)
+        assert mcp_names == exposed, f"MCP drift on {op.name}"
+        cli_names = list(inspect.signature(cli_mod._make_command(typer, op)).parameters)
+        assert cli_names == exposed + ["db", "json"], f"CLI drift on {op.name}"
+        for p in op.exposed_params():
+            # every exposed annotation must resolve to a concrete Typer type
+            assert cli_mod._anno_type(p.annotation) in (str, int, float, bool), \
+                f"{op.name}.{p.name}: unresolvable annotation {p.annotation!r}"
+
+
 # -- dogfood finding (round 2): test-owned stubs are doubles, not debt ---------
 def test_scan_test_owned_stub_is_green_advisory(tmp_path):
     """A deliberately-empty fake in a test file (a stub server's run(), a mock

@@ -170,6 +170,29 @@ its own repo:
   `test_order`, `redundant_tests`, `find_core`, `coverage_drift`) stay raw
   by design — they never join graph ids.
 
+### Fixed (external review, 2026-07-09)
+An independent agent review of the branch surfaced three pre-existing repo
+issues (none introduced by this release line); the two safe fixes plus the
+suggested guards are applied, the adapter-normalization refactor it floated
+is deliberately pinned by a test instead of churned:
+
+- **Quoted config booleans no longer silently enable features.** `bool()` on
+  a hand-quoted `include_tests = "false"` (or `adjacency_cache` /
+  `similarity_cache` / `edge_compression`) yielded True; malformed boolean
+  values now fall back to their defaults via the same `isinstance` shape
+  guard `lsp.enabled` already used. Real TOML booleans are honoured.
+- **The lean-install promise is pinned in-suite**, not only in the core-only
+  CI job: a subprocess test imports `stitchgraph` and runs an op with every
+  optional dependency blocked at the import hook, so a future eager import
+  of typer/mcp/tree-sitter/jedi/sqlglot/numpy/graphblas/scipy/yaml fails
+  loudly in any environment.
+- **Three-way signature parity is pinned for every operation**: exposed
+  params ↔ generated CLI command ↔ generated MCP tool must agree in name
+  and order, and every exposed annotation must resolve to a concrete Typer
+  type — the "same name, same params, everywhere" contract (design §3) was
+  previously enforced by three separately-drifting code paths with no test
+  spanning them.
+
 ## [3.50.0] — 2026-07-07
 
 ### Fixed
