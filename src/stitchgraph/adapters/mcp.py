@@ -29,29 +29,43 @@ def _item_budget() -> int:
         return _MCP_MAX_ITEMS
 
 
-def _bound(envelope: dict) -> dict:
-    """Cut oversized lists in a serialized envelope: the top-level `result` list,
-    list values directly under a dict `result`, and `alternatives`. Every cut is
-    recorded in `meta.truncated[key] = {shown, total}` plus a one-line hint, so a
-    consumer can never mistake a bounded answer for a complete one."""
+# Ops whose payload lists are index-correlated (get_matrix's `labels` row/col
+# indices are what `cells` entries point at): cutting them independently would
+# silently corrupt the correspondence — worse than size. They are exempt here
+# because they are already self-bounded at the operation layer (get_matrix
+# refuses broad scopes past its own `limit`).
+_UNBOUNDED_OPS = frozenset({"get_matrix"})
+
+
+def _bound(envelope: dict, op_name: str | None = None) -> dict:
+    """Cut oversized lists in a serialized envelope, RECURSIVELY — a nested list
+    (a scan cycle's `members`, an orient hub's callers) must not smuggle the
+    400 KB blob the bound exists to prevent (self-review 2026-07-09). Every cut
+    is recorded in `meta.truncated[path] = {shown, total}` plus a one-line hint,
+    so a consumer can never mistake a bounded answer for a complete one. Ops in
+    _UNBOUNDED_OPS pass through untouched (index-correlated payloads, bounded at
+    the op layer)."""
     budget = _item_budget()
-    if budget <= 0:
+    if budget <= 0 or op_name in _UNBOUNDED_OPS:
         return envelope
     truncated: dict[str, dict[str, int]] = {}
 
-    def cut(value: Any, key: str) -> Any:
-        if isinstance(value, list) and len(value) > budget:
-            truncated[key] = {"shown": budget, "total": len(value)}
-            return value[:budget]
+    def walk(value: Any, path: str) -> Any:
+        if isinstance(value, list):
+            if len(value) > budget:
+                # Same path may be cut in several sibling items ("result[].members");
+                # report the largest original length rather than overwriting blindly.
+                seen = truncated.get(path)
+                total = max(len(value), seen["total"]) if seen else len(value)
+                truncated[path] = {"shown": budget, "total": total}
+                value = value[:budget]
+            return [walk(v, f"{path}[]") for v in value]
+        if isinstance(value, dict):
+            return {k: walk(v, f"{path}.{k}") for k, v in value.items()}
         return value
 
-    result = envelope.get("result")
-    if isinstance(result, list):
-        envelope["result"] = cut(result, "result")
-    elif isinstance(result, dict):
-        for k, v in result.items():
-            result[k] = cut(v, f"result.{k}")
-    envelope["alternatives"] = cut(envelope.get("alternatives") or [], "alternatives")
+    envelope["result"] = walk(envelope.get("result"), "result")
+    envelope["alternatives"] = walk(envelope.get("alternatives") or [], "alternatives")
     if truncated:
         meta = envelope.get("meta")
         if not isinstance(meta, dict):
@@ -95,7 +109,7 @@ def _make_tool(op: Operation, db: str):
         assert store is not None
         with store:
             result = op.func(store, **kwargs)
-        return _bound(result.to_dict())
+        return _bound(result.to_dict(), op.name)
 
     # Expose only JSON-simple params (drop `store` and internal objects like
     # `detector`, which pydantic can't schema-ify) — they fall back to defaults.

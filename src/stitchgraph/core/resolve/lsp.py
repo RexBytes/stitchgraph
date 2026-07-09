@@ -68,6 +68,13 @@ _INSTALL_HINTS = {
 _RUSTUP_ADD = re.compile(r"rustup +component +add +[\w-]+")
 
 
+# diagnose_server memo: a broken binary's verdict cannot change within a session
+# (fixing it makes start() succeed, so diagnose stops being called at all), and
+# watch mode constructs a fresh LspResolver per edit — without the cache a dead
+# shim would cost a failed spawn PLUS an up-to-10s probe on every save.
+_DIAGNOSIS_CACHE: dict[tuple[str, str | None], tuple[str, bool]] = {}
+
+
 def diagnose_server(cmd: str) -> tuple[str, bool]:
     """Why `cmd` could not serve, as (actionable message, binary_on_path).
 
@@ -78,16 +85,34 @@ def diagnose_server(cmd: str) -> tuple[str, bool]:
     rust-analyzer proxy errors on launch and names the `rustup component add`
     fix, which is surfaced verbatim; (c) binary present and runnable but the
     LSP initialize handshake failed. Total: any probe failure degrades to a
-    generic-but-honest message, never an exception."""
+    generic-but-honest message, never an exception. Memoized per (cmd,
+    resolved path) for the session."""
     argv = cmd.split()
     binary = argv[0] if argv else cmd
-    if shutil.which(binary) is None:
+    located = shutil.which(binary)
+    key = (cmd, located)
+    cached = _DIAGNOSIS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    _DIAGNOSIS_CACHE[key] = out = _diagnose_uncached(binary, located)
+    return out
+
+
+def _diagnose_uncached(binary: str, located: str | None) -> tuple[str, bool]:
+    if located is None:
         hint = _INSTALL_HINTS.get(binary)
         msg = f"'{binary}' is not on PATH"
         return (f"{msg}; install it: {hint}" if hint else msg), False
     try:
+        # stdin MUST be detached: this probe targets exactly the population of
+        # misbehaving binaries, and one that ignores argv and reads stdin would
+        # otherwise inherit the parent's — which is the live MCP JSON-RPC
+        # channel when stitchgraph-mcp runs on stdio transport, so it could eat
+        # protocol bytes before the timeout kills it (self-review 2026-07-09;
+        # LspClient.start() has always piped stdin for the same reason).
         probe = subprocess.run([binary, "--version"], capture_output=True,
-                               text=True, timeout=10)
+                               text=True, timeout=10,
+                               stdin=subprocess.DEVNULL)
         err = ((probe.stderr or "") + "\n" + (probe.stdout or "")).strip()
         if probe.returncode != 0:
             fix = _RUSTUP_ADD.search(err)
@@ -96,8 +121,12 @@ def diagnose_server(cmd: str) -> tuple[str, bool]:
                         f"is not installed; run: {fix.group(0)}"), True
             first = err.splitlines()[0] if err else "no error output"
             hint = _INSTALL_HINTS.get(binary)
-            return (f"'{binary}' is on PATH but exits with an error ({first})"
-                    + (f"; reinstall it: {hint}" if hint else "")), True
+            # Honest about the probe's limits: a non-zero exit may just mean the
+            # server has no --version flag while the REAL failure was the LSP
+            # handshake — assert the observation, not a broken install.
+            return (f"'{binary}' is on PATH but did not serve; probing it with "
+                    f"--version also failed ({first})"
+                    + (f" — if it is broken, reinstall: {hint}" if hint else "")), True
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return f"'{binary}' is on PATH but could not be executed", True
     return (f"'{binary}' is installed but did not complete the LSP initialize "

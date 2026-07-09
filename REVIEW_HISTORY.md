@@ -2282,6 +2282,19 @@ reminder that the honest-envelope "refuse clearly" principle is only as good as 
 refusal *message*: returning `ok=False` was correct; conflating "unknown" with "ambiguous" and hiding
 the candidates was the real gap.
 
+### v3.51.0 — answers to the 2026-07-09 external field review + self-review of the batch
+
+An external field review (Claude Opus 4.8 running stitchgraph 3.50.0 against `ant-node`, a ~40k-line
+Rust crate — full static + git-risk + POD run) filed 15 requests; 8 were implemented (actionable LSP
+diagnostics incl. rustup-shim detection, 0/N-confident cycle suppression behind `--show-heuristic`,
+tiered/ranked/capped `impact_of`, bounded MCP output, stable `review_codes`, `find_hotspots`
+convergence, IDF mode labels, `audit_graph` id-drift tolerance). The batch was then put through the
+same adversarial process as any panel: 8 finder angles + per-candidate verification.
+
+| panel | models | clean | notes |
+|---|---|---|---|
+| R287 | 1 (self) | ✗ | 8-angle self-review of the v3.51.0 diff, per-candidate adversarial verify (2 claims refuted: healthy-slow-server AUTO flag — the circuit-breaker path stays silent; overlay-edge distance gap — `edges_all` is the complete contract the sidecar mirrors). 10 findings survived, all fixed same-day with boundary tests: (1) `_suffix_remap` matched by bare basename+symbol — could graft a stale/vendored id onto an unrelated file and fabricate audit recall; now requires whole-segment path-suffix alignment (the runtime.py `_by_suffix` policy, panel R34A) and keys only candidate basenames, never a full-graph dict. (2) `impact_of` gated demotion on the EDGE tally but messaged in NODE-tier counts — a redundant parallel inferred edge produced "0 of N dependents are ambiguous … verify the ambiguous tier" beside an EMPTY ambiguous tier; the gate is now the tier split itself. (3+4) MCP `_bound` cut only one level deep (a scan cycle's `members` still shipped the 400 KB blob) and cut correlated lists independently (get_matrix labels/cells lost index alignment; `tests_to_run` truncated to an alphabetical prefix) — now recursive, `get_matrix` exempt (self-bounded at the op layer), and `impact_of` ranks `tests_to_run`/tiers nearest-first so any truncation keeps the most relevant entries. (5) `diagnose_server`'s probe inherited the parent's stdin — under the MCP stdio transport a broken binary could eat JSON-RPC bytes; now `stdin=DEVNULL` + per-session memoized. (6+7) `find_hotspots` lacked orient's research/25 test-mass exclusion (test files converge on every lens by construction) and gave tied lens values ordinal (alphabetical) percentiles — now excluded + average-rank ties, cheap lenses probed before the expensive hub ranking. (8) `impact_of`'s detail cap bounded radius NODES but not induced EDGES — added a 250k edge budget that abandons the detail pass mid-stream. (9) the `needs_review ⇒ review_codes non-empty` contract held only in `to_dict` — now enforced on assignment, so the library and MCP surfaces can never disagree. (10) `refuse(result=…)` stamped ok=True advisory partials as REFUSED — split into REFUSED (no result) vs HEDGED_RESULT. Also: `_file_centrality`/`_file_behaviour` extracted so `risk`/`runtime_risk`/`find_hotspots` share one aggregation (the v3.25.0 src-layout bug class has one fix point), `_pos_int` replaces 9 hand-copied limit-validation idioms, and the honest-probe wording no longer claims a broken install when a server merely lacks `--version`. |
+
 ## v3.20.0 — `find_subsystems`: spectral subsystem decomposition (§6 spectral research → package)
 
 The second §6 "system-matrix" win graduates into the package. New advisory operation `find_subsystems`

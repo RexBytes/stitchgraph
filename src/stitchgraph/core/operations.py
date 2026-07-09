@@ -94,6 +94,16 @@ def registry() -> list[Operation]:
     return list(_REGISTRY.values())
 
 
+def _pos_int(value: Any, default: int) -> int:
+    """Coerce a user-supplied count parameter: a positive int passes, anything
+    else (bool, zero, negative, wrong type from an MCP JSON client) falls back
+    to the op's default. One helper instead of the nine hand-copied inline
+    idioms it replaces (self-review 2026-07-09) — the substitute-don't-refuse
+    semantics every `limit`-taking analysis op shares."""
+    return value if isinstance(value, int) and not isinstance(value, bool) \
+        and value > 0 else default
+
+
 # --------------------------------------------------------------------------
 # Structural primitives (design §6, layer 0/1) — backed directly by the store.
 # --------------------------------------------------------------------------
@@ -438,7 +448,14 @@ def _hub_ranking(store: Store,
 # --------------------------------------------------------------------------
 
 
-_IMPACT_DETAIL_CAP = 5_000  # radius size above which hop distances are skipped (memory bound)
+_IMPACT_DETAIL_CAP = 5_000  # radius NODE count above which hop distances are skipped
+# The node cap alone does not bound memory: radj grows one entry per radius-induced
+# edges_all ROW, and group expansion makes >95% of resolved rows at framework density —
+# a 5k-node radius on a dense graph can induce millions of entries (self-review
+# 2026-07-09). When the induced edge count passes this budget the detail pass is
+# abandoned mid-stream (radj discarded, tiers fall back to id order) so impact_of can
+# never rematerialize the edge table it streams to avoid.
+_IMPACT_DETAIL_EDGE_CAP = 250_000
 
 
 @operation("Blast radius of changing a symbol (which tests to run).")
@@ -469,15 +486,14 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
             res.alternatives = [n.to_dict() for n in candidates]
             return res
         return refuse(f"'{name}' is not in the index", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) \
-        and limit > 0 else 50
+    lim = _pos_int(limit, 50)
     dependents = reverse_reachable_from(store, {target.id})
     # The certain tier: one more reverse BFS restricted to EXTRACTED edges.
     confident = (reverse_reachable_from(store, {target.id}, confident_only=True)
                  if dependents else set())
     ambiguous_only = dependents - confident
-    tests = sorted(d for d in dependents
-                   if (n := store.get_node(d)) and "test" in n.roles)
+    test_set = {d for d in dependents
+                if (n := store.get_node(d)) and "test" in n.roles}
     # Confidence/provenance must reflect the edges the blast radius rests on, exactly as
     # get_callers/_callgraph_result and trace_path do: a dependent reached only through
     # name-based (AMBIGUOUS/INFERRED) edges is a heuristic guess, not a certain
@@ -494,19 +510,22 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
     # for hop distances — bounded by _IMPACT_DETAIL_CAP) are kept.
     detail = len(radius) <= _IMPACT_DETAIL_CAP
     radj: dict[str, list[str]] = {}
-    n_backing = n_conf = 0
+    n_backing = 0
     any_ambiguous = False
     cur = store.conn.execute(
         "SELECT src, relation, dst_id, provenance FROM edges_all")
     for src, rel, dst_id, prov_s in cur:
         if rel in liveness and src in dependents and dst_id in radius:
             n_backing += 1
-            if prov_s == Provenance.EXTRACTED.value:
-                n_conf += 1
-            elif prov_s == Provenance.AMBIGUOUS.value:
+            if prov_s == Provenance.AMBIGUOUS.value:
                 any_ambiguous = True
             if detail:
-                radj.setdefault(dst_id, []).append(src)
+                # n_backing counts exactly the rows radj holds — the edge budget.
+                if n_backing > _IMPACT_DETAIL_EDGE_CAP:
+                    detail = False
+                    radj.clear()
+                else:
+                    radj.setdefault(dst_id, []).append(src)
     dist: dict[str, int] = {}
     if detail:
         # Hop distances = BFS from the target over the induced reverse adjacency.
@@ -519,12 +538,19 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
                     dist[prev] = d + 1
                     frontier.append((prev, d + 1))
 
+    # nearest-first everywhere the order carries meaning: an adapter or consumer
+    # that truncates keeps the closest (most relevant) entries, never an
+    # alphabetical prefix (self-review 2026-07-09). With no distances (past the
+    # detail caps) every key ties and this degrades to plain id order.
+    def _nearest(i: str) -> tuple[int, str]:
+        return (dist.get(i, len(radius)), i)
+
     def _tier(ids: set[str]) -> list[dict]:
-        ranked = sorted(ids, key=(lambda i: (dist.get(i, len(radius)), i))
-                        if detail else None)
+        ranked = sorted(ids, key=_nearest)
         return [({"id": i, "distance": dist[i]} if i in dist else {"id": i})
                 for i in ranked[:lim]]
 
+    tests = sorted(test_set, key=_nearest)
     payload = {
         "symbol": target.id,
         "blast_radius": sorted(dependents),
@@ -535,14 +561,25 @@ def impact_of(store: Store, name: str, limit: int = 50) -> Result:
         "ambiguous_count": len(ambiguous_only),
         "tests_to_run": tests,
     }
-    truncated = {k: lim for k, n in (("confident", len(confident)),
-                                     ("ambiguous", len(ambiguous_only))) if n > lim}
+    truncated = {}
+    if len(confident) > lim:
+        truncated["confident"] = lim
+    if len(ambiguous_only) > lim:
+        truncated["ambiguous"] = lim
     extra = {"tiers_truncated": truncated} if truncated else {}
-    if not n_backing or n_conf == n_backing:
+    # The demotion gate is the NODE-tier split, not the raw edge tally: a
+    # dependent with a confident route is certain even when a redundant
+    # name-based edge also points at it, so an empty `ambiguous` tier must not
+    # produce a hedged envelope whose reason says "0 of N dependents…" while
+    # telling the consumer to verify an empty list (self-review 2026-07-09;
+    # panel R33A's intent — dependents reached ONLY through guesses are the
+    # over-approximation — is exactly the tier definition).
+    if not dependents or not ambiguous_only:
         return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
                   count=len(dependents), tests=len(tests), **extra)
     prov = Provenance.AMBIGUOUS if any_ambiguous else Provenance.INFERRED
-    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / n_backing), 2),
+    res = ok(payload,
+             confidence=round(0.4 + 0.5 * (len(confident) / len(dependents)), 2),
              provenance=prov, count=len(dependents), tests=len(tests), **extra)
     res.needs_review = True
     res.add_reason(f"{len(ambiguous_only)} of {len(dependents)} dependents are reached "
@@ -1093,7 +1130,7 @@ def find_outlier_tests(store: Store, coverage: str = "coverage_modes.json",
     if not modes.load_coverage(coverage):
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
     try:
         rows, meta = modes.outlier_tests(store, coverage, k=want, limit=lim)
@@ -1193,7 +1230,7 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     target, candidates = _resolve_target(store, name)
     if target is None:
         if len(candidates) > 1:
@@ -1268,7 +1305,7 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     cov = coverage_query.load_coverage(coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
@@ -1332,8 +1369,10 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     if not per_test:
         # Diagnose the id-scheme gap instead of just asserting it: one sample from
         # each namespace lets the consumer SEE the drift (prefix, separator, …).
-        sample_cov = next(iter(sorted(by_test)), "?")
-        sample_graph = next(iter(sorted(_test_node_ids(store))), "(no test nodes indexed)")
+        # min(), not sorted() — the error path needs one stable sample, not a
+        # total order of every test id on a large graph.
+        sample_cov = min(by_test, default="?")
+        sample_graph = min(_test_node_ids(store), default="(no test nodes indexed)")
         return refuse("no coverage row matched a test node in the graph — are the artifact "
                       "and the index from the same tree? "
                       f"(artifact test id e.g. {sample_cov!r}; graph test node "
@@ -1364,22 +1403,40 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
 
 
 def _suffix_remap(missing: set[str], nodes: set[str]) -> dict[str, str]:
-    """artifact id -> graph node id by (path basename, qualname), for ids whose
-    trees disagree on a path PREFIX (capture kit run from a sandbox root, crate
-    subdir, …). Only unambiguous keys map: a basename+symbol pair that names two
-    graph nodes stays unmatched rather than guessing."""
+    """artifact id -> graph node id, for ids whose trees disagree on a path
+    PREFIX (capture kit run from a sandbox root, crate subdir, …). Two guards,
+    both required (self-review 2026-07-09 — a bare basename+symbol match
+    silently grafted a stale/vendored id onto an unrelated same-named file,
+    fabricating recall; runtime.py's `_by_suffix` refuses bare basenames for
+    the same reason, panel R34A):
+
+    - the (basename, qualname) key must be UNIQUE among graph nodes, and
+    - the two paths must actually be prefix-drifted versions of each other:
+      one path is a whole-segment suffix of the other. `sandbox/tests/a.py`
+      aligns with `tests/a.py`; `src/utils.py` does NOT align with
+      `tools/utils.py` — that id stays unmatched (honest `tests_unmatched`)
+      rather than becoming a wrong-node audit."""
     def key(nid: str) -> tuple[str, str]:
         path, _, qual = nid.partition("::")
         return (path.replace("\\", "/").rsplit("/", 1)[-1], qual)
 
+    def aligned(a: str, b: str) -> bool:
+        pa, pb = (i.partition("::")[0].replace("\\", "/") for i in (a, b))
+        longer, shorter = (pa, pb) if len(pa) >= len(pb) else (pb, pa)
+        return longer == shorter or longer.endswith("/" + shorter)
+
+    # Key only the candidates that could serve a missing id — never a dict over
+    # every node in a multi-million-node graph to remap a handful of ids.
+    wanted = {key(mid) for mid in missing}
     by_key: dict[tuple[str, str], str | None] = {}
     for nid in nodes:
         k = key(nid)
-        by_key[k] = None if k in by_key else nid  # duplicate key -> ambiguous -> never map
+        if k in wanted:
+            by_key[k] = None if k in by_key else nid  # duplicate -> ambiguous -> never map
     out: dict[str, str] = {}
     for mid in missing:
         cand = by_key.get(key(mid))
-        if cand is not None and cand != mid:
+        if cand is not None and cand != mid and aligned(mid, cand):
             out[mid] = cand
     return out
 
@@ -1408,9 +1465,8 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
-    ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
-        min_shared > 0 else 3
+    lim = _pos_int(limit, 40)
+    ms = _pos_int(min_shared, 3)
     # Every structurally-linked function pair (any resolved edge) is "visible" —
     # exclude those. Probed per CANDIDATE pair via two indexed lookups instead of
     # materialising a frozenset per resolved edge (v3.39.0: that set was the op's
@@ -1573,7 +1629,7 @@ def find_core(store: Store, coverage: str = "coverage_modes.json", limit: int = 
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     cov = coverage_query.load_coverage(coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
@@ -1604,17 +1660,13 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
     churn = gitrisk.churn(path)
     if not churn:
         return refuse("no git history found for indexed source files", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 15
+    lim = _pos_int(limit, 15)
     # behavioural centrality per file = total activation frequency of the functions it defines.
     # Coverage fids are relative to the INDEXED root; git churn paths to the REPO root — on a
     # src-layout project the raw join matched nothing and returned ok/0 hotspots silently
     # (found dogfooding v3.25.0 on itself). Translate exactly as `risk` does.
     to_git = _git_path_mapper(store, path)
-    fmap = coverage_query.invert(cov)
-    file_beh: dict[str, float] = {}
-    for fid, tset in fmap.items():
-        f = to_git(fid.split("::", 1)[0])
-        file_beh[f] = file_beh.get(f, 0.0) + len(tset)
+    file_beh = _file_behaviour(cov, to_git)
     hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():
         beh = file_beh.get(f, 0.0)
@@ -1650,45 +1702,56 @@ def find_hotspots(store: Store, path: str | None = None,
     - **behavioural_centrality** — how many tests exercise the file's functions
       (needs a per-test coverage artifact from `scaffold_coverage`).
 
-    Each lens ranks files into percentiles; a file's score is the geometric mean
-    of its percentiles over the lenses it appears in, and only files visible to
-    at least TWO lenses are listed — one strong lens is `orient`/`risk`
-    territory, convergence is what turns "probably important" into "provably
-    central". Refuses when fewer than two lenses are available. Advisory,
-    read-only."""
+    Each lens ranks files into percentiles (ties share their average rank); a
+    file's score is the geometric mean of its percentiles over the lenses it
+    appears in, and only files visible to at least TWO lenses are listed — one
+    strong lens is `orient`/`risk` territory, convergence is what turns
+    "probably important" into "provably central". Test files and test-sourced
+    dependency mass are excluded, as in `orient` (research/25): the suite is
+    hot on every lens by construction — top churner, credited by its own
+    coverage rows, fan-in from every test — and that convergence is an
+    artifact, not centrality. Refuses when fewer than two lenses are
+    available. Advisory, read-only."""
+    import math
+
     from . import coverage_query, gitrisk
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) \
-        and limit > 0 else 15
+    lim = _pos_int(limit, 15)
     path = path or store.get_meta("root") or "."
     to_git = _git_path_mapper(store, path)
 
+    # Probe the two CHEAP lenses first: static centrality is always available,
+    # so whether we can answer at all is decided entirely by these — refusing
+    # after a hub ranking (up to a minute at field scale) wasted 100% of the
+    # work (self-review 2026-07-09).
     lenses: dict[str, dict[str, float]] = {}
-    # static centrality per file — same aggregation as `risk`
-    ranking, _metric = _hub_ranking(store)
-    static: dict[str, float] = {}
-    for nid in store.all_node_ids():
-        f = to_git(nid.split("::", 1)[0])
-        static[f] = static.get(f, 0.0) + ranking.get(nid, 0.0)
-    static = {f: v for f, v in static.items() if v > 0}
-    if static:
-        lenses["static_centrality"] = static
-    # git churn per file
     if gitrisk.is_git_repo(path):
-        churn = gitrisk.churn(path)
+        churn = {f: float(c) for f, c in gitrisk.churn(path).items()
+                 if not _is_test_path(f)}
         if churn:
-            lenses["churn"] = {f: float(c) for f, c in churn.items()}
-    # behavioural centrality per file (test-activation mass)
+            lenses["churn"] = churn
     cov = coverage_query.load_coverage(coverage)
     if cov:
-        beh: dict[str, float] = {}
-        for fid, tset in coverage_query.invert(cov).items():
-            f = to_git(fid.split("::", 1)[0])
-            beh[f] = beh.get(f, 0.0) + len(tset)
+        beh = _file_behaviour(cov, to_git, exclude_tests=True)
         if beh:
             lenses["behavioural_centrality"] = beh
+    if not lenses:
+        return refuse(
+            "cross-lens convergence needs at least two lenses and only static "
+            "centrality is available. Run inside a git repo for churn, and/or "
+            "pass a per-test coverage artifact (scaffold_coverage) for "
+            "behavioural centrality; a single lens is `orient`/`risk` territory",
+            confidence=0.0)
+    # Static lens: test-sourced fan-in excluded exactly as orient does
+    # (research/25) — a suite that closes 1,117 stores must not crown
+    # Store.close, and here it would converge on 2-3 lenses at once.
+    test_ids = _test_node_ids(store)
+    ranking, _metric = _hub_ranking(store, exclude_sources=test_ids)
+    static = _file_centrality(store, ranking, to_git, exclude=test_ids)
+    if static:
+        lenses["static_centrality"] = static
 
     if len(lenses) < 2:
         have = ", ".join(sorted(lenses)) or "none"
@@ -1698,22 +1761,14 @@ def find_hotspots(store: Store, path: str | None = None,
             "artifact (scaffold_coverage) for behavioural centrality; a single "
             "lens is `orient`/`risk` territory", confidence=0.0)
 
-    def percentiles(values: dict[str, float]) -> dict[str, float]:
-        ordered = sorted(values.items(), key=lambda kv: (kv[1], kv[0]))
-        n = len(ordered)
-        return {f: (i + 1) / n for i, (f, _v) in enumerate(ordered)}
-
-    pct = {lens: percentiles(values) for lens, values in lenses.items()}
+    pct = {lens: _tied_percentiles(values) for lens, values in lenses.items()}
     files = {f for values in lenses.values() for f in values}
     hotspots: list[dict[str, Any]] = []
     for f in files:
         present = [lens for lens in lenses if f in lenses[lens]]
         if len(present) < 2:
             continue  # convergence needs independent agreement, not one loud lens
-        score = 1.0
-        for lens in present:
-            score *= pct[lens][f]
-        score **= 1.0 / len(present)
+        score = math.prod(pct[lens][f] for lens in present) ** (1.0 / len(present))
         hotspots.append({
             "file": f,
             "score": round(score, 4),
@@ -2028,10 +2083,7 @@ def risk(store: Store, path: str | None = None) -> Result:
 
     # File-level centrality = total importance of the nodes it defines.
     ranking, _ = _hub_ranking(store)
-    file_centrality: dict[str, float] = {}
-    for nid in store.all_node_ids():
-        f = to_git(nid.split("::", 1)[0])
-        file_centrality[f] = file_centrality.get(f, 0.0) + ranking.get(nid, 0.0)
+    file_centrality = _file_centrality(store, ranking, to_git)
 
     hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():
@@ -2074,6 +2126,58 @@ def _connected_file_pairs(store: Store, to_git) -> set[frozenset[str]]:
         if a != b:
             pairs.add(frozenset((a, b)))
     return pairs
+
+
+def _tied_percentiles(values: dict[str, float]) -> dict[str, float]:
+    """Percentile rank per key, ties sharing their AVERAGE rank. Ordinal ranks
+    gave equal lens values arbitrarily different (alphabetical) percentiles,
+    inflating low-signal files to near-top scores on tie-heavy lenses like
+    churn (self-review 2026-07-09: 100 files at churn 1 spanned 0.01..0.99)."""
+    ordered = sorted(values.items(), key=lambda kv: (kv[1], kv[0]))
+    n = len(ordered)
+    pct: dict[str, float] = {}
+    i = 0
+    while i < n:
+        j = i
+        while j < n and ordered[j][1] == ordered[i][1]:
+            j += 1
+        avg = (i + 1 + j) / 2 / n  # mean of 1-based ranks i+1 .. j
+        for k in range(i, j):
+            pct[ordered[k][0]] = avg
+        i = j
+    return pct
+
+
+def _file_centrality(store: Store, ranking: dict[str, float], to_git,
+                     exclude: set[str] | None = None) -> dict[str, float]:
+    """File-level centrality: total hub-ranking mass of the nodes each file
+    defines, in git-relative path space. The ONE aggregation `risk` and
+    `find_hotspots` share (self-review 2026-07-09) — the src-layout mapping bug
+    class (v3.25.0: raw join matched nothing, silent zero hotspots) must have a
+    single fix point. Zero-mass files are dropped."""
+    skip = exclude or set()
+    out: dict[str, float] = {}
+    for nid in store.all_node_ids():
+        if nid in skip:
+            continue
+        f = to_git(nid.split("::", 1)[0])
+        out[f] = out.get(f, 0.0) + ranking.get(nid, 0.0)
+    return {f: v for f, v in out.items() if v > 0}
+
+
+def _file_behaviour(cov: dict[str, list[str]], to_git,
+                    exclude_tests: bool = False) -> dict[str, float]:
+    """Per-file behavioural mass: how many tests execute each file's functions,
+    in git-relative path space — shared by `runtime_risk` and `find_hotspots`."""
+    from . import coverage_query
+
+    out: dict[str, float] = {}
+    for fid, tset in coverage_query.invert(cov).items():
+        if exclude_tests and _is_test_path(fid):
+            continue
+        f = to_git(fid.split("::", 1)[0])
+        out[f] = out.get(f, 0.0) + len(tset)
+    return out
 
 
 def _git_path_mapper(store: Store, path: str):

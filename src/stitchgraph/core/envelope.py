@@ -50,7 +50,8 @@ class ReviewCode(str, Enum):
 
     LOW_CONFIDENCE = "LOW_CONFIDENCE"              # confidence below the review threshold
     AMBIGUOUS_PROVENANCE = "AMBIGUOUS_PROVENANCE"  # result provenance is AMBIGUOUS
-    REFUSED = "REFUSED"                            # the operation refused to answer
+    REFUSED = "REFUSED"                            # the operation refused to answer (no result)
+    HEDGED_RESULT = "HEDGED_RESULT"                # answered, but hedged — a partial/advisory result
     UNSPECIFIED = "UNSPECIFIED"                    # flagged without a specific code
     NAME_BASED_EDGE = "NAME_BASED_EDGE"            # rests on inferred/ambiguous (name-matched) edges
     NON_CALL_USES = "NON_CALL_USES"                # empty CALLS answer, but other relations touch it
@@ -117,11 +118,31 @@ class Result(Generic[T]):
         # An op may flag review without an explicit reason (low confidence / ambiguous
         # provenance); guarantee the contract `needs_review => review_reasons non-empty`
         # centrally so no single op can reintroduce an unexplained flag (panels R19B/R20B).
-        if self.needs_review and not self.review_reasons:
-            self.review_reasons.append(_DEFAULT_REVIEW_REASON)
+        # The codes mirror of the same contract: a flagged result must always be
+        # machine-filterable (needs_review => review_codes non-empty).
+        if self.needs_review:
+            if not self.review_reasons:
+                self.review_reasons.append(_DEFAULT_REVIEW_REASON)
+            if not self.review_codes:
+                self.review_codes.append(ReviewCode.UNSPECIFIED.value)
         # Provenance gates the urgency ceiling: nothing low-confidence shouts red.
         if self.urgency is Urgency.RED and self.provenance is not Provenance.EXTRACTED:
             self.urgency = Urgency.ORANGE
+        # From here on, direct `res.needs_review = True` assignments (the common
+        # post-construction op idiom) route through __setattr__'s backfill so the
+        # contract holds on the LIBRARY surface too, not only in to_dict — a
+        # consumer filtering `res.review_codes` in-process must see the same
+        # answer MCP/CLI would serialize (self-review 2026-07-09).
+        object.__setattr__(self, "_contract_live", True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if (name == "needs_review" and value
+                and getattr(self, "_contract_live", False)):
+            if not self.review_reasons:
+                self.review_reasons.append(_DEFAULT_REVIEW_REASON)
+            if not self.review_codes:
+                self.review_codes.append(ReviewCode.UNSPECIFIED.value)
 
     def add_reason(self, reason: str,
                    code: ReviewCode | str | None = None) -> Result[T]:
@@ -137,17 +158,19 @@ class Result(Generic[T]):
 
     def _add_code(self, code: ReviewCode | str) -> None:
         value = code.value if isinstance(code, ReviewCode) else str(code)
+        # A specific code supersedes the generic UNSPECIFIED backfill, exactly as
+        # a specific reason supersedes _DEFAULT_REVIEW_REASON in add_reason.
+        if (value != ReviewCode.UNSPECIFIED.value
+                and self.review_codes == [ReviewCode.UNSPECIFIED.value]):
+            self.review_codes = []
         if value not in self.review_codes:
             self.review_codes.append(value)
 
     def to_dict(self) -> dict[str, Any]:
-        # Mirror the reasons contract on codes at the one serialization point:
-        # `needs_review => review_codes non-empty` — a flagged result an agent
-        # filters by code must never come back with an empty code list, even when
-        # an op set needs_review after construction without naming a code.
-        codes = self.review_codes
-        if self.needs_review and not codes:
-            codes = [ReviewCode.UNSPECIFIED.value]
+        # The `needs_review => review_codes non-empty` contract is upheld at
+        # construction (__post_init__) and on assignment (__setattr__), so the
+        # serialized codes are exactly the in-process codes — the library and
+        # MCP/CLI surfaces can never disagree.
         return {
             "ok": self.ok,
             "result": _plain(self.result),
@@ -155,7 +178,7 @@ class Result(Generic[T]):
             "provenance": self.provenance.value,
             "needs_review": self.needs_review,
             "review_reasons": self.review_reasons,
-            "review_codes": codes,
+            "review_codes": self.review_codes,
             "urgency": self.urgency.value if self.urgency else None,
             "alternatives": [_plain(a) for a in self.alternatives],
             "meta": _plain(self.meta),  # honour _plain as the chokepoint for ALL values:
@@ -179,11 +202,18 @@ def refuse(*reasons: str, confidence: float = 0.0,
 
     Used when an operation can't answer confidently — the single most valuable
     contract for an LLM consumer (design principle 4).
+
+    The stable code tracks `ok`: a true refusal (no result) is REFUSED; a
+    hedged partial answer (result supplied, ok=True — find_stale's
+    no-entry-points candidates) is HEDGED_RESULT, so a machine consumer
+    treating REFUSED as "no answer, try differently" never discards a genuine
+    candidate payload (self-review 2026-07-09).
     """
+    code = ReviewCode.REFUSED if result is None else ReviewCode.HEDGED_RESULT
     return Result(ok=result is not None, result=result, confidence=confidence,
                   provenance=provenance, needs_review=True,
                   review_reasons=list(reasons),
-                  review_codes=[ReviewCode.REFUSED.value], meta=meta)
+                  review_codes=[code.value], meta=meta)
 
 
 def _plain(value: Any) -> Any:

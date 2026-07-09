@@ -72,6 +72,49 @@ Each change is pinned by tests in `tests/test_field_review.py` /
 - The envelope schema (including the `review_codes` table) is documented in
   docs/design.md §4.
 
+### Fixed (same-day self-review of this batch — panel R287)
+An 8-angle adversarial self-review of the diff above surfaced 10 findings
+(2 refuted claims documented in REVIEW_HISTORY.md); all fixed with boundary
+tests before release:
+
+- **`audit_graph` remap can no longer graft ids onto the wrong file.** The
+  suffix remap now requires whole-segment path alignment (one path a suffix
+  of the other — `sandbox/tests/a.py` ↔ `tests/a.py` yes, `src/utils.py` ↔
+  `tools/utils.py` NO), matching runtime.py's `_by_suffix` policy (panel
+  R34A); and it keys only candidate basenames instead of building a dict
+  over every node in the graph.
+- **`impact_of`'s demotion gate now matches its message.** The hedge fires on
+  the node-tier split (dependents reached ONLY through name-based edges),
+  not the raw edge tally — a redundant inferred edge parallel to a confident
+  route no longer produces "0 of N dependents are ambiguous" beside an empty
+  ambiguous tier. `tests_to_run` and both tiers are ranked nearest-first so
+  any downstream truncation keeps the most relevant entries, and the detail
+  pass gains a 250k induced-EDGE budget on top of the 5k node cap (the node
+  cap alone did not bound memory on group-expanded graphs).
+- **MCP bounding is recursive and correlation-aware.** Nested lists (a scan
+  cycle's `members`) are now bounded too; `get_matrix` is exempt — its
+  labels/cells are index-correlated and it is already self-bounded at the
+  operation layer (cutting them independently silently corrupted the
+  matrix).
+- **`diagnose_server` probe hygiene.** The `--version` probe detaches stdin
+  (under the MCP stdio transport a broken binary could consume JSON-RPC
+  protocol bytes), memoizes per session (watch mode re-probed a dead shim on
+  every save), and no longer claims a broken install when a server merely
+  lacks `--version`.
+- **`find_hotspots` ranking integrity.** Test files and test-sourced fan-in
+  are excluded (research/25, as `orient` does — the suite is hot on every
+  lens by construction); tied lens values share their average-rank
+  percentile instead of arbitrary alphabetical ordinals; the cheap lenses
+  are probed before the expensive hub ranking so a refusal costs nothing.
+- **Envelope contract parity.** `needs_review ⇒ review_codes non-empty` is
+  enforced on assignment, so the library surface and MCP/CLI serialization
+  can never disagree; `refuse(result=…)` (the ok=True advisory-partial
+  constructor) now codes `HEDGED_RESULT` instead of `REFUSED`.
+- Shared `_file_centrality`/`_file_behaviour` helpers (risk / runtime_risk /
+  find_hotspots aggregate identically — one fix point for the v3.25.0
+  src-layout bug class) and a `_pos_int` helper replacing nine hand-copied
+  limit-validation idioms.
+
 ## [3.50.0] — 2026-07-07
 
 ### Fixed

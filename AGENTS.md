@@ -61,7 +61,13 @@ Every result carries `confidence`, `provenance`, and `needs_review`. Treat
 `review_codes` is the machine-readable companion to `review_reasons` — filter
 on stable codes (`NAME_BASED_EDGE`, `LSP_UNAVAILABLE`, `CYCLE_HEURISTIC`,
 `COVERAGE_MISMATCH`, …; full table in docs/design.md §4) instead of
-string-matching prose.
+string-matching prose. `REFUSED` means no answer; `HEDGED_RESULT` means an
+advisory partial answer you can still use — don't discard those.
+
+Over MCP, long lists are bounded (default 100 items per list). **Always check
+`meta.truncated`** before treating a list as complete — `impact_of` ranks
+`tests_to_run` and its tiers nearest-first, so a truncated list keeps the most
+relevant entries, but the full set is only in the counts / CLI `--json`.
 
 ## Don't
 - Don't treat `find_stale` / `find_holes` as ground truth — they're suspicion,

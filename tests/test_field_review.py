@@ -44,14 +44,23 @@ def test_refusal_carries_refused_code():
 
 def test_needs_review_never_serializes_with_empty_codes():
     """The codes mirror of the reasons contract: a flagged result must always be
-    machine-filterable, even when an op set needs_review post-construction
-    without naming a code."""
+    machine-filterable — on the LIBRARY surface too, not only after to_dict —
+    even when an op set needs_review post-construction without naming a code."""
     r = ok([], confidence=1.0)
     r.needs_review = True
-    r.review_reasons.append("hand-flagged")
+    # the in-process object and the serialized envelope must agree
+    assert r.review_codes == [ReviewCode.UNSPECIFIED.value]
+    assert r.review_reasons != []
     d = r.to_dict()
     assert d["needs_review"] is True
     assert d["review_codes"] == [ReviewCode.UNSPECIFIED.value]
+
+
+def test_specific_code_supersedes_unspecified_backfill():
+    r = ok([], confidence=1.0)
+    r.needs_review = True                                # backfills UNSPECIFIED
+    r.add_reason("specific", code=ReviewCode.NAME_BASED_EDGE)
+    assert r.review_codes == [ReviewCode.NAME_BASED_EDGE.value]
 
 
 def test_add_reason_code_deduplicates():
@@ -59,6 +68,19 @@ def test_add_reason_code_deduplicates():
     r.add_reason("a", code=ReviewCode.NAME_BASED_EDGE)
     r.add_reason("b", code=ReviewCode.NAME_BASED_EDGE)
     assert r.review_codes == [ReviewCode.NAME_BASED_EDGE.value]
+
+
+def test_hedged_partial_result_is_not_coded_refused():
+    """refuse(result=...) is the ok=True advisory-partial constructor
+    (find_stale's no-entry-points candidates): a machine consumer treating
+    REFUSED as 'no answer, retry differently' must not discard it."""
+    hedged = refuse("hedged, but real candidates", result=[1, 2], confidence=0.5)
+    assert hedged.ok is True
+    assert ReviewCode.REFUSED.value not in hedged.review_codes
+    assert ReviewCode.HEDGED_RESULT.value in hedged.review_codes
+    hard = refuse("nothing to give")
+    assert hard.ok is False
+    assert ReviewCode.REFUSED.value in hard.review_codes
 
 
 # -- request 4/5: tiered, distance-ranked, capped impact_of --------------------
@@ -111,6 +133,56 @@ def test_impact_of_caps_tier_lists_and_reports_truncation(tmp_path):
         assert len(r.result["blast_radius"]) == r.result["count"]
 
 
+def test_impact_of_parallel_inferred_edge_does_not_hedge(tmp_path):
+    """The demotion gate is the NODE-tier split, not the raw edge tally: a
+    dependent with a confident route stays certain even when a redundant
+    name-based edge also points at it — no more '0 of N dependents are
+    ambiguous … verify the ambiguous tier' beside an empty ambiguous list."""
+    from stitchgraph.core.model import Edge, Node, NodeKind, Relation
+
+    with sg.Store(":memory:") as store:
+        for n in ("target", "caller"):
+            store.add_node(Node(id=f"m.py::{n}", kind=NodeKind.FUNCTION,
+                                name=n, location="m.py:1:0"))
+        store.add_edge(Edge(src="m.py::caller", dst_id="m.py::target",
+                            dst_symbol="target", relation=Relation.CALLS,
+                            provenance=Provenance.EXTRACTED))
+        # the redundant name-based edge that used to trip the edge-tally gate
+        store.add_edge(Edge(src="m.py::caller", dst_id="m.py::target",
+                            dst_symbol="target", relation=Relation.REFERENCES,
+                            provenance=Provenance.INFERRED))
+        r = sg.impact_of(store, "m.py::target")
+        assert r.result["ambiguous"] == [] and r.result["ambiguous_count"] == 0
+        assert r.needs_review is False
+        assert r.provenance is Provenance.EXTRACTED
+
+
+def test_impact_of_detail_caps_degrade_to_id_order(tmp_path, monkeypatch):
+    """Just-above/below the detail caps (CONTRIBUTING rule 4): under the caps
+    entries carry distances; past either the NODE cap or the induced-EDGE
+    budget the tiers degrade to id order with no distance keys — the memory
+    bound must actually bound."""
+    import stitchgraph.core.operations as ops
+    _mk(tmp_path, {
+        "hub.py": "def hub():\n    return 1\n",
+        "c0.py": "from hub import hub\ndef caller0():\n    return hub()\n",
+        "c1.py": "from hub import hub\ndef caller1():\n    return hub()\n",
+    })
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        below = sg.impact_of(store, "hub.py::hub")
+        assert all("distance" in e for e in below.result["confident"])
+        monkeypatch.setattr(ops, "_IMPACT_DETAIL_CAP", 2)   # radius+target > 2
+        above = sg.impact_of(store, "hub.py::hub")
+        assert above.result["confident"] and \
+            all("distance" not in e for e in above.result["confident"])
+        monkeypatch.setattr(ops, "_IMPACT_DETAIL_CAP", 5_000)
+        monkeypatch.setattr(ops, "_IMPACT_DETAIL_EDGE_CAP", 1)  # >1 induced edge
+        edge_capped = sg.impact_of(store, "hub.py::hub")
+        assert edge_capped.result["confident"] and \
+            all("distance" not in e for e in edge_capped.result["confident"])
+
+
 # -- request 9: bounded MCP output ---------------------------------------------
 def test_mcp_bound_cuts_lists_and_reports_it(monkeypatch):
     from stitchgraph.adapters.mcp import _bound
@@ -142,6 +214,43 @@ def test_mcp_bound_leaves_small_payloads_untouched(monkeypatch):
     monkeypatch.delenv("STITCHGRAPH_MCP_MAX_ITEMS", raising=False)
     env = {"result": {"items": [1, 2, 3]}, "alternatives": [], "meta": {}}
     assert _bound(env)["meta"] == {}
+
+
+def test_mcp_bound_descends_into_nested_lists(monkeypatch):
+    """A list nested inside a result item (a scan cycle's `members`) must not
+    smuggle the blob the bound exists to prevent."""
+    from stitchgraph.adapters.mcp import _bound
+    monkeypatch.setenv("STITCHGRAPH_MCP_MAX_ITEMS", "5")
+    env = {"result": [{"kind": "cycle", "members": [f"n{i}" for i in range(30)]}],
+           "alternatives": [], "meta": {}}
+    out = _bound(env)
+    assert len(out["result"][0]["members"]) == 5
+    assert out["meta"]["truncated"]["result[].members"] == {"shown": 5, "total": 30}
+
+
+def test_mcp_bound_boundary_is_exact(monkeypatch):
+    """N items pass uncut; N+1 are cut (CONTRIBUTING rule 4: a limit of N means
+    nothing unless N passes and N+1 refuses)."""
+    from stitchgraph.adapters.mcp import _bound
+    monkeypatch.setenv("STITCHGRAPH_MCP_MAX_ITEMS", "5")
+    exact = _bound({"result": list(range(5)), "alternatives": [], "meta": {}})
+    assert exact["result"] == list(range(5)) and "truncated" not in exact["meta"]
+    over = _bound({"result": list(range(6)), "alternatives": [], "meta": {}})
+    assert over["result"] == list(range(5))
+    assert over["meta"]["truncated"]["result"] == {"shown": 5, "total": 6}
+
+
+def test_mcp_bound_exempts_index_correlated_payloads(monkeypatch):
+    """get_matrix's labels/cells are index-correlated: cutting them
+    independently silently corrupts the matrix, so the op is exempt (it is
+    already self-bounded — it refuses broad scopes at the operation layer)."""
+    from stitchgraph.adapters.mcp import _bound
+    monkeypatch.setenv("STITCHGRAPH_MCP_MAX_ITEMS", "5")
+    env = {"result": {"labels": list(range(20)), "cells": list(range(20))},
+           "alternatives": [], "meta": {}}
+    out = _bound(env, "get_matrix")
+    assert len(out["result"]["labels"]) == 20 and len(out["result"]["cells"]) == 20
+    assert "truncated" not in out["meta"]
 
 
 # -- request 12: find_hotspots (cross-lens convergence) ------------------------
@@ -206,6 +315,79 @@ def test_mode_labels_downweight_ubiquitous_tokens():
         assert label.index("handle") > 1
 
 
+def test_find_hotspots_excludes_test_mass(tmp_path):
+    """Test files are hot on every lens by construction (top churn, credited by
+    their own coverage rows, fan-in from every test) — that convergence is an
+    artifact, not centrality, so they must not appear in the hotspot list
+    (the research/25 exclusion orient applies, carried over)."""
+    _mk(tmp_path, {
+        "core.py": ("def api():\n    return util()\n"
+                    "def util():\n    return 1\n"),
+        "app.py": ("from core import api\n"
+                   "def run():\n    return api()\n"),
+        "tests/test_core.py": ("from core import api\n"
+                               "def helper():\n    return api()\n"
+                               "def test_one():\n    return helper()\n"
+                               "def test_two():\n    return helper()\n"),
+    })
+    cov = {
+        "format": "stitchgraph-coverage-v1",
+        "tests": {  # every test credits its OWN file's functions too
+            "tests/test_core.py::test_one":
+                ["core.py::api", "core.py::util",
+                 "tests/test_core.py::test_one", "tests/test_core.py::helper"],
+            "tests/test_core.py::test_two":
+                ["core.py::api",
+                 "tests/test_core.py::test_two", "tests/test_core.py::helper"],
+            "tests/test_core.py::test_three": ["app.py::run", "core.py::api"],
+            "tests/test_core.py::test_four": ["core.py::util"],
+        },
+    }
+    cov_path = tmp_path / "coverage_modes.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.find_hotspots(store, coverage=str(cov_path))
+        assert r.ok
+        files = [h["file"] for h in r.result["hotspots"]]
+        assert files, "expected source hotspots"
+        assert not any(f.startswith("tests/") for f in files), files
+
+
+def test_find_hotspots_limit_boundary(tmp_path):
+    """limit=N returns N; the full count stays in meta (CONTRIBUTING rule 4)."""
+    files = {"m0.py": "def f0():\n    return 0\n"}
+    cov_tests = {"tests/t.py::test_0": ["m0.py::f0"]}
+    for i in range(1, 4):
+        # a call chain so every file carries static mass, not just m0
+        files[f"m{i}.py"] = (f"from m{i - 1} import f{i - 1}\n"
+                             f"def f{i}():\n    return f{i - 1}() + {i}\n")
+        cov_tests[f"tests/t.py::test_{i}"] = [f"m{i}.py::f{i}", "m0.py::f0"]
+    files["main.py"] = "from m3 import f3\ndef main():\n    return f3()\n"
+    _mk(tmp_path, files)
+    cov_path = tmp_path / "coverage_modes.json"
+    cov_path.write_text(json.dumps(
+        {"format": "stitchgraph-coverage-v1", "tests": cov_tests}))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        full = sg.find_hotspots(store, coverage=str(cov_path))
+        assert full.ok
+        n = len(full.result["hotspots"])
+        assert n >= 2
+        capped = sg.find_hotspots(store, coverage=str(cov_path), limit=n - 1)
+        assert len(capped.result["hotspots"]) == n - 1
+        assert capped.meta["hotspots"] == n           # full count never hidden
+
+
+def test_tied_percentiles_share_average_rank():
+    """Ordinal ranks gave tied values arbitrary alphabetical percentiles —
+    100 files at churn 1 spanned 0.01..0.99. Ties share their average rank."""
+    from stitchgraph.core.operations import _tied_percentiles
+    pct = _tied_percentiles({"a": 1.0, "b": 1.0, "c": 1.0, "d": 50.0})
+    assert pct["a"] == pct["b"] == pct["c"] == 0.5   # mean of ranks 1..3 / 4
+    assert pct["d"] == 1.0
+
+
 # -- request 14: audit_graph tolerates path-prefix id drift --------------------
 def test_audit_graph_suffix_matches_prefixed_coverage_ids(tmp_path):
     """The artifact was captured with a `crate/`-style path prefix the index
@@ -232,3 +414,32 @@ def test_audit_graph_suffix_matches_prefixed_coverage_ids(tmp_path):
         assert r.result["tests_audited"] == 1
         assert r.meta.get("ids_remapped", 0) >= 1
         assert ReviewCode.COVERAGE_MISMATCH.value in r.review_codes
+
+
+def test_audit_graph_never_grafts_unaligned_paths(tmp_path):
+    """A basename+symbol match alone must NOT remap: a stale/vendored id whose
+    directory disagrees with the index's (neither path a whole-segment suffix
+    of the other) stays unmatched — an honest refusal beats recall numbers
+    computed against the wrong function."""
+    pytest.importorskip("numpy")
+    _mk(tmp_path, {
+        "tools/utils.py": "def parse():\n    return 1\n",
+        "tests/test_u.py": ("import sys\n"
+                            "def test_parse():\n    assert True\n"),
+    })
+    cov = {
+        "format": "stitchgraph-coverage-v1",
+        "tests": {  # 'src/utils.py' does not align with the index's 'tools/utils.py'
+            "src/tests/test_u.py::test_parse": ["src/utils.py::parse"],
+        },
+    }
+    cov_path = tmp_path / "coverage_modes.json"
+    cov_path.write_text(json.dumps(cov))
+    with sg.Store(":memory:") as store:
+        sg.reindex(store, str(tmp_path))
+        r = sg.audit_graph(store, coverage=str(cov_path))
+        # the test id aligns (suffix) but its only function must NOT be grafted
+        # onto tools/utils.py::parse — so the row has no matching function and
+        # the audit refuses rather than fabricating recall for the wrong node
+        assert r.ok is False
+        assert "no coverage row matched" in r.review_reasons[0]
