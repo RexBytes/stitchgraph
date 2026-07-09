@@ -190,30 +190,36 @@ def transitive_fan_in_estimate(
     return {cache.ids[i]: float(hits[i]) * scale for i in nz.tolist()}, exact
 
 
-def _reverse_adjacency(store: Store, relations: Iterable[Relation]) -> dict[str, list[str]]:
+def _reverse_adjacency(store: Store, relations: Iterable[Relation],
+                       confident_only: bool = False) -> dict[str, list[str]]:
     radj: dict[str, list[str]] = defaultdict(list)
     rels = {r.value for r in relations}
     nodes = set(store.all_node_ids())  # ignore edges to a non-existent target (panel R29A)
-    for src, rel, dst, _w in store.iter_resolved():
+    for src, rel, dst, _w in store.iter_resolved(confident_only=confident_only):
         if rel in rels and dst in nodes:
             radj[dst].append(src)
     return radj
 
 
 def reverse_reachable_from(store: Store, targets: Iterable[str],
-                           relations: Iterable[Relation] = LIVENESS_RELATIONS) -> set[str]:
+                           relations: Iterable[Relation] = LIVENESS_RELATIONS,
+                           confident_only: bool = False) -> set[str]:
     """Backward closure: every node that can transitively reach a target.
 
     This is the blast radius for impact_of (design §6.B): who depends on X.
+    `confident_only` restricts propagation to EXTRACTED edges — the certain
+    tier of the blast radius (field review 2026-07-09, request 4), the reverse
+    counterpart of `reachable_from`'s confident sweep.
     """
     from .adjcache import load_cache
     cache = load_cache(store)
     if cache is not None:
-        return cache.reverse_reachable(targets, relations)
+        return cache.reverse_reachable(targets, relations, confident_only)
     gb = _graphblas()
     if gb is not None:
-        return gb.reverse_reachable_from(store, targets, relations)
-    radj = _reverse_adjacency(store, relations)
+        return gb.reverse_reachable_from(store, targets, relations,
+                                         confident_only=confident_only)
+    radj = _reverse_adjacency(store, relations, confident_only)
     seen: set[str] = set()
     frontier = deque(t for t in targets if store.get_node(t) is not None)
     seen.update(frontier)

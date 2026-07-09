@@ -193,13 +193,137 @@ def test_reindex_lsp_streaming_matches_in_memory(tmp_path, monkeypatch):
 
 
 def test_reindex_lsp_server_unavailable_is_honest(tmp_path):
+    """A decline names the missing binary and says WHY (field review 2026-07-09,
+    request 1) — the opaque "server unavailable" cost a whole low-confidence
+    first pass that one actionable message would have saved."""
     root = _ts_project(tmp_path)
     store = sg.Store(str(tmp_path / "g.db"))
     resolver = LspResolver(servers={".ts": "definitely-not-a-real-binary-xyz"})
     rows = [("src/main.ts::run", "greet", "src/main.ts:4:0", True)]
     assert resolver.resolve_rows(root, [], rows) == []
-    assert resolver.report["definitely-not-a-real-binary-xyz"]["declined"] \
-        == "server unavailable"
+    stats = resolver.report["definitely-not-a-real-binary-xyz"]
+    assert "not on PATH" in stats["declined"]
+    assert "definitely-not-a-real-binary-xyz" in stats["declined"]
+    # a binary that simply isn't installed is NOT the broken-binary case
+    assert "broken_binary" not in stats
+    store.close()
+
+
+# -- actionable server diagnostics (field review 2026-07-09, request 1) --------
+def test_diagnose_server_missing_binary_names_install_hint():
+    import shutil
+
+    from stitchgraph.core.resolve.lsp import diagnose_server
+    msg, present = diagnose_server("definitely-not-a-real-binary-xyz --stdio")
+    assert present is False
+    assert "not on PATH" in msg
+    if not shutil.which("rust-analyzer"):
+        # a registered default server carries its one-line install fix
+        msg_ra, _present = diagnose_server("rust-analyzer")
+        assert "rustup component add rust-analyzer" in msg_ra
+
+
+def test_diagnose_server_rustup_shim_names_the_fix(tmp_path, monkeypatch):
+    """THE field case: rust-analyzer resolves to rustup's proxy shim (component
+    not installed). The diagnostic must lift the exact `rustup component add`
+    command from the shim's own error output."""
+    import os
+
+    from stitchgraph.core.resolve.lsp import diagnose_server
+    shim = tmp_path / "rust-analyzer"
+    shim.write_text(
+        "#!/bin/sh\n"
+        "echo \"error: 'rust-analyzer' is not installed for the toolchain "
+        "'stable-x86_64-unknown-linux-gnu'\" >&2\n"
+        "echo 'To install, run: rustup component add rust-analyzer' >&2\n"
+        "exit 1\n")
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+    msg, present = diagnose_server("rust-analyzer")
+    assert present is True
+    assert "proxy shim" in msg
+    assert "rustup component add rust-analyzer" in msg
+
+
+def test_diagnose_probe_detaches_stdin_and_memoizes(tmp_path, monkeypatch):
+    """(1) The --version probe must NOT inherit the parent's stdin — under the
+    MCP stdio transport that fd is the live JSON-RPC channel, and a broken
+    binary that reads stdin would eat protocol bytes (self-review round 2).
+    (2) The verdict is memoized per (cmd, path, mtime): a second decline in
+    the same session must not re-spawn the probe."""
+    import subprocess as sp
+
+    from stitchgraph.core.resolve import lsp as lsp_mod
+
+    shim = tmp_path / "fake-server"
+    shim.write_text("#!/bin/sh\nexit 1\n")
+    shim.chmod(0o755)
+    # a REAL PATH entry: the probe subprocess resolves the binary via the OS,
+    # so patching shutil.which alone would leave the spawn failing (OSError,
+    # a transient outcome the memo deliberately never caches)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    calls: list[dict] = []
+    real_run = sp.run
+
+    def spy_run(argv, **kwargs):
+        calls.append(kwargs)
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(lsp_mod.subprocess, "run", spy_run)
+    lsp_mod._DIAGNOSIS_CACHE.clear()
+    msg1, present1 = lsp_mod.diagnose_server("fake-server")
+    msg2, present2 = lsp_mod.diagnose_server("fake-server")
+    assert present1 is present2 is True
+    assert msg1 == msg2
+    assert len(calls) == 1, "second decline must hit the memo, not re-probe"
+    assert calls[0].get("stdin") is sp.DEVNULL
+    # honest wording: the probe's failure is reported as an observation, not
+    # asserted as a broken install
+    assert "probing it with --version also failed" in msg1
+
+
+def test_diagnose_transient_probe_failure_is_not_cached(tmp_path, monkeypatch):
+    """A probe timeout on a loaded machine may be transient: it must be
+    reported but never cached, so the next decline re-probes."""
+    import subprocess as sp
+
+    from stitchgraph.core.resolve import lsp as lsp_mod
+
+    monkeypatch.setattr(lsp_mod.shutil, "which", lambda b: "/fake/bin/srv")
+    monkeypatch.setattr(lsp_mod.os, "stat",
+                        lambda p: type("S", (), {"st_mtime_ns": 1})())
+    attempts = []
+
+    def timeout_run(argv, **kwargs):
+        attempts.append(argv)
+        raise sp.TimeoutExpired(argv, 10)
+
+    monkeypatch.setattr(lsp_mod.subprocess, "run", timeout_run)
+    lsp_mod._DIAGNOSIS_CACHE.clear()
+    msg1, _ = lsp_mod.diagnose_server("srv")
+    msg2, _ = lsp_mod.diagnose_server("srv")
+    assert "could not be executed" in msg1 == msg2
+    assert len(attempts) == 2, "transient outcomes must not be memoized"
+
+
+def test_reindex_auto_flags_broken_server_binary(tmp_path, monkeypatch):
+    """AUTO mode stays silent for a machine with no servers, but a binary that
+    EXISTS and cannot serve (the rustup-shim class) must surface a review
+    reason with the stable LSP_UNAVAILABLE code — the user half-installed a
+    server, so degrading silently to the name-based graph hides exactly the
+    diagnostic they need."""
+    monkeypatch.delenv("STITCHGRAPH_NO_LSP", raising=False)
+    root = _ts_project(tmp_path)
+    (root / "stitchgraph.toml").write_text(textwrap.dedent(f"""\
+        [lsp.servers]
+        ".ts" = '''{_fake_cmd(tmp_path, {"mode": "die"})}'''
+    """))
+    store = sg.Store(str(tmp_path / "g.db"))
+    res = sg.reindex(store, str(root))
+    assert res.ok
+    assert res.needs_review
+    assert any("declined" in r for r in res.review_reasons)
+    assert "LSP_UNAVAILABLE" in res.review_codes
     store.close()
 
 

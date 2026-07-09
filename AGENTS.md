@@ -16,7 +16,9 @@ tests to ground liveness in what actually executed.
   points, the most-depended-on hubs to read first, the layers, and subsystems.
   Don't read files at random.
 - **About to edit a function?** Call `impact_of <name>` for the blast radius and
-  exactly which tests to run. Edit with that in mind.
+  exactly which tests to run. Edit with that in mind. The radius is tiered:
+  act on `confident` (reached through resolved edges, nearest-first), verify
+  `ambiguous` (reached only through name-based guesses) before relying on it.
 - **Need to understand how a request flows?** Call `trace_path <source> <sink>` —
   it returns the full-stack path (HTML form → route → handler → … → DB table)
   with a propagated confidence.
@@ -32,9 +34,15 @@ tests to ground liveness in what actually executed.
   god-object whose coupling rests on name-ambiguous/heuristic edges is flagged
   `needs_review: true`, capped to 🟢, and reports its confident-only degree — it's
   likely a resolution artifact (common on languages without type resolution), so
-  verify before acting.
+  verify before acting. Cycles with ZERO confident edges (pure name collisions)
+  are suppressed by default and counted in meta; `--show-heuristic` lists them.
 - **Where's the risk?** Call `risk` — files that change often AND are depended on
   heavily, plus hidden coupling (files that co-change but share no code edge).
+- **What matters most, across every lens?** Call `find_hotspots` — files that
+  rank high on static centrality AND git churn AND runtime behaviour at once
+  (cross-lens convergence). It fuses whatever lenses are available and refuses
+  below two; convergence is what turns "probably important" into "provably
+  central".
 - **What's dangerous to touch structurally?** Call `find_chokepoints` — the
   articulation points (sole bridges whose removal fragments the graph), ranked by
   blast radius. Distinct from `risk`/`orient`: a chokepoint can have modest
@@ -50,6 +58,16 @@ tests to ground liveness in what actually executed.
 Every result carries `confidence`, `provenance`, and `needs_review`. Treat
 `needs_review: true` as "double-check this," and prefer high-confidence,
 `extracted`-provenance answers. Issue results also carry an `urgency`.
+`review_codes` is the machine-readable companion to `review_reasons` — filter
+on stable codes (`NAME_BASED_EDGE`, `LSP_UNAVAILABLE`, `CYCLE_HEURISTIC`,
+`COVERAGE_MISMATCH`, …; full table in docs/design.md §4) instead of
+string-matching prose. `REFUSED` means no answer; `HEDGED_RESULT` means an
+advisory partial answer you can still use — don't discard those.
+
+Over MCP, long lists are bounded (default 100 items per list). **Always check
+`meta.truncated`** before treating a list as complete — `impact_of` ranks
+`tests_to_run` and its tiers nearest-first, so a truncated list keeps the most
+relevant entries, but the full set is only in the counts / CLI `--json`.
 
 ## Don't
 - Don't treat `find_stale` / `find_holes` as ground truth — they're suspicion,

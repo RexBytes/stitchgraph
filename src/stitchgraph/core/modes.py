@@ -75,6 +75,32 @@ def _leaf(fid: str) -> str:
     return fid.split("::")[-1]
 
 
+def _token_df(funcs: list[str]) -> collections.Counter[str]:
+    """Document frequency per token over ALL executed function ids — the IDF
+    denominator for mode labels."""
+    gdf: collections.Counter[str] = collections.Counter()
+    for fid in funcs:
+        gdf.update(set(_toks(_leaf(fid))))
+    return gdf
+
+
+def _idf_label(top_fids: list[str], gdf: collections.Counter[str],
+               n_docs: int, k: int = 4) -> str:
+    """Distinctive-token label for one mode: TF over the top-loading functions'
+    leaf-name tokens, weighted by inverse document frequency over the whole
+    artifact — the same scheme spectral.py's subsystem labeller uses. Plain TF
+    produced keyword salad (field review 2026-07-09, request 13): suite-wide
+    boilerplate tokens (`test`, `new`, `get`) out-counted the tokens that
+    actually distinguish the mode."""
+    tf: collections.Counter[str] = collections.Counter()
+    for fid in top_fids:
+        tf.update(set(_toks(_leaf(fid))))
+    score = {t: c * math.log((n_docs + 1) / (gdf.get(t, 0) + 1))
+             for t, c in tf.items()}
+    ranked = sorted(score, key=lambda t: (-score[t], t))
+    return " ".join(ranked[:k]) or "(unlabelled)"
+
+
 def _module(fid: str) -> str:
     return fid.split("::", 1)[0] if "::" in fid else fid
 
@@ -215,15 +241,13 @@ def decompose(store: Store, coverage_path: str, k: int | None = None
             k90 = kk
             dim_lower_bound = True
     modes: list[dict[str, Any]] = []
+    gdf = _token_df(funcs)
     for m in range(nmodes):
         load = Vt[m]
         order = np.argsort(-np.abs(load))[:8]
         top = [funcs[i] for i in order]
-        # distinctive-token label from the top functions' leaf names
-        tf: collections.Counter[str] = collections.Counter()
-        for fid in top:
-            tf.update(set(_toks(_leaf(fid))))
-        label = " ".join(t for t, _ in tf.most_common(4)) or "(unlabelled)"
+        # distinctive-token label from the top functions' leaf names, IDF-weighted
+        label = _idf_label(top, gdf, nF)
         dirs = collections.Counter(_module(funcs[i]) for i in order)
         texpr = np.argsort(-np.abs(U[:, m]))[:5]
         modes.append({
@@ -354,13 +378,11 @@ def feature_map(store: Store, coverage_path: str, k: int | None = None,
     frac = energy / tot if tot > 0 else np.zeros_like(energy)
     nmodes = kk if k is None else min(k, kk)
     features: list[dict[str, Any]] = []
+    gdf = _token_df(funcs)
     for m in range(nmodes):
         order = np.argsort(-np.abs(Vt[m]))[:top_funcs]
         fns = [funcs[i] for i in order]
-        tf: collections.Counter[str] = collections.Counter()
-        for fid in fns:
-            tf.update(set(_toks(_leaf(fid))))
-        label = " ".join(t for t, _ in tf.most_common(4)) or "(unlabelled)"
+        label = _idf_label(fns, gdf, len(funcs))
         files = sorted({_module(f) for f in fns})[:8]
         texpr = np.argsort(-np.abs(U[:, m]))[:top_tests]
         features.append({

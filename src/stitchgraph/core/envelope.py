@@ -41,6 +41,34 @@ class Provenance(str, Enum):
     AMBIGUOUS = "ambiguous"  # multiple candidates, none dominant
 
 
+class ReviewCode(str, Enum):
+    """Stable machine-readable codes for `review_reasons` (field review 2026-07-09,
+    request 11): an agent filters on `review_codes` programmatically instead of
+    string-matching prose. One code may back several prose reasons; the code set is
+    the CONTRACT — never rename a member, only add. Documented in docs/design.md §4.
+    """
+
+    LOW_CONFIDENCE = "LOW_CONFIDENCE"              # confidence below the review threshold
+    AMBIGUOUS_PROVENANCE = "AMBIGUOUS_PROVENANCE"  # result provenance is AMBIGUOUS
+    REFUSED = "REFUSED"                            # the operation refused to answer (no result)
+    HEDGED_RESULT = "HEDGED_RESULT"                # answered, but hedged — a partial/advisory result
+    UNSPECIFIED = "UNSPECIFIED"                    # flagged without a specific code
+    NAME_BASED_EDGE = "NAME_BASED_EDGE"            # rests on inferred/ambiguous (name-matched) edges
+    NON_CALL_USES = "NON_CALL_USES"                # empty CALLS answer, but other relations touch it
+    CYCLE_HEURISTIC = "CYCLE_HEURISTIC"            # cycle backed mostly/only by heuristic edges
+    LSP_UNAVAILABLE = "LSP_UNAVAILABLE"            # a language server declined / is missing or broken
+    COVERAGE_ABSENT = "COVERAGE_ABSENT"            # symbol/test absent from the coverage artifact
+    COVERAGE_MISMATCH = "COVERAGE_MISMATCH"        # artifact ids don't line up with graph node ids
+    RESOLVER_GAP = "RESOLVER_GAP"                  # executed on paths the static graph cannot see
+    STATIC_ONLY = "STATIC_ONLY"                    # answer rests on static reach alone (no runtime)
+    UNRESOLVED_SYMBOL = "UNRESOLVED_SYMBOL"        # a requested symbol did not resolve uniquely
+    IMPLICIT_COUPLING = "IMPLICIT_COUPLING"        # co-activation without a static edge (candidate)
+    PROFILE_IDENTITY = "PROFILE_IDENTITY"          # identical coverage profile != behavioural identity
+    PARSE_FAILURE = "PARSE_FAILURE"                # files could not be parsed / are missing from graph
+    SUPPRESSED_RESULTS = "SUPPRESSED_RESULTS"      # low-signal findings were capped/suppressed (never silent)
+    NO_ENTRY_POINTS = "NO_ENTRY_POINTS"            # liveness ranking unavailable (no entry points found)
+
+
 class Urgency(str, Enum):
     GREEN = "green"  # informational / safe cleanup / low risk
     ORANGE = "orange"  # anomaly, ambiguous, or moderate impact — look closer
@@ -57,6 +85,7 @@ class Result(Generic[T]):
     provenance: Provenance = Provenance.EXTRACTED
     needs_review: bool = False
     review_reasons: list[str] = field(default_factory=list)
+    review_codes: list[str] = field(default_factory=list)  # stable ReviewCode values
     urgency: Urgency | None = None  # issue results only
     alternatives: list[Any] = field(default_factory=list)
     meta: dict[str, Any] = field(default_factory=dict)
@@ -66,10 +95,17 @@ class Result(Generic[T]):
         # `not (0.0 <= confidence <= 1.0)` clause also catches NaN and out-of-range
         # confidence (NaN < threshold is False, so a NaN would otherwise silently skip
         # review and emit invalid JSON) — defensive, no current caller hits it (panel PPP).
-        if (not (0.0 <= self.confidence <= 1.0)
-                or self.confidence < REVIEW_THRESHOLD
-                or self.provenance is Provenance.AMBIGUOUS):
+        low = (not (0.0 <= self.confidence <= 1.0)
+               or self.confidence < REVIEW_THRESHOLD)
+        if low or self.provenance is Provenance.AMBIGUOUS:
             self.needs_review = True
+            # The central rules carry their own stable codes, so every centrally-
+            # flagged result is machine-filterable even before an op adds a
+            # specific code of its own.
+            if low:
+                self._add_code(ReviewCode.LOW_CONFIDENCE)
+            if self.provenance is Provenance.AMBIGUOUS:
+                self._add_code(ReviewCode.AMBIGUOUS_PROVENANCE)
         # Clamp a non-finite / out-of-range confidence to a finite [0,1] value so to_dict()
         # can never emit Infinity/NaN (invalid JSON per RFC 8259). needs_review is already set
         # above; here we also CORRECT the value, not merely flag it — the envelope is the
@@ -82,22 +118,67 @@ class Result(Generic[T]):
         # An op may flag review without an explicit reason (low confidence / ambiguous
         # provenance); guarantee the contract `needs_review => review_reasons non-empty`
         # centrally so no single op can reintroduce an unexplained flag (panels R19B/R20B).
-        if self.needs_review and not self.review_reasons:
-            self.review_reasons.append(_DEFAULT_REVIEW_REASON)
+        # The codes mirror of the same contract: a flagged result must always be
+        # machine-filterable (needs_review => review_codes non-empty).
+        if self.needs_review:
+            self._backfill_review_contract()
         # Provenance gates the urgency ceiling: nothing low-confidence shouts red.
         if self.urgency is Urgency.RED and self.provenance is not Provenance.EXTRACTED:
             self.urgency = Urgency.ORANGE
+        # From here on, direct `res.needs_review = True` assignments (the common
+        # post-construction op idiom) route through __setattr__'s backfill so the
+        # contract holds on the LIBRARY surface too, not only in to_dict — a
+        # consumer filtering `res.review_codes` in-process must see the same
+        # answer MCP/CLI would serialize (self-review 2026-07-09).
+        object.__setattr__(self, "_contract_live", True)
 
-    def add_reason(self, reason: str) -> Result[T]:
+    def _backfill_review_contract(self) -> None:
+        """One edit point for the flagged-result contract: `needs_review` implies
+        non-empty `review_reasons` (explainable) AND `review_codes`
+        (machine-filterable). Idempotent; called at construction, on assignment,
+        and at serialization."""
+        if not self.review_reasons:
+            self.review_reasons.append(_DEFAULT_REVIEW_REASON)
+        if not self.review_codes:
+            self.review_codes.append(ReviewCode.UNSPECIFIED.value)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        if (name == "needs_review" and value
+                and getattr(self, "_contract_live", False)):
+            self._backfill_review_contract()
+
+    def add_reason(self, reason: str,
+                   code: ReviewCode | str | None = None) -> Result[T]:
         if reason not in self.review_reasons:
             # A specific reason supersedes the generic fallback added in __post_init__.
             if self.review_reasons == [_DEFAULT_REVIEW_REASON]:
                 self.review_reasons = []
             self.review_reasons.append(reason)
             self.needs_review = True
+        if code is not None:
+            self._add_code(code)
         return self
 
+    def _add_code(self, code: ReviewCode | str) -> None:
+        value = code.value if isinstance(code, ReviewCode) else str(code)
+        # A specific code supersedes the generic UNSPECIFIED backfill, exactly as
+        # a specific reason supersedes _DEFAULT_REVIEW_REASON in add_reason.
+        if (value != ReviewCode.UNSPECIFIED.value
+                and self.review_codes == [ReviewCode.UNSPECIFIED.value]):
+            self.review_codes = []
+        if value not in self.review_codes:
+            self.review_codes.append(value)
+
     def to_dict(self) -> dict[str, Any]:
+        # Belt AND suspenders: the contract is upheld at construction
+        # (__post_init__) and on assignment (__setattr__), but the hook only
+        # watches the `needs_review` name — an op that clears/reassigns the
+        # lists on an already-flagged Result would still serialize an
+        # unexplained flag. The chokepoint self-protects, exactly as it does
+        # for non-finite confidence (panel R38; self-review round 2).
+        if self.needs_review:
+            self._backfill_review_contract()
         return {
             "ok": self.ok,
             "result": _plain(self.result),
@@ -105,6 +186,7 @@ class Result(Generic[T]):
             "provenance": self.provenance.value,
             "needs_review": self.needs_review,
             "review_reasons": self.review_reasons,
+            "review_codes": self.review_codes,
             "urgency": self.urgency.value if self.urgency else None,
             "alternatives": [_plain(a) for a in self.alternatives],
             "meta": _plain(self.meta),  # honour _plain as the chokepoint for ALL values:
@@ -128,10 +210,19 @@ def refuse(*reasons: str, confidence: float = 0.0,
 
     Used when an operation can't answer confidently — the single most valuable
     contract for an LLM consumer (design principle 4).
+
+    The stable code tracks the PAYLOAD, not just `ok`: a refusal with no
+    usable answer — result None or EMPTY (find_stale can pass an empty
+    candidates list) — is REFUSED; only a non-empty advisory payload is
+    HEDGED_RESULT, so a machine consumer treating REFUSED as "no answer, try
+    differently" never discards a genuine candidate payload AND never keeps
+    an empty one it should have retried (self-review rounds 1–2).
     """
+    code = ReviewCode.HEDGED_RESULT if result else ReviewCode.REFUSED
     return Result(ok=result is not None, result=result, confidence=confidence,
                   provenance=provenance, needs_review=True,
-                  review_reasons=list(reasons), meta=meta)
+                  review_reasons=list(reasons),
+                  review_codes=[code.value], meta=meta)
 
 
 def _plain(value: Any) -> Any:

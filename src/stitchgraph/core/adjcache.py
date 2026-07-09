@@ -536,10 +536,12 @@ class AdjacencyCache:
         return hits
 
     def reverse_reachable(self, targets: Iterable[str],
-                          relations: Iterable[Relation]) -> set[str]:
+                          relations: Iterable[Relation],
+                          confident_only: bool = False) -> set[str]:
         targets = set(targets)
         seen = self._bfs(self.rev_indptr, self.rev_indices, self.rev_rel,
-                         self.rev_conf, targets, self._rel_mask(relations), False,
+                         self.rev_conf, targets, self._rel_mask(relations),
+                         confident_only,
                          overlay=self.overlay_rev, ov_keys=self._ov_rev_keys,
                          grp=self._rev_grp_neighbours)
         out = {self.ids[i] for i in _np.nonzero(seen)[0]}

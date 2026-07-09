@@ -189,6 +189,7 @@ Result {
   provenance:     extracted | inferred | ambiguous
   needs_review:   bool
   review_reasons: [str]
+  review_codes:   [str]                          # stable machine-readable codes
   urgency:        green | orange | red | null   # issue results only (see §7)
   alternatives:   [<payload>]
   meta:           {...}
@@ -197,6 +198,34 @@ Result {
 
 `needs_review` is true whenever confidence is below threshold or an ambiguity is
 named. Payloads stay compact — the token tax is real on a local model.
+
+**`review_codes`** (field review 2026-07-09) is the machine-readable companion to
+the prose `review_reasons`: a deduped list of stable codes an agent can filter on
+without string-matching. `needs_review ⇒ review_codes non-empty` (mirroring the
+reasons contract). Codes are append-only — never renamed. The set (defined in
+`envelope.ReviewCode`):
+
+| code | meaning |
+|---|---|
+| `LOW_CONFIDENCE` | confidence below the review threshold |
+| `AMBIGUOUS_PROVENANCE` | result provenance is AMBIGUOUS |
+| `REFUSED` | the operation refused to answer (`ok=false`, no result) |
+| `HEDGED_RESULT` | answered, but hedged — a NON-EMPTY advisory/partial result (`ok=true`; an empty payload codes REFUSED) |
+| `UNSPECIFIED` | flagged without a specific code |
+| `NAME_BASED_EDGE` | rests on inferred/ambiguous (name-matched) edges |
+| `NON_CALL_USES` | empty CALLS answer, but other relations touch the symbol |
+| `CYCLE_HEURISTIC` | cycle backed mostly/only by heuristic edges |
+| `LSP_UNAVAILABLE` | a language server declined / is missing or broken |
+| `COVERAGE_ABSENT` | symbol/test absent from the coverage artifact |
+| `COVERAGE_MISMATCH` | artifact ids don't line up with graph node ids |
+| `RESOLVER_GAP` | executed on paths the static graph cannot see |
+| `STATIC_ONLY` | answer rests on static reach alone (no runtime signal) |
+| `UNRESOLVED_SYMBOL` | a requested symbol did not resolve uniquely |
+| `IMPLICIT_COUPLING` | co-activation without a static edge (candidate) |
+| `PROFILE_IDENTITY` | identical coverage profile ≠ behavioural identity |
+| `PARSE_FAILURE` | files could not be parsed / are missing from the graph |
+| `SUPPRESSED_RESULTS` | low-signal findings were capped (never silently) |
+| `NO_ENTRY_POINTS` | liveness ranking unavailable (no entry points found) |
 
 ### Store & incremental updates
 

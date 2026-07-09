@@ -14,12 +14,13 @@ from __future__ import annotations
 import inspect
 import sqlite3
 import warnings
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from .entrypoints import EntryPointDetector, PythonLibraryDetector
-from .envelope import Provenance, Result, Urgency, ok, refuse
+from .envelope import Provenance, Result, ReviewCode, Urgency, ok, refuse
 from .model import Edge, Layer, NodeKind, Relation
 from .reach import (
     LIVENESS_RELATIONS,
@@ -91,6 +92,16 @@ def operation(summary: str) -> Callable[[Callable[..., Result]], Callable[..., R
 
 def registry() -> list[Operation]:
     return list(_REGISTRY.values())
+
+
+def _pos_int(value: Any, default: int) -> int:
+    """Coerce a user-supplied count parameter: a positive int passes, anything
+    else (bool, zero, negative, wrong type from an MCP JSON client) falls back
+    to the op's default. One helper instead of the nine hand-copied inline
+    idioms it replaces (self-review 2026-07-09) — the substitute-don't-refuse
+    semantics every `limit`-taking analysis op shares."""
+    return value if isinstance(value, int) and not isinstance(value, bool) \
+        and value > 0 else default
 
 
 # --------------------------------------------------------------------------
@@ -169,11 +180,12 @@ def _annotate_non_call_uses(res: Result, store: Store, node_id: str,
         res.add_reason(
             f"no CALLS edges, but other edges point at this symbol ({kinds}) — "
             "macro/decorator/dispatch/framework use is invisible to the call "
-            "graph; do NOT treat it as unused")
+            "graph; do NOT treat it as unused", code=ReviewCode.NON_CALL_USES)
     else:
         res.add_reason(
             f"no CALLS edges, but this symbol has other outgoing edges ({kinds}) "
-            "— its dependencies may run through references/imports, not calls")
+            "— its dependencies may run through references/imports, not calls",
+            code=ReviewCode.NON_CALL_USES)
 
 
 def _callgraph_result(payload: list, edges: list, **meta) -> Result:
@@ -189,7 +201,8 @@ def _callgraph_result(payload: list, edges: list, **meta) -> Result:
     res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / len(edges)), 2),
              provenance=prov, count=len(payload), **meta)
     res.needs_review = True
-    res.add_reason("some edges are name-based (inferred/ambiguous) — verify before relying")
+    res.add_reason("some edges are name-based (inferred/ambiguous) — verify before relying",
+                   code=ReviewCode.NAME_BASED_EDGE)
     return res
 
 
@@ -216,7 +229,8 @@ def find_holes(store: Store) -> Result:
         # lands, so flag them orange + needs_review with an explicit reason.
         res = ok(holes, confidence=0.7, provenance=Provenance.INFERRED, count=len(holes))
         res.urgency = Urgency.ORANGE
-        res.add_reason("liveness of holes not yet ranked (entry-point detector pending)")
+        res.add_reason("liveness of holes not yet ranked (entry-point detector pending)",
+                       code=ReviewCode.NO_ENTRY_POINTS)
     else:
         # Zero holes is a clean, factual result (every reference resolved), not a low-
         # confidence anomaly — return it confident so needs_review stays False instead of
@@ -308,7 +322,7 @@ def find_stale(store: Store, detector: EntryPointDetector | None = None) -> Resu
     res = ok(candidates, confidence=0.6, provenance=Provenance.INFERRED,
              count=len(candidates))
     res.add_reason("reachability is from name-based resolution (no type info yet); "
-                   "verify before removal")
+                   "verify before removal", code=ReviewCode.NAME_BASED_EDGE)
     return res
 
 
@@ -434,10 +448,32 @@ def _hub_ranking(store: Store,
 # --------------------------------------------------------------------------
 
 
+_IMPACT_DETAIL_CAP = 5_000  # radius NODE count above which hop distances are skipped
+# The node cap alone does not bound memory: radj grows one entry per radius-induced
+# edges_all ROW, and group expansion makes >95% of resolved rows at framework density —
+# a 5k-node radius on a dense graph can induce millions of entries (self-review
+# 2026-07-09). When the induced edge count passes this budget the detail pass is
+# abandoned mid-stream (radj discarded, tiers fall back to id order) so impact_of can
+# never rematerialize the edge table it streams to avoid.
+_IMPACT_DETAIL_EDGE_CAP = 250_000
+
+
 @operation("Blast radius of changing a symbol (which tests to run).")
-def impact_of(store: Store, name: str) -> Result:
+def impact_of(store: Store, name: str, limit: int = 50) -> Result:
     """Reverse reachability: everything that transitively depends on a symbol,
-    plus which tests it reaches (design §6.B/G)."""
+    plus which tests it reaches (design §6.B/G).
+
+    The radius is TIERED (field review 2026-07-09, request 4 — a single
+    1,400-node blob at confidence 0.47 is not actionable): `confident` is the
+    sub-radius reachable through EXTRACTED edges alone (act on it), `ambiguous`
+    is the rest — dependents whose every route to the symbol crosses at least
+    one name-based guess (verify before acting). Both tiers are ranked
+    nearest-first by call-graph hop distance and capped at `limit` entries
+    (`*_count` always carries the full number; `blast_radius` stays the full
+    flat list for compatibility). On radii past ~5k nodes the per-node
+    distances are skipped — the induced-subgraph walk is what the streamed
+    tally exists to avoid at that scale — and the tiers fall back to id order.
+    """
     target, candidates = _resolve_target(store, name)
     if target is None:
         if len(candidates) > 1:
@@ -450,15 +486,14 @@ def impact_of(store: Store, name: str) -> Result:
             res.alternatives = [n.to_dict() for n in candidates]
             return res
         return refuse(f"'{name}' is not in the index", confidence=0.0)
+    lim = _pos_int(limit, 50)
     dependents = reverse_reachable_from(store, {target.id})
-    tests = sorted(d for d in dependents
-                   if (n := store.get_node(d)) and "test" in n.roles)
-    payload = {
-        "symbol": target.id,
-        "blast_radius": sorted(dependents),
-        "count": len(dependents),
-        "tests_to_run": tests,
-    }
+    # The certain tier: one more reverse BFS restricted to EXTRACTED edges.
+    confident = (reverse_reachable_from(store, {target.id}, confident_only=True)
+                 if dependents else set())
+    ambiguous_only = dependents - confident
+    test_set = {d for d in dependents
+                if (n := store.get_node(d)) and "test" in n.roles}
     # Confidence/provenance must reflect the edges the blast radius rests on, exactly as
     # get_callers/_callgraph_result and trace_path do: a dependent reached only through
     # name-based (AMBIGUOUS/INFERRED) edges is a heuristic guess, not a certain
@@ -467,31 +502,113 @@ def impact_of(store: Store, name: str) -> Result:
     # (homonym name-binds) as certain (panel R33A). The backing edges are the liveness
     # edges induced on the blast radius (every dependent reaches the target through them).
     radius = dependents | {target.id}
-    liveness = {r.value for r in LIVENESS_RELATIONS}
-    # Streamed (cursor) provenance tally: impact_of runs on EVERY query, and
-    # `resolved_edges()` fetchall+Edge-materializes the whole table — the documented
-    # 16M-edge OOM class `iter_resolved` exists to avoid (review 2026-07-03, F11a).
-    # Only three aggregates are needed, so nothing is materialized.
-    n_backing = n_conf = 0
+    # Streamed (cursor) scan: impact_of runs on EVERY query, and `resolved_edges()`
+    # fetchall+Edge-materializes the whole table — the documented 16M-edge OOM
+    # class `iter_resolved` exists to avoid (review 2026-07-03, F11a). The scan
+    # feeds exactly two consumers — the radius-induced reverse adjacency for hop
+    # distances (detail passes only) and the AMBIGUOUS-vs-INFERRED provenance
+    # choice (demoted results only) — so it is SKIPPED outright when neither is
+    # needed: a big fully-confident radius pays zero passes (self-review round 2).
+    detail = len(radius) <= _IMPACT_DETAIL_CAP
+    degraded = None if detail else "node_cap"
+    radj: dict[str, list[str]] = {}
     any_ambiguous = False
-    cur = store.conn.execute(
-        "SELECT src, relation, dst_id, provenance FROM edges_all")
-    for src, rel, dst_id, prov_s in cur:
-        if rel in liveness and src in dependents and dst_id in radius:
-            n_backing += 1
-            if prov_s == Provenance.EXTRACTED.value:
-                n_conf += 1
-            elif prov_s == Provenance.AMBIGUOUS.value:
+    if detail or ambiguous_only:
+        liveness = {r.value for r in LIVENESS_RELATIONS}
+        n_induced = 0
+        cur = store.conn.execute(
+            "SELECT src, relation, dst_id, provenance FROM edges_all")
+        for src, rel, dst_id, prov_s in cur:
+            if rel not in liveness or src not in dependents or dst_id not in radius:
+                continue
+            # Provenance reflects the edges backing the AMBIGUOUS TIER, not any
+            # stray edge in the radius: a redundant AMBIGUOUS edge onto a
+            # confident-tier dependent must not flip the envelope to AMBIGUOUS
+            # (self-review round 2). Every ambiguous-tier path provably crosses
+            # a non-EXTRACTED edge whose src is itself ambiguous-only (a node
+            # with an EXTRACTED edge to a confident node would BE confident),
+            # so scoping the tally to those sources is exact.
+            if (prov_s == Provenance.AMBIGUOUS.value and src in ambiguous_only):
                 any_ambiguous = True
-    if not n_backing or n_conf == n_backing:
+                if not detail:
+                    break  # the only remaining question is answered
+            if detail:
+                n_induced += 1
+                if n_induced > _IMPACT_DETAIL_EDGE_CAP:
+                    # The node cap alone does not bound memory (group expansion
+                    # makes >95% of rows at framework density): abandon the
+                    # detail pass, NEVER silently — `degraded` lands in meta.
+                    detail = False
+                    degraded = "edge_budget"
+                    radj.clear()
+                    if any_ambiguous or not ambiguous_only:
+                        break
+                else:
+                    radj.setdefault(dst_id, []).append(src)
+    dist: dict[str, int] = {}
+    if detail:
+        # Hop distances = BFS from the target over the induced reverse adjacency.
+        frontier = deque([(target.id, 0)])
+        dist[target.id] = 0
+        while frontier:
+            node, d = frontier.popleft()
+            for prev in radj.get(node, ()):
+                if prev not in dist:
+                    dist[prev] = d + 1
+                    frontier.append((prev, d + 1))
+
+    # nearest-first everywhere the order carries meaning: an adapter or consumer
+    # that truncates keeps the closest (most relevant) entries, never an
+    # alphabetical prefix (self-review 2026-07-09). With no distances (past the
+    # detail caps) plain id order — no keyed sort tax on huge radii.
+    def _nearest(i: str) -> tuple[int, str]:
+        return (dist.get(i, len(radius)), i)
+
+    def _tier(ids: set[str]) -> list[dict]:
+        ranked = sorted(ids, key=_nearest) if dist else sorted(ids)
+        return [({"id": i, "distance": dist[i]} if i in dist else {"id": i})
+                for i in ranked[:lim]]
+
+    tests = sorted(test_set, key=_nearest) if dist else sorted(test_set)
+    payload = {
+        "symbol": target.id,
+        "blast_radius": sorted(dependents),
+        "count": len(dependents),
+        "confident": _tier(confident),
+        "confident_count": len(confident),
+        "ambiguous": _tier(ambiguous_only),
+        "ambiguous_count": len(ambiguous_only),
+        "tests_to_run": tests,
+    }
+    truncated = {}
+    if len(confident) > lim:
+        truncated["confident"] = lim
+    if len(ambiguous_only) > lim:
+        truncated["ambiguous"] = lim
+    extra: dict[str, Any] = {"tiers_truncated": truncated} if truncated else {}
+    if degraded and dependents:
+        # Degradation is never silent: distances were skipped because a memory
+        # bound tripped, not because the graph changed (self-review round 2).
+        extra["distances_skipped"] = degraded
+    # The demotion gate is the NODE-tier split, not the raw edge tally: a
+    # dependent with a confident route is certain even when a redundant
+    # name-based edge also points at it, so an empty `ambiguous` tier must not
+    # produce a hedged envelope whose reason says "0 of N dependents…" while
+    # telling the consumer to verify an empty list (self-review 2026-07-09;
+    # panel R33A's intent — dependents reached ONLY through guesses are the
+    # over-approximation — is exactly the tier definition).
+    if not dependents or not ambiguous_only:
         return ok(payload, confidence=0.9, provenance=Provenance.EXTRACTED,
-                  count=len(dependents), tests=len(tests))
+                  count=len(dependents), tests=len(tests), **extra)
     prov = Provenance.AMBIGUOUS if any_ambiguous else Provenance.INFERRED
-    res = ok(payload, confidence=round(0.4 + 0.5 * (n_conf / n_backing), 2),
-             provenance=prov, count=len(dependents), tests=len(tests))
+    res = ok(payload,
+             confidence=round(0.4 + 0.5 * (len(confident) / len(dependents)), 2),
+             provenance=prov, count=len(dependents), tests=len(tests), **extra)
     res.needs_review = True
-    res.add_reason("some dependents are reached only through name-based "
-                   "(inferred/ambiguous) edges — verify before relying")
+    res.add_reason(f"{len(ambiguous_only)} of {len(dependents)} dependents are reached "
+                   "only through name-based (inferred/ambiguous) edges — act on the "
+                   "'confident' tier, verify the 'ambiguous' tier before relying",
+                   code=ReviewCode.NAME_BASED_EDGE)
     return res
 
 
@@ -525,7 +642,7 @@ def trace_path(store: Store, source: str, sink: str) -> Result:
     res = ok(path, confidence=conf, provenance=prov, hops=len(path) - 1)
     res.needs_review = True
     res.add_reason("the path includes name-based (inferred/ambiguous) edges — "
-                   "verify before relying")
+                   "verify before relying", code=ReviewCode.NAME_BASED_EDGE)
     return res
 
 
@@ -582,9 +699,17 @@ def _god_floors(store: Store, fi: dict, fo: dict) -> tuple[int, int]:
 
 
 @operation("Ranked issue list with urgency (structural scan).")
-def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
+def scan(store: Store, detector: EntryPointDetector | None = None,
+         show_heuristic: bool = False) -> Result:
     """Structural issue flagging with urgency (design §7). Suspicion, not
-    diagnosis: wiring/structure defects only, each ranked by liveness."""
+    diagnosis: wiring/structure defects only, each ranked by liveness.
+
+    `show_heuristic=True` (CLI `--show-heuristic`) also lists the cycles whose
+    every linking edge is a name-based guess (0/N confident) — pure homonym
+    collisions (`new`/`default`/`build` matching across unrelated types) that
+    are suppressed by default because they look like architecture problems and
+    force the consumer to disprove each one (field review 2026-07-09, request
+    2). The suppression is counted in meta, never silent."""
     detector = detector or _default_detector(store)
     seeds = detector.detect(store)
     # Liveness-ranked issues (stubs/holes) need seeds; structural issues (cycles,
@@ -603,6 +728,20 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
     for node in store.stub_nodes():
         live = node.id in reachable
         certain_live = node.id in certain
+        # Test-owned stubs are deliberate doubles (a fake server's empty run(),
+        # a mock's pass body), not unimplemented product code — the same
+        # test-ownership principle the god-object detector applies. Found by
+        # dogfooding the whole repo (self-review round 2): the sole RED in
+        # stitchgraph's own scan was a fake in tests/test_mcp.py. Kept visible
+        # (GREEN advisory), never RED/ORANGE.
+        if "test" in node.roles or _is_test_path(node.id):
+            issues.append({
+                "kind": "stub", "node": node.id, "location": node.location,
+                "urgency": Urgency.GREEN.value,
+                "reason": "unimplemented body in test-owned code — a deliberate "
+                          "double/fake, not product debt",
+            })
+            continue
         issues.append({
             "kind": "live_stub" if live else "stub",
             "node": node.id, "location": node.location,
@@ -640,6 +779,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
 
     # Circular dependencies (SCC > 1). Single-node self-loops are ordinary
     # recursion, not a coupling smell, so they're excluded.
+    heuristic_cycles_suppressed = 0
     for comp in strongly_connected_components(store):
         if len(comp) < 2:
             continue
@@ -688,6 +828,18 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         store.conn.execute("DROP TABLE temp._scan_comp")
         frac, conf_n, total = _share_rows(row["t"] + grow["t"], row["c"] + grow["c"])
         artifact = frac < 0.5  # majority of the linking edges are guesses
+        # A "cycle" with ZERO confident edges is not a hedged finding, it is
+        # noise manufactured by name-based resolution — bare `new`/`default`/
+        # `build` method-name collisions across unrelated types (common on
+        # languages without type info). Down-ranking wasn't enough: they still
+        # read as real architecture problems and force the consumer to disprove
+        # each one (field review 2026-07-09, request 2 — 8 spurious cycles on a
+        # Rust crate). Suppress by default, count in meta, opt back in with
+        # `show_heuristic`. A cycle with even ONE confident edge stays: partial
+        # confirmation is a genuine hedged finding, not pure collision.
+        if total and conf_n == 0 and not show_heuristic:
+            heuristic_cycles_suppressed += 1
+            continue
         reason = (f"circular dependency among {len(comp)} symbols"
                   + ("; rests mostly on name-ambiguous/heuristic edges "
                      f"({conf_n}/{total} confident) — verify before acting" if artifact else ""))
@@ -704,6 +856,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
             # so a consumer keying on review_reasons isn't left empty when needs_review is set
             # (panel R34B).
             "review_reasons": [reason] if artifact else [],
+            "review_codes": [ReviewCode.CYCLE_HEURISTIC.value] if artifact else [],
         })
 
     # Data loops: feedback through mutable global state (design §6.F).
@@ -805,6 +958,7 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
                 "confident_fan_in": c_in, "confident_fan_out": c_out,
                 "reason": reason,
                 "review_reasons": [reason] if artifact else [],  # inner-item contract (panel R34B)
+                "review_codes": [ReviewCode.NAME_BASED_EDGE.value] if artifact else [],
             })
     # Scale cutoff: on the 16M-edge field graph the hedged (needs_review) god-object
     # flags numbered 11,117 of 11,124 — individually honest, collectively unusable
@@ -830,6 +984,15 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
              red=sum(i["urgency"] == "red" for i in issues),
              orange=sum(i["urgency"] == "orange" for i in issues))
     res.urgency = Urgency(top) if issues else Urgency.GREEN
+    if heuristic_cycles_suppressed:
+        # Suppressed, never silent (the god-object precedent below): the count is
+        # reported and `show_heuristic=True` lists them.
+        res.meta["heuristic_cycles_suppressed"] = heuristic_cycles_suppressed
+        res.add_reason(
+            f"{heuristic_cycles_suppressed} cycle(s) whose every linking edge is a "
+            "name-based guess (0 confident) were suppressed — pure method-name "
+            "collisions, likely resolution artifacts; rerun with show_heuristic=True "
+            "(--show-heuristic) to list them", code=ReviewCode.CYCLE_HEURISTIC)
     if god_test_mass:
         res.meta["god_objects_test_mass_suppressed"] = god_test_mass
     if god_suppressed:
@@ -837,10 +1000,12 @@ def scan(store: Store, detector: EntryPointDetector | None = None) -> Result:
         res.add_reason(
             f"{god_suppressed} low-confidence (needs_review) god-object flags beyond "
             f"the top {_GOD_REVIEW_CAP} were suppressed — individually hedged, "
-            "collectively noise at this graph size; confident flags are never dropped")
+            "collectively noise at this graph size; confident flags are never dropped",
+            code=ReviewCode.SUPPRESSED_RESULTS)
     if not seeds:
         res.add_reason("no entry points found — liveness-ranked issues (stubs, "
-                       "holes) are omitted; only structural issues are shown")
+                       "holes) are omitted; only structural issues are shown",
+                       code=ReviewCode.NO_ENTRY_POINTS)
     return res
 
 
@@ -856,7 +1021,7 @@ def find_chokepoints(store: Store, limit: int = 20) -> Result:
     never raises."""
     from .reach import articulation_points
 
-    lim = limit if isinstance(limit, int) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     aps = articulation_points(store)
     items: list[dict] = []
     for nid, blast in sorted(aps.items(), key=lambda kv: (-kv[1], kv[0])):
@@ -1002,7 +1167,7 @@ def find_outlier_tests(store: Store, coverage: str = "coverage_modes.json",
     if not modes.load_coverage(coverage):
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     want = k if isinstance(k, int) and not isinstance(k, bool) and k >= 2 else None
     try:
         rows, meta = modes.outlier_tests(store, coverage, k=want, limit=lim)
@@ -1052,7 +1217,7 @@ def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json")
         if not targets:
             return refuse(f"none of the changeset symbols resolve to a unique indexed symbol: {parts}",
                           confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage); for static-only "
@@ -1075,16 +1240,18 @@ def select_tests(store: Store, name: str, coverage: str = "coverage_modes.json")
         payload["symbol"] = targets[0]               # back-compat for the single-symbol shape
     if unresolved:
         payload["unresolved"] = sorted(unresolved)
-    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
-             runtime=len(runtime), static=len(static))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(recommended),
+           runtime=len(runtime), static=len(static)), remapped)
     if not runtime:
         res.needs_review = True
         res.add_reason("none of the symbols were executed in this coverage artifact — 'run_these' is "
-                       "the static blast radius only; coverage may predate them or not exercise them")
+                       "the static blast radius only; coverage may predate them or not exercise them",
+                       code=ReviewCode.STATIC_ONLY)
     if unresolved:
         res.needs_review = True
         res.add_reason(f"{len(unresolved)} changeset symbol(s) did not resolve to a unique indexed "
-                       "symbol and were skipped")
+                       "symbol and were skipped", code=ReviewCode.UNRESOLVED_SYMBOL)
     return res
 
 
@@ -1101,7 +1268,7 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     target, candidates = _resolve_target(store, name)
     if target is None:
         if len(candidates) > 1:
@@ -1111,7 +1278,7 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
             res.alternatives = [n.to_dict() for n in candidates]
             return res
         return refuse(f"'{name}' is not in the index", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1128,26 +1295,30 @@ def co_change(store: Store, name: str, coverage: str = "coverage_modes.json",
                 covered.update(funcs)
                 rows += 1
         if not rows:
-            res = ok({"test": target.id, "covers": []},
-                     provenance=Provenance.EXTRACTED, count=0)
+            res = _annotate_remap(ok({"test": target.id, "covers": []},
+                                     provenance=Provenance.EXTRACTED, count=0), remapped)
             res.needs_review = True
             res.add_reason("this test has no row in the coverage artifact — it was not "
-                           "part of the recorded run")
+                           "part of the recorded run", code=ReviewCode.COVERAGE_ABSENT)
             return res
         payload = {"test": target.id, "covers": sorted(covered), "coverage_rows": rows}
-        return ok(payload, provenance=Provenance.EXTRACTED, count=len(covered))
+        return _annotate_remap(
+            ok(payload, provenance=Provenance.EXTRACTED, count=len(covered)), remapped)
     neighbours = coverage_query.co_functions(cov, target.id, k=lim)
     if not neighbours:
-        res = ok({"symbol": target.id, "co_changing": []}, provenance=Provenance.EXTRACTED, count=0)
+        res = _annotate_remap(ok({"symbol": target.id, "co_changing": []},
+                                 provenance=Provenance.EXTRACTED, count=0), remapped)
         res.needs_review = True
-        res.add_reason("the symbol was never executed in this coverage artifact — no co-activation "
-                       "neighbourhood to report")
+        res.add_reason("the symbol was never executed in this coverage artifact — no "
+                       "co-activation neighbourhood to report",
+                       code=ReviewCode.COVERAGE_ABSENT)
         return res
     payload = {
         "symbol": target.id,
         "co_changing": [{"function": g, "score": s, "shared_tests": c} for g, s, c in neighbours],
     }
-    return ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours))
+    return _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(neighbours)), remapped)
 
 
 @operation("Audit the call graph against runtime ground truth (static reach vs executed, per test).")
@@ -1170,13 +1341,16 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
     closure per test (sidecar-fast). Only functions that exist as graph nodes are
     compared, so id-scheme drift between the artifact and the index reads as
     `unmatched`, not as fake misses."""
-    from . import coverage_query
     from .modes import base_test_id
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
-    cov = coverage_query.load_coverage(coverage)
+    lim = _pos_int(limit, 20)
+    # Path-prefix drift reconciliation happens at the shared load boundary
+    # (field review 2026-07-09 request 14, hoisted in self-review round 2 —
+    # the drift is a property of the ARTIFACT, so every graph-joining
+    # coverage op sees the same reconciled ids and the same annotation).
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1218,8 +1392,16 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
             "recall": round(len(hit) / len(executed), 3),
         })
     if not per_test:
+        # Diagnose the id-scheme gap instead of just asserting it: one sample from
+        # each namespace lets the consumer SEE the drift (prefix, separator, …).
+        # min(), not sorted() — the error path needs one stable sample, not a
+        # total order of every test id on a large graph.
+        sample_cov = min(by_test, default="?")
+        sample_graph = min(_test_node_ids(store), default="(no test nodes indexed)")
         return refuse("no coverage row matched a test node in the graph — are the artifact "
-                      "and the index from the same tree?", confidence=0.0)
+                      "and the index from the same tree? "
+                      f"(artifact test id e.g. {sample_cov!r}; graph test node "
+                      f"e.g. {sample_graph!r})", confidence=0.0)
     per_test.sort(key=lambda r: (r["recall"], r["test"]))
     missed = sorted(missed_count.items(), key=lambda kv: (-kv[1], kv[0]))[:lim]
     payload = {
@@ -1229,12 +1411,40 @@ def audit_graph(store: Store, coverage: str = "coverage_modes.json",
         "worst_tests": per_test[:lim],
         "missed_functions": [{"function": f, "tests_missing_it": n} for f, n in missed],
     }
-    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(per_test))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(per_test)), remapped)
     if missed:
         res.needs_review = True
         res.add_reason("missed_functions are executed on paths the static graph cannot see "
                        "(dynamic dispatch, getattr, framework wiring) — resolver-gap "
-                       "candidates, not necessarily bugs in the analyzed code")
+                       "candidates, not necessarily bugs in the analyzed code",
+                       code=ReviewCode.RESOLVER_GAP)
+    return res
+
+
+def _load_reconciled(store: Store, coverage: str) -> tuple[dict[str, list[str]], int]:
+    """load_coverage + path-drift reconciliation against the graph — the ONE
+    place coverage ids meet node ids (self-review round 2; the matching policy
+    itself lives in coverage_query.suffix_remap/reconcile). Returns
+    ({}, 0) for an unusable artifact, exactly like load_coverage."""
+    from . import coverage_query
+
+    cov = coverage_query.load_coverage(coverage)
+    if not cov:
+        return {}, 0
+    return coverage_query.reconcile(cov, set(store.all_node_ids()))
+
+
+def _annotate_remap(res: Result, remapped: int) -> Result:
+    """The never-silent half of the reconciliation contract: every op that
+    consumed remapped ids says so, with the same code, on every surface."""
+    if remapped:
+        res.meta["ids_remapped"] = remapped
+        res.add_reason(f"{remapped} artifact id(s) did not match a graph node exactly and "
+                       "were remapped by (file basename, symbol) with path alignment — "
+                       "the artifact and the index disagree on a path prefix; regenerate "
+                       "the artifact from the indexed root for exact ids",
+                       code=ReviewCode.COVERAGE_MISMATCH)
     return res
 
 
@@ -1258,13 +1468,12 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
         return refuse("coverage path must be a string", confidence=0.0)
     if scope not in ("all", "cross_file", "same_file"):
         return refuse("scope must be 'all', 'cross_file' or 'same_file'", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 40
-    ms = min_shared if isinstance(min_shared, int) and not isinstance(min_shared, bool) and \
-        min_shared > 0 else 3
+    lim = _pos_int(limit, 40)
+    ms = _pos_int(min_shared, 3)
     # Every structurally-linked function pair (any resolved edge) is "visible" —
     # exclude those. Probed per CANDIDATE pair via two indexed lookups instead of
     # materialising a frozenset per resolved edge (v3.39.0: that set was the op's
@@ -1302,11 +1511,13 @@ def find_coupling(store: Store, coverage: str = "coverage_modes.json",
                   for a, b, s, c in pairs],
         "count": len(pairs),
     }
-    res = ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.EXTRACTED, count=len(pairs)), remapped)
     res.needs_review = True
     res.add_reason("co-activation without a static edge is a *candidate* for implicit coupling — "
                    "populated common_callers usually explains it (siblings of one dispatcher); "
-                   "pairs with no common caller are the truly hidden ones")
+                   "pairs with no common caller are the truly hidden ones",
+                   code=ReviewCode.IMPLICIT_COUPLING)
     return res
 
 
@@ -1329,7 +1540,7 @@ def find_gaps(store: Store, coverage: str = "coverage_modes.json") -> Result:
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1346,15 +1557,18 @@ def find_gaps(store: Store, coverage: str = "coverage_modes.json") -> Result:
         "tested": len(funcs) - len(ungapped),
         "total_functions": len(funcs),
     }
-    res = ok(payload, provenance=Provenance.INFERRED, count=len(untested_live),
-             untested_live=len(untested_live), untested_dead=len(untested_dead))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.INFERRED, count=len(untested_live),
+           untested_live=len(untested_live), untested_dead=len(untested_dead)), remapped)
     res.needs_review = True
     if funcs and not (exercised & funcs):
         res.add_reason("no coverage function id matches a graph node id — likely a namespace mismatch "
-                       "(reindex root vs converter SRC); results are not meaningful until they align")
+                       "(reindex root vs converter SRC); results are not meaningful until they align",
+                       code=ReviewCode.COVERAGE_MISMATCH)
     else:
         res.add_reason("reachability is name-based (no type info); an 'untested_live' gap is real, but "
-                       "verify a symbol before treating 'untested_dead' as removable")
+                       "verify a symbol before treating 'untested_dead' as removable",
+                       code=ReviewCode.NAME_BASED_EDGE)
     return res
 
 
@@ -1410,7 +1624,8 @@ def redundant_tests(store: Store, coverage: str = "coverage_modes.json") -> Resu
              redundant=sum(len(g) - 1 for g in groups))
     res.needs_review = True
     res.add_reason("identical coverage profile != behavioural redundancy (parametrized tests share a "
-                   "profile but test different inputs) — a consolidation review aid, not a delete list")
+                   "profile but test different inputs) — a consolidation review aid, not a delete list",
+                   code=ReviewCode.PROFILE_IDENTITY)
     return res
 
 
@@ -1423,7 +1638,7 @@ def find_core(store: Store, coverage: str = "coverage_modes.json", limit: int = 
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 20
+    lim = _pos_int(limit, 20)
     cov = coverage_query.load_coverage(coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
@@ -1440,11 +1655,11 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
     centrality** — how many tests exercise a file's functions (from the coverage matrix). A file that
     changes often *and* is touched by many behaviours is the most dangerous to modify, a sharper hotspot
     than churn × static-centrality alone. Advisory, read-only; needs no numpy (git + set math)."""
-    from . import coverage_query, gitrisk
+    from . import gitrisk
 
     if not isinstance(coverage, str):
         return refuse("coverage path must be a string", confidence=0.0)
-    cov = coverage_query.load_coverage(coverage)
+    cov, remapped = _load_reconciled(store, coverage)
     if not cov:
         return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                       "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1454,17 +1669,13 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
     churn = gitrisk.churn(path)
     if not churn:
         return refuse("no git history found for indexed source files", confidence=0.0)
-    lim = limit if isinstance(limit, int) and not isinstance(limit, bool) and limit > 0 else 15
+    lim = _pos_int(limit, 15)
     # behavioural centrality per file = total activation frequency of the functions it defines.
     # Coverage fids are relative to the INDEXED root; git churn paths to the REPO root — on a
     # src-layout project the raw join matched nothing and returned ok/0 hotspots silently
     # (found dogfooding v3.25.0 on itself). Translate exactly as `risk` does.
     to_git = _git_path_mapper(store, path)
-    fmap = coverage_query.invert(cov)
-    file_beh: dict[str, float] = {}
-    for fid, tset in fmap.items():
-        f = to_git(fid.split("::", 1)[0])
-        file_beh[f] = file_beh.get(f, 0.0) + len(tset)
+    file_beh = _file_behaviour(cov, to_git)
     hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():
         beh = file_beh.get(f, 0.0)
@@ -1478,11 +1689,110 @@ def runtime_risk(store: Store, coverage: str = "coverage_modes.json", path: str 
         for h in hotspots:
             h["urgency"] = (Urgency.ORANGE.value if h["risk"] >= top / 2 else Urgency.GREEN.value)
     payload = {"hotspots": hotspots[:lim]}
-    res = ok(payload, provenance=Provenance.INFERRED, confidence=0.7, hotspots=len(hotspots))
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.INFERRED, confidence=0.7,
+           hotspots=len(hotspots)), remapped)
     res.needs_review = True
     if not hotspots:
         res.add_reason("no file's coverage functions matched a churned file — likely a namespace "
-                       "mismatch (coverage SRC vs git root) or the changed files are untested")
+                       "mismatch (coverage SRC vs git root) or the changed files are untested",
+                       code=ReviewCode.COVERAGE_MISMATCH)
+    return res
+
+
+@operation("Cross-lens hotspots: files ranked high across static centrality, git churn, and runtime behaviour.")
+def find_hotspots(store: Store, path: str | None = None,
+                  coverage: str = "coverage_modes.json", limit: int = 15) -> Result:
+    """The convergence command (field review 2026-07-09, request 12): the single
+    most valuable insight of the field report — files that rank high across
+    *independent* lenses at once — previously had to be assembled by hand from
+    four command outputs. This fuses whatever lenses are available:
+
+    - **static_centrality** — hub ranking aggregated per file (always available);
+    - **churn** — git commit frequency per file (needs a git repo);
+    - **behavioural_centrality** — how many tests exercise the file's functions
+      (needs a per-test coverage artifact from `scaffold_coverage`).
+
+    Each lens ranks files into percentiles (ties share their average rank); a
+    file's score is the geometric mean of its percentiles over the lenses it
+    appears in, and only files visible to at least TWO lenses are listed — one
+    strong lens is `orient`/`risk` territory, convergence is what turns
+    "probably important" into "provably central". Test files and test-sourced
+    dependency mass are excluded, as in `orient` (research/25): the suite is
+    hot on every lens by construction — top churner, credited by its own
+    coverage rows, fan-in from every test — and that convergence is an
+    artifact, not centrality. Refuses when fewer than two lenses are
+    available. Advisory, read-only."""
+    import math
+
+    from . import gitrisk
+
+    if not isinstance(coverage, str):
+        return refuse("coverage path must be a string", confidence=0.0)
+    lim = _pos_int(limit, 15)
+    path = path or store.get_meta("root") or "."
+    to_git = _git_path_mapper(store, path)
+
+    # Probe the two CHEAP lenses first: static centrality is always available,
+    # so whether we can answer at all is decided entirely by these — refusing
+    # after a hub ranking (up to a minute at field scale) wasted 100% of the
+    # work (self-review 2026-07-09).
+    lenses: dict[str, dict[str, float]] = {}
+    if gitrisk.is_git_repo(path):
+        churn = {f: float(c) for f, c in gitrisk.churn(path).items()
+                 if not _is_test_path(f)}
+        if churn:
+            lenses["churn"] = churn
+    cov, remapped = _load_reconciled(store, coverage)
+    if cov:
+        beh = _file_behaviour(cov, to_git, exclude_tests=True)
+        if beh:
+            lenses["behavioural_centrality"] = beh
+    if not lenses:
+        # Honest about what was OBSERVED: static centrality has NOT been
+        # computed on this path (that is the point of the early exit), and this
+        # branch is also reachable when the user supplied both inputs but the
+        # test-file exclusion emptied them — say so instead of asserting an
+        # availability nobody verified (self-review round 2).
+        return _lens_refusal(
+            "neither git churn nor usable per-test coverage; at most static "
+            "centrality remains, and one lens cannot converge")
+    # Static lens: test-sourced fan-in excluded exactly as orient does
+    # (research/25) — a suite that closes 1,117 stores must not crown
+    # Store.close, and here it would converge on 2-3 lenses at once.
+    test_ids = _test_node_ids(store)
+    ranking, _metric = _hub_ranking(store, exclude_sources=test_ids)
+    static = _file_centrality(store, ranking, to_git, exclude=test_ids)
+    if static:
+        lenses["static_centrality"] = static
+
+    if len(lenses) < 2:
+        return _lens_refusal(", ".join(sorted(lenses)) or "none")
+
+    pct = {lens: _tied_percentiles(values) for lens, values in lenses.items()}
+    files = {f for values in lenses.values() for f in values}
+    hotspots: list[dict[str, Any]] = []
+    for f in files:
+        present = [lens for lens in lenses if f in lenses[lens]]
+        if len(present) < 2:
+            continue  # convergence needs independent agreement, not one loud lens
+        score = math.prod(pct[lens][f] for lens in present) ** (1.0 / len(present))
+        hotspots.append({
+            "file": f,
+            "score": round(score, 4),
+            "converging_lenses": len(present),
+            "lenses": {lens: {"value": round(lenses[lens][f], 2),
+                              "percentile": round(pct[lens][f], 3)}
+                       for lens in present},
+        })
+    hotspots.sort(key=lambda h: (-h["converging_lenses"], -h["score"], h["file"]))
+    payload = {"hotspots": hotspots[:lim], "lenses": sorted(lenses)}
+    res = _annotate_remap(
+        ok(payload, provenance=Provenance.INFERRED, confidence=0.75,
+           hotspots=len(hotspots), lenses=len(lenses)), remapped)
+    res.add_reason("convergence is advisory: percentile fusion over "
+                   f"{len(lenses)} lenses ({', '.join(sorted(lenses))}) — a ranking "
+                   "aid, not a measurement")
     return res
 
 
@@ -1538,12 +1848,16 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
     # the stdlib-only default install is what crashes — guard here, at the op boundary.
     if not isinstance(snippet, str):
         return refuse("snippet must be a string", confidence=0.0)
-    if not isinstance(limit, int) or isinstance(limit, bool):
-        return refuse("limit must be an integer", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        # aligned with find_component's check (self-review round 2): the three
+        # refuse-style limit validations had drifted — limit=0/-5 passed here
+        # and produced degenerate output (empty slice / a matrix op refusing
+        # every non-empty scope) while the sibling op refused cleanly.
+        return refuse("limit must be a positive integer", confidence=0.0)
     if mode not in ("semantic", "structure", "behavior"):
         return refuse("mode must be 'semantic', 'structure' or 'behavior'", confidence=0.0)
     if mode == "behavior":
-        from . import coverage_query, modes
+        from . import modes
         target, candidates = _resolve_target(store, snippet)
         if target is None:
             if len(candidates) > 1:
@@ -1553,7 +1867,7 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
                 res.alternatives = [n.to_dict() for n in candidates]
                 return res
             return refuse(f"'{snippet}' is not in the index", confidence=0.0)
-        cov = coverage_query.load_coverage(coverage)
+        cov, remapped = _load_reconciled(store, coverage)
         if not cov:
             return refuse(f"no usable per-test coverage in '{coverage}' (expected the "
                           "stitchgraph-coverage-v1 JSON from scaffold_coverage)", confidence=0.0)
@@ -1564,8 +1878,9 @@ def find_similar(store: Store, snippet: str, limit: int = 10,
         if not neighbours:
             return refuse(f"'{target.id}' was never executed in this coverage artifact — "
                           "no behavioural embedding to rank from", confidence=0.0)
-        return ok([{"id": nid, "score": s} for nid, s in neighbours],
-                  provenance=Provenance.INFERRED, count=len(neighbours))
+        return _annotate_remap(
+            ok([{"id": nid, "score": s} for nid, s in neighbours],
+               provenance=Provenance.INFERRED, count=len(neighbours)), remapped)
     matches = similar.find_similar(store, snippet, limit, mode=mode)
     if not matches:
         hint = ("no structurally-similar function found (snippet must be Python, JS/TS, Go, Rust, "
@@ -1782,10 +2097,7 @@ def risk(store: Store, path: str | None = None) -> Result:
 
     # File-level centrality = total importance of the nodes it defines.
     ranking, _ = _hub_ranking(store)
-    file_centrality: dict[str, float] = {}
-    for nid in store.all_node_ids():
-        f = to_git(nid.split("::", 1)[0])
-        file_centrality[f] = file_centrality.get(f, 0.0) + ranking.get(nid, 0.0)
+    file_centrality = _file_centrality(store, ranking, to_git)
 
     hotspots: list[dict[str, Any]] = []
     for f, c in churn.items():
@@ -1828,6 +2140,70 @@ def _connected_file_pairs(store: Store, to_git) -> set[frozenset[str]]:
         if a != b:
             pairs.add(frozenset((a, b)))
     return pairs
+
+
+def _lens_refusal(available: str) -> Result:
+    """find_hotspots' one refusal message (two call sites had already drifted
+    ~90%-identical prose — self-review round 2). `available` states what was
+    actually observed, never a guess."""
+    return refuse(
+        f"cross-lens convergence needs at least two lenses; available: {available}. "
+        "Run inside a git repo for churn, and/or pass a per-test coverage artifact "
+        "(scaffold_coverage) for behavioural centrality — note test files are "
+        "excluded from every lens; a single lens is `orient`/`risk` territory",
+        confidence=0.0)
+
+
+def _tied_percentiles(values: dict[str, float]) -> dict[str, float]:
+    """Percentile rank per key, ties sharing their AVERAGE rank. Ordinal ranks
+    gave equal lens values arbitrarily different (alphabetical) percentiles,
+    inflating low-signal files to near-top scores on tie-heavy lenses like
+    churn (self-review 2026-07-09: 100 files at churn 1 spanned 0.01..0.99)."""
+    ordered = sorted(values.items(), key=lambda kv: (kv[1], kv[0]))
+    n = len(ordered)
+    pct: dict[str, float] = {}
+    i = 0
+    while i < n:
+        j = i
+        while j < n and ordered[j][1] == ordered[i][1]:
+            j += 1
+        avg = (i + 1 + j) / 2 / n  # mean of 1-based ranks i+1 .. j
+        for k in range(i, j):
+            pct[ordered[k][0]] = avg
+        i = j
+    return pct
+
+
+def _file_centrality(store: Store, ranking: dict[str, float], to_git,
+                     exclude: set[str] | None = None) -> dict[str, float]:
+    """File-level centrality: total hub-ranking mass of the nodes each file
+    defines, in git-relative path space. The ONE aggregation `risk` and
+    `find_hotspots` share (self-review 2026-07-09) — the src-layout mapping bug
+    class (v3.25.0: raw join matched nothing, silent zero hotspots) must have a
+    single fix point. Zero-mass files are dropped."""
+    skip = exclude or set()
+    out: dict[str, float] = {}
+    for nid in store.all_node_ids():
+        if nid in skip:
+            continue
+        f = to_git(nid.split("::", 1)[0])
+        out[f] = out.get(f, 0.0) + ranking.get(nid, 0.0)
+    return {f: v for f, v in out.items() if v > 0}
+
+
+def _file_behaviour(cov: dict[str, list[str]], to_git,
+                    exclude_tests: bool = False) -> dict[str, float]:
+    """Per-file behavioural mass: how many tests execute each file's functions,
+    in git-relative path space — shared by `runtime_risk` and `find_hotspots`."""
+    from . import coverage_query
+
+    out: dict[str, float] = {}
+    for fid, tset in coverage_query.invert(cov).items():
+        if exclude_tests and _is_test_path(fid):
+            continue
+        f = to_git(fid.split("::", 1)[0])
+        out[f] = out.get(f, 0.0) + len(tset)
+    return out
 
 
 def _git_path_mapper(store: Store, path: str):
@@ -2082,8 +2458,12 @@ def get_matrix(store: Store, scope: str, relation: str = "CALLS",
         return refuse("scope must be a string", confidence=0.0)
     if not isinstance(relation, str):
         return refuse("relation must be a string", confidence=0.0)
-    if not isinstance(limit, int) or isinstance(limit, bool):
-        return refuse("limit must be an integer", confidence=0.0)
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        # aligned with find_component's check (self-review round 2): the three
+        # refuse-style limit validations had drifted — limit=0/-5 passed here
+        # and produced degenerate output (empty slice / a matrix op refusing
+        # every non-empty scope) while the sibling op refused cleanly.
+        return refuse("limit must be a positive integer", confidence=0.0)
     if not isinstance(layer, str):
         return refuse("layer must be a string", confidence=0.0)
     layer = layer.lower()
@@ -2272,18 +2652,22 @@ def reindex(store: Store, path: str, precise: bool = False,
 def _annotate_lsp(res: Result, resolvers, forced: bool = True) -> None:
     """Surface the LSP pass's honesty counters (sites asked / resolved /
     declines) on the reindex result — the pass must never pretend coverage
-    it didn't have (research/24). Declines become review reasons only when
-    the pass was FORCED (`lsp=True`): under AUTO a missing server is the
-    expected fallback, not something to flag."""
+    it didn't have (research/24). Declines become review reasons when the
+    pass was FORCED (`lsp=True`) — under AUTO a missing server is the
+    expected fallback, not something to flag — OR when the binary is on PATH
+    but broken (`broken_binary`, e.g. rustup's uninstalled rust-analyzer
+    proxy shim): AUTO only attached the pass because that binary looked
+    installed, so its failure must be loud and carry the fix, not silently
+    degrade to the name-based graph (field review 2026-07-09, request 1)."""
     for r in resolvers:
         if getattr(r, "name", "") == "lsp" and getattr(r, "report", None):
             if isinstance(res.result, dict):
                 res.result["lsp"] = r.report
-            if forced:
-                for cmd, stats in r.report.items():
-                    if stats.get("declined"):
-                        res.add_reason(f"lsp: {cmd.split()[0]} declined "
-                                       f"({stats['declined']})")
+            for cmd, stats in r.report.items():
+                if stats.get("declined") and (forced or stats.get("broken_binary")):
+                    res.add_reason(f"lsp: {cmd.split()[0]} declined "
+                                   f"({stats['declined']})",
+                                   code=ReviewCode.LSP_UNAVAILABLE)
 
 
 def _lsp_edges_for(path: str, cfg, nodes: list, edges: list,
@@ -2358,8 +2742,9 @@ def type_at(store: Store, file: str, line: int, col: int = 0) -> Result:
     cmd, language_id = server
     client = LspClient(cmd, root, timeout=cfg.lsp_timeout)
     if not client.start():
-        return refuse(f"language server unavailable: {cmd.split()[0]!r} "
-                      "(not on PATH, or it exited during initialize)")
+        from .resolve.lsp import diagnose_server
+        diag, _present = diagnose_server(cmd)
+        return refuse(f"language server unavailable: {diag}")
     try:
         if not client.did_open(rel, language_id):
             return refuse(f"could not open {rel!r} on the server")
@@ -2890,7 +3275,7 @@ def _annotate_extraction_gaps(res: Result, xreport: dict) -> None:
             f"{shown}{more}. A SyntaxError under an interpreter older than the code's "
             f"syntax level is the common cause — reindex with a newer Python or install "
             f"tree-sitter for the fallback grammar. Every answer from this index silently "
-            f"excludes these files.")
+            f"excludes these files.", code=ReviewCode.PARSE_FAILURE)
 
 
 _EDGE_INSERT_SQL = (

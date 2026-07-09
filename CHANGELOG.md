@@ -4,6 +4,195 @@ All notable changes to stitchgraph. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versioning is
 [SemVer](https://semver.org/).
 
+## [3.51.0] — 2026-07-09
+
+Answers to the 2026-07-09 field review (Claude Opus 4.8 running stitchgraph
+3.50.0 against `ant-node`, a ~40k-line Rust crate — static + git-risk + POD).
+Each change is pinned by tests in `tests/test_field_review.py` /
+`tests/test_lsp.py`.
+
+### Added
+- **`find_hotspots` — cross-lens convergence as a first-class command**
+  (request 12). Files that rank high across static centrality AND git churn
+  AND runtime behaviour at once — the review's single most valuable insight,
+  previously assembled by hand from four command outputs. Percentile fusion
+  (geometric mean) over whatever lenses are available; refuses below two
+  lenses; a file must converge on ≥ 2 lenses to be listed.
+- **Stable machine-readable `review_codes` on every envelope** (request 11).
+  The programmatic companion to the prose `review_reasons`:
+  `NAME_BASED_EDGE`, `LSP_UNAVAILABLE`, `CYCLE_HEURISTIC`,
+  `COVERAGE_MISMATCH`, … (full table in docs/design.md §4). Append-only
+  contract; `needs_review ⇒ review_codes non-empty`, centrally enforced.
+- **Tiered, ranked, capped `impact_of`** (requests 4/5). The blast radius
+  splits into `confident` (reachable through EXTRACTED edges alone — act on
+  it) and `ambiguous` (every route crosses a name-based guess — verify
+  first), each ranked nearest-first by call-graph hop distance and capped at
+  `limit` (default 50) with full counts and truncation reported in meta.
+  `blast_radius` stays the full flat list for compatibility. Backed by
+  `confident_only` support in reverse reachability across all three engines
+  (sidecar / GraphBLAS / pure).
+- **`scan --show-heuristic`** (request 2). Cycles whose every linking edge is
+  a name-based guess (0/N confident — pure `new`/`default`/`build` method-name
+  collisions across unrelated types) are now SUPPRESSED by default instead of
+  merely down-ranked: they read as real architecture problems and forced the
+  consumer to disprove each one (8 spurious cycles on the reviewed crate).
+  The suppression is counted in `meta.heuristic_cycles_suppressed` — never
+  silent — and `--show-heuristic` restores them. Cycles with even one
+  confident edge are unaffected.
+
+### Changed
+- **Actionable language-server diagnostics** (request 1). The opaque
+  "server unavailable" decline now says WHY and how to fix it:
+  `diagnose_server` distinguishes not-on-PATH (with a per-server install
+  hint), the rustup proxy-shim case — where the exact
+  `rustup component add rust-analyzer` fix is lifted from the shim's own
+  error output — and a present-but-broken binary. Under AUTO, a decline
+  from a binary that IS on PATH (the half-installed shim) now surfaces as a
+  review reason with code `LSP_UNAVAILABLE` instead of silently degrading
+  to the name-based graph; machines with no servers stay silent as before.
+  `type_at` refusals carry the same diagnosis.
+- **Bounded MCP tool output** (request 9). Every list in an MCP tool result
+  is cut at 100 items (`STITCHGRAPH_MCP_MAX_ITEMS` overrides; 0 disables),
+  with each cut reported in `meta.truncated` plus a hint — a 400 KB tool
+  result is unusable inside an agent's context. The CLI `--json` continues
+  to carry full payloads.
+- **Mode labels are IDF-weighted** (request 13). `find_modes`/`feature_map`
+  labels now weight tokens by inverse document frequency over the whole
+  artifact (the same scheme the subsystem labeller already used) — suite-wide
+  boilerplate tokens (`test`, `new`, `get`) no longer drown the tokens that
+  actually distinguish a mode.
+- **`audit_graph` tolerates path-prefix id drift** (request 14). The same
+  artifact `find_modes` consumed happily used to make `audit_graph` refuse
+  ("no coverage row matched a test node"): only audit_graph requires ids to
+  exist as graph nodes, and a capture kit run from a different root prefixes
+  every id. Unmatched ids are now remapped by (file basename, symbol) when
+  unambiguous — reported via `meta.ids_remapped` + `COVERAGE_MISMATCH`, never
+  silently — and the refusal, when it still fires, shows one sample id from
+  each namespace so the drift is visible.
+- The envelope schema (including the `review_codes` table) is documented in
+  docs/design.md §4.
+
+### Fixed (same-day self-review of this batch — panel R287)
+An 8-angle adversarial self-review of the diff above surfaced 10 findings
+(2 refuted claims documented in REVIEW_HISTORY.md); all fixed with boundary
+tests before release:
+
+- **`audit_graph` remap can no longer graft ids onto the wrong file.** The
+  suffix remap now requires whole-segment path alignment (one path a suffix
+  of the other — `sandbox/tests/a.py` ↔ `tests/a.py` yes, `src/utils.py` ↔
+  `tools/utils.py` NO), matching runtime.py's `_by_suffix` policy (panel
+  R34A); and it keys only candidate basenames instead of building a dict
+  over every node in the graph.
+- **`impact_of`'s demotion gate now matches its message.** The hedge fires on
+  the node-tier split (dependents reached ONLY through name-based edges),
+  not the raw edge tally — a redundant inferred edge parallel to a confident
+  route no longer produces "0 of N dependents are ambiguous" beside an empty
+  ambiguous tier. `tests_to_run` and both tiers are ranked nearest-first so
+  any downstream truncation keeps the most relevant entries, and the detail
+  pass gains a 250k induced-EDGE budget on top of the 5k node cap (the node
+  cap alone did not bound memory on group-expanded graphs).
+- **MCP bounding is recursive and correlation-aware.** Nested lists (a scan
+  cycle's `members`) are now bounded too; `get_matrix` is exempt — its
+  labels/cells are index-correlated and it is already self-bounded at the
+  operation layer (cutting them independently silently corrupted the
+  matrix).
+- **`diagnose_server` probe hygiene.** The `--version` probe detaches stdin
+  (under the MCP stdio transport a broken binary could consume JSON-RPC
+  protocol bytes), memoizes per session (watch mode re-probed a dead shim on
+  every save), and no longer claims a broken install when a server merely
+  lacks `--version`.
+- **`find_hotspots` ranking integrity.** Test files and test-sourced fan-in
+  are excluded (research/25, as `orient` does — the suite is hot on every
+  lens by construction); tied lens values share their average-rank
+  percentile instead of arbitrary alphabetical ordinals; the cheap lenses
+  are probed before the expensive hub ranking so a refusal costs nothing.
+- **Envelope contract parity.** `needs_review ⇒ review_codes non-empty` is
+  enforced on assignment, so the library surface and MCP/CLI serialization
+  can never disagree; `refuse(result=…)` (the ok=True advisory-partial
+  constructor) now codes `HEDGED_RESULT` instead of `REFUSED`.
+- Shared `_file_centrality`/`_file_behaviour` helpers (risk / runtime_risk /
+  find_hotspots aggregate identically — one fix point for the v3.25.0
+  src-layout bug class) and a `_pos_int` helper replacing nine hand-copied
+  limit-validation idioms.
+
+### Fixed (round-2 self-review of the fixes — panel R288)
+The R287 fix batch was itself reviewed with the same 8-angle process; 10
+findings survived (two of R287's own fixes had introduced regressions), all
+fixed with boundary tests, plus one finding from dogfooding stitchgraph on
+its own repo:
+
+- **The `get_matrix` MCP exemption reopened the unbounded-blob hole** — the
+  op's "self-bound" is the caller-supplied `limit`, which has no ceiling.
+  Replaced with a correlated cut: labels trimmed to the budget, cells kept
+  only where both endpoints survive (index alignment preserved), both cuts
+  reported.
+- **The envelope serialization chokepoint self-protects again** — the
+  `__setattr__` hook only watches the `needs_review` name, so clearing
+  `review_codes` on a flagged Result serialized an unfilterable envelope;
+  `to_dict` now backfills as belt-and-suspenders and the backfill is one
+  shared method. `refuse(result=[])` (empty payload) codes REFUSED, not
+  HEDGED_RESULT — an empty advisory is "no answer, retry differently".
+- **`impact_of` refinements**: `any_ambiguous` is scoped to edges sourced in
+  the ambiguous tier (a redundant AMBIGUOUS edge onto a confident dependent
+  no longer flips the envelope's provenance); the `edges_all` scan is skipped
+  outright when neither distances nor provenance need it and breaks early
+  once its remaining question is answered; detail degradation reports itself
+  (`meta.distances_skipped = node_cap | edge_budget`); huge radii keep plain
+  id-order sorts instead of paying constant-key keyed sorts.
+- **`diagnose_server` memo keyed by binary mtime** (an in-place fix
+  re-probes) and transient probe failures are never cached; `find_hotspots`'
+  two drifted refusal messages collapsed into one honest builder that states
+  what was observed (including the test-file exclusion); `find_chokepoints`
+  converted to `_pos_int` (its leftover copy accepted `limit=True` as 1);
+  `find_similar`/`get_matrix` now refuse non-positive limits like their
+  sibling.
+- **Dogfood finding**: scan's stub detector now applies the god-object
+  test-ownership principle — a deliberately-empty double in a test file
+  (`FakeServer.run`) is a GREEN advisory, never the repo's loudest RED
+  (found by scanning stitchgraph itself: the sole RED was a test fake).
+- New boundary tests pin the node/edge detail caps at exactly N vs N-1,
+  the correlated matrix cut, `tests_to_run`'s nearest-first order, the
+  stdin/memo/transient probe behavior, and the bool-limit coercion.
+- **Coverage id-drift reconciliation hoisted to the shared load boundary**
+  (the round-2 deferred item). The drift is a property of the artifact, not
+  of one op: with a prefix-drifted artifact, `select_tests`/`co_change`/
+  `find_gaps` used to emit confident WRONG diagnoses (STATIC_ONLY "coverage
+  may predate them", COVERAGE_ABSENT "never executed", everything
+  "untested") while `audit_graph` — one function away — proved the rows
+  exist. `coverage_query.reconcile` (built on the alignment-guarded
+  `suffix_remap`, moved out of operations.py) now runs once per load for
+  every graph-joining coverage op — `select_tests`, `co_change`,
+  `audit_graph`, `find_coupling`, `find_gaps`, `runtime_risk`,
+  `find_hotspots`, and `find_similar(mode="behavior")` — each annotating
+  `meta.ids_remapped` + `COVERAGE_MISMATCH`, never silently. Test-id remaps
+  rewrite only the path component, so pytest `[param]` / coverage.py
+  `|phase` suffixes survive intact. Pure-artifact ops (`find_modes`,
+  `test_order`, `redundant_tests`, `find_core`, `coverage_drift`) stay raw
+  by design — they never join graph ids.
+
+### Fixed (external review, 2026-07-09)
+An independent agent review of the branch surfaced three pre-existing repo
+issues (none introduced by this release line); the two safe fixes plus the
+suggested guards are applied, the adapter-normalization refactor it floated
+is deliberately pinned by a test instead of churned:
+
+- **Quoted config booleans no longer silently enable features.** `bool()` on
+  a hand-quoted `include_tests = "false"` (or `adjacency_cache` /
+  `similarity_cache` / `edge_compression`) yielded True; malformed boolean
+  values now fall back to their defaults via the same `isinstance` shape
+  guard `lsp.enabled` already used. Real TOML booleans are honoured.
+- **The lean-install promise is pinned in-suite**, not only in the core-only
+  CI job: a subprocess test imports `stitchgraph` and runs an op with every
+  optional dependency blocked at the import hook, so a future eager import
+  of typer/mcp/tree-sitter/jedi/sqlglot/numpy/graphblas/scipy/yaml fails
+  loudly in any environment.
+- **Three-way signature parity is pinned for every operation**: exposed
+  params ↔ generated CLI command ↔ generated MCP tool must agree in name
+  and order, and every exposed annotation must resolve to a concrete Typer
+  type — the "same name, same params, everywhere" contract (design §3) was
+  previously enforced by three separately-drifting code paths with no test
+  spanning them.
+
 ## [3.50.0] — 2026-07-07
 
 ### Fixed

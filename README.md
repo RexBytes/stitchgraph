@@ -130,6 +130,7 @@ the envelope.
 | What breaks if I change this? | `impact_of` |
 | How does a request flow end to end? | `trace_path` (HTML form → route → handler → ORM → SQL table) |
 | What's dangerous to touch? | `risk` (git churn × centrality), `find_chokepoints` (cut vertices × blast radius) |
+| What matters most, across every lens? | `find_hotspots` — cross-lens convergence: files high on static centrality AND churn AND runtime behaviour at once |
 | Where's the code that does X / clones of this? | `find_similar` — by tokens, or `mode="structure"` for **body-shape** clone detection (renamed/reordered clones a text diff misses) |
 | How do two builds differ? | `graph_diff` — call-level deltas **plus** body-shape changes (catches a data-flow bug that leaves the call graph identical) |
 | Drill into one function | `get_matrix(layer="call" \| "statement" \| "expression")` — call graph → program-dependence graph → value-flow graph |
